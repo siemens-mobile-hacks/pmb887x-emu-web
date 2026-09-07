@@ -1,0 +1,16 @@
+# build outputs
+/dist/
+/dist-jit/
+/build/
+
+# toolchains/dependencies
+node_modules
+
+# self-signed dev cert for LAN https
+.serve-cert/
+
+# test artifacts (headless-browser screenshots)
+/tools/*.png
+
+# fullflash / firmware dumps
+*.bin

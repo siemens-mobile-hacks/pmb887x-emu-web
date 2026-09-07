@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qemu-pmb887x — Siemens phone emulator (WASM)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Siemens PMB887X <span>emulator — qemu compiled to WebAssembly</span></h1>
+  <div id="status" class="status idle">idle</div>
+</header>
+
+<main>
+  <!-- ============ phone: LCD + on-screen keypad ============ -->
+  <section class="phone-panel">
+    <div class="lcd-wrap">
+      <canvas id="lcd" width="132" height="176"></canvas>
+      <div id="lcd-overlay" class="lcd-overlay">press “Start” to boot</div>
+    </div>
+
+    <div id="keypad" class="keypad">
+      <!-- every phone key is its own <button data-key=...>; see app.js -->
+      <div class="krow krow-media">
+        <button data-key="music"    title="Media key">♪</button>
+        <button data-key="play"     title="Play / pause">▶</button>
+        <button data-key="ptt"      title="Push to talk">PTT</button>
+        <button data-key="camera"   title="Camera">CAM</button>
+        <button data-key="browser"  title="Browser / internet">WWW</button>
+      </div>
+      <div class="krow krow-nav">
+        <button data-key="vol_up"   title="Volume up">Vol+</button>
+        <button data-key="send"     class="key-send" title="Green key">✆</button>
+        <button data-key="up"       class="key-nav" title="Joystick up">▲</button>
+        <button data-key="end"      class="key-end" title="Red key / power">✕</button>
+        <button data-key="vol_down" title="Volume down">Vol−</button>
+      </div>
+      <div class="krow krow-joy">
+        <button data-key="left"     class="key-nav" title="Joystick left">◀</button>
+        <button data-key="center"   class="key-nav key-center" title="Joystick press (OK)">●</button>
+        <button data-key="right"    class="key-nav" title="Joystick right">▶</button>
+      </div>
+      <div class="krow krow-soft">
+        <button data-key="left_soft"  title="Left soft key">L-soft</button>
+        <button data-key="down"       class="key-nav" title="Joystick down">▼</button>
+        <button data-key="right_soft" title="Right soft key">R-soft</button>
+      </div>
+      <div class="krow krow-digits">
+        <button data-key="1">1<span>☄</span></button>
+        <button data-key="2">2<span>abc</span></button>
+        <button data-key="3">3<span>def</span></button>
+        <button data-key="4">4<span>ghi</span></button>
+        <button data-key="5">5<span>jkl</span></button>
+        <button data-key="6">6<span>mno</span></button>
+        <button data-key="7">7<span>pqrs</span></button>
+        <button data-key="8">8<span>tuv</span></button>
+        <button data-key="9">9<span>wxyz</span></button>
+        <button data-key="star" title="*">*</button>
+        <button data-key="0">0<span>␣</span></button>
+        <button data-key="hash" title="#">#</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ controls ============ -->
+  <section class="ctrl-panel">
+    <form id="boot-form">
+      <fieldset>
+        <legend>Boot</legend>
+
+        <label class="file-label" for="fullflash">Fullflash (.bin)
+          <input type="file" id="fullflash" accept=".bin" required>
+        </label>
+
+        <label>Device
+          <select id="device" size="1"></select>
+        </label>
+
+        <label>IMEI <small>(15 digits → OTP1)</small>
+          <input type="text" id="imei" value="490154203237518" pattern="\d{15}" maxlength="15">
+        </label>
+
+        <label>ESN <small>(8 hex → OTP0)</small>
+          <input type="text" id="esn" value="12345678" pattern="[0-9a-fA-F]{8}" maxlength="8">
+        </label>
+
+        <label>SIM
+          <select id="sim" size="1">
+            <option value="virtual" selected>virtual</option>
+            <option value="none">none</option>
+          </select>
+        </label>
+
+        <label>Operator <small>(MCC+MNC)</small>
+          <input type="text" id="operator" value="00101" pattern="\d{5,6}" maxlength="6">
+        </label>
+
+        <label>Startup
+          <select id="startup" size="1">
+            <option value="ONLINE" selected>ONLINE</option>
+            <option value="PTEST">PTEST</option>
+            <option value="OFFLINE">OFFLINE</option>
+          </select>
+        </label>
+
+        <label class="checkbox-label">
+          <input type="checkbox" id="rw">
+          writable flash <small>(lets firmware modify the .bin in memory)</small>
+        </label>
+
+        <div class="btn-row">
+          <button type="submit" id="btn-start">Start</button>
+          <button type="button" id="btn-stop" disabled>Stop</button>
+          <button type="button" id="btn-save-flash" disabled>Download flash</button>
+        </div>
+      </fieldset>
+    </form>
+
+    <details class="serial-box" open>
+      <summary>Serial log <small>(-serial file:/serial.log)</small></summary>
+      <pre id="serial"></pre>
+    </details>
+
+    <p class="hint">
+      Everything runs locally in your browser: qemu (arm-softmmu, TCG interpreter)
+      compiled to wasm64 with emscripten, driven by a small
+      <code>-display wasm</code> backend. The physical keyboard works too:
+      arrows / Enter / F1–F9 / digits / numpad +−*/.
+    </p>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

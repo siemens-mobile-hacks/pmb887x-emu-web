@@ -1,0 +1,381 @@
+From 73674f957e2629578bcc8ca3e640d000206fcdec Mon Sep 17 00:00:00 2001
+From: sie-mcp web <web@sie-mcp.local>
+Date: Sun, 6 Sep 2026 19:45:38 +0000
+Subject: [PATCH 1/2] ui: add wasm display/input backend for emscripten builds
+
+Adds ui/wasm.c (emscripten-only): XRGB8888 staging framebuffer exported
+to JS (dirty-flag guarded), linux-keycode input via SPSC ring drained by
+a bottom half, thread-safe wasm_quit(); adaptive dpy_refresh polling
+(pmb887x LCD redraws via GraphicHwOps.gfx_update polls); extends
+configs/meson/emscripten.txt link settings with ENV/HEAP exports and
+EXIT_RUNTIME needed by the browser frontend.
+
+Select with: -display wasm
+---
+ configs/meson/emscripten.txt |   4 +-
+ meson.build                  |   1 +
+ qapi/ui.json                 |   6 +-
+ ui/meson.build               |   6 +
+ ui/wasm.c                    | 282 +++++++++++++++++++++++++++++++++++
+ 5 files changed, 296 insertions(+), 3 deletions(-)
+ create mode 100644 ui/wasm.c
+
+diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
+index 56c39763..735d0cdf 100644
+--- a/configs/meson/emscripten.txt
++++ b/configs/meson/emscripten.txt
+@@ -4,8 +4,8 @@ cpp_args = ['-pthread']
+ objc_args = ['-pthread']
+ # -sPROXY_TO_PTHREAD link time flag always requires -pthread even during
+ # configuration so explicitly add the flag here.
+-c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS']
+-cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS']
++c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
++cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
+ 
+ [project options]
+ # Workaround for failure to find glib-2.0 when building idef parser,
+diff --git a/meson.build b/meson.build
+index ed3ba287..a6bf82d5 100644
+--- a/meson.build
++++ b/meson.build
+@@ -2547,6 +2547,7 @@ endif
+ config_host_data.set('CONFIG_SPICE', spice.found())
+ config_host_data.set('CONFIG_X11', x11.found())
+ config_host_data.set('CONFIG_DBUS_DISPLAY', dbus_display)
++config_host_data.set('CONFIG_WASM_UI', host_os == 'emscripten')
+ config_host_data.set('CONFIG_CFI', get_option('cfi'))
+ config_host_data.set('CONFIG_SELINUX', selinux.found())
+ config_host_data.set('CONFIG_XEN_BACKEND', xen.found())
+diff --git a/qapi/ui.json b/qapi/ui.json
+index b2c42a7f..94513b90 100644
+--- a/qapi/ui.json
++++ b/qapi/ui.json
+@@ -1517,6 +1517,9 @@
+ #
+ # @dbus: Start a D-Bus service for the display.  (Since 7.0)
+ #
++# @wasm: Render to a browser-controlled framebuffer via the wasm UI
++#     backend (emscripten builds only).
++#
+ # Since: 2.12
+ ##
+ { 'enum'    : 'DisplayType',
+@@ -1529,7 +1532,8 @@
+     { 'name': 'curses', 'if': 'CONFIG_CURSES' },
+     { 'name': 'cocoa', 'if': 'CONFIG_COCOA' },
+     { 'name': 'spice-app', 'if': 'CONFIG_SPICE' },
+-    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' }
++    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' },
++    { 'name': 'wasm', 'if': 'CONFIG_WASM_UI' }
+   ]
+ }
+ 
+diff --git a/ui/meson.build b/ui/meson.build
+index d345f6c7..a7a21a11 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -92,6 +92,12 @@ system_ss.add(when: vnc, if_true: files('vnc-system.c'), if_false: files('vnc-st
+ 
+ ui_modules = {}
+ 
++if host_os == 'emscripten'
++  wasm_ss = ss.source_set()
++  wasm_ss.add(when: [pixman], if_true: [files('wasm.c')])
++  ui_modules += {'wasm' : wasm_ss}
++endif
++
+ if curses.found()
+   curses_ss = ss.source_set()
+   curses_ss.add(when: [curses, iconv], if_true: [files('curses.c'), pixman])
+diff --git a/ui/wasm.c b/ui/wasm.c
+new file mode 100644
+index 00000000..4a53e3b5
+--- /dev/null
++++ b/ui/wasm.c
+@@ -0,0 +1,282 @@
++/*
++ * QEMU wasm display/input backend (for emscripten builds).
++ *
++ * Exposes the guest framebuffer to JavaScript and accepts linux-keycode
++ * input + a quit request from JavaScript. All JS entry points are safe to
++ * call from the browser main thread while QEMU runs on a pthread:
++ *  - the framebuffer is converted into a private XRGB8888 staging buffer
++ *    that JS reads directly (a "dirty" flag guards redraws),
++ *  - key events are pushed into a single-producer/single-consumer ring and
++ *    drained on the QEMU main loop via a bottom half,
++ *  - quit goes through the thread-safe qemu_system_shutdown_request().
++ *
++ * Enable with: qemu-system-arm ... -display wasm
++ */
++#include "qemu/osdep.h"
++
++#include <emscripten.h>
++#include <pixman.h>
++
++#include "qemu/atomic.h"
++#include "qemu/error-report.h"
++#include "qemu/main-loop.h"
++#include "qemu/timer.h"
++#include "hw/core/cpu.h"
++#include "system/runstate.h"
++#include "ui/console.h"
++#include "ui/input.h"
++#include "ui/surface.h"
++
++/* ------------------------------------------------------------------ */
++/* Framebuffer shared state (read by JS through exported accessors)    */
++/* ------------------------------------------------------------------ */
++
++static struct {
++    int32_t width;
++    int32_t height;
++    int32_t stride;         /* bytes per row of staging buffer */
++    int32_t dirty;          /* 1 => staging buffer changed since last take */
++    uint64_t updates;       /* total blits (refresh-rate control) */
++} wasm_fb;
++
++static uint8_t *wasm_fb_data;   /* XRGB8888, width*height*4, wasm heap */
++
++static void wasm_fb_free(void)
++{
++    g_free(wasm_fb_data);
++    wasm_fb_data = NULL;
++}
++
++static void wasm_fb_resize(int width, int height)
++{
++    wasm_fb_free();
++    wasm_fb.width = width;
++    wasm_fb.height = height;
++    wasm_fb.stride = width * 4;
++    wasm_fb_data = g_malloc0_n(width, height * 4);
++    qatomic_set(&wasm_fb.dirty, 1);
++}
++
++/* Copy the given region of the console surface into the staging buffer. */
++static void wasm_fb_blit(DisplaySurface *surface, int x, int y, int w, int h)
++{
++    pixman_image_t *dst;
++
++    if (!wasm_fb_data || !surface || !surface->image) {
++        return;
++    }
++    if (x < 0 || y < 0 || w <= 0 || h <= 0 ||
++        x + w > surface_width(surface) || y + h > surface_height(surface) ||
++        surface_width(surface) != wasm_fb.width ||
++        surface_height(surface) != wasm_fb.height) {
++        return;
++    }
++
++    dst = pixman_image_create_bits(PIXMAN_x8r8g8b8, wasm_fb.width,
++                                   wasm_fb.height,
++                                   (uint32_t *)wasm_fb_data,
++                                   wasm_fb.stride);
++    if (!dst) {
++        return;
++    }
++
++    pixman_image_composite(PIXMAN_OP_SRC, surface->image, NULL, dst,
++                           x, y, 0, 0, x, y, w, h);
++    pixman_image_unref(dst);
++
++    wasm_fb.updates++;
++    qatomic_set(&wasm_fb.dirty, 1);
++}
++
++/* Exported to JS: address of the staging buffer (wasm heap offset) */
++EMSCRIPTEN_KEEPALIVE
++uint8_t *wasm_fb_ptr(void)
++{
++    return wasm_fb_data;
++}
++
++EMSCRIPTEN_KEEPALIVE
++int32_t wasm_fb_width(void)
++{
++    return wasm_fb.width;
++}
++
++EMSCRIPTEN_KEEPALIVE
++int32_t wasm_fb_height(void)
++{
++    return wasm_fb.height;
++}
++
++EMSCRIPTEN_KEEPALIVE
++int32_t wasm_fb_stride(void)
++{
++    return wasm_fb.stride;
++}
++
++/* Returns 1 (and clears the flag) when the framebuffer was updated. */
++EMSCRIPTEN_KEEPALIVE
++int32_t wasm_fb_take_dirty(void)
++{
++    return qatomic_xchg(&wasm_fb.dirty, 0);
++}
++
++/* Total number of blits performed (diagnostics/perf). */
++EMSCRIPTEN_KEEPALIVE
++uint64_t wasm_fb_updates(void)
++{
++    return wasm_fb.updates;
++}
++
++/* Guest virtual clock in ns (diagnostics: boot progress). */
++EMSCRIPTEN_KEEPALIVE
++int64_t wasm_vclock(void)
++{
++    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++}
++
++/* Whether CPU 0 is halted (WFI; diagnostics). */
++EMSCRIPTEN_KEEPALIVE
++int32_t wasm_cpu_halted(void)
++{
++    CPUState *cpu = qemu_get_cpu(0);
++    return cpu ? cpu->halted : -1;
++}
++
++/* ------------------------------------------------------------------ */
++/* Key input: SPSC ring filled from the JS main thread, drained by BH  */
++/* ------------------------------------------------------------------ */
++
++#define KEY_RING_SIZE 64        /* power of two */
++
++static struct {
++    uint32_t lnx;
++    uint8_t down;
++} key_ring[KEY_RING_SIZE];
++static unsigned int key_ring_head;   /* consumer (main loop) */
++static unsigned int key_ring_tail;   /* producer (JS thread) */
++
++static QEMUBH *key_bh;
++
++static void wasm_key_bh(void *opaque)
++{
++    while (qatomic_read(&key_ring_tail) != key_ring_head) {
++        unsigned int i = key_ring_head & (KEY_RING_SIZE - 1);
++        qemu_input_event_send_key_linux(NULL, key_ring[i].lnx,
++                                        key_ring[i].down);
++        key_ring_head++;
++    }
++}
++
++/* Exported to JS: enqueue a key event (linux keycode). */
++EMSCRIPTEN_KEEPALIVE
++void wasm_send_key(uint32_t lnx, int32_t down)
++{
++    unsigned int tail = qatomic_read(&key_ring_tail);
++    unsigned int head = qatomic_read(&key_ring_head);
++
++    if (tail - head >= KEY_RING_SIZE) {
++        return; /* full: drop */
++    }
++    key_ring[tail & (KEY_RING_SIZE - 1)].lnx = lnx;
++    key_ring[tail & (KEY_RING_SIZE - 1)].down = !!down;
++    qatomic_set(&key_ring_tail, tail + 1);
++
++    qemu_bh_schedule(key_bh);
++}
++
++/* ------------------------------------------------------------------ */
++/* Quit: thread-safe shutdown request                                  */
++/* ------------------------------------------------------------------ */
++
++EMSCRIPTEN_KEEPALIVE
++void wasm_quit(void)
++{
++    qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
++}
++
++/* ------------------------------------------------------------------ */
++/* DisplayChangeListener                                               */
++/* ------------------------------------------------------------------ */
++
++#define WASM_REFRESH_INTERVAL_MIN  16    /* ~60 fps when busy   */
++#define WASM_REFRESH_INTERVAL_MAX  500   /* idle polling        */
++
++static void wasm_refresh(DisplayChangeListener *dcl)
++{
++    uint64_t before = wasm_fb.updates;
++
++    /* poll the device (GraphicHwOps.gfx_update): pushes dpy_gfx_update */
++    qemu_console_hw_update(dcl->con);
++
++    if (wasm_fb.updates != before) {
++        if (dcl->update_interval > WASM_REFRESH_INTERVAL_MIN) {
++            qemu_console_listener_set_refresh(
++                dcl, dcl->update_interval / 2 > WASM_REFRESH_INTERVAL_MIN
++                        ? dcl->update_interval / 2
++                        : WASM_REFRESH_INTERVAL_MIN);
++        }
++    } else if (dcl->update_interval < WASM_REFRESH_INTERVAL_MAX) {
++        qemu_console_listener_set_refresh(
++            dcl, dcl->update_interval * 2 < WASM_REFRESH_INTERVAL_MAX
++                    ? dcl->update_interval * 2
++                    : WASM_REFRESH_INTERVAL_MAX);
++    }
++}
++
++static void wasm_gfx_update(DisplayChangeListener *dcl,
++                            int x, int y, int w, int h)
++{
++    DisplaySurface *surface = qemu_console_surface(dcl->con);
++
++    wasm_fb_blit(surface, x, y, w, h);
++}
++
++static void wasm_gfx_switch(DisplayChangeListener *dcl,
++                            struct DisplaySurface *new_surface)
++{
++    if (!new_surface) {
++        return;
++    }
++    if (wasm_fb.width != surface_width(new_surface) ||
++        wasm_fb.height != surface_height(new_surface)) {
++        wasm_fb_resize(surface_width(new_surface), surface_height(new_surface));
++    }
++    wasm_fb_blit(new_surface, 0, 0, surface_width(new_surface),
++                 surface_height(new_surface));
++}
++
++static const DisplayChangeListenerOps wasm_dcl_ops = {
++    .dpy_name             = "wasm",
++    .dpy_refresh          = wasm_refresh,
++    .dpy_gfx_update       = wasm_gfx_update,
++    .dpy_gfx_switch       = wasm_gfx_switch,
++};
++
++static DisplayChangeListener wasm_dcl;
++
++static void wasm_display_init(DisplayState *ds, DisplayOptions *opts)
++{
++    QemuConsole *con;
++
++    key_bh = qemu_bh_new(wasm_key_bh, NULL);
++
++    /* listen on the first (graphic) console: the phone LCD */
++    con = qemu_console_lookup_by_index(0);
++    if (!con) {
++        error_report("wasm display: no console found");
++        exit(1);
++    }
++    qemu_console_register_listener(con, &wasm_dcl, &wasm_dcl_ops);
++    qemu_console_listener_set_refresh(&wasm_dcl, WASM_REFRESH_INTERVAL_MIN);
++}
++
++static QemuDisplay qemu_display_wasm = {
++    .type   = DISPLAY_TYPE_WASM,
++    .init   = wasm_display_init,
++};
++
++static void register_wasm_display(void)
++{
++    qemu_display_register(&qemu_display_wasm);
++}
++type_init(register_wasm_display);
+-- 
+2.53.0
+

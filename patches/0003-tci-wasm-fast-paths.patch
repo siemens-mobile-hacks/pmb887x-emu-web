@@ -1,0 +1,861 @@
+From 8b1c3d02a1f4e5a6b7c8d9e0a1b2c3d4e5f60712 Mon Sep 17 00:00:00 2001
+From: sie-mcp web <web@sie-mcp.local>
+Date: Mon, 7 Sep 2026 00:00:00 +0000
+Subject: [PATCH] tci: wasm fast paths - inline TLB probe + direct helper
+ dispatch
+
+TCI on wasm routes every guest memory access and every helper call
+through libffi's ffi_call, which emscripten implements as a JS
+round-trip (ffi_call_js: argument arrays + BigInt marshalling +
+getWasmTableEntry(fn).apply(), ~1.7us).  The S75 firmware's busy-poll
+loops are dominated by exactly these two paths.
+
+- tci_qemu_ld/tci_qemu_st: probe the softmmu TLB inline before calling
+  the helper, mirroring the compare native TCG backends emit
+  (prepare_host_addr / tlb_set_compare): on (addr[+s-a] &
+  (page_mask|a_mask)) == tlb_addr the entry is valid RAM, dirty,
+  watchpoint-free and cannot straddle a page, so addr+addend is the
+  host address and a single wasm load/store suffices.  Byte swapping,
+  sign extension, alignment and MO_ATOM_* requirements handled;
+  everything else falls back to the helpers.
+- INDEX_op_call: classify the call's libffi signature at runtime; when
+  it uses only i32/i64 words (<= 5 args, void/u32/u64 return) call the
+  helper through an exactly-typed function pointer instead of
+  ffi_call - a native wasm call_indirect with no JS involvement.
+
+Both paths are __EMSCRIPTEN__-only; native TCI builds are unchanged.
+---
+diff --git a/tcg/tci.c b/tcg/tci.c
+index 29ecb39929..0817f13a81 100644
+--- a/tcg/tci.c
++++ b/tcg/tci.c
+@@ -25,6 +25,18 @@
+ #include "tcg-has.h"
+ #include <ffi.h>
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * wasm fast paths (see web/patches/0003 in the sie-mcp repo):
++ * libffi's ffi_call is a JS round-trip (~1.7us per call), so route both
++ * guest memory accesses and plain i32/i64 helper calls around it.
++ */
++#include "hw/core/cpu.h"
++#include "exec/cpu-common.h"
++#include "exec/tlb-flags.h"
++#include "exec/target_page.h"
++#endif
++
+ 
+ /*
+  * Enable TCI assertions only when debugging TCG (and without NDEBUG defined).
+@@ -257,12 +269,90 @@ static bool tci_compare64(uint64_t u0, uint64_t u1, TCGCond condition)
+     return result;
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * Inline TLB probe, mirroring the compare that native TCG backends emit
++ * (prepare_host_addr() in the native tcg-target.c.inc backends and tlb_set_compare() in
++ * accel/tcg/cputlb.c).  When (addr[+s-a adjust] & (page_mask | a_mask))
++ * equals tlb_addr, the entry is valid, RAM-backed, writable (clean pages
++ * get TLB_NOTDIRTY and watchpointed entries TLB_FORCE_SLOW, both of which
++ * live in tlb_addr's flag bits and make the compare fail) and the access
++ * cannot straddle a page: addr + addend is then the host address.
++ * Returns NULL when the helper slow path must be taken instead.
++ */
++static void *tci_tlb_probe(CPUArchState *env, uint64_t addr,
++                           MemOpIdx oi, bool is_load)
++{
++    MemOp opc = get_memop(oi);
++    unsigned s_mask = (1u << (opc & MO_SIZE)) - 1;
++    unsigned a_mask = (1u << memop_alignment_bits(opc)) - 1;
++    unsigned atom = opc & (7u << MO_ATOM_SHIFT);
++    uint64_t page_mask = (uint64_t)(int64_t)TARGET_PAGE_MASK;
++    CPUTLBDescFast *fast = cpu_tlb_fast(env_cpu(env), get_mmuidx(oi));
++    CPUTLBEntry *entry;
++    uint64_t tlb_addr, cmp;
++
++    /*
++     * The interpreter emits single plain wasm loads/stores; only aligned
++     * ones may stand in for accesses with atomicity requirements.
++     */
++    if (atom != MO_ATOM_NONE && atom != MO_ATOM_IFALIGN &&
++        (addr & s_mask) != 0) {
++        return NULL;
++    }
++
++    entry = &fast->table[(addr >> TARGET_PAGE_BITS) &
++                         (fast->mask >> CPU_TLB_ENTRY_BITS)];
++    tlb_addr = is_load ? entry->addr_read : entry->addr_write;
++    cmp = a_mask >= s_mask ? addr : addr + (s_mask - a_mask);
++
++    if (likely((cmp & (page_mask | a_mask)) == tlb_addr)) {
++        return (void *)(uintptr_t)(addr + entry->addend);
++    }
++    return NULL;
++}
++#endif /* __EMSCRIPTEN__ */
++
+ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+                             MemOpIdx oi, const void *tb_ptr)
+ {
+     MemOp mop = get_memop(oi);
+     uintptr_t ra = (uintptr_t)tb_ptr;
+ 
++#ifdef __EMSCRIPTEN__
++    {
++        void *haddr = tci_tlb_probe(env, taddr, oi, true);
++        if (likely(haddr != NULL)) {
++            uint64_t v;
++            switch (mop & MO_SSIZE) {
++            case MO_UB:
++                return *(uint8_t *)haddr;
++            case MO_SB:
++                return (int8_t)*(uint8_t *)haddr;
++            case MO_UW:
++                v = *(uint16_t *)haddr;
++                return (mop & MO_BSWAP) ? bswap16(v) : v;
++            case MO_SW:
++                v = *(uint16_t *)haddr;
++                v = (mop & MO_BSWAP) ? bswap16(v) : v;
++                return (int16_t)v;
++            case MO_UL:
++                v = *(uint32_t *)haddr;
++                return (mop & MO_BSWAP) ? bswap32(v) : v;
++            case MO_SL:
++                v = *(uint32_t *)haddr;
++                v = (mop & MO_BSWAP) ? bswap32(v) : v;
++                return (int32_t)v;
++            case MO_UQ:
++                v = *(uint64_t *)haddr;
++                return (mop & MO_BSWAP) ? bswap64(v) : v;
++            default:
++                g_assert_not_reached();
++            }
++        }
++    }
++#endif /* __EMSCRIPTEN__ */
++
+     switch (mop & MO_SSIZE) {
+     case MO_UB:
+         return helper_ldub_mmu(env, taddr, oi, ra);
+@@ -289,6 +379,33 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+     MemOp mop = get_memop(oi);
+     uintptr_t ra = (uintptr_t)tb_ptr;
+ 
++#ifdef __EMSCRIPTEN__
++    {
++        void *haddr = tci_tlb_probe(env, taddr, oi, false);
++        if (likely(haddr != NULL)) {
++            switch (mop & MO_SIZE) {
++            case MO_UB:
++                *(uint8_t *)haddr = (uint8_t)val;
++                return;
++            case MO_UW:
++                *(uint16_t *)haddr =
++                    (mop & MO_BSWAP) ? bswap16(val) : (uint16_t)val;
++                return;
++            case MO_UL:
++                *(uint32_t *)haddr =
++                    (mop & MO_BSWAP) ? bswap32(val) : (uint32_t)val;
++                return;
++            case MO_UQ:
++                *(uint64_t *)haddr =
++                    (mop & MO_BSWAP) ? bswap64(val) : val;
++                return;
++            default:
++                g_assert_not_reached();
++            }
++        }
++    }
++#endif /* __EMSCRIPTEN__ */
++
+     switch (mop & MO_SIZE) {
+     case MO_UB:
+         helper_stb_mmu(env, taddr, val, oi, ra);
+@@ -307,6 +424,655 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+     }
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * Direct C dispatch for helper calls whose libffi signature uses only
++ * i32/i64 words and at most 5 arguments.  On wasm, ffi_call() marshals
++ * every argument through JS (ffi_call_js, ~1.7us); calling the helper
++ * through a correctly typed function pointer is a native wasm
++ * call_indirect instead.  Argument words have already been stored into
++ * stack[0..n-1] by the preceding TCI store ops (one 8-byte slot each for
++ * both i32 and i64 arguments); the result is written back to stack[0]
++ * for the caller's return-length switch.  Anything else returns false
++ * and the caller falls back to libffi.
++ *
++ * The signature tag is encoded as
++ *   bits 0-2  number of arguments
++ *   bits 3-4  return class (0 = void, 1 = u32, 2 = u64)
++ *   bits 5+   2 bits per argument (1 = u32, 2 = u64)
++ */
++#define TCI_CLS_U32 1
++#define TCI_CLS_U64 2
++
++static uint32_t tci_call_tag(const ffi_cif *cif)
++{
++    uint32_t tag = cif->nargs;
++    unsigned i;
++
++    if (cif->nargs > 5) {
++        return 0;
++    }
++    switch (cif->rtype->type) {
++    case FFI_TYPE_VOID:
++        break;
++    case FFI_TYPE_INT:
++    case FFI_TYPE_UINT8:
++    case FFI_TYPE_SINT8:
++    case FFI_TYPE_UINT16:
++    case FFI_TYPE_SINT16:
++    case FFI_TYPE_UINT32:
++    case FFI_TYPE_SINT32:
++        tag |= TCI_CLS_U32 << 3;
++        break;
++    case FFI_TYPE_UINT64:
++    case FFI_TYPE_SINT64:
++    case FFI_TYPE_POINTER:
++        tag |= TCI_CLS_U64 << 3;
++        break;
++    default:
++        return 0;
++    }
++
++    for (i = 0; i < cif->nargs; i++) {
++        switch (cif->arg_types[i]->type) {
++        case FFI_TYPE_INT:
++        case FFI_TYPE_UINT8:
++        case FFI_TYPE_SINT8:
++        case FFI_TYPE_UINT16:
++        case FFI_TYPE_SINT16:
++        case FFI_TYPE_UINT32:
++        case FFI_TYPE_SINT32:
++            tag |= TCI_CLS_U32 << (5 + 2 * i);
++            break;
++        case FFI_TYPE_UINT64:
++        case FFI_TYPE_SINT64:
++        case FFI_TYPE_POINTER:
++            tag |= TCI_CLS_U64 << (5 + 2 * i);
++            break;
++        default:
++            return 0;
++        }
++    }
++    return tag;
++}
++
++static bool tci_call_direct(void *func, uint32_t tag, uint64_t *stack)
++{
++    switch (tag) {
++    case 0x0000: /* (void) -> void */
++        ((void (*)(void))func)();
++        return true;
++    case 0x0008: /* (void) -> u32 */
++        stack[0] = ((uint32_t (*)(void))func)();
++        return true;
++    case 0x0010: /* (void) -> u64 */
++        stack[0] = ((uint64_t (*)(void))func)();
++        return true;
++    case 0x0021: /* (i32) -> void */
++        ((void (*)(uint32_t))func)((uint32_t)stack[0]);
++        return true;
++    case 0x0041: /* (i64) -> void */
++        ((void (*)(uint64_t))func)(stack[0]);
++        return true;
++    case 0x0029: /* (i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t))func)((uint32_t)stack[0]);
++        return true;
++    case 0x0049: /* (i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t))func)(stack[0]);
++        return true;
++    case 0x0031: /* (i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t))func)((uint32_t)stack[0]);
++        return true;
++    case 0x0051: /* (i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t))func)(stack[0]);
++        return true;
++    case 0x00a2: /* (i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x00c2: /* (i64,i32) -> void */
++        ((void (*)(uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x0122: /* (i32,i64) -> void */
++        ((void (*)(uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1]);
++        return true;
++    case 0x0142: /* (i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t))func)(stack[0], stack[1]);
++        return true;
++    case 0x00aa: /* (i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x00ca: /* (i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x012a: /* (i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1]);
++        return true;
++    case 0x014a: /* (i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t))func)(stack[0], stack[1]);
++        return true;
++    case 0x00b2: /* (i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x00d2: /* (i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x0132: /* (i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1]);
++        return true;
++    case 0x0152: /* (i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t))func)(stack[0], stack[1]);
++        return true;
++    case 0x02a3: /* (i32,i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x02c3: /* (i64,i32,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x0323: /* (i32,i64,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x0343: /* (i64,i64,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x04a3: /* (i32,i32,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x04c3: /* (i64,i32,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x0523: /* (i32,i64,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2]);
++        return true;
++    case 0x0543: /* (i64,i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2]);
++        return true;
++    case 0x02ab: /* (i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x02cb: /* (i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x032b: /* (i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x034b: /* (i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x04ab: /* (i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x04cb: /* (i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x052b: /* (i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2]);
++        return true;
++    case 0x054b: /* (i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2]);
++        return true;
++    case 0x02b3: /* (i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x02d3: /* (i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x0333: /* (i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x0353: /* (i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x04b3: /* (i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x04d3: /* (i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x0533: /* (i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2]);
++        return true;
++    case 0x0553: /* (i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2]);
++        return true;
++    case 0x0aa4: /* (i32,i32,i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0ac4: /* (i64,i32,i32,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b24: /* (i32,i64,i32,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b44: /* (i64,i64,i32,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0ca4: /* (i32,i32,i64,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0cc4: /* (i64,i32,i64,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d24: /* (i32,i64,i64,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d44: /* (i64,i64,i64,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x12a4: /* (i32,i32,i32,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x12c4: /* (i64,i32,i32,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x1324: /* (i32,i64,i32,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x1344: /* (i64,i64,i32,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x14a4: /* (i32,i32,i64,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x14c4: /* (i64,i32,i64,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x1524: /* (i32,i64,i64,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x1544: /* (i64,i64,i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x0aac: /* (i32,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0acc: /* (i64,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b2c: /* (i32,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b4c: /* (i64,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0cac: /* (i32,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0ccc: /* (i64,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d2c: /* (i32,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d4c: /* (i64,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x12ac: /* (i32,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x12cc: /* (i64,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x132c: /* (i32,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x134c: /* (i64,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x14ac: /* (i32,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x14cc: /* (i64,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x152c: /* (i32,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x154c: /* (i64,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x0ab4: /* (i32,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0ad4: /* (i64,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b34: /* (i32,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b54: /* (i64,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0cb4: /* (i32,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0cd4: /* (i64,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d34: /* (i32,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d54: /* (i64,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x12b4: /* (i32,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x12d4: /* (i64,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x1334: /* (i32,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x1354: /* (i64,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x14b4: /* (i32,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x14d4: /* (i64,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x1534: /* (i32,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x1554: /* (i64,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x2aa5: /* (i32,i32,i32,i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2ac5: /* (i64,i32,i32,i32,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b25: /* (i32,i64,i32,i32,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b45: /* (i64,i64,i32,i32,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2ca5: /* (i32,i32,i64,i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2cc5: /* (i64,i32,i64,i32,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d25: /* (i32,i64,i64,i32,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d45: /* (i64,i64,i64,i32,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32a5: /* (i32,i32,i32,i64,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32c5: /* (i64,i32,i32,i64,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3325: /* (i32,i64,i32,i64,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3345: /* (i64,i64,i32,i64,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34a5: /* (i32,i32,i64,i64,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34c5: /* (i64,i32,i64,i64,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3525: /* (i32,i64,i64,i64,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3545: /* (i64,i64,i64,i64,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x4aa5: /* (i32,i32,i32,i32,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4ac5: /* (i64,i32,i32,i32,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b25: /* (i32,i64,i32,i32,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b45: /* (i64,i64,i32,i32,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4ca5: /* (i32,i32,i64,i32,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4cc5: /* (i64,i32,i64,i32,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d25: /* (i32,i64,i64,i32,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d45: /* (i64,i64,i64,i32,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x52a5: /* (i32,i32,i32,i64,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x52c5: /* (i64,i32,i32,i64,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5325: /* (i32,i64,i32,i64,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5345: /* (i64,i64,i32,i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54a5: /* (i32,i32,i64,i64,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54c5: /* (i64,i32,i64,i64,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5525: /* (i32,i64,i64,i64,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5545: /* (i64,i64,i64,i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x2aad: /* (i32,i32,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2acd: /* (i64,i32,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b2d: /* (i32,i64,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b4d: /* (i64,i64,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2cad: /* (i32,i32,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2ccd: /* (i64,i32,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d2d: /* (i32,i64,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d4d: /* (i64,i64,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32ad: /* (i32,i32,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32cd: /* (i64,i32,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x332d: /* (i32,i64,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x334d: /* (i64,i64,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34ad: /* (i32,i32,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34cd: /* (i64,i32,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x352d: /* (i32,i64,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x354d: /* (i64,i64,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x4aad: /* (i32,i32,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4acd: /* (i64,i32,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b2d: /* (i32,i64,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b4d: /* (i64,i64,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4cad: /* (i32,i32,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4ccd: /* (i64,i32,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d2d: /* (i32,i64,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d4d: /* (i64,i64,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x52ad: /* (i32,i32,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x52cd: /* (i64,i32,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x532d: /* (i32,i64,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x534d: /* (i64,i64,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54ad: /* (i32,i32,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54cd: /* (i64,i32,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x552d: /* (i32,i64,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x554d: /* (i64,i64,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x2ab5: /* (i32,i32,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2ad5: /* (i64,i32,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b35: /* (i32,i64,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b55: /* (i64,i64,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2cb5: /* (i32,i32,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2cd5: /* (i64,i32,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d35: /* (i32,i64,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d55: /* (i64,i64,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32b5: /* (i32,i32,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32d5: /* (i64,i32,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3335: /* (i32,i64,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3355: /* (i64,i64,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34b5: /* (i32,i32,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34d5: /* (i64,i32,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3535: /* (i32,i64,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3555: /* (i64,i64,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x4ab5: /* (i32,i32,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4ad5: /* (i64,i32,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b35: /* (i32,i64,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b55: /* (i64,i64,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4cb5: /* (i32,i32,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4cd5: /* (i64,i32,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d35: /* (i32,i64,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d55: /* (i64,i64,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x52b5: /* (i32,i32,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x52d5: /* (i64,i32,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5335: /* (i32,i64,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5355: /* (i64,i64,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54b5: /* (i32,i32,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54d5: /* (i64,i32,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5535: /* (i32,i64,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5555: /* (i64,i64,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    default:
++        return false;
++    }
++}
++
++#endif /* __EMSCRIPTEN__ */
++
+ /* Interpret pseudo code in tb. */
+ /*
+  * Disable CFI checks.
+@@ -354,6 +1120,19 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+                 func = ((void **)ptr)[0];
+                 cif = ((void **)ptr)[1];
+ 
++#ifdef __EMSCRIPTEN__
++                {
++                    uint32_t tag = tci_call_tag(cif);
++                    if (tag != 0) {
++                        /* Helper functions may need the "return address" */
++                        tci_tb_ptr = (uintptr_t)tb_ptr;
++                        if (tci_call_direct(func, tag, stack)) {
++                            goto tci_call_done;
++                        }
++                    }
++                }
++#endif
++
+                 n = cif->nargs;
+                 for (i = s = 0; i < n; ++i) {
+                     ffi_type *t = cif->arg_types[i];
+@@ -365,6 +1144,9 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+                 tci_tb_ptr = (uintptr_t)tb_ptr;
+                 ffi_call(cif, func, stack, call_slots);
+             }
++#ifdef __EMSCRIPTEN__
++        tci_call_done: ;
++#endif
+ 
+             switch (len) {
+             case 0: /* void */

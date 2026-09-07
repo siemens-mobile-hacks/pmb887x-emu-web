@@ -1,0 +1,60 @@
+From 3f2e1a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f Mon Sep 17 00:00:00 2001
+From: sie-mcp web <web@sie-mcp.local>
+Date: Mon, 7 Sep 2026 00:40:00 +0000
+Subject: [PATCH] wasm: skip cpu_io_recompile() - MMIO poll longjmp storm
+
+Every MMIO access from a TB whose instruction is not the TB's last
+(!can_do_io, qemu 11's strict io placement for icount) triggers
+cpu_io_recompile(): a cpu_loop_exit() longjmp plus re-translation of a
+1-insn CF_MEMI_ONLY TB.  The original TB stays cached, so an MMIO
+polling loop pays this on EVERY iteration, forever.  Natively that is a
+~1us setjmp hop; under emscripten longjmp is JS-exception based and
+costs ~150us of unwinding.
+
+Measured on the S75 firmware (post-crash idle): 16,324 recompiles in
+~20s across only 229 distinct TBs; 50.7% of the vCPU worker's self
+time was inside __emscripten_throw_longjmp (caller stack:
+cpu_io_recompile <- do_ld_mmio_beN <- do_ld4_mmu <- tci_qemu_ld).
+Disabling the recompile took the sustained rate from 175k to 790k
+insns/s (4.5x).
+
+The per-instruction icount precision the recompile protects does not
+exist on emscripten anyway: this tree batches icount2 accounting once
+per TB in cpu_tb_exec() before execution (web patch 0002), so device
+callbacks already see the end-of-TB clock.  Skipping io_prepare's
+recompile changes nothing about clock visibility.
+---
+ accel/tcg/cputlb.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index 28c864839e..50914a9aa3 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -1280,9 +1280,26 @@ io_prepare(hwaddr *out_offset, CPUState *cpu, CPUTLBEntryFull *full,
+     section = full->section;
+     mr_offset = full->xlat_offset + addr;
+     cpu->mem_io_pc = retaddr;
++#ifndef __EMSCRIPTEN__
+     if (!cpu->neg.can_do_io) {
+         cpu_io_recompile(cpu, retaddr);
+     }
++#else
++    /*
++     * wasm: cpu_io_recompile() longjmps out of the interpreter, and
++     * emscripten's JS-based longjmp costs ~150us of unwinding.  MMIO
++     * polling loops (this machine's firmware polls constantly) would
++     * pay it on every iteration: measured 16k recompiles / 20s across
++     * only 229 TBs, 50% of the vCPU thread in __emscripten_throw_longjmp.
++     *
++     * The recompile exists so icount accounts an MMIO access with
++     * per-instruction precision (device callbacks must not see the
++     * clock of insns that have not executed yet).  On emscripten the
++     * icount2 accounting is already batched once per TB before
++     * execution (accel/tcg/cpu-exec.c), so skipping this changes
++     * nothing about clock visibility - it only stops the storm.
++     */
++#endif
+ 
+     *out_offset = mr_offset;
+     return section;
