@@ -66,17 +66,33 @@ main {
   display: flex; flex-direction: column; align-items: center; line-height: 1.15;
   touch-action: none;
 }
-.keypad button span, .aux-keys button span { font-size: 0.6rem; color: var(--muted); letter-spacing: .08em; text-transform: lowercase; }
+.key-sub {
+  font-size: 0.6rem; color: var(--muted); letter-spacing: .08em; text-transform: lowercase;
+  white-space: nowrap;
+}
+.key-sub svg {
+  height: 0.55rem; width: auto;
+  stroke: currentColor; fill: none; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 .keypad button:hover, .aux-keys button:hover { border-color: var(--accent); }
 .keypad button:active, .keypad button.pressed, .aux-keys button:active, .aux-keys button.pressed {
   background: var(--accent); color: #08131f; border-color: var(--accent);
 }
-.keypad button:active span, .keypad button.pressed span,
-.aux-keys button:active span, .aux-keys button.pressed span { color: #08131f; }
+.keypad button:active .key-sub, .keypad button.pressed .key-sub { color: #08131f; }
 .key-nav { font-size: 0.8rem; }
 .key-center { font-size: 1.05rem; }
-.key-send { color: var(--good); }
-.key-end { color: var(--bad); }
+.key-icon { width: 1.1rem; height: 1.1rem; display: block; fill: currentColor; }
+.key-icon-stack { width: 1.05rem; height: auto; }
+.key-end .icon-hangup { fill: #9b2d2e; }
+.key-end .icon-power { fill: #d7dce4; }
+/* keys whose legend is glyph + icon side by side (*, 0, #) */
+.keypad .key-inline { flex-direction: row; justify-content: center; gap: 0.45rem; }
+.key-inline .key-sub svg { height: 0.8rem; }
+/* call/end icon colors sampled from keyboards/S75-ru.webp
+   (.keypad prefix needed to beat the .keypad button color rule) */
+.keypad .key-send { color: #68ba9c; }
+.keypad .key-end { color: #9b2d2e; }
 
 /* secondary column: auxiliary keys, left of the LCD, vertically centered on it */
 .aux-keys {
@@ -84,6 +100,11 @@ main {
   display: flex; flex-direction: column; gap: 6px; width: 64px;
 }
 .aux-keys button { font-size: 0.78rem; }
+
+/* keyboard letter layout picker (under the keypad) */
+.kbd-row { display: flex; align-items: center; gap: 0.6rem; width: 320px; }
+.kbd-row label { flex: none; font-size: 0.78rem; color: var(--muted); }
+.kbd-row select { flex: 1; min-width: 0; }
 
 /* very narrow screens: the padded panel (394px) no longer fits, so let the
    aux keys flow as a centered row under the LCD instead of hanging left */
@@ -95,6 +116,10 @@ main {
     flex-direction: row; flex-wrap: wrap; justify-content: center;
     width: auto; padding-top: 6px;
   }
+  /* vertical column shows Vol+ above Vol− (DOM order); in the horizontal
+     row swap just that pair so Vol− sits left of Vol+ */
+  #aux-keys button[data-key="vol_down"] { order: 1; }
+  #aux-keys button[data-key="vol_up"]   { order: 2; }
 }
 
 /* ---------------- control panel ---------------- */

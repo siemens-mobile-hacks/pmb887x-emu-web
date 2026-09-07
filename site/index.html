@@ -26,8 +26,8 @@
         <button data-key="ptt"     title="Push to talk">PTT</button>
         <button data-key="camera"  title="Camera">CAM</button>
         <button data-key="browser" title="Browser / internet">WWW</button>
-        <button data-key="vol_down" title="Volume down">Vol−</button>
         <button data-key="vol_up"   title="Volume up">Vol+</button>
+        <button data-key="vol_down" title="Volume down">Vol−</button>
       </div>
     </div>
 
@@ -46,26 +46,37 @@
         </div>
         <!-- send/end take the old soft-key slots, flanking joystick-down -->
         <div class="krow krow-call">
-          <button data-key="send" class="key-send" title="Green key">✆</button>
+          <button data-key="send" class="key-send" title="Green key (call)">
+            <svg class="key-icon" viewBox="0 0 24 24"><path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+          </button>
           <button data-key="down" class="key-nav" title="Joystick down">▼</button>
-          <button data-key="end"  class="key-end" title="Red key / power">✕</button>
+          <button data-key="end" class="key-end" title="Red key / power">
+            <svg class="key-icon" viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/></svg>
+          </button>
         </div>
         <div class="krow krow-digits">
-          <button data-key="1">1<span>☄</span></button>
-          <button data-key="2">2<span>abc</span></button>
-          <button data-key="3">3<span>def</span></button>
-          <button data-key="4">4<span>ghi</span></button>
-          <button data-key="5">5<span>jkl</span></button>
-          <button data-key="6">6<span>mno</span></button>
-          <button data-key="7">7<span>pqrs</span></button>
-          <button data-key="8">8<span>tuv</span></button>
-          <button data-key="9">9<span>wxyz</span></button>
-          <button data-key="star" title="*">*</button>
-          <button data-key="0">0<span>␣</span></button>
-          <button data-key="hash" title="#">#</button>
+        <!-- static S75 English default below; app.js rebuilds the whole
+             keypad from KBD_BOARDS/KBD_LAYOUTS on layout switches -->
+          <button data-key="1">1<span class="key-sub">␣</span></button>
+          <button data-key="2">2<span class="key-sub">abc</span></button>
+          <button data-key="3">3<span class="key-sub">def</span></button>
+          <button data-key="4">4<span class="key-sub">ghi</span></button>
+          <button data-key="5">5<span class="key-sub">jkl</span></button>
+          <button data-key="6">6<span class="key-sub">mno</span></button>
+          <button data-key="7">7<span class="key-sub">pqrs</span></button>
+          <button data-key="8">8<span class="key-sub">tuv</span></button>
+          <button data-key="9">9<span class="key-sub">wxyz</span></button>
+          <button data-key="star" title="*">*<span class="key-sub"></span></button>
+          <button data-key="0">0<span class="key-sub">+</span></button>
+          <button data-key="hash" title="#">#<span class="key-sub"></span></button>
         </div>
       </div>
-    </div>
+
+      <!-- keyboard letter layout picker (populated + handled in app.js) -->
+      <div class="kbd-row">
+        <label for="kbd-layout">Keyboard</label>
+        <select id="kbd-layout"></select>
+      </div>
   </section>
 
   <!-- ============ controls ============ -->

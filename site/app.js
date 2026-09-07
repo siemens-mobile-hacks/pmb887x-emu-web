@@ -10,6 +10,8 @@
 //     MCP `press_key` tool uses (converted to linux keycodes, which is what
 //     this qemu fork's input layer consumes).
 
+import { KBD_LAYOUTS, applyKbdLayout } from "./keyboards.js";
+
 /* ------------------------------------------------------------------ */
 /* phone key tables (mirrors pmb887x-emu-mcp/src/keys.ts + otp.ts)      */
 /* ------------------------------------------------------------------ */
@@ -364,23 +366,46 @@ function sendKey(phoneKey, down) {
   m._wasm_send_key(lnx, down ? 1 : 0);
 }
 
-for (const btn of document.querySelectorAll("#keypad button[data-key], #aux-keys button[data-key]")) {
-  const key = btn.dataset.key;
-  const press = (ev) => {
-    ev.preventDefault();
-    btn.classList.add("pressed");
-    sendKey(key, true);
-  };
-  const release = () => {
-    btn.classList.remove("pressed");
-    sendKey(key, false);
-  };
-  btn.addEventListener("pointerdown", press);
-  btn.addEventListener("pointerup", release);
-  btn.addEventListener("pointerleave", release);
-  btn.addEventListener("pointercancel", release);
-  btn.addEventListener("contextmenu", (e) => e.preventDefault());
+// press-and-hold wiring for every on-screen key; re-run after each keyboard
+// render since the buttons are rebuilt per layout
+function bindKeypad() {
+  for (const btn of document.querySelectorAll("#keypad button[data-key], #aux-keys button[data-key]")) {
+    const key = btn.dataset.key;
+    const press = (ev) => {
+      ev.preventDefault();
+      btn.classList.add("pressed");
+      sendKey(key, true);
+    };
+    const release = () => {
+      btn.classList.remove("pressed");
+      sendKey(key, false);
+    };
+    btn.addEventListener("pointerdown", press);
+    btn.addEventListener("pointerup", release);
+    btn.addEventListener("pointerleave", release);
+    btn.addEventListener("pointercancel", release);
+    btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
 }
+
+/* ------------------------------------------------------------------ */
+/* on-screen keyboard layout picker (definitions live in keyboards.js)   */
+/* ------------------------------------------------------------------ */
+
+const kbdSel = $("kbd-layout");
+for (const [id, layout] of Object.entries(KBD_LAYOUTS)) {
+  const opt = document.createElement("option");
+  opt.value = id;
+  opt.textContent = layout.name;
+  kbdSel.appendChild(opt);
+}
+kbdSel.value = localStorage.getItem("kbd-layout");
+if (!(kbdSel.value in KBD_LAYOUTS)) kbdSel.value = "en";
+applyKbdLayout(kbdSel.value, bindKeypad);
+kbdSel.addEventListener("change", () => {
+  applyKbdLayout(kbdSel.value, bindKeypad);
+  localStorage.setItem("kbd-layout", kbdSel.value);
+});
 
 // physical keyboard -> phone keys
 const heldKeys = new Set();
