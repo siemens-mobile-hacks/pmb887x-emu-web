@@ -21,3 +21,7 @@ node_modules
 # session daemon artifacts
 tools/.session*
 tools/.serve.log
+
+# test suite build/run artifacts
+tests/insncount.so
+tests/results/
