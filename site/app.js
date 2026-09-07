@@ -317,7 +317,10 @@ function startPainting() {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const px = dv.getUint32(Number(addr) + y * stride + x * 4, true);
-        dst[y * w + x] = 0xff000000 | px; // set alpha
+        // XRGB8888 (LE u32 0x00RRGGBB) -> canvas RGBA (LE u32 0xffBBGGRR):
+        // swap R and B, then set alpha.
+        dst[y * w + x] = 0xff000000 | ((px & 0x000000ff) << 16)
+                       | (px & 0x0000ff00) | ((px >>> 16) & 0x000000ff);
       }
     }
     ctx.putImageData(img, 0, 0);
