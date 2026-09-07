@@ -13,13 +13,13 @@ WT="$ROOT/build/qemu-native"
 BUILD="$ROOT/build/qemu-native-build"
 
 # worktree at the pinned revision (shares the existing clone's objects)
+bash "$ROOT/scripts/fetch-qemu.sh" "$SRC"
 if [ ! -d "$WT" ]; then
   git -C "$SRC" worktree add --detach "$WT" "$QEMU_PMB887X_REV"
-  if git -C "$WT" config --get submodule."subprojects/teakra".url >/dev/null 2>&1 \
-     || grep -q 'subprojects/teakra' "$WT/.gitmodules" 2>/dev/null; then
+  if grep -q 'subprojects/teakra' "$WT/.gitmodules" 2>/dev/null; then
     (cd "$WT" \
       && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
-      && git submodule update --init --recursive --depth 1 \
+      && git submodule update --init --depth 1 subprojects/teakra \
       && (cd subprojects/teakra && git checkout -q -f HEAD))
   fi
 fi

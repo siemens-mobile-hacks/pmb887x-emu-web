@@ -25,9 +25,7 @@ export PKG_CONFIG_PATH="$TARGET/lib/pkgconfig"
 export EM_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
 
 # --- qemu source: pinned clone + patches ---
-if [ ! -d "$BUILD/qemu/.git" ]; then
-  git clone "$QEMU_PMB887X_REPO" "$BUILD/qemu"
-fi
+bash "$WEB_DIR/scripts/fetch-qemu.sh" "$BUILD/qemu"
 # optional teakra submodule (used by older qemu-pmb887x trees; the current
 # tree has its own native DSP). HTTPS rewrite like the sie-mcp Dockerfile.
 if grep -q 'subprojects/teakra' "$BUILD/qemu/.gitmodules" 2>/dev/null; then
@@ -44,7 +42,9 @@ if [ -e tcg/wasm32.c ] || [ -n "$(git status --porcelain -- tcg/wasm32.c tcg/was
 fi
 git fetch --all --quiet 2>/dev/null || true
 git checkout -q -- . 2>/dev/null || true
-git checkout -q "$QEMU_PMB887X_REV"
+# stale nested repo from older trees (teakra) blocks clean checkouts
+rm -rf "$BUILD/qemu/subprojects/teakra"
+git checkout -q -f "$QEMU_PMB887X_REV"
 git reset -q --hard "$QEMU_PMB887X_REV"
 git clean -qfd
 git apply --check "$WEB_DIR"/patches/*.patch 2>/dev/null || true

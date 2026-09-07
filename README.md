@@ -120,15 +120,22 @@ Select with `-display wasm` — the same way `-display none` works.
 
 ## Pins
 
-`versions.env` pins qemu-pmb887x `2735ce4e` (2026-08-02, interpreter-DSP era)
-and bsp `9277046`. Notes for bumping:
+`versions.env` pins qemu-pmb887x `b31b98fe1e` (alula's `dsp-stuff`
+branch — master + the AFE LLE+HLE fix; see below) and bsp `49b0130`
+(= the submodule pins of the latest pmb887x-emu master, 2026-09-07).
+Notes for bumping:
 
-- `43d084b2` (“native TCG DSP emulation”) and later run the DSP on a TCG
-  worker thread; that revision boots natively but hits the wasm stall
-  earlier (the MCU↔DSP `COM_SET` handshake livelocks).
-- qemu-pmb887x master after `5da18a97` has an unfinished `PLL→CGU` rename
-  (fix `hw/arm/pmb887x/i2c_v2.c` + `board.c` first) and the bsp S75 board
-  gained an unimplemented RF peripheral (`hd155153np`) that aborts boot.
+- qemu-pmb887x **master** (`1f7fc803bf`) aborts every Siemens fullflash
+  during L1 GSM frame handling (`>>EXIT<< FILE: l1bbcsg`, ~25–30 s) —
+  the DSP needs the "hacky AFE (LLE+HLE)" commit that lives on alula's
+  `dsp-stuff` branch (fetched automatically via
+  `QEMU_PMB887X_ALT_REPO`; scripts/fetch-qemu.sh).
+- the bsp main branch defines `[peripheral.RF] type = "hd155153np"` —
+  a device the emulator does not define (only the `pmb6272` stub);
+  `patches/bsp/0001` re-points the two affected includes until upstream
+  grows the device.
+- `tests/run.mjs` (+ `tests/RESULTS-switch.md`) is the A/B harness for
+  bumping: it boots s75/el71/c81 and benchmarks before/after.
 
 ## Performance work (see doc/performance-handoff.md + doc/wasm32-port-status.md)
 
