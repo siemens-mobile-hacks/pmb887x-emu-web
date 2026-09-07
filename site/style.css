@@ -31,7 +31,10 @@ main {
 }
 
 /* ---------------- phone panel ---------------- */
-.phone-panel { display: flex; flex-direction: column; align-items: center; gap: 1rem; }
+/* padding-left reserves room for the absolutely-positioned .aux-keys column
+   (64px keys + 10px gap) so it participates in flex layout and can never be
+   clipped by the viewport when the window gets narrow */
+.phone-panel { display: flex; flex-direction: column; align-items: center; gap: 1rem; padding-left: 74px; }
 
 .lcd-wrap { position: relative; }
 #lcd {
@@ -81,6 +84,18 @@ main {
   display: flex; flex-direction: column; gap: 6px; width: 64px;
 }
 .aux-keys button { font-size: 0.78rem; }
+
+/* very narrow screens: the padded panel (394px) no longer fits, so let the
+   aux keys flow as a centered row under the LCD instead of hanging left */
+@media (max-width: 420px) {
+  .phone-panel { padding-left: 0; }
+  .lcd-overlay { inset: 6px 6px auto; height: 352px; }
+  .aux-keys {
+    position: static; transform: none;
+    flex-direction: row; flex-wrap: wrap; justify-content: center;
+    width: auto; padding-top: 6px;
+  }
+}
 
 /* ---------------- control panel ---------------- */
 .ctrl-panel { flex: 1 1 380px; max-width: 560px; display: flex; flex-direction: column; gap: 1rem; }
