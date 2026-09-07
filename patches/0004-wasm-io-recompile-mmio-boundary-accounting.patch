@@ -1,0 +1,324 @@
+From 3b7e5f9a2c4d6e8f0a1b3c5d7e9f1a2b4c6d8e0f2 Mon Sep 17 00:00:00 2001
+From: sie-mcp web <web@sie-mcp.local>
+Date: Mon, 7 Sep 2026 21:15:00 +0000
+Subject: [PATCH] wasm: kill the io-recompile longjmp storm - account mid-TB
+ MMIO at the stock rewind's clock instead
+
+Every MMIO access from a TB whose instruction is not the TB's last
+(!can_do_io, qemu 11's strict io placement for icount) triggers
+cpu_io_recompile(): a cpu_loop_exit() longjmp plus re-translation of a
+1-insn CF_MEMI_ONLY TB.  The original TB stays cached, so an MMIO
+polling loop pays this on EVERY iteration, forever.  Natively that is a
+~1us setjmp hop; under emscripten longjmp is JS-exception based and
+costs ~150us of unwinding.
+
+Measured on the S75 firmware: 16,324 recompiles in ~20s across only 229
+distinct TBs; 50.7% of the vCPU worker's self time was inside
+__emscripten_throw_longjmp (caller stack: cpu_io_recompile <-
+do_ld_mmio_beN <- do_ld4_mmu <- tci_qemu_ld).
+
+The first attempt (attic: skip the recompile entirely) regressed boot:
+with the whole TB's icount2 cycles only credited after execution, every
+MMIO callback inside the TB sees the virtual clock frozen at the TB
+*start* - two accesses to the same device within one TB observe zero
+elapsed time.  The boot-ROM's GPTU SRC7 poll (pmb8876_brom_r16 @
+0x400118c) reads a timer armed earlier as never elapsed, returns 0
+where the ROM requires 1, and the boot aborts (>>EXIT<< FILE: flash
+ExitCode 0x0552).  Full analysis: doc/early-crash-postmortem.md.
+
+This version keeps the rewind's icount2 semantics and removes the
+repeated cost instead.  On emscripten (icount2 only):
+
+- io_prepare() no longer rewinds for regular MMIO.  Instead
+  wasm_io_account() (translate-all.c) moves the icount2 clock to
+  T0 + (k - 1) for the k-th io access of the TB (T0 = ticks at TB
+  start), using the same insn_start unwind the rewind uses to find the
+  io insn's index - exactly the clock the stock path shows the callback
+  (first access: TB boundary; later ones: +1 per earlier io insn, which
+  the stock 1-insn re-execution TBs credit).
+
+- cpu_tb_exec() credits only wasm_io_account_rest(): the executed
+  prefix of the stock-aborted TB is lost, each io insn counts +1, and
+  only the insns after the last io are credited here - identical
+  accumulation to the stock path, including its lost-partial-TB cycles
+  the firmware timing is tuned to.
+
+- An access from a TB chained via helper_lookup_tb_ptr() (indirect
+  branches; TCI does not return to cpu_tb_exec between them) gets +1
+  and loses the session prefix, as the stock rewind - which unwinds
+  the whole chain - would.
+
+- ROM devices (the flash command interface) keep the stock rewind:
+  the boot-ROM's program/verify handshake over the flash command
+  registers aborts without it (FILE: flash 0x0552; the romd-mode
+  toggling on every flash command needs the rewind's TB serialization).
+  Those accesses are rare, so the ~150us longjmp costs nothing.
+
+- QEMU_IO_REWIND=1 forces the stock rewind everywhere (A/B testing /
+  fallback).
+
+Verified on the S75 fullflash in the browser (tools/verify-boot.mjs):
+boots past the GPTU SRC7 poll with SRR set at the same virtual instant
+as the stock build, draws the splash ~3x earlier in wall time and boots
+2.5-12x further per wall second (sustained 4-14M insns/s vs 0.2-5M
+stock; TCI + V8 tier-up), no >>EXIT<<.  Native builds are unchanged
+(everything is __EMSCRIPTEN__ + icount2 gated).
+---
+
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -28,6 +28,7 @@
+ #include "system/memory.h"
+ #include "system/physmem.h"
+ #include "accel/tcg/cpu-ldst-common.h"
++#include "system/cpu-timers.h"
+ #include "accel/tcg/cpu-mmu-index.h"
+ #include "exec/cputlb.h"
+ #include "exec/tb-flush.h"
+@@ -1281,7 +1282,50 @@
+     mr_offset = full->xlat_offset + addr;
+     cpu->mem_io_pc = retaddr;
+     if (!cpu->neg.can_do_io) {
++#ifdef __EMSCRIPTEN__
++        /*
++         * wasm: do not rewind the TB.  The rewind (cpu_io_recompile)
++         * exists so icount-mode device callbacks see the clock of the
++         * io insn, not of the TB boundary; but its cpu_loop_exit()
++         * longjmp costs ~150us under emscripten (JS-exception based)
++         * and an MMIO polling loop re-pays it on every iteration
++         * forever (the unsplit TB stays cached).
++         *
++         * This tree batches icount2 accounting once per TB after
++         * execution (see cpu_tb_exec), so instead of rewinding we
++         * credit the cycles of the insns that already executed in
++         * this TB right here (wasm_io_account, translate-all.c): the
++         * callback then sees the clock at the io insn boundary, and
++         * the post-TB accounting adds only the remainder.  Skipping
++         * the rewind outright (as an earlier dropped patch did)
++         * leaves the clock frozen at the TB start - the boot-ROM GPTU
++         * SRC7 poll at 0x400118c then reads a timer armed earlier in
++         * the same TB as never elapsed and the boot aborts (FILE:
++         * flash ExitCode 0x0552, doc/early-crash-postmortem.md).
++         */
++        static bool rewind_mode, rewind_mode_init;
++        if (unlikely(!rewind_mode_init)) {
++            rewind_mode = getenv("QEMU_IO_REWIND") != NULL;
++            rewind_mode_init = true;
++        }
++        /*
++         * ROM devices (the flash command interface): keep the stock
++         * rewind.  The boot ROM's program/verify handshake over the
++         * flash command registers aborts without it (FILE: flash
++         * 0x0552); those accesses are rare, so the ~150us longjmp
++         * costs nothing.  QEMU_IO_REWIND=1 forces the stock rewind
++         * everywhere (A/B testing / fallback).
++         */
++        if (icount2_enabled() && !rewind_mode &&
++            !section->mr->rom_device) {
++            extern void wasm_io_account(CPUState *cpu, uintptr_t retaddr);
++            wasm_io_account(cpu, retaddr);
++        } else {
++            cpu_io_recompile(cpu, retaddr);
++        }
++#else
+         cpu_io_recompile(cpu, retaddr);
++#endif
+     }
+ 
+     *out_offset = mr_offset;
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -37,6 +37,9 @@
+ #include "internal-common.h"
+ #include "tcg/perf.h"
+ #include "tcg/insn-start-words.h"
++#ifdef __EMSCRIPTEN__
++#include "system/cpu-timers.h"
++#endif
+ 
+ TBContext tb_ctx;
+ 
+@@ -167,6 +170,114 @@
+     return -1;
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * wasm: mid-TB MMIO clock accounting (see io_prepare(), cputlb.c).
++ *
++ * icount2 cycles are batched per TB on emscripten (patch 0002): the
++ * whole TB's icount is credited only after tcg_qemu_tb_exec() returns,
++ * so a device callback for an access in the middle of a TB would see
++ * the virtual clock frozen at the TB start.  Stock qemu avoids that by
++ * rewinding the TB (cpu_io_recompile), whose cpu_loop_exit() longjmp
++ * costs ~150us under emscripten and is re-paid on every pass of an
++ * MMIO polling loop (16k recompiles / 20s across 229 TBs here).
++ *
++ * We skip the rewind but reproduce its icount2 clock exactly:
++ *
++ *  - At the access, wasm_io_account() moves the clock to T0 + (k - 1)
++ *    for the k-th io access of the TB (T0 = ticks at TB start): the
++ *    stock callback sees the TB-boundary clock for the first access
++ *    and, for later ones, +1 per earlier io insn (each re-executed as
++ *    a 1-insn CF_MEMI_ONLY TB).  The io insn index comes from the same
++ *    insn_start unwind cpu_io_recompile uses.
++ *
++ *  - At TB end, cpu_tb_exec() credits wasm_io_account_rest(): the
++ *    executed prefix of the (stock-aborted) TB is lost, each io insn
++ *    counts +1, and only the insns after the last io run as normal
++ *    follow-up TBs - exactly the stock per-TB accounting, including
++ *    its lost-partial-TB cycles the firmware timing is tuned to.
++ *
++ *  - An access from a TB chained via helper_lookup_tb_ptr() (indirect
++ *    branches; the interpreter does not return to cpu_tb_exec between
++ *    them) is credited +1 and loses the whole session prefix, as the
++ *    stock rewind - which unwinds the entire chain - would.
++ *
++ * Only the vCPU thread touches this state (translation and execution
++ * both run there); no locking needed.
++ */
++static __thread unsigned wasm_io_n;          /* io accesses in this session */
++static __thread int wasm_io_idx_last;        /* insn index of last io, -1 */
++static __thread bool wasm_io_chained;        /* io hit a chained TB */
++static __thread int64_t wasm_io_t0;          /* ticks at TB start */
++static __thread TranslationBlock *wasm_io_session_tb;
++
++void wasm_io_account_reset(TranslationBlock *session_tb)
++{
++    wasm_io_n = 0;
++    wasm_io_idx_last = -1;
++    wasm_io_chained = false;
++    wasm_io_session_tb = session_tb;
++}
++
++unsigned wasm_io_account_rest(unsigned tb_icount)
++{
++    /*
++     * Stock per-TB accounting after the session: the executed prefix
++     * of a rewound TB is lost, each io insn is re-executed as a 1-insn
++     * CF_MEMI_ONLY TB (+1 each) and only the insns after the last io
++     * run as normal follow-up TBs.  Emulate exactly that loss.
++     */
++    if (wasm_io_chained) {
++        return 0;   /* the whole chain prefix is lost by the rewind */
++    }
++    if (wasm_io_n == 0) {
++        return tb_icount;
++    }
++    return wasm_io_n + (tb_icount - 1 - (unsigned)wasm_io_idx_last);
++}
++
++void wasm_io_account(CPUState *cpu, uintptr_t retaddr)
++{
++    TranslationBlock *tb = tcg_tb_lookup(retaddr);
++    uint64_t data[INSN_START_WORDS];
++    int insns_left;
++    extern int64_t icount2_ticks_now(void);
++    extern void wasm_io_advance(unsigned cycles);
++
++    if (tb != wasm_io_session_tb) {
++        /*
++         * Chained via helper_lookup_tb_ptr(): the stock rewind would
++         * longjmp out of the whole chain (losing it) and re-execute
++         * this access as a 1-insn TB: give it its +1.
++         */
++        wasm_io_chained = true;
++        wasm_io_advance(1);
++        return;
++    }
++    insns_left = cpu_unwind_data_from_tb(tb, retaddr, data);
++    if (insns_left < 0) {
++        return;
++    }
++
++    wasm_io_idx_last = (int)tb->icount - insns_left;
++
++    /*
++     * The k-th io access of the TB must see the clock the stock path
++     * shows it: T0 + (k - 1) - the aborted TB is never credited, each
++     * earlier io insn's 1-insn TB is.
++     */
++    if (wasm_io_n == 0) {
++        wasm_io_t0 = icount2_ticks_now();
++    }
++    wasm_io_n++;
++    int64_t want = wasm_io_t0 + (wasm_io_n - 1);
++    int64_t now = icount2_ticks_now();
++    if (want > now) {
++        wasm_io_advance((unsigned)(want - now));
++    }
++}
++#endif
++
+ /*
+  * The cpu state corresponding to 'host_pc' is restored in
+  * preparation for exiting the TB.
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -448,14 +448,30 @@
+      * (io recompile / self-modifying code) while tcg_qemu_tb_exec runs.
+      */
+     unsigned tb_icount = itb->icount;
++    {
++        extern void wasm_io_account_reset(TranslationBlock *session_tb);
++        wasm_io_account_reset(itb);
++    }
+ #endif
+     qemu_thread_jit_execute();
+     ret = tcg_qemu_tb_exec(cpu_env(cpu), tb_ptr);
+ #ifdef __EMSCRIPTEN__
+     if (icount2_enabled()) {
+         extern void wasm_tb_account(unsigned insns);
++        unsigned rest;
++        {
++            extern unsigned wasm_io_account_rest(unsigned tb_icount);
++            rest = wasm_io_account_rest(tb_icount);
++        }
+         wasm_tb_account(tb_icount);
+-        icount2_advance(tb_icount);
++        /*
++         * Stock-equivalent credit: mid-TB io accesses were accounted
++         * at their own boundaries (each +1 like the stock 1-insn
++         * CF_MEMI_ONLY TB), the executed prefix of the aborted TB is
++         * lost, and only the insns after the last io are credited
++         * here (translate-all.c).
++         */
++        icount2_advance(rest);
+     }
+ #endif
+     cpu->neg.can_do_io = true;
+--- a/system/icount2.c
++++ b/system/icount2.c
+@@ -126,6 +126,32 @@
+ 	}
+ }
+ 
++int64_t icount2_ticks_now(void) {
++	return qatomic_read(&timers_state.icount2_ticks);
++}
++
++#ifdef __EMSCRIPTEN__
++/*
++ * wasm: mid-TB MMIO accounting (see io_prepare(), cputlb.c).  Called
++ * from a load/store helper: if a virtual-timer deadline is crossed the
++ * timers are synced here so the upcoming device callback sees their
++ * effects, but never when the BQL is already held by this thread (a
++ * nested dispatch); the next per-TB icount2_advance() syncs instead.
++ */
++void wasm_io_advance(unsigned cycles) {
++	int64_t ticks = qatomic_read(&timers_state.icount2_ticks);
++	int64_t new_ticks = ticks + cycles;
++	qatomic_set(&timers_state.icount2_ticks, new_ticks);
++
++	int64_t deadline = qatomic_read(&timers_state.icount2_deadline);
++	if (deadline > 0 && new_ticks >= deadline && !bql_locked()) {
++		bql_lock();
++		icount2_sync();
++		bql_unlock();
++	}
++}
++#endif
++
+ static int64_t icount2_get_locked(void) {
+ 	int64_t ticks = qatomic_read(&timers_state.icount2_ticks);
+ 	int64_t offset = qatomic_read(&timers_state.icount2_offset);

@@ -7,3 +7,4 @@
 | [livelock-postmortem.md](livelock-postmortem.md) | Full debugging story of the WASM boot livelock: symptoms, root causes, fixes, evidence — including the fixed 104 MHz virtual-clock timing model |
 | [performance-handoff.md](performance-handoff.md) | Performance analysis, targets and open next steps to cut boot wall-time (correctness no longer depends on speed) |
 | [diagnostics.md](diagnostics.md) | The tooling built along the way: URL params, trace channels, headless-browser probes |
+| [serial-cross-tab.md](serial-cross-tab.md) | Exposing the emulator's serial port to another tab: what the browser allows (Web Serial can't be published; socat ptys invisible to Chrome), the tab-link design and the wasm chardev prerequisite |

@@ -52,7 +52,7 @@ particular [doc/performance-handoff.md](doc/performance-handoff.md)
 (targets + next steps), [doc/livelock-postmortem.md](doc/livelock-postmortem.md)
 (the Asyncify-condvar fix, the wild-TB crash, the fixed-clock timing model)
 and [doc/early-crash-postmortem.md](doc/early-crash-postmortem.md)
-(the dropped 0004 io-recompile regression).
+(the 0004 io-recompile saga: dropped, then reworked correctly).
 
 ## Native (Linux) build
 
@@ -87,7 +87,8 @@ web/
   patches/
     0001-ui-add-wasm-*.patch   wasm display/input backend (applied to the clone)
     0006-wasm-icount2-*.patch  fixed 104 MHz virtual clock on emscripten
-    attic/                    dropped patches (0004 io-recompile skip: boot regression)
+    attic/                    dropped patches (the original 0004 io-recompile
+                              skip: boot regression; superseded by the reworked 0004)
   site/                 WASM-mode page (index.html / app.js / style.css)
   tools/                headless-browser test/screenshot helpers (playwright)
                         test fullflash path lives in tools/testflash.local.json
@@ -131,9 +132,10 @@ and bsp `9277046`. Notes for bumping:
 
 ## Performance work (see doc/performance-handoff.md + doc/wasm32-port-status.md)
 
-- `dist/` — TCI build (patches 0001–0003 + 0006; 0004 dropped — it caused
-  an early boot-ROM abort, see doc/early-crash-postmortem.md), boots in
-  slow motion.
+- `dist/` — TCI build (patches 0001–0004 + 0006; 0004 reworked: the
+  io-recompile longjmp storm is gone, MMIO accounted at the rewind's
+  clock, stock rewind kept for flash-command accesses — boots 2.5–12×
+  further per wall second, see doc/early-crash-postmortem.md §9).
 - `dist-jit/` — wasm32 runtime-JIT build (0005 DRAFT + the old
   0003+0004-era tree), currently stale: needs a fresh baseline against
   the 0004-less, 0006-carrying dist; port in progress.

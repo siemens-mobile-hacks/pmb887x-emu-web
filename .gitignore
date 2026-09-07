@@ -17,3 +17,7 @@ node_modules
 
 # fullflash / firmware dumps
 *.bin
+
+# session daemon artifacts
+tools/.session*
+tools/.serve.log

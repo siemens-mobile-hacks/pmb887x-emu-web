@@ -251,6 +251,11 @@ async function boot() {
         if (qsp.get("icount2debug") === "1") {
           mod.ENV.QEMU_ICOUNT2_DEBUG = "1";
         }
+        // ?iorewind=1: force the stock io-recompile everywhere
+        // (A/B against the wasm io accounting; see patches/0004)
+        if (qsp.get("iorewind") === "1") {
+          mod.ENV.QEMU_IO_REWIND = "1";
+        }
         // ?icount2freq=<hz>: fixed virtual-clock frequency override
         // (default: the real phone CPU clock, 104 MHz — see web/doc/).
         const icount2freq = qsp.get("icount2freq");

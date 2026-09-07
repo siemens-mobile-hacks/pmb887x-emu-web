@@ -3,15 +3,19 @@
 Status (superseded — see [wasm32-port-status.md](wasm32-port-status.md)
 and [early-crash-postmortem.md](early-crash-postmortem.md)):
 **the timing problem is fixed and boot correctness no longer depends on
-speed.** Patch 0004 (skip `cpu_io_recompile`) turned out to be a
-regression (early `FILE: flash` boot-ROM abort) and was dropped into
-`patches/attic/`; patch 0006 runs icount2 at the fixed hardware rate
-(104 MHz) so virtual time is instruction-proportional and every
-firmware deadline carries the full native instruction budget — the
-phone boots in slow motion with **no `>>EXIT<<`**. Measured on the
-booting build: ~320k insns/s early (io-recompile storm) rising to
-~850k insns/s after V8 tier-up; the 790k figure previously claimed for
-0004 was measured in the post-crash idle loop and is void. What remains
+speed — and the io-recompile storm is fixed too.** The first 0004
+(skip `cpu_io_recompile`) was a regression (early `FILE: flash`
+boot-ROM abort) and was dropped; the reworked 0004 (MMIO-boundary
+accounting, see post-mortem §9) removes the storm correctly: the
+stock rewind's icount2 clock is reproduced without the ~150 µs
+longjmp (kept only for ROM-device flash-command accesses).
+Patch 0006 runs icount2 at the fixed hardware rate (104 MHz) so
+virtual time is instruction-proportional and every firmware deadline
+carries the full native instruction budget — the phone boots with
+**no `>>EXIT<<`**. Measured on the reworked build: splash in ~25–30 s
+(stock rewind path: ~85 s), 4–17M insns/s sustained (stock path:
+0.2–5M), 49.8 s of virtual time / 1.25B insns in the first 180 s.
+What remains
 here is raw throughput for *wall-clock* boot time only. The document
 below is the original hand-off from the previous session; its
 measurement methodology and constraints still apply.

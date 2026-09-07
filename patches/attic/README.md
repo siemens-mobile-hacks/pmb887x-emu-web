@@ -1,4 +1,4 @@
-# Dropped patches
+ Dropped patches
 
 ## 0004 — wasm: skip io-recompile longjmp storm
 
@@ -11,15 +11,21 @@ Boot aborts within seconds with `>>EXIT<< FILE: flash ExitCode: 0x0552`.
 Full analysis: `../doc/early-crash-postmortem.md` (bisect, divergence
 point, mechanism).
 
-If the performance work wants the ~4× back, the rework must be
-clock-neutral, e.g.:
-
-- keep the recompile but stop re-entering the unsplit TB (fix TB
-  chaining after the rewind), or
-- account the TB's icount2 *before* execution and credit back the
-  un-executed tail from the `retaddr` insn offset on rewind — with a
-  determinism argument per device that a too-far clock at the MMIO
-  callback is safe (the GPTU SRC7 poll says it is not today).
+**Superseded 2026-09-07 (same day, later session) by
+`../0004-wasm-io-recompile-mmio-boundary-accounting.patch`** — kept in
+`patches/` and part of the build again.  The rework does not skip the
+rewind's *semantics*, only its repeated cost: on emscripten the mid-TB
+MMIO accounting is performed at exactly the clock the stock rewind
+produces (io-access boundary of the current TB, stock-equivalent
+per-TB accumulation including the lost partial-TB cycles), the stock
+rewind is kept for ROM-device (flash command) accesses — the boot ROM's
+flash program/verify handshake aborts without it — and `QEMU_IO_REWIND=1`
+(page: `?iorewind=1`) forces the stock behavior everywhere.  Verified:
+boots past `0x400118c` with SRR set at the same virtual instant as the
+stock build, splash ~3× earlier in wall time, 4–17M insns/s sustained
+(stock rewind path: 0.2–5M), no `FILE: flash` exit.  Investigation
+notes (what else was tried: TB splitting, mid-TB crediting, pacing,
+DSP-core locking) are in `../doc/early-crash-postmortem.md` §9.
 
 Acceptance test: boots past `0x400118c` with SRR set at the first poll,
 reaches the L1 phase, no `FILE: flash` exit.

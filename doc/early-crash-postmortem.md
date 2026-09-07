@@ -4,13 +4,14 @@ Committed to answer: *"the emulator was getting much further in the boot
 process in dfb4e21c018e641cbcb64206944064db038b0874; in the next commit
 (ea28492) it started crashing before anything is drawn."*
 
-Status: **RESOLVED — patch 0004 dropped (moved to `patches/attic/`);
-`dist/` = patches 0001–0003 + 0006.** The early `FILE: flash ExitCode
+Status: **RESOLVED — the storm is fixed properly. `dist/` = patches
+0001–0004 (io-accounting rework) + 0006.** The early `FILE: flash ExitCode
 0x0552` abort is gone; the follow-on `l1bbcsg` L1 timeout is separately
 fixed by 0006 (fixed 104 MHz virtual clock, see
-[livelock-postmortem.md](livelock-postmortem.md)); the build now boots
-through both crash points in slow motion. What follows is the original
-investigation record.
+[livelock-postmortem.md](livelock-postmortem.md)); the build boots
+through both crash points 2.5–12× faster per wall second than the
+stock rewind path (4–17M insns/s sustained). What follows is the
+original investigation record, plus §9 for the 0004 rework.
 
 ## 1. Symptom (reproduced at HEAD 4294229)
 
@@ -197,7 +198,7 @@ accumulation, contrary to the patch's stated rationale.**
 - `tools/exectrace.mjs` added (boot + serial/trace dump helper).
 - The `serve.mjs` started for testing was stopped.
 
-## 7. Resolution (2026-09-07)
+## 7. Resolution (2026-09-07, updated by the 0004 rework)
 
 - **0004 dropped** (moved to `patches/attic/`, `accel/tcg/cputlb.c`
   restored to pristine) — immediate-unblock option §5.1. Verified in
@@ -212,12 +213,74 @@ accumulation, contrary to the patch's stated rationale.**
   all firmware budgets carry the full native instruction budget and
   the machine boots in slow motion (see
   [livelock-postmortem.md](livelock-postmortem.md)).
-- A proper fix for the io-recompile storm (if the perf work wants the
-  ~4× back) must be clock-visibility-neutral per §4: either keep the
-  recompile and stop re-entering the unsplit TB, or account-and-rewind
-  per retaddr. Rework notes stay in `patches/attic/`.
-- The instrumentation checklist below is kept for that future rework;
-  the GPTU SRC7 poll sensitivity is the acceptance test.
+- ~~A proper fix for the io-recompile storm (if the perf work wants the
+  ~4× back) must be clock-visibility-neutral per §4~~ → **done, see §9.**
+- The instrumentation checklist below is superseded by §9;
+  the GPTU SRC7 poll sensitivity was the acceptance test (and passed:
+  SRR sets at the same virtual instant as the stock build).
+
+## 9. The 0004 rework: MMIO-boundary accounting (2026-09-07, later session)
+
+`patches/0004-wasm-io-recompile-mmio-boundary-accounting.patch`
+replaces the dropped attic patch. Design, verified on real runs:
+
+- **Keep the rewind's icount2 semantics, not its cost.** On emscripten
+  (icount2 only) `io_prepare()` no longer longjmps for regular MMIO:
+  `wasm_io_account()` (translate-all.c) moves the clock to
+  `T0 + (k-1)` for the k-th io access of the TB (T0 = ticks at TB
+  start; io insn index from the same insn_start unwind the rewind
+  uses) — exactly the clock the stock path shows the callback (first
+  access: TB boundary; later: +1 per earlier io insn's 1-insn
+  CF_MEMI_ONLY TB). `cpu_tb_exec()` then credits only
+  `wasm_io_account_rest()`: stock accumulation, *including* the
+  lost partial-TB cycles (the firmware timing is tuned to them).
+- **ROM devices (flash command interface) keep the stock rewind** —
+  without it the boot-ROM's flash program/verify handshake aborts with
+  the very same `FILE: flash 0x0552`. The BROM polls flash status in a
+  tight loop after issuing CFI/devid commands; the rewind's TB
+  serialization is required there (flash commands toggle romd mode,
+  invalidating the executing flash-backed TBs). Those accesses are
+  rare, so the ~150 µs longjmp costs nothing.
+- **`QEMU_IO_REWIND=1`** (page: `?iorewind=1`) forces the stock rewind
+  everywhere — the A/B escape hatch.
+
+Measured (S75 fullflash, headless Chrome, same machine):
+
+| build | splash | sustained rate | deep boot |
+|---|---|---|---|
+| stock rewind (0001–0003+0006) | ~85 s | 0.2–5M insns/s | 1.97 s vclock @ 120 s |
+| 0004 rework | ~25–30 s | 4–17M insns/s | 49.8 s vclock / 1.25B insns @ 180 s |
+
+Acceptance: GPTU SRC7 SRR sets at the same virtual instant as stock
+(119.617 ms vs 119.651 ms), no `>>EXIT<<`, `?iorewind=1` still boots.
+
+Dead ends investigated on the way (all reproduced the boot abort or a
+worse wedge, all documented for the next person):
+
+1. **TB splitting at known io PCs** (record the io insn PC on first
+   rewind, invalidate the unsplit TB, end re-translations after it):
+   correct rewinds (~1 per distinct io insn) but the machine wedged
+   ~120–165M insns in — several threads busy-spinning, no qemu lock
+   held (watchdog-instrumented); correlated with the TB invalidation,
+   never root-caused (emscripten runtime-level livelock).
+2. **Mid-TB crediting** (credit the io index at the access, remainder
+   at TB end): passes SRC7 but ~34 µs of virtual clock ahead of stock
+   by the flash phase → `FILE: flash 0x0552` again.
+3. **Prefix-drop** (credit `icount - last_io_idx` at TB end only):
+   loses the per-io +1 visibility → same abort.
+4. **Wall pacing** (futex sleep per mid-TB io access, up to 150 µs to
+   mimic the storm's pacing): does not help — the flash abort is not
+   a wall-time race but the ROM-device/romd semantics above.
+5. **DSP core mutex** (serialize teakra access vs the worker thread —
+   a real data race in the fork): masks nothing once (4) is understood;
+   the race exists upstream but does not bite at these speeds once the
+   flash rewind is kept. Not carried in the patch.
+
+Also note: the stock wasm build's per-TB accounting under-credits TBs
+  chained through `helper_lookup_tb_ptr` (indirect branches) — only the
+  first TB of a chain is credited. The rework reproduces that behaviour
+  exactly (chained io: +1, session prefix lost) rather than "fixing"
+  it, to stay clock-identical to the booting baseline.
 
 ## 8. Original follow-up checklist (superseded by §7)
 
