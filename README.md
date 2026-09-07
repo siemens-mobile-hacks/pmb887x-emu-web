@@ -54,6 +54,24 @@ particular [doc/performance-handoff.md](doc/performance-handoff.md)
 and [doc/early-crash-postmortem.md](doc/early-crash-postmortem.md)
 (the dropped 0004 io-recompile regression).
 
+## Native (Linux) build
+
+The same emulator, compiled natively (real TCG JIT — much faster than the
+wasm TCI build; full boot to the idle screen takes ~1–2 minutes):
+
+```bash
+scripts/build-native.sh                          # worktree of the pinned rev → build/qemu-native-build
+scripts/run-native.sh fullflashes/s75_working20060710172101.bin
+```
+
+`run-native.sh` mirrors the web boot exactly (same `-icount
+precise-clocks=on`, `-drive if=pflash…`, `-serial file:…` and `PMB887X_*`
+env vars; board inferred from the fullflash filename, IMEI/ESN → OTP
+included). Options via env: `BOARD= STARTUP= SIM= OPERATOR= IMEI= ESN=`
+`RW=1 DISPLAY_MODE=vnc=[:N] MONITOR=unix:/tmp/pmb.sock SERIAL=path`,
+extra qemu args as positional args. Headless by default; the serial log
+lands in `/tmp/pmb887x-serial.log`.
+
 ## Layout
 
 ```
@@ -64,6 +82,8 @@ web/
   scripts/
     build-deps.sh       emsdk + glib/pixman/zlib built with emcc (wasm64)
     build-qemu.sh       clones pinned qemu-pmb887x, applies patches/, builds
+    build-native.sh     native Linux build (pristine worktree, no patches)
+    run-native.sh       native launcher (same boot recipe as the web page)
   patches/
     0001-ui-add-wasm-*.patch   wasm display/input backend (applied to the clone)
     0006-wasm-icount2-*.patch  fixed 104 MHz virtual clock on emscripten
