@@ -1,5 +1,6 @@
 // JIT-mode boot watcher: instance table growth + insn rates + page errors
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const waitS = Number(process.argv[2] || 40);
 const port = process.env.PORT || "8082";
 const browser = await chromium.launch({ headless: true });
@@ -35,7 +36,7 @@ await page.addScriptTag({ content: `
       " serial=" + sl);
   }, 2000);
 `});
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, waitS * 1000));
 await browser.close();

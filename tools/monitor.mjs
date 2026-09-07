@@ -2,6 +2,7 @@
 // and reports pixel statistics + serial-log growth every N seconds.
 //   node monitor.mjs [totalSeconds] [intervalSeconds]
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 
 const totalS = Number(process.argv[2] || 300);
 const everyS = Number(process.argv[3] || 30);
@@ -16,7 +17,7 @@ page.on("console", (m) => {
   console.log("[page]", m.type(), t.slice(0, 200));
 });
 await page.goto("http://127.0.0.1:8080/", { waitUntil: "networkidle", timeout: 120000 });
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted; monitoring for", totalS, "s");
 

@@ -1,11 +1,12 @@
 // count io_recompile frequency + unique PCs from -d exec log
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const waitS = Number(process.argv[2] || 30);
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 page.on("console", (m) => { const t = m.text(); if (t.startsWith("WATCH")) console.log("[page]", t.slice(0, 120)); });
 await page.goto("http://127.0.0.1:8080/?qargs=-d exec -D /exec.log", { waitUntil: "networkidle" });
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, waitS * 1000));
 const log = await page.evaluate(() => {

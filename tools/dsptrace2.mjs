@@ -1,5 +1,6 @@
 // Lean capture: boot with trace, wait fixed time, dump serial + DSP trace once.
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const waitS = Number(process.argv[2] || 240);
 const channels = process.argv[3] || "dsp,dsp_interrupt";
 const browser = await chromium.launch({ headless: true });
@@ -7,7 +8,7 @@ const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)));
 await page.goto(`http://127.0.0.1:8080/?trace=${encodeURIComponent(channels)}&tracebuf=1`,
   { waitUntil: "networkidle", timeout: 120000 });
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted; waiting", waitS, "s…");
 await new Promise((r) => setTimeout(r, waitS * 1000));

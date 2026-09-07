@@ -1,5 +1,6 @@
 // Profile the qemu wasm worker thread via CDP Profiler.
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const waitS = Number(process.argv[2] || 40);
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
@@ -14,7 +15,7 @@ for (const w of workers) {
   await s.send("Profiler.enable");
   sessions.push({ s, w });
 }
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, 3000));
 // also catch late-spawned workers (qemu DSP worker)

@@ -1,5 +1,6 @@
 // Watch an untraced wasm boot: the page pushes serial+vclock via console.
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const waitS = Number(process.argv[2] || 300);
 const extra = process.argv[3] || "";
 const browser = await chromium.launch({ headless: true });
@@ -29,7 +30,7 @@ await page.addScriptTag({ content: `
       " tail=" + JSON.stringify(tail.slice(-40)));
   }, 10000);
 `});
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted (untraced)" + (extra ? " [" + extra + "]" : ""));
 await new Promise((r) => setTimeout(r, waitS * 1000));

@@ -1,9 +1,10 @@
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const q = process.argv[2], waitS = Number(process.argv[3]), pat = process.argv[4];
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 await page.goto("http://127.0.0.1:8080/?" + q + "&tracebuf=1", { waitUntil: "networkidle", timeout: 120000 });
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, waitS * 1000));
 const { total, hits } = await page.evaluate((pat) => {

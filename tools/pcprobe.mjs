@@ -1,8 +1,9 @@
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 await page.goto("http://127.0.0.1:8080/", { waitUntil: "networkidle" });
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 for (let i = 0; i < 8; i++) {
   await new Promise((r) => setTimeout(r, 15000));

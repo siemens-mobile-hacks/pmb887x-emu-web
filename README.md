@@ -90,6 +90,8 @@ web/
     attic/                    dropped patches (0004 io-recompile skip: boot regression)
   site/                 WASM-mode page (index.html / app.js / style.css)
   tools/                headless-browser test/screenshot helpers (playwright)
+                        test fullflash path lives in tools/testflash.local.json
+                        (gitignored — copy from tools/testflash.local.json.example)
   dist/                 WASM build output — serve this (gitignored)
 ```
 

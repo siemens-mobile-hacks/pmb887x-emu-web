@@ -1,6 +1,7 @@
 // Measures guest virtual-clock progression in the browser for ?icount= variants.
 //   node vclock.mjs [icountQuery] [totalSeconds] [intervalSeconds]
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const q = process.argv[2] || "";
 const totalS = Number(process.argv[3] || 180);
 const everyS = Number(process.argv[4] || 30);
@@ -8,7 +9,7 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)));
 await page.goto("http://127.0.0.1:8080/" + (q ? "?" + q : ""), { waitUntil: "networkidle", timeout: 120000 });
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted", q || "(default icount)");
 let last = 0n;

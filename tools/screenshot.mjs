@@ -8,12 +8,13 @@
 import puppeteer from "puppeteer";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fullflash } from "./testflash.mjs";
 
 const url = process.argv[2] || "http://127.0.0.1:8080/";
 const out = process.argv[3] || path.join(path.dirname(fileURLToPath(import.meta.url)), "shot.png");
 const waitS = Number(process.argv[4] || 90);
 const flash =
-  process.argv[5] || "/workspace/s75_working20060710172101.bin";
+  process.argv[5] || fullflash;
 
 const browser = await puppeteer.launch({
   headless: true,

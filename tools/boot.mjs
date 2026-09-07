@@ -1,6 +1,7 @@
 // Boots with a chosen startup scenario and watches the framebuffer.
 //   node boot.mjs [startup] [totalSeconds]
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const startup = process.argv[2] || "ONLINE";
 const totalS = Number(process.argv[3] || 180);
 
@@ -10,7 +11,7 @@ page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)))
 const q = process.env.QARGS ? "?" + process.env.QARGS : "";
 await page.goto("http://127.0.0.1:8080/" + q, { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", startup);
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted with startup=" + startup);
 for (let t = 0; t < totalS; t += 30) {

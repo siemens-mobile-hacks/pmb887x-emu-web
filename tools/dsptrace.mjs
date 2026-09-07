@@ -2,6 +2,7 @@
 // firmware's L1 task exit (">>EXIT<<") or timeout; dump serial + DSP trace.
 //   node dsptrace.mjs [maxWaitSeconds] [traceChannels]
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const maxWait = Number(process.argv[2] || 420);
 const channels = process.argv[3] || "dsp,dsp_interrupt";
 
@@ -10,7 +11,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)));
 await page.goto(`http://127.0.0.1:8080/?trace=${encodeURIComponent(channels)}&tracebuf=1&debug=0`,
   { waitUntil: "networkidle", timeout: 120000 });
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted (trace=" + channels + "); waiting for >>EXIT<<…");
 

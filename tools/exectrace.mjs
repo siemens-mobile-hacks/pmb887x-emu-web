@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const tag = process.argv[2] || "run";
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -7,7 +8,7 @@ page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)))
 const q = new URLSearchParams({ qargs: "-d exec -D /trace.log" });
 await page.goto("http://127.0.0.1:8080/?" + q.toString(), { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", "ONLINE");
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 let sawExit = false;
 for (let i = 0; i < 14 && !sawExit; i++) {

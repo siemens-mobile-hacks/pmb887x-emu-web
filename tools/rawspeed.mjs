@@ -1,4 +1,5 @@
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const port = process.env.PORT || "8082";
 const secs = Number(process.argv[2] || 15);
 const b = await chromium.launch({ headless: true });
@@ -17,7 +18,7 @@ await p.addScriptTag({ content: `
   }, 3000);
   window.__lt = 0;
 `});
-await p.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 await new Promise((r) => setTimeout(r, secs * 1000));
 await b.close();

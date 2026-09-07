@@ -3,6 +3,7 @@
 // attach Profiler to emscripten's module workers.
 // Usage: node wprof2.mjs [seconds] [query] [sampleIntervalUs]
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 import WebSocket from "ws";
 
 const secs = Number(process.argv[2] || 40);
@@ -26,7 +27,7 @@ try {
         " insns=" + (m._wasm_insns?Number(m._wasm_insns()):0));
     }, 10000);
   `});
-  await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+  await page.setInputFiles("#fullflash", fullflash);
   await page.click("#btn-start");
 
   // raw CDP on the devtools endpoint

@@ -1,10 +1,11 @@
 // Run both builds with -d exec,nochain; diff the TB pc sequences.
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 async function run(port) {
   const b = await chromium.launch({ headless: true });
   const p = await b.newPage();
   await p.goto(`http://127.0.0.1:${port}/?qargs=-d exec,nochain -D /e.log`, { waitUntil: "domcontentloaded" });
-  await p.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+  await p.setInputFiles("#fullflash", fullflash);
   await p.click("#btn-start");
   await new Promise((r) => setTimeout(r, port === "8082" ? 9000 : 14000));
   const lines = await p.evaluate(() => {

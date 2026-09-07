@@ -12,5 +12,8 @@ node_modules
 # test artifacts (headless-browser screenshots)
 /tools/*.png
 
+# local test fullflash config
+/tools/testflash.local.json
+
 # fullflash / firmware dumps
 *.bin

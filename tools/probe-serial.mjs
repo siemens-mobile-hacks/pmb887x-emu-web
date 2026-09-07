@@ -1,10 +1,11 @@
 import { chromium } from "playwright-core";
+import { fullflash } from "./testflash.mjs";
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 300)));
 await page.goto("http://127.0.0.1:8080/?debug=1", { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", "ONLINE");
-await page.setInputFiles("#fullflash", "/workspace/s75_working20060710172101.bin");
+await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 let last = "";
 for (let t = 0; t < 3; t++) {
