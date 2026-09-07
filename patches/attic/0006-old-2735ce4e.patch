@@ -30,14 +30,9 @@ their handshakes complete.
 Applies on top of 0002 (which adds the emscripten ICOUNT2_MIN_FREQUENCY
 branch); native builds are unchanged.
 ---
-
-(Rebased onto qemu-pmb887x 1f7fc803bf; content unchanged apart from upstream context.)
-
-diff --git a/system/icount2.c b/system/icount2.c
-index 72ca7c2a88..6c73a4b4ca 100644
 --- a/system/icount2.c
 +++ b/system/icount2.c
-@@ -22,19 +22,37 @@ static bool icount2_debug;
+@@ -22,19 +22,37 @@
  
  #define ICOUNT2_INITIAL_FREQUENCY 314000000
  #ifdef __EMSCRIPTEN__
@@ -83,9 +78,9 @@ index 72ca7c2a88..6c73a4b4ca 100644
  #define ICOUNT2_ADJUST_INTERVAL NANOSECONDS_PER_SECOND
  #define ICOUNT2_ADJUST_P_GAIN 200000
  #define ICOUNT2_ADJUST_I_GAIN 20000
-@@ -172,6 +190,9 @@ static void icount2_adjust(void) {
- 	int64_t elapsed;
- 	int64_t executed;
+@@ -140,6 +158,9 @@
+ 	int64_t realtime;
+ 	int64_t ticks;
  
 +	if (!icount2_adaptive())
 +		return;
@@ -93,7 +88,7 @@ index 72ca7c2a88..6c73a4b4ca 100644
  	if (!runstate_is_running() || timers_state.icount2_idle)
  		return;
  
-@@ -274,6 +295,32 @@ static void icount2_adjust_rt(void *opaque) {
+@@ -231,6 +252,32 @@
  		timers_state.icount_rt_timer,
  		qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL_RT) + ICOUNT2_ADJUST_INTERVAL / SCALE_MS
  	);
@@ -126,7 +121,7 @@ index 72ca7c2a88..6c73a4b4ca 100644
  	icount2_adjust();
  }
  
-@@ -360,7 +407,19 @@ void icount2_wakeup(int cpu_index, bool halted, int mask, int interrupt_request)
+@@ -317,7 +364,19 @@
  void icount2_configure(QemuOpts *opts, Error **errp) {
  	use_icount2 = true;
  	icount2_debug = g_strcmp0(g_getenv("QEMU_ICOUNT2_DEBUG"), "1") == 0;

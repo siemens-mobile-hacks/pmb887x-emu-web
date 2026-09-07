@@ -1,0 +1,27 @@
+From: sie-mcp web <web@sie-mcp.local>
+Subject: [PATCH] bsp: work around undefined hd155153np device (use pmb6272 stub)
+
+diff -ruN a/lib/data/board/include/siemens-sg2-elka.toml b/lib/data/board/include/siemens-sg2-elka.toml
+--- a/lib/data/board/include/siemens-sg2-elka.toml	2026-09-07 22:31:41.657492027 +0000
++++ b/lib/data/board/include/siemens-sg2-elka.toml	2026-09-07 22:31:41.658673869 +0000
+@@ -21,7 +21,7 @@
+ ram.size = 0x1000000 # 16 Mb
+ 
+ [peripheral.RF]
+-type = "hd155153np"
++type = "pmb6272"
+ bus = "TPU:RFSSC"
+ 
+ [analog]
+diff -ruN a/lib/data/board/include/siemens-sg2-x75.toml b/lib/data/board/include/siemens-sg2-x75.toml
+--- a/lib/data/board/include/siemens-sg2-x75.toml	2026-09-07 22:31:41.654832892 +0000
++++ b/lib/data/board/include/siemens-sg2-x75.toml	2026-09-07 22:31:41.655462919 +0000
+@@ -40,7 +40,7 @@
+ revision = 0xED
+ 
+ [peripheral.RF]
+-type = "hd155153np"
++type = "pmb6272"
+ bus = "TPU:RFSSC"
+ 
+ [analog]

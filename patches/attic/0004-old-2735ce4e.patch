@@ -65,46 +65,6 @@ stock; TCI + V8 tier-up), no >>EXIT<<.  Native builds are unchanged
 (everything is __EMSCRIPTEN__ + icount2 gated).
 ---
 
-(Rebased onto qemu-pmb887x 1f7fc803bf; content unchanged apart from upstream context.)
-
-diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 96bb067cd2..b01ddcebac 100644
---- a/accel/tcg/cpu-exec.c
-+++ b/accel/tcg/cpu-exec.c
-@@ -448,14 +448,30 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
-      * (io recompile / self-modifying code) while tcg_qemu_tb_exec runs.
-      */
-     unsigned tb_icount = itb->icount;
-+    {
-+        extern void wasm_io_account_reset(TranslationBlock *session_tb);
-+        wasm_io_account_reset(itb);
-+    }
- #endif
-     qemu_thread_jit_execute();
-     ret = tcg_qemu_tb_exec(cpu_env(cpu), tb_ptr);
- #ifdef __EMSCRIPTEN__
-     if (icount2_enabled()) {
-         extern void wasm_tb_account(unsigned insns);
-+        unsigned rest;
-+        {
-+            extern unsigned wasm_io_account_rest(unsigned tb_icount);
-+            rest = wasm_io_account_rest(tb_icount);
-+        }
-         wasm_tb_account(tb_icount);
--        icount2_advance(tb_icount);
-+        /*
-+         * Stock-equivalent credit: mid-TB io accesses were accounted
-+         * at their own boundaries (each +1 like the stock 1-insn
-+         * CF_MEMI_ONLY TB), the executed prefix of the aborted TB is
-+         * lost, and only the insns after the last io are credited
-+         * here (translate-all.c).
-+         */
-+        icount2_advance(rest);
-     }
- #endif
-     cpu->neg.can_do_io = true;
-diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
-index 28c864839e..1d2689d51f 100644
 --- a/accel/tcg/cputlb.c
 +++ b/accel/tcg/cputlb.c
 @@ -28,6 +28,7 @@
@@ -115,7 +75,7 @@ index 28c864839e..1d2689d51f 100644
  #include "accel/tcg/cpu-mmu-index.h"
  #include "exec/cputlb.h"
  #include "exec/tb-flush.h"
-@@ -1281,7 +1282,50 @@ io_prepare(hwaddr *out_offset, CPUState *cpu, CPUTLBEntryFull *full,
+@@ -1281,7 +1282,50 @@
      mr_offset = full->xlat_offset + addr;
      cpu->mem_io_pc = retaddr;
      if (!cpu->neg.can_do_io) {
@@ -166,8 +126,6 @@ index 28c864839e..1d2689d51f 100644
      }
  
      *out_offset = mr_offset;
-diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
-index 328d96aba3..a44f4afa80 100644
 --- a/accel/tcg/translate-all.c
 +++ b/accel/tcg/translate-all.c
 @@ -37,6 +37,9 @@
@@ -180,7 +138,7 @@ index 328d96aba3..a44f4afa80 100644
  
  TBContext tb_ctx;
  
-@@ -167,6 +170,114 @@ static int cpu_unwind_data_from_tb(TranslationBlock *tb, uintptr_t host_pc,
+@@ -167,6 +170,114 @@
      return -1;
  }
  
@@ -295,11 +253,43 @@ index 328d96aba3..a44f4afa80 100644
  /*
   * The cpu state corresponding to 'host_pc' is restored in
   * preparation for exiting the TB.
-diff --git a/system/icount2.c b/system/icount2.c
-index 9ccc301eb3..72ca7c2a88 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -448,14 +448,30 @@
+      * (io recompile / self-modifying code) while tcg_qemu_tb_exec runs.
+      */
+     unsigned tb_icount = itb->icount;
++    {
++        extern void wasm_io_account_reset(TranslationBlock *session_tb);
++        wasm_io_account_reset(itb);
++    }
+ #endif
+     qemu_thread_jit_execute();
+     ret = tcg_qemu_tb_exec(cpu_env(cpu), tb_ptr);
+ #ifdef __EMSCRIPTEN__
+     if (icount2_enabled()) {
+         extern void wasm_tb_account(unsigned insns);
++        unsigned rest;
++        {
++            extern unsigned wasm_io_account_rest(unsigned tb_icount);
++            rest = wasm_io_account_rest(tb_icount);
++        }
+         wasm_tb_account(tb_icount);
+-        icount2_advance(tb_icount);
++        /*
++         * Stock-equivalent credit: mid-TB io accesses were accounted
++         * at their own boundaries (each +1 like the stock 1-insn
++         * CF_MEMI_ONLY TB), the executed prefix of the aborted TB is
++         * lost, and only the insns after the last io are credited
++         * here (translate-all.c).
++         */
++        icount2_advance(rest);
+     }
+ #endif
+     cpu->neg.can_do_io = true;
 --- a/system/icount2.c
 +++ b/system/icount2.c
-@@ -112,6 +112,32 @@ void icount2_advance(uint32_t cycles) {
+@@ -126,6 +126,32 @@
  	}
  }
  

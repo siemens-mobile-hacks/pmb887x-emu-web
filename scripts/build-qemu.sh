@@ -28,12 +28,14 @@ export EM_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
 if [ ! -d "$BUILD/qemu/.git" ]; then
   git clone "$QEMU_PMB887X_REPO" "$BUILD/qemu"
 fi
-# teakra submodule (used by the interpreter-DSP era tree); HTTPS rewrite like
-# the sie-mcp Dockerfile does, then shallow-init everything.
-(cd "$BUILD/qemu" \
-  && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
-  && git submodule update --init --recursive --depth 1 \
-  && (cd subprojects/teakra && git checkout -q -f HEAD))
+# optional teakra submodule (used by older qemu-pmb887x trees; the current
+# tree has its own native DSP). HTTPS rewrite like the sie-mcp Dockerfile.
+if grep -q 'subprojects/teakra' "$BUILD/qemu/.gitmodules" 2>/dev/null; then
+  (cd "$BUILD/qemu" \
+    && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
+    && git submodule update --init --recursive --depth 1 \
+    && (cd subprojects/teakra && git checkout -q -f HEAD))
+fi
 cd "$BUILD/qemu"
 if [ -e tcg/wasm32.c ] || [ -n "$(git status --porcelain -- tcg/wasm32.c tcg/wasm32 2>/dev/null)" ]; then
   echo "REFUSING to reset the qemu tree: uncommitted wasm32 draft work present." >&2
@@ -55,11 +57,8 @@ for p in "$WEB_DIR"/patches/*.patch; do
   fi
 done
 
-# --- board configs from bsp ---
-if [ ! -d "$BUILD/bsp/.git" ]; then
-  git clone "$PMB887X_BSP_REPO" "$BUILD/bsp"
-fi
-(cd "$BUILD/bsp" && git fetch --all --quiet 2>/dev/null || true && git checkout -q "$PMB887X_BSP_REV")
+# --- board configs from bsp (pinned rev + patches/bsp workarounds) ---
+bash "$WEB_DIR/scripts/sync-bsp.sh"
 tar -cf "$DIST/boards.tar" -C "$BUILD/bsp/lib/data/board" .
 
 # --- configure + build ---

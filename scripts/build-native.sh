@@ -15,10 +15,13 @@ BUILD="$ROOT/build/qemu-native-build"
 # worktree at the pinned revision (shares the existing clone's objects)
 if [ ! -d "$WT" ]; then
   git -C "$SRC" worktree add --detach "$WT" "$QEMU_PMB887X_REV"
-  (cd "$WT" \
-    && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
-    && git submodule update --init --recursive --depth 1 \
-    && (cd subprojects/teakra && git checkout -q -f HEAD))
+  if git -C "$WT" config --get submodule."subprojects/teakra".url >/dev/null 2>&1 \
+     || grep -q 'subprojects/teakra' "$WT/.gitmodules" 2>/dev/null; then
+    (cd "$WT" \
+      && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
+      && git submodule update --init --recursive --depth 1 \
+      && (cd subprojects/teakra && git checkout -q -f HEAD))
+  fi
 fi
 
 mkdir -p "$BUILD"
@@ -31,4 +34,5 @@ cd "$BUILD"
 # before qapi-types-error.h existed) — a second ninja pass resolves it
 ninja -j"$(nproc)" qemu-system-arm || ninja -j"$(nproc)" qemu-system-arm
 echo "=== native qemu ready: $BUILD/qemu-system-arm ==="
+echo "board configs: bash scripts/sync-bsp.sh (build/bsp)"
 echo "run: scripts/run-native.sh fullflashes/<device>.bin"

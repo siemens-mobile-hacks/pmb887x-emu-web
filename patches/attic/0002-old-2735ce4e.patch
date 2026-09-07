@@ -27,11 +27,19 @@ helper (target/arm/tcg/translate.c) and account executed TBs once in
 cpu_tb_exec() (accel/tcg/cpu-exec.c) instead — same icount2 clock, ~50x
 cheaper.
 ---
-
-(Rebased onto qemu-pmb887x 1f7fc803bf; content unchanged apart from upstream context.)
+ accel/tcg/cpu-exec.c         | 25 ++++++++++
+ configs/meson/emscripten.txt | 12 ++++-
+ include/qemu/futex.h         | 25 ++++++++++
+ include/qemu/thread-posix.h  | 11 +++++
+ system/icount2.c             | 12 +++++
+ target/arm/tcg/translate.c   | 11 +++++
+ tcg/tci/tcg-target.c.inc     | 12 +++++
+ ui/wasm.c                    | 52 ++++++++++++++++++++
+ util/qemu-thread-posix.c     | 95 ++++++++++++++++++++++++++++++++++++
+ 9 files changed, 253 insertions(+), 2 deletions(-)
 
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 257211235d..96bb067cd2 100644
+index 25721123..96bb067c 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -23,6 +23,7 @@
@@ -83,7 +91,7 @@ index 257211235d..96bb067cd2 100644
          *last_tb = tb;
          return;
 diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
-index 735d0cdf7c..49f424a7a8 100644
+index 735d0cdf..49f424a7 100644
 --- a/configs/meson/emscripten.txt
 +++ b/configs/meson/emscripten.txt
 @@ -4,8 +4,16 @@ cpp_args = ['-pthread']
@@ -106,7 +114,7 @@ index 735d0cdf7c..49f424a7a8 100644
  [project options]
  # Workaround for failure to find glib-2.0 when building idef parser,
 diff --git a/include/qemu/futex.h b/include/qemu/futex.h
-index 607613eec8..2fb9c49c75 100644
+index 607613ee..2fb9c49c 100644
 --- a/include/qemu/futex.h
 +++ b/include/qemu/futex.h
 @@ -55,6 +55,31 @@ static inline void qemu_futex_wait(void *f, unsigned val)
@@ -142,7 +150,7 @@ index 607613eec8..2fb9c49c75 100644
  #include <synchapi.h>
  
 diff --git a/include/qemu/thread-posix.h b/include/qemu/thread-posix.h
-index 758808b705..1f20095a25 100644
+index 758808b7..1f20095a 100644
 --- a/include/qemu/thread-posix.h
 +++ b/include/qemu/thread-posix.h
 @@ -21,10 +21,21 @@ typedef struct QemuRecMutex {
@@ -168,7 +176,7 @@ index 758808b705..1f20095a25 100644
  struct QemuSemaphore {
      QemuMutex mutex;
 diff --git a/system/icount2.c b/system/icount2.c
-index b742b8e2df..9ccc301eb3 100644
+index d3972965..706ce80c 100644
 --- a/system/icount2.c
 +++ b/system/icount2.c
 @@ -21,7 +21,19 @@ bool use_icount2 = false;
@@ -192,7 +200,7 @@ index b742b8e2df..9ccc301eb3 100644
  #define ICOUNT2_ADJUST_INTERVAL NANOSECONDS_PER_SECOND
  #define ICOUNT2_ADJUST_P_GAIN 200000
 diff --git a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
-index 2b5a8d8320..bf25f4c42e 100644
+index 2b5a8d83..bf25f4c4 100644
 --- a/target/arm/tcg/translate.c
 +++ b/target/arm/tcg/translate.c
 @@ -5362,9 +5362,11 @@ static bool trans_B_cond_thumb(DisasContext *s, arg_ci *a)
@@ -224,7 +232,7 @@ index 2b5a8d8320..bf25f4c42e 100644
          gen_helper_cycle_counter(tcg_env, tcg_constant_i32(cycles));
      }
 diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
-index 1b22c70616..e14e0fe92d 100644
+index 1b22c706..e14e0fe9 100644
 --- a/tcg/tci/tcg-target.c.inc
 +++ b/tcg/tci/tcg-target.c.inc
 @@ -462,6 +462,18 @@ static void tcg_out_exit_tb(TCGContext *s, uintptr_t arg)
@@ -247,7 +255,7 @@ index 1b22c70616..e14e0fe92d 100644
      tcg_out_op_p(s, INDEX_op_goto_tb, (void *)get_jmp_target_addr(s, which));
      set_jmp_reset_offset(s, which);
 diff --git a/ui/wasm.c b/ui/wasm.c
-index 4a53e3b542..a72c95bbbc 100644
+index 4a53e3b5..a72c95bb 100644
 --- a/ui/wasm.c
 +++ b/ui/wasm.c
 @@ -127,6 +127,58 @@ uint64_t wasm_fb_updates(void)
@@ -310,7 +318,7 @@ index 4a53e3b542..a72c95bbbc 100644
  EMSCRIPTEN_KEEPALIVE
  int64_t wasm_vclock(void)
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93f..55c2c9e6bf 100644
+index 089606c9..55c2c9e6 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -21,6 +21,9 @@
@@ -429,3 +437,6 @@ index 089606c93f..55c2c9e6bf 100644
  
  void qemu_sem_init(QemuSemaphore *sem, int init)
  {
+-- 
+2.53.0
+
