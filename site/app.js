@@ -361,7 +361,7 @@ function sendKey(phoneKey, down) {
   m._wasm_send_key(lnx, down ? 1 : 0);
 }
 
-for (const btn of document.querySelectorAll("#keypad button[data-key]")) {
+for (const btn of document.querySelectorAll("#keypad button[data-key], #aux-keys button[data-key]")) {
   const key = btn.dataset.key;
   const press = (ev) => {
     ev.preventDefault();

@@ -18,47 +18,52 @@
     <div class="lcd-wrap">
       <canvas id="lcd" width="132" height="176"></canvas>
       <div id="lcd-overlay" class="lcd-overlay">press “Start” to boot</div>
-    </div>
 
-    <div id="keypad" class="keypad">
-      <!-- every phone key is its own <button data-key=...>; see app.js -->
-      <div class="krow krow-media">
-        <button data-key="music"    title="Media key">♪</button>
-        <button data-key="play"     title="Play / pause">▶</button>
-        <button data-key="ptt"      title="Push to talk">PTT</button>
-        <button data-key="camera"   title="Camera">CAM</button>
-        <button data-key="browser"  title="Browser / internet">WWW</button>
-      </div>
-      <div class="krow krow-nav">
+      <!-- secondary column: floats to the left of the LCD, vertically centered on it -->
+      <div id="aux-keys" class="aux-keys">
+        <button data-key="music"   title="Media key (note)">♪</button>
+        <button data-key="play"    title="Play / pause">▶</button>
+        <button data-key="ptt"     title="Push to talk">PTT</button>
+        <button data-key="camera"  title="Camera">CAM</button>
+        <button data-key="browser" title="Browser / internet">WWW</button>
         <button data-key="vol_up"   title="Volume up">Vol+</button>
-        <button data-key="send"     class="key-send" title="Green key">✆</button>
-        <button data-key="up"       class="key-nav" title="Joystick up">▲</button>
-        <button data-key="end"      class="key-end" title="Red key / power">✕</button>
         <button data-key="vol_down" title="Volume down">Vol−</button>
       </div>
-      <div class="krow krow-joy">
-        <button data-key="left"     class="key-nav" title="Joystick left">◀</button>
-        <button data-key="center"   class="key-nav key-center" title="Joystick press (OK)">●</button>
-        <button data-key="right"    class="key-nav" title="Joystick right">▶</button>
-      </div>
-      <div class="krow krow-soft">
-        <button data-key="left_soft"  title="Left soft key">L-soft</button>
-        <button data-key="down"       class="key-nav" title="Joystick down">▼</button>
-        <button data-key="right_soft" title="Right soft key">R-soft</button>
-      </div>
-      <div class="krow krow-digits">
-        <button data-key="1">1<span>☄</span></button>
-        <button data-key="2">2<span>abc</span></button>
-        <button data-key="3">3<span>def</span></button>
-        <button data-key="4">4<span>ghi</span></button>
-        <button data-key="5">5<span>jkl</span></button>
-        <button data-key="6">6<span>mno</span></button>
-        <button data-key="7">7<span>pqrs</span></button>
-        <button data-key="8">8<span>tuv</span></button>
-        <button data-key="9">9<span>wxyz</span></button>
-        <button data-key="star" title="*">*</button>
-        <button data-key="0">0<span>␣</span></button>
-        <button data-key="hash" title="#">#</button>
+    </div>
+
+      <div id="keypad" class="keypad">
+        <!-- every phone key is its own <button data-key=...>; see app.js -->
+        <!-- soft keys sit directly under the LCD (they match its on-screen labels) -->
+        <div class="krow krow-soft">
+          <button data-key="left_soft"  title="Left soft key">L-soft</button>
+          <button data-key="up"         class="key-nav" title="Joystick up">▲</button>
+          <button data-key="right_soft" title="Right soft key">R-soft</button>
+        </div>
+        <div class="krow krow-joy">
+          <button data-key="left"     class="key-nav" title="Joystick left">◀</button>
+          <button data-key="center"   class="key-nav key-center" title="Joystick press (OK)">●</button>
+          <button data-key="right"    class="key-nav" title="Joystick right">▶</button>
+        </div>
+        <!-- send/end take the old soft-key slots, flanking joystick-down -->
+        <div class="krow krow-call">
+          <button data-key="send" class="key-send" title="Green key">✆</button>
+          <button data-key="down" class="key-nav" title="Joystick down">▼</button>
+          <button data-key="end"  class="key-end" title="Red key / power">✕</button>
+        </div>
+        <div class="krow krow-digits">
+          <button data-key="1">1<span>☄</span></button>
+          <button data-key="2">2<span>abc</span></button>
+          <button data-key="3">3<span>def</span></button>
+          <button data-key="4">4<span>ghi</span></button>
+          <button data-key="5">5<span>jkl</span></button>
+          <button data-key="6">6<span>mno</span></button>
+          <button data-key="7">7<span>pqrs</span></button>
+          <button data-key="8">8<span>tuv</span></button>
+          <button data-key="9">9<span>wxyz</span></button>
+          <button data-key="star" title="*">*</button>
+          <button data-key="0">0<span>␣</span></button>
+          <button data-key="hash" title="#">#</button>
+        </div>
       </div>
     </div>
   </section>

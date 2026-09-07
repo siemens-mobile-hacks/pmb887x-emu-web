@@ -51,29 +51,36 @@ main {
 /* ---------------- keypad ---------------- */
 .keypad { display: flex; flex-direction: column; gap: 6px; width: 320px; }
 .krow { display: grid; gap: 6px; }
-.krow-media   { grid-template-columns: repeat(5, 1fr); }
-.krow-nav     { grid-template-columns: 1fr 1.2fr 1.2fr 1.2fr 1fr; }
-.krow-joy     { grid-template-columns: 1fr 1.2fr 1fr; }
 .krow-soft    { grid-template-columns: 1fr 1.2fr 1fr; }
+.krow-joy     { grid-template-columns: 1fr 1.2fr 1fr; }
+.krow-call    { grid-template-columns: 1fr 1.2fr 1fr; }
 .krow-digits  { grid-template-columns: repeat(3, 1fr); }
 
-.keypad button {
+.keypad button, .aux-keys button {
   font: inherit; color: var(--text); background: var(--panel2);
   border: 1px solid var(--border); border-radius: 8px;
   padding: 0.55rem 0.2rem; cursor: pointer; user-select: none;
   display: flex; flex-direction: column; align-items: center; line-height: 1.15;
   touch-action: none;
 }
-.keypad button span { font-size: 0.6rem; color: var(--muted); letter-spacing: .08em; text-transform: lowercase; }
-.keypad button:hover { border-color: var(--accent); }
-.keypad button:active, .keypad button.pressed {
+.keypad button span, .aux-keys button span { font-size: 0.6rem; color: var(--muted); letter-spacing: .08em; text-transform: lowercase; }
+.keypad button:hover, .aux-keys button:hover { border-color: var(--accent); }
+.keypad button:active, .keypad button.pressed, .aux-keys button:active, .aux-keys button.pressed {
   background: var(--accent); color: #08131f; border-color: var(--accent);
 }
-.keypad button:active span, .keypad button.pressed span { color: #08131f; }
+.keypad button:active span, .keypad button.pressed span,
+.aux-keys button:active span, .aux-keys button.pressed span { color: #08131f; }
 .key-nav { font-size: 0.8rem; }
 .key-center { font-size: 1.05rem; }
 .key-send { color: var(--good); }
 .key-end { color: var(--bad); }
+
+/* secondary column: auxiliary keys, left of the LCD, vertically centered on it */
+.aux-keys {
+  position: absolute; top: 50%; right: calc(100% + 10px); transform: translateY(-50%);
+  display: flex; flex-direction: column; gap: 6px; width: 64px;
+}
+.aux-keys button { font-size: 0.78rem; }
 
 /* ---------------- control panel ---------------- */
 .ctrl-panel { flex: 1 1 380px; max-width: 560px; display: flex; flex-direction: column; gap: 1rem; }
