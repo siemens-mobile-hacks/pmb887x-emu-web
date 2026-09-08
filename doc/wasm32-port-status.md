@@ -227,12 +227,16 @@ counters work in every mode.
 
 - `tools/wprof2.mjs [s] [query] [sampleUs]` — per-worker CDP profiler
   (raw websocket via `--remote-debugging-port`, page-target auto-attach).
-  This is the tool that found both the longjmp storm and the frozen
-  virtual clock. `PROF_FN=<substr>` env prints caller stacks for any
-  matching hot function (use for the a_cas_p question). The JIT build
-  gets symbol names via `--emit-symbol-map` hacked into its build.ninja
-  (not in the script yet — add it to build-qemu-jit.sh ldflags when
-  convenient).
+  Repaired in the 0007-0009 sessions (it never collected profiles
+  before) and extended to symbolize `wasm-function[N]` via the
+  `qemu-system-arm.js.symbols` sidecar (`--emit-symbol-map` in the link
+  args — currently a local build.ninja hack; see
+  doc/optimization-playbook.md). `PROF_FN=<substr>` env prints caller
+  stacks for matching hot functions.
+- `tools/bootbench.mjs [secs]` — the A/B benchmark used to select the
+  0007-0009 patches: one JSON line with the deterministic v-window
+  wall time + final progress. Methodology (and its traps) in
+  doc/optimization-playbook.md.
 - `tools/jitwatch.mjs`, `tools/tracediff.mjs`, `tools/iorec.mjs`,
   `tools/rawspeed.mjs`, `tools/list-targets.mjs` — the session's other
   probes; all take `PORT` env (8080 TCI / 8082 JIT).

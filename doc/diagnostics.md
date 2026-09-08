@@ -33,7 +33,9 @@ playwright-downloaded `chromium-headless-shell`; `npm i` in that dir once).
 | `tracebuf2.mjs` | dump buffered trace with flexible filters |
 | `execdump.mjs` | run with `-d exec -D /exec.log`, dump the exec log from MEMFS |
 | `wshot.mjs` | WASM-mode screenshot, waits for framebuffer activity |
-| `wprof.mjs` | (experimental) CDP profiling attempt of the wasm worker — emscripten ES-module workers are not exposed to playwright's `page.workers()`; use `--emit-symbol-map` + `llvm-objdump`/`addr2line`-style manual symbolisation instead (see post-mortem) |
+| `wprof.mjs` | (experimental, superseded) CDP profiling attempt via playwright's `page.workers()` — use `wprof2.mjs` instead |
+| `wprof2.mjs` | per-worker CDP profiler (raw websocket, page-target auto-attach). Repaired in the 0007–0009 sessions and extended with `wasm-function[N]` → symbol resolution via the `.symbols` sidecar. `PROF_FN=<substr>` prints caller stacks of a hot function |
+| `bootbench.mjs` | the A/B boot benchmark for patch selection: one JSON line with the deterministic v-window wall time + final progress (see doc/optimization-playbook.md) |
 
 ## Native reference runs
 
