@@ -92,7 +92,7 @@ lands in `/tmp/pmb887x-serial.log`.
 ## Layout
 
 ```
-web/
+.
   build.sh              one-shot WASM build (toolchain → deps → qemu → dist)
   serve.mjs             static server for the WASM page (COOP/COEP)
   versions.env          pinned qemu-pmb887x / bsp / toolchain revisions
@@ -123,12 +123,12 @@ web/
 
 The WASM build is fully decoupled from the upstream sources: it clones
 `Azq2/qemu-pmb887x` and `Azq2/pmb887x-dev` at the revisions pinned in
-`versions.env` into `web/build/` (gitignored) and applies only the patch in
-`web/patches/`. Nothing in this repo's other components is modified.
+`versions.env` into `build/` (gitignored) and applies only the patch in
+`patches/`. Nothing in this repo's other components is modified.
 
 ## The wasm UI patch
 
-`web/patches/0001-ui-add-wasm-display-input-backend.patch` adds `ui/wasm.c`
+`patches/0001-ui-add-wasm-display-input-backend.patch` adds `ui/wasm.c`
 (compiled only for `host_os == 'emscripten'`) plus small qapi/meson wiring:
 
 - a `DisplayChangeListener` that blits the console surface into an

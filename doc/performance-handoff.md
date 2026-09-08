@@ -124,6 +124,6 @@ realistically we want ≥50M insns/s for a comfortable boot).
   deadline fires early (measured: boot hangs in the BROM delay loops).
 - `QEMU_ICOUNT2_DEBUG=1` (page: `?icount2debug=1`) prints the controller
   state every second — frequency, executed cycles, error. Keep it.
-- All diagnostics used in this investigation are in `web/tools/` and
+- All diagnostics used in this investigation are in `tools/` and
   documented in [diagnostics.md](diagnostics.md); the raw numbers above are
   reproducible with `node serialwatch.mjs 120`.

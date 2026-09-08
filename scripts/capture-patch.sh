@@ -1,5 +1,5 @@
 #!/bin/bash
-# Capture uncommitted C edits from build/qemu into web/patches/ so that
+# Capture uncommitted C edits from build/qemu into patches/ so that
 # scripts/build-qemu.sh (which hard-resets the clone to the pinned rev)
 # cannot lose iteration work, and other machines can reproduce the tree.
 #

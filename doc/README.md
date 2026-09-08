@@ -1,4 +1,4 @@
-# web/doc — documentation index
+# doc — documentation index
 
 | Doc | What it covers |
 |---|---|

@@ -1,7 +1,7 @@
 # Livelock post-mortem (WASM boot)
 
 Symptom chain as observed, root causes found, and what was fixed. All
-evidence reproducible with the tools in `web/tools/` (see
+evidence reproducible with the tools in `tools/` (see
 [diagnostics.md](diagnostics.md)).
 
 ## Symptom

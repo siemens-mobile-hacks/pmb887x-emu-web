@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build qemu-system-arm (pmb887x) with the wasm32 runtime-JIT TCG backend.
-# Uses the wasm32 deps (web/build/deps32). Patches from web/patches/ must be
-# applied to web/build/qemu first (scripts/build-qemu.sh does this for the
-# shared tree; we reuse web/build/qemu as the source tree).
+# Uses the wasm32 deps (build/deps32). Patches from patches/ must be
+# applied to build/qemu first (scripts/build-qemu.sh does this for the
+# shared tree; we reuse build/qemu as the source tree).
 set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

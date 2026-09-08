@@ -1,7 +1,7 @@
 #!/bin/bash
-# Fast incremental rebuild + deploy of the wasm qemu build (web/build/qemu-wasm).
+# Fast incremental rebuild + deploy of the wasm qemu build (build/qemu-wasm).
 # Skips the tree reset/patch/reconfigure that scripts/build-qemu.sh does;
-# use it while iterating on files already patched into web/build/qemu.
+# use it while iterating on files already patched into build/qemu.
 #
 # With no arguments: builds qemu-system-arm.js and DEPLOYS the emscripten
 # artifacts to $WEB_DIST (default dist/) so the next page load runs the new

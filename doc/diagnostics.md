@@ -1,6 +1,6 @@
 # Diagnostics toolkit
 
-Everything here lives in `web/tools/` (playwright-core + the
+Everything here lives in `tools/` (playwright-core + the
 playwright-downloaded `chromium-headless-shell`; `npm i` in that dir once).
 
 ## Page URL parameters (WASM mode)

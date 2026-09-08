@@ -19,6 +19,9 @@
 #   DISPLAY_MODE=none    none | vnc=[:display] | sdl | gtk
 #   SERIAL=path          serial log file     (default /tmp/pmb887x-serial.log)
 #   MONITOR=stdio        stdio | unix:path | none
+#   ICOUNT=<spec>        -icount value; "none" omits it (default: LG boards
+#                        none, everything else shift=3,sleep=off — same
+#                        timing model as the web page, see site/app.js)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,6 +58,10 @@ OPERATOR="${OPERATOR:-00101}"
 DISPLAY_MODE="${DISPLAY_MODE:-none}"
 SERIAL="${SERIAL:-/tmp/pmb887x-serial.log}"
 MONITOR="${MONITOR:-stdio}"
+# Timing model mirrors the web page: LG firmware boots fine on the plain
+# realtime clock (no icount); Siemens firmware needs an instruction-driven
+# virtual clock — stock icount, fixed shift, deterministic sleep=off.
+ICOUNT="${ICOUNT:-$([[ "$BOARD" == lg-* ]] && echo none || echo "shift=3,sleep=off")}"
 # bare unix:path means "listen" — add the server options unless given fully
 if [[ "$MONITOR" == unix:* && "$MONITOR" != *,* ]]; then
   MONITOR="$MONITOR,server=on,wait=off"
@@ -89,10 +96,14 @@ echo "fullflash: $FLASH$([ "${RW:-0}" = 1 ] && echo ' (writable)')"
 echo "serial:   $SERIAL   monitor: $MONITOR   display: $DISPLAY_MODE"
 echo
 
+# ICOUNT=none boots without -icount entirely
+ICOUNT_ARGS=()
+[ "$ICOUNT" != "none" ] && ICOUNT_ARGS=(-icount "$ICOUNT")
+
 : > "$SERIAL"
 exec "$QEMU" \
   -machine pmb887x \
-  -icount precise-clocks=on \
+  "${ICOUNT_ARGS[@]}" \
   -display "$DISPLAY_MODE" \
   -drive "if=pflash,format=raw,file=$FLASH${READONLY:+,$READONLY}" \
   -serial "file:$SERIAL" \

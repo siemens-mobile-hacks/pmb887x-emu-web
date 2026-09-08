@@ -32,7 +32,7 @@ MEMFS).
 
 ## 2. Which patch regressed it (full bisect)
 
-The qemu wasm64 source tree (`web/build/qemu`) at the time of
+The qemu wasm64 source tree (`build/qemu`) at the time of
 investigation was verified byte-identical to
 `QEMU_PMB887X_REV (2735ce4e) + patches 0001..0004` (0005 cannot apply
 after 0003 — `git apply --check` fails on the duplicated hunks, so
@@ -178,8 +178,8 @@ accumulation, contrary to the patch's stated rationale.**
 
 ## 6. Session artifacts / state
 
-- `web/build/qemu` tree: left as found — pristine rev + 0001–0004
-  (uncommitted, `ui/wasm.c` untracked). `web/dist/` currently holds a
+- `build/qemu` tree: left as found — pristine rev + 0001–0004
+  (uncommitted, `ui/wasm.c` untracked). `dist/` currently holds a
   **0003+0004 (bad/crashing) build** (rebuilt during this session from
   the same sources; equivalent content to what was there before).
   Rebuild good variant with: `cp /tmp/q12/tcg/tci.c` … see below.

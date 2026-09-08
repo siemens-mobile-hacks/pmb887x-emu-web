@@ -1,9 +1,9 @@
 # Architecture
 
-The Siemens phone emulator runs entirely in the browser, rooted in `web/`:
+The Siemens phone emulator runs entirely in the browser. Repo layout:
 
 ```
-web/
+.
   build.sh, versions.env, scripts/          build pipeline (WASM mode)
   patches/0001-ui-*.patch                   -display wasm backend
   patches/0002-wasm-*.patch                 condvar/crash/icount2 fixes
@@ -23,13 +23,13 @@ a page.
 
 ### Build pipeline
 
-1. `scripts/build-deps.sh` installs emsdk 4.0.10 into `web/build/deps/emsdk`
+1. `scripts/build-deps.sh` installs emsdk 4.0.10 into `build/deps/emsdk`
    and builds glib 2.84, pixman 0.44.2, zlib 1.3.2 and libffi headers with
    emcc for wasm64 (mirrors qemu's own
    `tests/docker/dockerfiles/emsdk-wasm64-cross.docker`).
 2. `scripts/build-qemu.sh` clones `Azq2/qemu-pmb887x` @ `2735ce4e` and
    `Azq2/pmb887x-dev` (bsp) @ `9277046` (pins in `versions.env`) into
-   `web/build/`, applies `web/patches/*.patch` onto the pristine tree and
+   `build/`, applies `patches/*.patch` onto the pristine tree and
    configures like qemu's CI wasm64 job:
    `--static --cpu=wasm64 --target-list=arm-softmmu --enable-tcg-interpreter
    --with-coroutine=wasm`. Output: `dist/qemu-system-arm.{js,wasm}` plus

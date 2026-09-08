@@ -1,12 +1,12 @@
 #!/bin/bash
-# Build qemu-system-arm (pmb887x) as WebAssembly + assemble web/dist.
+# Build qemu-system-arm (pmb887x) as WebAssembly + assemble dist.
 #
-# Clones the pinned qemu-pmb887x revision into web/build/qemu (pristine
-# upstream + web/patches/*.patch), configures it for emscripten/wasm64 with
+# Clones the pinned qemu-pmb887x revision into build/qemu (pristine
+# upstream + patches/*.patch), configures it for emscripten/wasm64 with
 # the TCG interpreter, and produces:
 #   dist/qemu-system-arm.js / .wasm / .worker.js   (emscripten output)
 #   dist/boards.tar                                 (board configs from bsp)
-#   dist/index.html, app.js, style.css, ...         (copied from web/site)
+#   dist/index.html, app.js, style.css, ...         (copied from site)
 set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -68,7 +68,7 @@ tar -cf "$DIST/boards.tar" -C "$BUILD/bsp/lib/data/board" .
 # module output, MEMFS for the fullflash, exported wasm_* helpers.
 # Emscripten link settings (threads, ASYNCIFY, ES6, ENV export, memory
 # growth) come from qemu's own configs/meson/emscripten.txt, extended by
-# web/patches/0001 (ENV + EXIT_RUNTIME + growable memory).
+# patches/0001 (ENV + EXIT_RUNTIME + growable memory).
 EXTRA_CFLAGS="-O3 -pthread -DWASM_BIGINT -sMEMORY64=1"
 
 BUILD_DIR="$BUILD/qemu-wasm"

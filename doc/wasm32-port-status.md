@@ -69,16 +69,16 @@ insns/s ✓). Consequences:
   work is present (tcg/wasm32.c etc. exist). To do a clean TCI rebuild,
   commit/refresh the 0005 patch first (or temporarily move the files).
 - Regenerate the patch after any change:
-  `cd web/build/qemu && git add -N tcg/wasm32 tcg/wasm32.c tcg/wasm32.h
+  `cd build/qemu && git add -N tcg/wasm32 tcg/wasm32.c tcg/wasm32.h
   tcg/tci/tci-emitters.h.inc && git diff HEAD >
   ../../patches/0005-wasm32-tcg-backend-port-DRAFT.patch`
-- The **TCI build dir (web/build/qemu-wasm) is currently misconfigured**
+- The **TCI build dir (build/qemu-wasm) is currently misconfigured**
   (a meson reconfigure lost the emscripten cross-files and linked a native
   binary; also watch for the stale `scripts -> /home/perk11/...` symlink —
   delete it if it reappears). dist/ still holds the last good TCI binary
-  (verified booting). To rebuild TCI: rm -rf web/build/qemu-wasm, stash the
+  (verified booting). To rebuild TCI: rm -rf build/qemu-wasm, stash the
   wasm32 files (or commit the patch), run build-qemu.sh, restore.
-- The JIT build dir (web/build/qemu-wasm32) is healthy;
+- The JIT build dir (build/qemu-wasm32) is healthy;
   `scripts/build-qemu-jit.sh` works as-is.
 
 ## The wasm32 port (patch 0005 DRAFT)
@@ -217,9 +217,9 @@ counters work in every mode.
    look once speed lands (handoff item 4).
 5. The 0005 DRAFT patch was generated with `git add -N` + `git diff` from
    the working tree — **`scripts/build-qemu.sh` resets the tree and would
-   destroy the uncommitted wasm32 work**. The patch in `web/patches/` is
+   destroy the uncommitted wasm32 work**. The patch in `patches/` is
    the backup; re-apply with `git apply` after the reset (or commit it).
-   Regenerate it after any source change: `cd web/build/qemu && git add -N
+   Regenerate it after any source change: `cd build/qemu && git add -N
    tcg/wasm32 tcg/wasm32.c tcg/wasm32.h tcg/tci/tci-emitters.h.inc &&
    git diff > ../../patches/0005-wasm32-tcg-backend-port-DRAFT.patch`.
 
@@ -243,7 +243,7 @@ counters work in every mode.
 - `scripts/ninja-fast.sh [targets]` — incremental rebuild with the right
   env (the full scripts reconfigure from scratch every time; that cost
   ~10 min per iteration until this existed).
-- wasm32 deps: `scripts/build-deps32.sh` → `web/build/deps32/`
+- wasm32 deps: `scripts/build-deps32.sh` → `build/deps32/`
   (glib-2.84 + pixman + zlib + libffi, wasm32/masm64-LESS: no MEMORY64,
   no `-m64`, `INITIAL/TOTAL_MEMORY=2GB` fits the 4 GB wasm32 limit).
 

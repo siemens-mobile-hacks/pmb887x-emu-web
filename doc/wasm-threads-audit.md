@@ -141,7 +141,7 @@ If a future change ever *does* need `pipe2` (e.g. an O_CLOEXEC-aware path
 that doesn't fall back to `pipe`), the fix shape is: add a
 `__syscall_pipe2` implementation to the link (mirror `___syscall_pipe`,
 apply `O_NONBLOCK` via the existing fcntl path; `FD_CLOEXEC` is a no-op
-without exec) — as a `web/patches/`-style change to the emscripten link
+without exec) — as a `patches/`-style change to the emscripten link
 args, not a fork of emsdk. Not needed today.
 
 ## 5. Tooling added (kept, reusable)
