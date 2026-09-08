@@ -1,0 +1,89 @@
+From: sie-mcp web <web@sie-mcp.local>
+Subject: [PATCH] wasm: skip the io-recompile rewind under stock icount too
+
+The io-recompile longjmp storm is not icount2-specific: patch 0004's
+skip was gated on icount2_enabled(), but the default timing model is
+stock -icount shift=3,sleep=off - where every MMIO access from a
+mid-TB insn (!can_do_io) still paid cpu_io_recompile()'s ~150us
+emscripten longjmp on every iteration of every MMIO polling loop.
+
+Profile (S75, headless Chromium, wprof2, vCPU worker self-time):
+46.6% __emscripten_throw_longjmp, callers cpu_io_recompile <-
+do_ld_mmio_beN <- do_ld4_mmu <- tci_qemu_ld <- tcg_qemu_tb_exec.
+
+Stock icount makes skipping safe, because gen_tb_start() subtracts the
+whole TB's insn count from cpu->neg.icount_decr.u16.low and stores it
+back at TB entry: committing that (icount_update) lets the device
+callback see a clock that includes this TB - at most one TB (~5 guest
+insns on this firmware) ahead of the access, the same deviation the
+chained icount2 accounting accepts, in the safe direction (elapsed,
+never frozen - the GPTU SRC7 poll failure mode).  can_do_io=true
+re-opens the clock-read window (icount_get_raw_locked would otherwise
+"Bad icount read" abort); the translator re-clears it at the next TB
+entry.  rom_device and QEMU_IO_REWIND=1 keep the stock rewind.
+
+Measured (S75 fullflash, headless Chromium, deterministic v=2..7
+window + fixed-time boot progress; baseline = two runs of the 0009
+build under the same interleaved conditions):
+
+  v-window wall        51.5 / 53.4 s -> 42.3 / 41.8 s   (-19%)
+  @110 s               v=10.9, 811M insns
+                       -> v=65.3, 1638M insns           (+102% insns)
+  180 s soak           v=168, 2.38B insns, LCD updating (0009-era
+                       build: v~131 @240 s), no >>EXIT<<, verify-boot
+                       TIMEOUT=still-running (healthy) at v=238ms
+
+Native builds unchanged (__EMSCRIPTEN__-gated); accel/tcg/cpu-exec.c
+and translate-all.c remain untouched by the series.
+---
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+--- a/accel/tcg/cputlb.c	2026-09-08 08:47:22.596245403 +0000
++++ b/accel/tcg/cputlb.c	2026-09-08 08:34:27.175379043 +0000
+@@ -29,6 +29,7 @@
+ #include "system/physmem.h"
+ #include "accel/tcg/cpu-ldst-common.h"
+ #include "system/cpu-timers.h"
++#include "exec/icount.h"
+ #include "accel/tcg/cpu-mmu-index.h"
+ #include "exec/cputlb.h"
+ #include "exec/tb-flush.h"
+@@ -1315,8 +1316,9 @@
+          * costs nothing.  QEMU_IO_REWIND=1 forces the stock rewind
+          * everywhere (A/B testing / fallback).
+          */
+-        if (icount2_enabled() && !rewind_mode &&
+-            !section->mr->rom_device) {
++        if (rewind_mode || section->mr->rom_device) {
++            cpu_io_recompile(cpu, retaddr);
++        } else if (icount2_enabled()) {
+             /*
+              * The chained-TB clock is already at/after this access
+              * (tci_tbhdr credited the whole TB at its start); just run
+@@ -1325,7 +1327,27 @@
+              */
+             extern void wasm_io_advance(unsigned cycles);
+             wasm_io_advance(0);
++        } else if (icount_enabled()) {
++            /*
++             * Stock icount: gen_tb_start() has already subtracted the
++             * whole TB's insn count from icount_decr.u16.low and stored
++             * it back, so committing it now (icount_update) makes the
++             * callback see a clock that includes this TB - at most one
++             * TB (~5 guest insns on this firmware) ahead of the access,
++             * the same deviation the chained icount2 accounting above
++             * accepts, and in the safe direction (elapsed, never
++             * frozen - the GPTU SRC7 poll failure mode).  can_do_io
++             * re-opens the clock-read window (icount_get_raw_locked
++             * would otherwise "Bad icount read" abort); the next TB
++             * entry clears it again (the translator sets it false
++             * before the first insn of every multi-insn TB).  Mid-TB
++             * accesses after the first in the same TB see the same
++             * clock: their commits are idempotent.
++             */
++            cpu->neg.can_do_io = true;
++            icount_update(cpu);
+         } else {
++            /* !can_do_io without any icount mode: not expected. */
+             cpu_io_recompile(cpu, retaddr);
+         }
+ #else
