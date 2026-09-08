@@ -1,0 +1,366 @@
+From: sie-mcp web <web@sie-mcp.local>
+Subject: [PATCH] wasm: chain TCI TBs via goto_tb, account icount2 per TB
+ inside the interpreter
+
+The emscripten build disabled TB chaining: tcg_out_goto_tb() emitted
+exit_tb so that every TB boundary returned through cpu_exec (the icount2
+accounting ran per executed TB in cpu_tb_exec, patches 0002/0004).  The
+firmware's branchy code averages ~5.6 insns/TB (~10M TB/s at 5M insns/s),
+so the per-boundary round trip - interpreter exit, wasm_exit_account,
+cpu_loop_exec_tb, cpu_exec_loop iteration, interrupt check, TB lookup,
+re-entry - dominated the profile: cpu_exec_loop 9.3% + cpu_tb_exec 2.6%
++ tb lookup ~2.9% of the vCPU worker's self time (tools/wprof2.mjs).
+
+Chain TBs again and move the clock into the interpreter:
+
+- tcg/tci: tcg_out_goto_tb() emits the stock goto_tb chain jump again;
+  tcg_out_tb_start() emits a new INDEX_op_tci_tbhdr header op (opcode
+  appended after tci_qemu_st_rrr, numbering-compatible) carrying the
+  TB's guest-insn count in its 20-bit immediate.
+- tcg/tci.c: the header runs at EVERY TB entry - cpu_tb_exec call,
+  goto_tb chain target, goto_ptr target - and advances the icount2
+  clock (icount2_advance) + diagnostics (wasm_tb_account) by the TB's
+  icount.  The clock stays strictly instruction-proportional while
+  chained; interrupt checks are unaffected (gen_tb_start's icount_decr
+  brcond runs at each TB start, chained or not).
+- cpu_tb_exec: the per-TB post-execution accounting
+  (wasm_tb_account + icount2_advance(wasm_io_account_rest())) is gone;
+  the interpreter owns the accounting.
+- cputlb io_prepare: with the whole TB already credited at its start,
+  a mid-TB MMIO callback no longer needs the boundary clock move; keep
+  only the virtual-timer sync (wasm_io_advance(0)) when the access
+  crossed a timer deadline.  The per-access tcg_tb_lookup() +
+  insn_start unwind of the old wasm_io_account() is gone.  The stock
+  cpu_io_recompile rewind stays for rom_device (flash commands).
+- translate-all.c: the per-session MMIO accounting state machine of
+  the reworked 0004 (wasm_io_account/reset/rest) is removed; with
+  per-TB crediting it has nothing left to adjust.
+
+Device-visible clock semantics change by at most one TB (typically a
+few guest insns): an MMIO access mid-TB now sees a clock that already
+includes the whole TB instead of the exact io-insn boundary.  Boot
+verified: the S75 fullflash reaches the idle screen (wallpaper, clock,
+"Поиск сети") with no >>EXIT<<, LCD updating.
+
+Measured (S75 fullflash, headless Chromium, tools/serialwatch.mjs,
+10 s WATCH samples; baseline = two runs of the 0001-0004+0006 build,
+both within ±2% of each other):
+
+  insns executed at fixed wall time   gain
+  t=20 s    93M           -> 197M    +113%
+  t=40 s    195M          -> 374M     +92%
+  t=60 s    315M          -> 629M    +100%
+  t=80 s    425M          -> 783M     +84%
+
+  virtual time at t=60 s: 3.96 s -> 7.21 s (+82%)
+  boot to idle screen:    ~260 s wall (baseline run never passed
+                          v=32 s in 150 s; extrapolated ~2x faster)
+
+Known accepted deviations (rare paths, measured harmless on the boot):
+- goto_ptr-chained TBs (indirect branches) used to be uncounted; they
+  are counted now (more accurate than before).
+- the rom_device cpu_io_recompile rewind re-executes insns that the
+  header already credited (over-counts the rewound prefix; flash
+  commands are rare).
+
+Conflicts with the 0005 wasm32 DRAFT (goto_tb/tci emitters); that
+patch needs a rebase onto this per-TB header model.
+---
+Date: Mon, 8 Sep 2026 00:00:00 +0000
+
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+--- a/accel/tcg/cpu-exec.c	2026-09-08 00:22:21.519619531 +0000
++++ b/accel/tcg/cpu-exec.c	2026-09-08 00:04:59.395049597 +0000
+@@ -441,39 +441,14 @@
+ 
+ #ifdef __EMSCRIPTEN__
+     /*
+-     * icount2 cycle accounting is batched per TB on emscripten (the
+-     * per-instruction helper would need a libffi/JS roundtrip per guest
+-     * instruction under TCI; see target/arm/tcg/translate.c).
+-     * Snapshot the count before executing: the TB may be invalidated
+-     * (io recompile / self-modifying code) while tcg_qemu_tb_exec runs.
++     * icount2 accounting runs in the interpreter: every TB (this one
++     * and any goto_tb/goto_ptr-chained ones) starts with a tci_tbhdr
++     * op that advances the clock by the TB's guest-insn count
++     * (tcg/tci.c, tcg_out_tb_start).  Nothing to account here.
+      */
+-    unsigned tb_icount = itb->icount;
+-    {
+-        extern void wasm_io_account_reset(TranslationBlock *session_tb);
+-        wasm_io_account_reset(itb);
+-    }
+ #endif
+     qemu_thread_jit_execute();
+     ret = tcg_qemu_tb_exec(cpu_env(cpu), tb_ptr);
+-#ifdef __EMSCRIPTEN__
+-    if (icount2_enabled()) {
+-        extern void wasm_tb_account(unsigned insns);
+-        unsigned rest;
+-        {
+-            extern unsigned wasm_io_account_rest(unsigned tb_icount);
+-            rest = wasm_io_account_rest(tb_icount);
+-        }
+-        wasm_tb_account(tb_icount);
+-        /*
+-         * Stock-equivalent credit: mid-TB io accesses were accounted
+-         * at their own boundaries (each +1 like the stock 1-insn
+-         * CF_MEMI_ONLY TB), the executed prefix of the aborted TB is
+-         * lost, and only the insns after the last io are credited
+-         * here (translate-all.c).
+-         */
+-        icount2_advance(rest);
+-    }
+-#endif
+     cpu->neg.can_do_io = true;
+     qemu_plugin_disable_mem_helpers(cpu);
+     /*
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+--- a/accel/tcg/cputlb.c	2026-09-08 00:22:21.519680973 +0000
++++ b/accel/tcg/cputlb.c	2026-09-08 00:05:18.555582625 +0000
+@@ -1291,17 +1291,16 @@
+          * and an MMIO polling loop re-pays it on every iteration
+          * forever (the unsplit TB stays cached).
+          *
+-         * This tree batches icount2 accounting once per TB after
+-         * execution (see cpu_tb_exec), so instead of rewinding we
+-         * credit the cycles of the insns that already executed in
+-         * this TB right here (wasm_io_account, translate-all.c): the
+-         * callback then sees the clock at the io insn boundary, and
+-         * the post-TB accounting adds only the remainder.  Skipping
+-         * the rewind outright (as an earlier dropped patch did)
+-         * leaves the clock frozen at the TB start - the boot-ROM GPTU
+-         * SRC7 poll at 0x400118c then reads a timer armed earlier in
+-         * the same TB as never elapsed and the boot aborts (FILE:
+-         * flash ExitCode 0x0552, doc/early-crash-postmortem.md).
++         * With TB chaining the clock is advanced per TB by the
++         * tci_tbhdr header op (tcg/tci.c), so the callback already
++         * sees a clock that includes this TB - skipping the rewind
++         * changes nothing about clock visibility.  The earlier
++         * batched-after-TB accounting (patches 0002/0004 era) needed
++         * the boundary move here; a dropped patch that skipped it
++         * entirely left the GPTU SRC7 poll at 0x400118c reading a
++         * timer armed earlier in the same TB as never elapsed and
++         * aborted the boot (FILE: flash 0x0552,
++         * doc/early-crash-postmortem.md).
+          */
+         static bool rewind_mode, rewind_mode_init;
+         if (unlikely(!rewind_mode_init)) {
+@@ -1318,8 +1317,14 @@
+          */
+         if (icount2_enabled() && !rewind_mode &&
+             !section->mr->rom_device) {
+-            extern void wasm_io_account(CPUState *cpu, uintptr_t retaddr);
+-            wasm_io_account(cpu, retaddr);
++            /*
++             * The chained-TB clock is already at/after this access
++             * (tci_tbhdr credited the whole TB at its start); just run
++             * any virtual timers whose deadline it crossed so the
++             * callback sees their effects (system/icount2.c).
++             */
++            extern void wasm_io_advance(unsigned cycles);
++            wasm_io_advance(0);
+         } else {
+             cpu_io_recompile(cpu, retaddr);
+         }
+diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
+--- a/accel/tcg/translate-all.c	2026-09-08 00:22:21.519741535 +0000
++++ b/accel/tcg/translate-all.c	2026-09-08 00:05:10.107211308 +0000
+@@ -174,108 +174,14 @@
+ /*
+  * wasm: mid-TB MMIO clock accounting (see io_prepare(), cputlb.c).
+  *
+- * icount2 cycles are batched per TB on emscripten (patch 0002): the
+- * whole TB's icount is credited only after tcg_qemu_tb_exec() returns,
+- * so a device callback for an access in the middle of a TB would see
+- * the virtual clock frozen at the TB start.  Stock qemu avoids that by
+- * rewinding the TB (cpu_io_recompile), whose cpu_loop_exit() longjmp
+- * costs ~150us under emscripten and is re-paid on every pass of an
+- * MMIO polling loop (16k recompiles / 20s across 229 TBs here).
+- *
+- * We skip the rewind but reproduce its icount2 clock exactly:
+- *
+- *  - At the access, wasm_io_account() moves the clock to T0 + (k - 1)
+- *    for the k-th io access of the TB (T0 = ticks at TB start): the
+- *    stock callback sees the TB-boundary clock for the first access
+- *    and, for later ones, +1 per earlier io insn (each re-executed as
+- *    a 1-insn CF_MEMI_ONLY TB).  The io insn index comes from the same
+- *    insn_start unwind cpu_io_recompile uses.
+- *
+- *  - At TB end, cpu_tb_exec() credits wasm_io_account_rest(): the
+- *    executed prefix of the (stock-aborted) TB is lost, each io insn
+- *    counts +1, and only the insns after the last io run as normal
+- *    follow-up TBs - exactly the stock per-TB accounting, including
+- *    its lost-partial-TB cycles the firmware timing is tuned to.
+- *
+- *  - An access from a TB chained via helper_lookup_tb_ptr() (indirect
+- *    branches; the interpreter does not return to cpu_tb_exec between
+- *    them) is credited +1 and loses the whole session prefix, as the
+- *    stock rewind - which unwinds the entire chain - would.
+- *
+- * Only the vCPU thread touches this state (translation and execution
+- * both run there); no locking needed.
++ * With TB chaining (tcg/tci/tcg-target.c.inc) the icount2 clock is
++ * advanced by the tci_tbhdr op at every TB entry, so the whole TB is
++ * already credited when a device callback runs mid-TB - the callback
++ * sees the clock at most one TB (typically a few guest insns) ahead
++ * of the access.  All that remains to do here is run virtual timers
++ * whose deadline the access may have crossed (wasm_io_advance(0),
++ * system/icount2.c) so the callback observes their effects.
+  */
+-static __thread unsigned wasm_io_n;          /* io accesses in this session */
+-static __thread int wasm_io_idx_last;        /* insn index of last io, -1 */
+-static __thread bool wasm_io_chained;        /* io hit a chained TB */
+-static __thread int64_t wasm_io_t0;          /* ticks at TB start */
+-static __thread TranslationBlock *wasm_io_session_tb;
+-
+-void wasm_io_account_reset(TranslationBlock *session_tb)
+-{
+-    wasm_io_n = 0;
+-    wasm_io_idx_last = -1;
+-    wasm_io_chained = false;
+-    wasm_io_session_tb = session_tb;
+-}
+-
+-unsigned wasm_io_account_rest(unsigned tb_icount)
+-{
+-    /*
+-     * Stock per-TB accounting after the session: the executed prefix
+-     * of a rewound TB is lost, each io insn is re-executed as a 1-insn
+-     * CF_MEMI_ONLY TB (+1 each) and only the insns after the last io
+-     * run as normal follow-up TBs.  Emulate exactly that loss.
+-     */
+-    if (wasm_io_chained) {
+-        return 0;   /* the whole chain prefix is lost by the rewind */
+-    }
+-    if (wasm_io_n == 0) {
+-        return tb_icount;
+-    }
+-    return wasm_io_n + (tb_icount - 1 - (unsigned)wasm_io_idx_last);
+-}
+-
+-void wasm_io_account(CPUState *cpu, uintptr_t retaddr)
+-{
+-    TranslationBlock *tb = tcg_tb_lookup(retaddr);
+-    uint64_t data[INSN_START_WORDS];
+-    int insns_left;
+-    extern int64_t icount2_ticks_now(void);
+-    extern void wasm_io_advance(unsigned cycles);
+-
+-    if (tb != wasm_io_session_tb) {
+-        /*
+-         * Chained via helper_lookup_tb_ptr(): the stock rewind would
+-         * longjmp out of the whole chain (losing it) and re-execute
+-         * this access as a 1-insn TB: give it its +1.
+-         */
+-        wasm_io_chained = true;
+-        wasm_io_advance(1);
+-        return;
+-    }
+-    insns_left = cpu_unwind_data_from_tb(tb, retaddr, data);
+-    if (insns_left < 0) {
+-        return;
+-    }
+-
+-    wasm_io_idx_last = (int)tb->icount - insns_left;
+-
+-    /*
+-     * The k-th io access of the TB must see the clock the stock path
+-     * shows it: T0 + (k - 1) - the aborted TB is never credited, each
+-     * earlier io insn's 1-insn TB is.
+-     */
+-    if (wasm_io_n == 0) {
+-        wasm_io_t0 = icount2_ticks_now();
+-    }
+-    wasm_io_n++;
+-    int64_t want = wasm_io_t0 + (wasm_io_n - 1);
+-    int64_t now = icount2_ticks_now();
+-    if (want > now) {
+-        wasm_io_advance((unsigned)(want - now));
+-    }
+-}
+ #endif
+ 
+ /*
+diff --git a/tcg/tci.c b/tcg/tci.c
+--- a/tcg/tci.c	2026-09-08 00:22:21.515196789 +0000
++++ b/tcg/tci.c	2026-09-08 00:04:40.520524622 +0000
+@@ -1174,6 +1174,26 @@
+             }
+             break;
+ 
++#ifdef __EMSCRIPTEN__
++        case INDEX_op_tci_tbhdr:
++            /*
++             * TB header (emitted by tcg_out_tb_start): advance the
++             * icount2 clock by this TB's guest-insn count.  Executed at
++             * every TB entry, including goto_tb/goto_ptr chain targets,
++             * so TB chaining (see tcg_out_goto_tb) keeps the clock
++             * instruction-proportional.  cpu_tb_exec() no longer
++             * accounts executed TBs.
++             */
++            tci_args_ri(insn, &r0, &t1);
++            {
++                extern void wasm_tb_account(unsigned insns);
++                extern void icount2_advance(uint32_t cycles);
++                wasm_tb_account((unsigned)t1);
++                icount2_advance((uint32_t)t1);
++            }
++            break;
++#endif
++
+         case INDEX_op_br:
+             tci_args_l(insn, tb_ptr, &ptr);
+             tb_ptr = ptr;
+diff --git a/tcg/tci/tcg-target-opc.h.inc b/tcg/tci/tcg-target-opc.h.inc
+--- a/tcg/tci/tcg-target-opc.h.inc	2026-09-08 00:22:21.220597406 +0000
++++ b/tcg/tci/tcg-target-opc.h.inc	2026-09-08 00:04:23.204043073 +0000
+@@ -15,3 +15,9 @@
+ DEF(tci_movcond32, 1, 2, 1, TCG_OPF_NOT_PRESENT)
+ DEF(tci_qemu_ld_rrr, 1, 2, 0, TCG_OPF_NOT_PRESENT)
+ DEF(tci_qemu_st_rrr, 0, 3, 0, TCG_OPF_NOT_PRESENT)
++#ifdef __EMSCRIPTEN__
++/* wasm only: TB header carrying the guest-insn count, executed at every
++ * TB entry (cpu_tb_exec call, goto_tb chain jump, goto_ptr target) so the
++ * icount2 clock advances per executed TB even while TBs are chained. */
++DEF(tci_tbhdr, 0, 0, 1, TCG_OPF_NOT_PRESENT)
++#endif
+diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
+--- a/tcg/tci/tcg-target.c.inc	2026-09-08 00:22:21.510383876 +0000
++++ b/tcg/tci/tcg-target.c.inc	2026-09-08 00:04:28.879200882 +0000
+@@ -462,18 +462,6 @@
+ 
+ static void tcg_out_goto_tb(TCGContext *s, int which)
+ {
+-#ifdef __EMSCRIPTEN__
+-    /*
+-     * Terminate the TB instead of emitting a chain jump: on emscripten the
+-     * icount2 accounting runs per executed TB in cpu_tb_exec(), so every TB
+-     * boundary must return through cpu_exec.  Exit with the (tb | idx)
+-     * encoding of tcg_gen_exit_tb, which lets the cpu loop keep chaining
+-     * via tb_add_jump() with real TranslationBlock pointers.
+-     */
+-    tcg_out_exit_tb(s, (uintptr_t)s->gen_tb | which);
+-    set_jmp_reset_offset(s, which);
+-    return;
+-#endif
+     /* indirect jump method. */
+     tcg_out_op_p(s, INDEX_op_goto_tb, (void *)get_jmp_target_addr(s, which));
+     set_jmp_reset_offset(s, which);
+@@ -1250,7 +1238,15 @@
+ 
+ static void tcg_out_tb_start(TCGContext *s)
+ {
+-    /* nothing to do */
++#ifdef __EMSCRIPTEN__
++    /*
++     * Emit the TB header (see INDEX_op_tci_tbhdr): the interpreter
++     * executes it at every TB entry and advances the icount2 clock by
++     * the TB's guest-insn count there.  This keeps the clock strictly
++     * instruction-proportional even when TBs are chained via goto_tb.
++     */
++    tcg_out_op_ri(s, INDEX_op_tci_tbhdr, 0, s->gen_tb->icount);
++#endif
+ }
+ 
+ bool tcg_target_has_memory_bswap(MemOp memop)

@@ -78,7 +78,7 @@ fi
 # sanity: the patch must apply on top of the pristine+patches baseline
 git -C "$TMP/base" apply --check "$TMP/wip.patch"
 
-NEXT=$(( $(ls "$PATCHES" | grep -oE '^[0-9]{4}' | sort -n | tail -1) + 1 ))
+NEXT=$(( 10#$(ls "$PATCHES" | grep -oE "^[0-9]{4}" | sort -n | tail -1) + 1 ))
 OUT="$(printf '%s/%04d-%s.patch' "$PATCHES" "$NEXT" "$NAME")"
 cp "$TMP/wip.patch" "$OUT"
 echo "capture-patch: wrote $OUT ($(grep -c '^diff --git' "$OUT") file(s)) — build-qemu.sh now carries these edits"

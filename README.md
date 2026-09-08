@@ -44,10 +44,10 @@ phone boots without crashing — just in slow motion (~0.5–5% of real
 time while executing; WFI idle windows still advance at real pace).
 Override for experiments with `?icount2freq=<hz>`.
 
-**Known limitation (raw speed):** boot wall-time is minutes to tens of
-minutes (TCI sustains ~0.3–5M guest insns/s during boot, tiering up over
-the first minute; native needs ~10⁸–10⁹ insns to reach the idle screen).
-Keypad and LCD remain live throughout. Full analysis: [doc/](doc/) — in
+**Known limitation (raw speed):** boot wall-time is minutes (patch 0007
+restores TB chaining, roughly doubling guest throughput: ~7–17M insns/s
+sustained, S75 boots to its idle screen in ~4–5 minutes). Keypad and LCD
+remain live throughout. Full analysis: [doc/](doc/) — in
 particular [doc/performance-handoff.md](doc/performance-handoff.md)
 (targets + next steps), [doc/livelock-postmortem.md](doc/livelock-postmortem.md)
 (the Asyncify-condvar fix, the wild-TB crash, the fixed-clock timing model)
@@ -87,6 +87,15 @@ web/
   patches/
     0001-ui-add-wasm-*.patch   wasm display/input backend (applied to the clone)
     0006-wasm-icount2-*.patch  fixed 104 MHz virtual clock on emscripten
+    0007-wasm-tci-*.patch      TCI TB chaining + in-interpreter icount2
+                              accounting (~2x guest throughput; conflicts
+                              with the 0005 draft, see its header)
+    0008-tci-immediate-*.patch immediate-form TCI ops (add/and/or/xor/
+                              andc/setcond vs small constants; no tci_movi
+                              materialization; +7-9% on top of 0007)
+    0009-wasm-mainloop-*.patch futex-based main-loop wait (emscripten poll()
+                              can't sleep — the loop busy-spun ~23k/s through
+                              a proxied syscall; +8% early / +22% end-to-end)
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression; superseded by the reworked 0004)
   site/                 WASM-mode page (index.html / app.js / style.css)

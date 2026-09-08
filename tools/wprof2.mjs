@@ -5,6 +5,33 @@
 import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
 import WebSocket from "ws";
+import fs from "node:fs";
+import path from "node:path";
+
+// wasm-function[N] -> C symbol map (emcc --emit-symbol-map sidecar; the
+// wasm binary carries no name section). Looked up next to the wasm being
+// served (dist/ or dist-jit/) and in the build dirs.
+const symPaths = [
+  "../dist/qemu-system-arm.js.symbols",
+  "../dist-jit/qemu-system-arm.js.symbols",
+  "../build/qemu-wasm/qemu-system-arm.js.symbols",
+  "../build/qemu-wasm32/qemu-system-arm.js.symbols",
+];
+const fnSyms = new Map();
+for (const p of symPaths) {
+  try {
+    for (const l of fs.readFileSync(new URL(p, import.meta.url), "utf8").split("\n")) {
+      const m = l.match(/^(\d+):(.*)$/);
+      if (m) fnSyms.set(m[1], m[2]);
+    }
+    console.log(`symbols: ${path.basename(path.dirname(p))} (${fnSyms.size} fns)`);
+    break;
+  } catch {}
+}
+const symOf = (name) => {
+  const m = /wasm-function\[(\d+)\]/.exec(name || "");
+  return m ? fnSyms.get(m[1]) || name : name;
+};
 
 const secs = Number(process.argv[2] || 40);
 const query = process.argv[3] || "";
@@ -36,7 +63,7 @@ try {
   await new Promise((r, j) => { ws.on("open", r); ws.on("error", j); });
   let nextId = 1;
   const handlers = new Map();
-  const profiles = [];
+  const profiles = []; // one Profiler.stop result per worker session
   const attached = [];
   function send(method, params = {}, sessionId) {
     const id = nextId++;
@@ -71,22 +98,28 @@ try {
   }
   console.log("profiling " + sessions.length + " worker(s) for " + secs + "s @ " + sampleUs + "us...");
   await new Promise((r) => setTimeout(r, secs * 1000));
+  for (const sid of sessions) {
+    const st = await send("Profiler.stop", {}, sid);
+    if (st.result && st.result.profile) profiles.push(st.result.profile);
+  }
 
   const totals = new Map();
   const perWorker = [];
   const throwStacks = new Map();
+  let i = 0;
   for (const profile of profiles) {
-    const byId = new Map(profile.nodes.map((n) => [n.id, n]));
+    const nodes = profile.nodes;
+    const byId = new Map(nodes.map((n) => [n.id, n]));
     // build parent links
     const parent = new Map();
-    for (const n of profile.nodes) for (const c of n.children || []) parent.set(c, n.id);
+    for (const n of nodes) for (const c of n.children || []) parent.set(c, n.id);
     const wtotals = new Map();
     let wsum = 0;
     for (let j = 0; j < profile.samples.length; j++) {
       const node = byId.get(profile.samples[j]);
       if (!node) continue;
       const cf = node.callFrame;
-      const key = (cf.functionName || "?") + " " + (cf.url || "").slice(-24);
+      const key = symOf(cf.functionName) + " " + (cf.url || "").slice(-24);
       wtotals.set(key, (wtotals.get(key) || 0) + (profile.timeDeltas[j] || 0));
       wsum += profile.timeDeltas[j] || 0;
       if ((cf.functionName || "").includes("throw_longjmp")) {
@@ -103,7 +136,7 @@ try {
       }
     }
     for (const [k, v] of wtotals) totals.set(k, (totals.get(k) || 0) + v);
-    perWorker.push({ idx: i, sum: wsum, totals: wtotals });
+    perWorker.push({ idx: i++, sum: wsum, totals: wtotals });
   }
   for (const w of perWorker) {
     console.log("\n=== worker #" + w.idx + " self-time (total " + (w.sum / 1000).toFixed(0) + "ms) ===");
@@ -120,12 +153,12 @@ try {
     for (const n of profile.nodes) for (const c of n.children || []) parent.set(c, n.id);
     for (let j = 0; j < profile.samples.length; j++) {
       const node = byId.get(profile.samples[j]);
-      if (!node || !(node.callFrame.functionName || "").includes(want)) continue;
+      if (!node || !symOf(node.callFrame.functionName).includes(want) && !(node.callFrame.functionName || "").includes(want)) continue;
       const chain = [];
       let cur = parent.get(profile.samples[j]);
       while (cur !== undefined && chain.length < 10) {
         const anc = byId.get(cur);
-        if (anc) chain.push(anc.callFrame.functionName || "?");
+        if (anc) chain.push(symOf(anc.callFrame.functionName) || "?");
         cur = parent.get(cur);
       }
       const sk = chain.join(" <- ");

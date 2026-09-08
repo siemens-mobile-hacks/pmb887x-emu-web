@@ -15,8 +15,8 @@ Two independent web builds, both served simultaneously:
 |---|---|---|
 | TCG engine | TCI interpreter (wasm64) | **wasm32 runtime JIT** + TCI fallback |
 | Build | `scripts/build-qemu.sh` | `scripts/build-qemu-jit.sh` |
-| Patches | 0001–0003 + 0006 (**0004 dropped** — boot regression, see [early-crash-postmortem.md](early-crash-postmortem.md)) | 0001–0004 + **0005 (DRAFT, uncommitted)** — **stale** | 
-| Status | boots in slow motion (fixed 104 MHz virtual clock, no `>>EXIT<<`) at ~0.3–5M insns/s | was "lockstep with TCI to the same crash point" — but that crash point was the 0004 early abort; needs a fresh baseline against the current dist |
+| Patches | 0001–0004 + 0006 + **0007** (TCI TB chaining: per-TB `tci_tbhdr` icount2 accounting inside the interpreter — the same model this port uses for its dispatch loop, so a 0005 rebase must adopt 0007's header/goto_tb rather than re-derive it) | 0001–0004 + **0005 (DRAFT, uncommitted)** — **stale** |
+| Status | boots (fixed 104 MHz virtual clock, no `>>EXIT<<`) at ~7–17M insns/s (~2x pre-0007), S75 reaches the idle screen in ~4–5 min | was "lockstep with TCI to the same crash point" — but that crash point was the 0004 early abort; needs a fresh baseline against the current dist |
 | Guest correctness | verified past both former crash points (BROM GPTU poll, L1 handshake) | matches TCI through early boot (exec-trace-verified, see below) |
 
 Serve with:
