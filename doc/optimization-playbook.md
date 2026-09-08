@@ -112,6 +112,7 @@ workers:
 | 0007 TCI TB chaining | restore `goto_tb` chaining; per-TB icount2 accounting moved into the interpreter via a `tci_tbhdr` header op executed at every TB entry; the old 0004-era session io accounting collapses to a deadline-sync | +84–113 % insns at fixed wall time; `cpu_exec_loop` 9.3 %→0.8 % of vCPU; boot to idle ~260 s |
 | 0008 TCI immediate forms | `tci_add/and/or/xor/andc_ri`, `tci_setcond32_ri` + constraint letters + `tcg_target_const_match` + outop `out_rri`/`out_ri` wiring — constants stop materializing through `tci_movi` (18.9 %→12.8 % of ops; `add` 7.4 %→1.0 %) | window 46.7→42.9–43.7 s (+8 %); idle screen ~235 s |
 | 0009 futex main-loop wait | emscripten `poll()` cannot sleep (it ignores the timeout — the browser main thread must not block), so the main loop busy-spun ~23k iterations/s through a proxied syscall, 2 BQL handoffs each, and the aio eventfd wake never worked at all.  Replaced with a worker-local ns-precision futex wait woken by `qemu_notify_event`/`aio_notify`; main-loop wait no longer times out on virtual deadlines (the vCPU runs those) | window 43.7→40.1–40.4 s (+8 %); +22 % boot progress @110 s; idle screen ~195 s |
+| 0012 tci size-specialized ldst | eight appended opcodes (tci_qemu_ld8..st32) for the exact mop family MO_ALIGN\|MO_ATOM_NONE\|size\|sign — every plain pmb887x data access: the generic probe reduces to `(addr & (page_mask\|size-1)) == tlb_addr`, baked in as constants, no mask math/atom branch/size switch, mmu_idx-only stream word; tci_qemu_ld/st dead re-probe removed (0 hits in >1M calls); cold-path diag counters (wasm-diag.h + tools/memstat.mjs) | window wins all 4 interleaved pairs (34.1/33.9/34.0/34.0 vs 40.6/34.4/34.9/34.5; −1.4…−16 %, bigger under host load); boot progress @110 s v 91–102 → 114–121 (+18–25 %); native suite PASS ×4 |
 
 ## What was tried and REJECTED (do not retry without new ideas)
 
@@ -133,15 +134,16 @@ workers:
    block-restart protocol (its own dispatch returns normally instead of
    unwinding).  Do NOT try per-helper setjmp trampolines — the cost is
    the JS throw itself, not the distance.
-2. **TCI interpreter dispatch, ~35 % of vCPU** — 0008 already removed
-   the biggest op-class (constant materialization).  Remaining op mix:
-   `st32` 20 %, `ld32u` 13 %, `movi` 13 % (now mostly wide constants),
-   branches/compares ~15 %.  The known big lever is more allocatable
-   registers (13 today) to cut the spill traffic — but that needs 5-bit
-   register fields = a full TCI stream-format change (conflicts heavily
-   with 0005's shared emitters).  Smaller ideas not yet tried:
-   `tci_call_tag()` memoization (~1 %, sub-noise alone), TLB-probe
-   specialization in `tci_qemu_ld/st` (~1–2 %).
+2. **TCI interpreter dispatch, ~35 % of vCPU** — 0008 removed constant
+   materialization; 0012 specialized the memory ops (the single hottest
+   op class: st32/ld32u/st8 now run mask-math-free inline cases).
+   Remaining: `movi` 13 % (wide constants), branches/compares ~15 %.
+   The known big lever is more allocatable registers (13 today) to cut
+   the spill traffic — but that needs 5-bit register fields = a full TCI
+   stream-format change (conflicts heavily with 0005's shared emitters;
+   see the measured-and-rejected regfile experiment below).  Smaller
+   ideas not yet tried: `tci_call_tag()` memoization (~1 %, sub-noise
+   alone).
 3. **Flash romd topology churn, ~5.6 % of vCPU** — the firmware's
    status-poll loop (`[write 0x70, read status, write 0xFF]` × ~7 k/s)
    flips the flash partitions out of romd mode twice per poll, each
@@ -366,3 +368,55 @@ i.e. −54 % time-to-first-guest-work for a cold visit on wifi, −76 % for a
 revisit (revisits become link-independent), zero cold-visit regression, and
 the v-window is untouched (34.3 vs 34.2).  Boot soak after the app.js fix:
 v 1.2→4.7 over 40 s, LCD updates growing, ex=[0,0,0,0], no `>>EXIT<<`.
+
+## Session log: 2026-09-09 (patch 0012 — interpreter memory ops, counters)
+
+Target chosen by the playbook loop (profile → counters → ONE patch).
+Findings worth keeping:
+
+- **The page main thread is 98.5 % idle during emulation** (wprof2 now
+  profiles it too — page session first in its list).  Client-side
+  main-thread work (LCD repaint, serial poll, console) is irrelevant for
+  emulation speed on a many-core host; the "client-side" levers all live
+  in the wasm the client executes.
+- **Symbol-map ghosts re-confirmed**: `tci_qemu_ld` showed 45 % vCPU
+  self-time, but counters proved the slow path runs only ~20k calls/s
+  (MMIO/unmapped ≈ 2k/s, tlb_fill ≈ 20k/s in-window).  The 45 % was the
+  *inlined* fast-path code (tci_ld_fast/tci_st_fast inside the
+  interpreter) mislabeled — and it is genuinely the hot path:
+  ~5.9M loads + ~2.4M stores per wall second.  Always verify ≥1 % leaf
+  self-time with counters (the 0010/0011 sessions' rule holds).
+- **tci_qemu_ld/st re-probe was dead code** — the inline fast path probes
+  with identical inputs one call earlier; 1.1M+ calls, 0 second-probe
+  hits.  Removed in 0012.
+- **mop reality on this target**: every plain data access is
+  `MO_ALIGN|MO_ATOM_NONE|size|sign` (ARMv5 requires alignment, so
+  `memop` never fits the old 16-bit rrm stream word — that is why the
+  0011-era `oi & ~0xffff` fallback exists).  This is what makes
+  exact-mop specialization (0012) work: the opcode reconstructs the
+  whole mop, the stream word only carries mmu_idx.
+- **Benchmark discipline**: interleave against a *rebuilt* baseline
+  (cp the dist aside, one server per dist — a scoped server per run
+  survives the sandbox: see `/tmp/ab-one.sh` pattern in this session's
+  shell history).  Baseline windows are bimodal under shared-host load
+  (34.4–42.3 s); the candidate stayed 33.6–35.4 s across 6 runs and won
+  every pair.  finalV@110s (+18–25 % guest-seconds, all pairs) is the
+  most stable cross-check; insns@110s stays ~equal because the window
+  metric only covers v=2..7 while the big gains sit in later,
+  memory-op-dense phases.
+- **capture-patch.sh new-file handling was broken** (its sed mapped a new
+  file's `+++` line to `/dev/null`; first exercised by 0012's new header
+  file).  Fixed: the new/deleted branches now emit their own `---/+++`
+  headers and keep the diff body from the first `@@`.
+- **Lesson (cost ~30 min)**: the diagnostics enum and hard-coded indices
+  drifted apart twice while iterating — one round of "rejections" was
+  actually reading the wrong counter, which briefly pointed at a
+  big-endian-guest theory (wrong: the guest is LE; the mops carry
+  MO_ALIGN).  When adding counter slots mid-enum, re-check every consumer
+  (JS tools included) or use named indices everywhere (0012 ships
+  include/qemu/wasm-diag.h with named enum entries for exactly this).
+
+0012 measured headers are in `patches/0012-tci-size-specialized-ldst.patch`;
+correctness bar: native suite PASS ×4 (s75/el71/c81/ke800), wasm soak to
+v=245 with growing LCD updates, idle-screen screenshot verified (wallpaper,
+clock, «Поиск сети»), no `>>EXIT<<` anywhere.

@@ -116,6 +116,16 @@ lands in `/tmp/pmb887x-serial.log`.
     0009-wasm-mainloop-*.patch futex-based main-loop wait (emscripten poll()
                               can't sleep — the loop busy-spun ~23k/s through
                               a proxied syscall; +8% early / +22% end-to-end)
+    0010-wasm-io-recompile-*.patch skip the io-recompile rewind under stock
+                              icount (the ~150us emscripten longjmp per MMIO
+                              access dominated the vCPU; -19% v-window)
+    0011-tci-inline-ldst-*.patch TLB fast path inlined into the TCI
+                              interpreter loop (-10-12% v-window)
+    0012-tci-size-specialized-*.patch size-specialized guest memory ops
+                              (exact-mop fast forms for the MO_ALIGN|
+                              MO_ATOM_NONE family; dead re-probe removed;
+                              -1.4..-16% v-window, +18-25% boot progress
+                              @110s, wins every interleaved A/B pair)
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression; superseded by the reworked 0004)
   site/                 WASM-mode page (index.html / app.js / style.css)

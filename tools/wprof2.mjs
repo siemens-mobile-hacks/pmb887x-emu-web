@@ -89,6 +89,12 @@ try {
   console.log("attached workers:", workers.map((w) => w.targetInfo.url.slice(-46)).join(" | "));
 
   const sessions = [];
+  // profile the page main thread too (the client-side glue: rAF LCD paint,
+  // serial poll, console handlers) — it is the first session in the list
+  await send("Profiler.enable", {}, pageSession);
+  await send("Profiler.setSamplingInterval", { interval: sampleUs }, pageSession);
+  await send("Profiler.start", {}, pageSession);
+  sessions.push(pageSession);
   for (const w of workers) {
     const sid = w.sessionId;
     await send("Profiler.enable", {}, sid);
@@ -96,7 +102,7 @@ try {
     await send("Profiler.start", {}, sid);
     sessions.push(sid);
   }
-  console.log("profiling " + sessions.length + " worker(s) for " + secs + "s @ " + sampleUs + "us...");
+  console.log("profiling " + sessions.length + " session(s) for " + secs + "s @ " + sampleUs + "us...");
   await new Promise((r) => setTimeout(r, secs * 1000));
   for (const sid of sessions) {
     const st = await send("Profiler.stop", {}, sid);
@@ -139,7 +145,8 @@ try {
     perWorker.push({ idx: i++, sum: wsum, totals: wtotals });
   }
   for (const w of perWorker) {
-    console.log("\n=== worker #" + w.idx + " self-time (total " + (w.sum / 1000).toFixed(0) + "ms) ===");
+    const label = w.idx === 0 ? "page main thread" : "worker #" + (w.idx - 1);
+    console.log("\n=== " + label + " self-time (total " + (w.sum / 1000).toFixed(0) + "ms) ===");
     for (const [k, v] of [...w.totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
       console.log((v / 1000).toFixed(0).padStart(8) + "ms", (100 * v / w.sum).toFixed(1).padStart(5) + "%", k);
     }

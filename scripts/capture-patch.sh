@@ -57,9 +57,14 @@ while IFS= read -r line; do
   d="$(diff -uN "$TMP/base/$f" "$QEMU/$f" || true)"
   [ -n "$d" ] || continue
   if [ ! -e "$TMP/base/$f" ]; then
-    printf 'diff --git a/%s b/%s\nnew file mode 100644\n' "$f" "$f" >> "$TMP/wip.patch"
+    printf 'diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n' "$f" "$f" "$f" >> "$TMP/wip.patch"
+    # drop diff's own ---/+++ header lines, keep from the first @@ hunk
+    printf '%s\n' "$d" | sed -n '/^@@/,$p' >> "$TMP/wip.patch"
+    continue
   elif [ ! -e "$QEMU/$f" ]; then
-    printf 'diff --git a/%s b/%s\ndeleted file mode 100644\n' "$f" "$f" >> "$TMP/wip.patch"
+    printf 'diff --git a/%s b/%s\ndeleted file mode 100644\n--- a/%s\n+++ /dev/null\n' "$f" "$f" "$f" >> "$TMP/wip.patch"
+    printf '%s\n' "$d" | sed -n '/^@@/,$p' >> "$TMP/wip.patch"
+    continue
   else
     printf 'diff --git a/%s b/%s\n' "$f" "$f" >> "$TMP/wip.patch"
   fi
