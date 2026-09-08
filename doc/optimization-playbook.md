@@ -192,3 +192,81 @@ workers:
 5. `node tests/run.mjs --label <name> --timeout 240` + wasm boot soak.
 6. Update this playbook's tables (landed/rejected/remaining) and the
    README patch list.
+
+## Session log: 2026-09-08 (patches 0010–0011, upstream review follow-up)
+
+Started from the 0009-era build (v-window ~40–43 s on a quiet host).  Two
+patches landed, several hypotheses measured and rejected.  **The host is
+shared: loadavg is not namespaced — always interleave A/B pairs against
+saved binaries (cp the dist aside) and distrust absolute numbers across
+time.**  A profiler self-time of ≥1% in a leaf symbol whose caller stacks
+look insane (wav_enable_out under qemu_coroutine_new etc.) is symbol-map
+garbage; verify with counters before acting.  Note for diagnostics:
+`fprintf(stderr)` does NOT reach the page console — use
+`emscripten_console_error()` (and remember to click `#btn-start` in any
+hand-rolled playwright script; an unbooted page measures zero of
+everything).
+
+### Landed
+
+- **0010 wasm: skip the io-recompile rewind under stock icount** — the
+  0004 skip was icount2-gated, but the default timing model is stock
+  `-icount shift=3`: every mid-TB MMIO access still paid the ~150 µs
+  emscripten longjmp (wprof: 46.6% of vCPU in __emscripten_throw_longjmp,
+  callers cpu_io_recompile ← tci_qemu_ld).  Fix: commit the
+  pre-decremented TB budget (icount_update) + re-open the clock window
+  (can_do_io) instead of rewinding — the callback sees a clock at most
+  one TB ahead, the same deviation chained-icount2 accepts.  Measured:
+  v-window 51.5/53.4 → 42.3/41.8 s (interleaved, −19%); insns@110s
+  +102% (811M → 1.64G); 180 s soak v=168 @2.38B insns.
+- **0011 tci: inline TLB fast path in the interpreter loop** — the 0003
+  probe lived behind a per-access call to tci_qemu_ld/st; now
+  tci_ld_fast/tci_st_fast (QEMU_ALWAYS_INLINE) run at the four
+  interpreter call sites with the helper path as fallback.  Measured
+  (interleaved vs 0010): 41.2/41.5 → 38.5/36.5 s (−10–12%).
+
+### Measured and rejected (do not retry blind)
+
+- **Link-time binaryen -O3** (`-O3` in c_link_args): consistent
+  regression (41.4/40.9 vs 38.9/37.3 interleaved) — binaryen's rewrites
+  beat V8's own codegen.  Kept: no link -O flag.
+- **Single-call tbhdr accounting + icount2_advance fast-out** (one call
+  per TB instead of two, early-out when !use_icount2): no win (42.5/38.5
+  vs 41.4/36.6) — V8 already makes the uncontended atomics nearly free.
+- **wasm-EH longjmp** (`-sSUPPORT_LONGJMP=wasm` + `-mexception-handling`):
+  the linker never provides `emscripten_longjmp` while `-sASYNCIFY=1` is
+  on (JS-mode setjmp objects from the prebuilt sysroot want
+  `_emscripten_throw_longjmp`), and emscripten 4.0.10 has no
+  SUPPORT_LONGJMP=mixed.  Blocked by the asyncify requirement of
+  coroutine-wasm (emscripten/fiber.h).  Measured longjmp load: 12.8k
+  cpu_loop_exit/s (~9.4k guest SWIs + 1.6k interrupt exits, ~17% of
+  vCPU) — the prize stays behind the fiber/asyncify dependency.
+- **gthread coroutines + no asyncify**: no coroutine-gthread.c exists in
+  this qemu (backend was removed upstream); resurrecting it is the
+  prerequisite path for dropping asyncify.
+- **Console-print cost**: 74 console messages in 30 s — printing is a
+  non-issue (the unknown-reg warnings are rate-benign).
+- **Diagnostics that measured ZERO** (all real, via counters):
+  transaction-failed aborts, unaligned aborts, coroutine creations
+  (<1024/30 s).  The `emscripten_fiber_init`/`mtree_expand_owner`/
+  `qht_reset_size` profile entries are symbolization ghosts.
+
+### Measured facts for the next session
+
+- TCI op mix (histogram via interpreter counter, 2.55G ops sample):
+  st32 19.4%, tci_movi 12.7%, ld32u 12.3%, tci_add_ri 9.0%, brcond
+  6.2%, st8 6.0%, extract 4.9%, tci_setcond32_ri 4.0% … — **~31% of all
+  ops are register↔stack traffic** (middle-end spills + env-relative
+  globals) and tci_movi feeds stores.
+- TCI register budget: 16 regs − TMP − CALL_STACK = 14 allocatable; the
+  ARM frontend alone needs ~20 (cpu_R[16] + flags) → structural spills.
+- **5-bit register fields do not fit the 32-bit TCI word** (qemu_ld needs
+  op8+r0+r1+memop16 = 32 bits exactly).  Reducing the spill traffic
+  therefore requires the **64-bit TCI encoding** (8-byte insn units:
+  generous uniform fields, 32 regs, room for wider immediates and fused
+  brcond-vs-imm).  Estimated win: 8–15% (spills mostly vanish; decode
+  gets cheaper as a side effect).  Touches every tcg_out_op_* emitter /
+  tci_args_* decoder (~50+66 sites), tcg_insn_unit, code_gen buffer
+  sizing, pool alignment; invalidates the 0005 wasm32 draft's emitter
+  assumptions.  Effort ~2–4 h, best done as its own session with the
+  histogram + interleaved-bootbench loop from this one.
