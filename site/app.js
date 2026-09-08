@@ -496,10 +496,12 @@ const heldKeys = new Set();
 window.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   const key = CODE_TO_KEY[e.code];
-  if (!key || heldKeys.has(e.code)) return;
+  if (!key) return;
+  // prevent on repeats too: otherwise holding an arrow key scrolls the page
+  e.preventDefault();
+  if (heldKeys.has(e.code)) return;
   heldKeys.add(e.code);
   sendKey(key, true);
-  e.preventDefault();
 });
 window.addEventListener("keyup", (e) => {
   if (!heldKeys.delete(e.code)) return;
