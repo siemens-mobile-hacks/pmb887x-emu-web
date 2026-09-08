@@ -1,0 +1,148 @@
+From 5f1a02d3c9e8b7a6d5f4e3b2a1908c7d6e5f4a3b Mon Sep 17 00:00:00 2001
+From: sie-mcp web <web@sie-mcp.local>
+Date: Sun, 7 Sep 2026 07:45:00 +0000
+Subject: [PATCH] wasm: run icount2 at the fixed hardware frequency (104 MHz)
+
+The icount2 ("precise-clocks") PI controller adapts the virtual clock to
+the *measured host execution rate* so that virtual time tracks wall time.
+That is only correct on a host that sustains at least the guest's native
+instruction rate: on wasm-TCI (~0.2-0.8M insns/s vs 104M native) the
+controller locks the virtual CPU to ~0.8 MHz, so every firmware
+wall-clock budget - the L1<->DSP handshake first of all - fits ~1/130th
+of the instructions it needs and the phone crashes with
+">>EXIT<< FILE: l1bbcsg ExitCode 0x0B" shortly after boot.
+
+On emscripten, run the virtual clock at a fixed 104 MHz (the real CPU
+clock of these phones) instead: virtual time becomes strictly
+instruction-proportional, guest timer deadlines always arrive with the
+full native instruction budget, and the machine merely boots in slow
+motion.  Real-time actors (the pmb887x DSP worker thread) are
+effectively instantaneous on a virtual clock that lags wall time, so
+their handshakes complete.
+
+- system/icount2.c: disable the adaptive controller on emscripten
+  (icount2_adjust() early-returns; the 1 s adjust timer now only prints
+  the pace under QEMU_ICOUNT2_DEBUG=1), start the clock at
+  ICOUNT2_FIXED_FREQUENCY (104 MHz), and allow overriding it with
+  QEMU_ICOUNT2_FREQUENCY for experiments (the web page wires this to
+  ?icount2freq=).
+
+Applies on top of 0002 (which adds the emscripten ICOUNT2_MIN_FREQUENCY
+branch); native builds are unchanged.
+---
+
+(Rebased onto qemu-pmb887x 1f7fc803bf; content unchanged apart from upstream context.)
+
+diff --git a/system/icount2.c b/system/icount2.c
+index 72ca7c2a88..6c73a4b4ca 100644
+--- a/system/icount2.c
++++ b/system/icount2.c
+@@ -22,19 +22,37 @@ static bool icount2_debug;
+ 
+ #define ICOUNT2_INITIAL_FREQUENCY 314000000
+ #ifdef __EMSCRIPTEN__
+-/*
+- * The frequency is clamped to the actually measured execution rate.  The
+- * stock 1 MHz floor is far above what the TCI interpreter sustains on
+- * wasm: virtual time would run ahead of executed instructions, guest
+- * timer deadlines would arrive ~20x "early" and the icount2_sync() work
+- * triggered by every deadline would dominate the interpreter.  Let the
+- * controller converge to the real rate instead.
+- */
++/* Override-clamp floor only (the adaptive controller does not run here). */
+ #define ICOUNT2_MIN_FREQUENCY 1000
+ #else
+ #define ICOUNT2_MIN_FREQUENCY 1000000
+ #endif
+ #define ICOUNT2_MAX_FREQUENCY 500000000
++#ifdef __EMSCRIPTEN__
++/*
++ * "Precise clocks" must not be locked to wall time on a host that is
++ * orders of magnitude slower than the guest hardware.  The adaptive
++ * controller clamps the virtual clock to the measured execution rate
++ * (~0.2-0.8 MHz for TCI on wasm): virtual time then tracks real time
++ * while the guest only gets ~1/130th of the native instructions per
++ * virtual second, every firmware wall-clock budget (the L1<->DSP
++ * handshake first of all) starves, and the phone crashes (l1bbcsg
++ * ExitCode 0x0B, see web/doc/livelock-postmortem.md).
++ *
++ * Instead run the virtual clock at the real hardware rate (104 MHz CPU
++ * on these phones): virtual time is strictly instruction-proportional,
++ * timer deadlines always arrive with the full native instruction
++ * budget, and the machine merely boots in slow motion.  Real-time actors
++ * (the pmb887x DSP worker thread) are effectively instantaneous on a
++ * virtual clock that lags wall time, so their handshakes complete.
++ * QEMU_ICOUNT2_FREQUENCY (Hz) overrides the fixed rate for experiments
++ * (clamped to [ICOUNT2_MIN_FREQUENCY, ICOUNT2_MAX_FREQUENCY]).
++ */
++#define ICOUNT2_FIXED_FREQUENCY 104000000
++#define icount2_adaptive()	false
++#else
++#define icount2_adaptive()	true
++#endif
+ #define ICOUNT2_ADJUST_INTERVAL NANOSECONDS_PER_SECOND
+ #define ICOUNT2_ADJUST_P_GAIN 200000
+ #define ICOUNT2_ADJUST_I_GAIN 20000
+@@ -172,6 +190,9 @@ static void icount2_adjust(void) {
+ 	int64_t elapsed;
+ 	int64_t executed;
+ 
++	if (!icount2_adaptive())
++		return;
++
+ 	if (!runstate_is_running() || timers_state.icount2_idle)
+ 		return;
+ 
+@@ -274,6 +295,32 @@ static void icount2_adjust_rt(void *opaque) {
+ 		timers_state.icount_rt_timer,
+ 		qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL_RT) + ICOUNT2_ADJUST_INTERVAL / SCALE_MS
+ 	);
++#ifdef __EMSCRIPTEN__
++	/* Fixed-frequency mode: no controller, just report the pace. */
++	if (icount2_debug) {
++		static int64_t last_realtime, last_ticks;
++		int64_t realtime = cpu_get_clock();
++		int64_t ticks = qatomic_read(&timers_state.icount2_ticks);
++		if (last_realtime) {
++			int64_t elapsed = realtime - last_realtime;
++			int64_t executed = ticks - last_ticks;
++			if (elapsed > 0 && executed > 0) {
++				uint32_t frequency = qatomic_read(&timers_state.icount2_frequency);
++				uint64_t rate = muldiv64(executed, NANOSECONDS_PER_SECOND, elapsed);
++				fprintf(stderr,
++					"icount2 fixed: virtual=%.3f ms elapsed=%.3f ms rate=%.3f MIPS frequency=%.3f MHz pace=%.2f%%\n",
++					(double) icount2_get() / SCALE_MS,
++					(double) elapsed / SCALE_MS,
++					(double) rate / 1000000,
++					(double) frequency / 1000000,
++					(double) muldiv64(rate, 100, frequency));
++			}
++		}
++		last_realtime = realtime;
++		last_ticks = ticks;
++	}
++	return;
++#endif
+ 	icount2_adjust();
+ }
+ 
+@@ -360,7 +407,19 @@ void icount2_wakeup(int cpu_index, bool halted, int mask, int interrupt_request)
+ void icount2_configure(QemuOpts *opts, Error **errp) {
+ 	use_icount2 = true;
+ 	icount2_debug = g_strcmp0(g_getenv("QEMU_ICOUNT2_DEBUG"), "1") == 0;
++#ifdef __EMSCRIPTEN__
++	{
++		uint64_t frequency = ICOUNT2_FIXED_FREQUENCY;
++		const char *frequency_env = g_getenv("QEMU_ICOUNT2_FREQUENCY");
++		if (frequency_env &&
++			qemu_strtou64(frequency_env, NULL, 0, &frequency) != 0)
++			frequency = ICOUNT2_FIXED_FREQUENCY;
++		qatomic_set(&timers_state.icount2_frequency,
++			CLAMP(frequency, ICOUNT2_MIN_FREQUENCY, ICOUNT2_MAX_FREQUENCY));
++	}
++#else
+ 	qatomic_set(&timers_state.icount2_frequency, ICOUNT2_INITIAL_FREQUENCY);
++#endif
+ 	timers_state.icount2_adjust_initialized = false;
+ 	timers_state.icount2_adjust_locked = false;
+ 	timers_state.icount2_adjust_error = 0;
