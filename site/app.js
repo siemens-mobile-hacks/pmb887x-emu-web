@@ -21,6 +21,7 @@ const KEY_TO_LINUX = {
   up: 103, down: 108, left: 105, right: 106, center: 28, // KEY_UP.. KEY_ENTER
   left_soft: 59, right_soft: 60, // KEY_F1, KEY_F2
   send: 61, end: 62,             // KEY_F3, KEY_F4
+  clear: 14,                     // KEY_BACKSPACE (LG "C" key)
   music: 63, play: 64, ptt: 65, camera: 66, browser: 67, // KEY_F5..KEY_F9
   vol_up: 78, vol_down: 74,      // KEY_KPPLUS, KEY_KPMINUS
   "0": 11, "1": 2, "2": 3, "3": 4, "4": 5, "5": 6,
@@ -34,6 +35,7 @@ const CODE_TO_KEY = {
   Enter: "center", NumpadEnter: "center",
   F1: "left_soft", F2: "right_soft", F3: "send", F4: "end",
   F5: "music", F6: "play", F7: "ptt", F8: "camera", F9: "browser",
+  Backspace: "clear",
   NumpadAdd: "vol_up", NumpadSubtract: "vol_down", Equal: "vol_up", Minus: "vol_down",
   Digit0: "0", Digit1: "1", Digit2: "2", Digit3: "3", Digit4: "4",
   Digit5: "5", Digit6: "6", Digit7: "7", Digit8: "8", Digit9: "9",
@@ -163,12 +165,29 @@ function pickFiles(fileList) {
   return { main, sidecars };
 }
 
+// device id -> on-screen keyboard layout (ids from DEVICE_RULES): every LG
+// phone shares the KE800 board (side keys, no joystick block), every Siemens
+// phone the S75 board. English legends are the auto-picked default; Russian
+// stays one dropdown click away and is kept while the board does not change.
+function inferKbdLayout(dev) {
+  if (dev?.startsWith("lg-")) return "ke800_en";
+  if (dev?.startsWith("siemens-")) return "en";
+  return null;
+}
+
 $("fullflash").addEventListener("change", (e) => {
   const { main } = pickFiles(e.target.files);
   if (!main) return;
   const dev = inferDevice(main.name);
   if (dev && boards.some((b) => b.id === dev)) {
     $("device").value = dev;
+  }
+  const kbd = inferKbdLayout(dev);
+  if (kbd && kbd in KBD_LAYOUTS
+      && KBD_LAYOUTS[kbdSel.value]?.board !== KBD_LAYOUTS[kbd].board) {
+    kbdSel.value = kbd;
+    applyKbdLayout(kbd, bindKeypad);
+    localStorage.setItem("kbd-layout", kbd);
   }
 });
 
@@ -238,7 +257,17 @@ async function boot() {
       if (n === 1 || n % 500 === 0) console.log(`[qemu${n > 1 ? " x" + n : ""}]`, t);
     };
 
-    const icount = qsp.get("icount") ?? "precise-clocks=on";
+    // Timing model: stock icount with a fixed shift and sleep=off — virtual
+    // time is strictly instruction-proportional (plus deterministic jumps to
+    // the next timer deadline while the guest sleeps), so every firmware
+    // timing budget carries a full instruction budget regardless of how slow
+    // the wasm interpreter is (the phone merely boots in slow motion; see
+    // doc/livelock-postmortem.md §4). LG firmware has no such budgets — it
+    // boots fine on the plain realtime clock, so icount is off for it.
+    // ?icount= overrides (e.g. precise-clocks=on, shift=4, none).
+    const icount =
+      qsp.get("icount") ??
+      (device.startsWith("lg-") ? "none" : "shift=3,sleep=off");
     const trace = qsp.get("trace");
     const extraArgs = (qsp.get("qargs") ?? "").split(/\s+/).filter(Boolean);
     const args = [
@@ -292,10 +321,6 @@ async function boot() {
         if (qsp.get("iorewind") === "1") {
           mod.ENV.QEMU_IO_REWIND = "1";
         }
-        // ?icount2freq=<hz>: fixed virtual-clock frequency override
-        // (default: the real phone CPU clock, 104 MHz — see web/doc/).
-        const icount2freq = qsp.get("icount2freq");
-        if (icount2freq) mod.ENV.QEMU_ICOUNT2_FREQUENCY = icount2freq;
       },
     });
   } catch (e) {

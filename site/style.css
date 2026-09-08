@@ -75,6 +75,16 @@ main {
   stroke: currentColor; fill: none; stroke-width: 1.7;
   stroke-linecap: round; stroke-linejoin: round;
 }
+/* KE800 bottom-row sub-legends: stacked columns (timer over ".,", + over ␣)
+   and the offset # pair (flash upper right, solid arrow lower left) */
+.key-sub .sub-stack {
+  display: inline-flex; flex-direction: column; align-items: center;
+  gap: 0.12rem; line-height: 1;
+}
+.key-sub .sub-pair { position: relative; display: inline-block; width: 1.75rem; height: 1.35rem; }
+.key-sub .sub-pair svg { position: absolute; margin: 0; }
+.key-sub .sub-pair svg.icon-flash { top: 0; right: 0; height: 1.05rem; }
+.key-sub .sub-pair svg.icon-arrow { bottom: 0; left: 0; height: 0.8rem; }
 .keypad button:hover, .aux-keys button:hover { border-color: var(--accent); }
 .keypad button:active, .keypad button.pressed, .aux-keys button:active, .aux-keys button.pressed {
   background: var(--accent); color: #08131f; border-color: var(--accent);
@@ -83,6 +93,12 @@ main {
 .key-nav { font-size: 0.8rem; }
 .key-center { font-size: 1.05rem; }
 .key-icon { width: 1.1rem; height: 1.1rem; display: block; fill: currentColor; }
+/* stroke-drawn main-label icon (KE800 side power button) */
+.key-icon-line {
+  width: 1.1rem; height: 1.1rem; display: block;
+  stroke: currentColor; fill: none; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 .key-icon-stack { width: 1.05rem; height: auto; }
 .key-end .icon-hangup { fill: #9b2d2e; }
 .key-end .icon-power { fill: #d7dce4; }
@@ -93,6 +109,10 @@ main {
    (.keypad prefix needed to beat the .keypad button color rule) */
 .keypad .key-send { color: #68ba9c; }
 .keypad .key-end { color: #9b2d2e; }
+/* KE800: soft keys, arrows, OK, call and C glow red on the real phone
+   (sampled ~rgb(250,3,18) from keyboards/LG KE800.png); must come after
+   .key-send so the red wins on the call key */
+.keypad .key-red { color: #ef1d24; }
 
 /* secondary column: auxiliary keys, left of the LCD, vertically centered on it */
 .aux-keys {
