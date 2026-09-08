@@ -150,9 +150,17 @@ workers:
    fail (see rejected table).  The real fix is qemu-core: make a romd
    flip not re-render identical FlatViews (romd_mode participates in
    `flatrange_equal`) — medium-large, upstream-relevant surgery.
-4. **V8 tier-up warm-up** — the interpreter function tiers up over the
-   first ~60 s (visible in the per-sample rates).  Not controllable from
-   a plain page; maybe `WebAssembly.compileStreaming` hints someday.
+4. **V8 tier-up warm-up — measured 2026-09-08, no in-window effect (closed).**
+   `--no-wasm-lazy-compilation`, `--wasm-tiering-budget=100000`, and both
+   together leave the v-window at 33.9–34.1 s vs 34.2 s baseline (flags
+   verified live: `--no-liftoff` stalls boot, so the plumbing works).  The
+   12→44 M insns/s rate ramp across samples is guest-phase behavior — it is
+   identical with tier-up triggered 130× earlier.  On a 32-core host the
+   45 MB module streams/Liftoff-compiles in ~80 ms, so there is nothing to
+   warm up.  The warm-up cost is real only on *slow devices*; the page-side
+   lever for those is delivery-path (see the session log below) and, some
+   day, the browser's wasm code cache (not observed to engage in headless
+   Chromium 153, possibly disabled there — revisit on real hardware).
 5. **Main-loop residuals** — after 0009 the main loop sleeps properly;
    remaining cost is per-wake glib iteration + BQL handoffs (vCPU BQL
    waits ≈ 3 %).  Only worth revisiting if a profile shows it again.
@@ -305,3 +313,56 @@ Tooling note: `capture-patch.sh`'s verify only compares files that
 appear in `git status` of build/qemu — a file reverted to pristine HEAD
 silently escapes detection (bit us once; always also cmp the
 backend/*.h.inc files against the stack when doing surgery there).
+
+## Session log: 2026-09-08 evening (page-side session — delivery path)
+
+Picked remaining-opportunity #4 (V8 tier-up warm-up) and measured it
+properly (bootbench grew `JS_FLAGS` for browser flags + `RATES=1` for
+per-sample insns/s):
+
+- `--no-wasm-lazy-compilation`: window 33.9 vs 34.2/34.2 baseline.
+- `--wasm-tiering-budget=100000` (default 13M): 34.1.
+- both: 34.1.  Plumbing verified with `--no-liftoff --no-wasm-dynamic-tiering`
+  (finalV 3.1 @45 s — eager TurboFan of the whole module dominates).
+- Conclusion: V8 compilation tiers are NOT a factor in the v-window on this
+  host (streaming Liftoff of the 45 MB module: 80 ms).  Closed as #4 above.
+
+Pivoted to the page-side delivery path, where real wall-clock sits for the
+README's phone/LAN use case.  New tool `tools/loadbench.mjs`: a
+time-to-guest-work benchmark (t_module / t_v05 / t_v2 from page load,
+resource timing for the wasm, `instantiateStreaming` timing via an
+init-script wrapper, `PROFILE=` persistent browser profile for cache
+experiments, `NET=`/`LAT_MS=` CDP network emulation).  Primary page metric:
+**t_v05** (wall s until guest v crosses 0.5).
+
+Landed (serve.mjs + site/app.js, no qemu changes → no patch in the series):
+
+- **serve.mjs: strong ETag + 304 revalidation, and a lazily (re)generated
+  `qemu-system-arm.wasm.gz` sidecar** (44.8 MB → 11.2 MB, ~1.2 s to build,
+  `GZIP=0` disables, tmp+rename so a partial sidecar is never served,
+  auto-refreshed when the wasm is newer — ninja-fast already `rm -f`s it on
+  deploy).  `no-cache` kept: every visit revalidates, so redeploys are
+  always picked up, but unchanged files come back from the HTTP cache (and
+  stay eligible for Chromium's wasm code cache — which did not measurably
+  engage in headless; the measured warm win is HTTP-cache only).
+- **site/app.js: slow-link device-inference race fixed.**  `loadBoards()`
+  populates the `<select>` asynchronously; a fullflash picked before
+  boards.tar arrived silently lost device inference → booted
+  generic-pmb8875 → qemu hardware-error abort ("Invalid fullflash
+  size").  Found by loadbench under NET=20 emulation (localhost is too
+  fast to ever hit it).  Fix: deferred `pendingDevice` applied when the
+  options exist + `boot()` awaits `boardsReady` (also removes a latent
+  `boardsBuf` null-deref in preRun).
+
+Measured (loadbench, S75, 2 runs each, all within ±0.3 s):
+
+| visit | t_v05 localhost | t_v05 @20 Mbps+30 ms | t_v2 @20 Mbps | wasm transfer |
+|---|---|---|---|---|
+| before (raw, no validators) | 7.0–7.2 | 26.2 | 35.0 | 44.8 MB |
+| after, cold (gz) | 7.0–7.2 | 12.1–12.4 | 21.2 | 11.2 MB |
+| after, warm (304) | **6.2** | **6.3** | **15.1–15.3** | **300 B** |
+
+i.e. −54 % time-to-first-guest-work for a cold visit on wifi, −76 % for a
+revisit (revisits become link-independent), zero cold-visit regression, and
+the v-window is untouched (34.3 vs 34.2).  Boot soak after the app.js fix:
+v 1.2→4.7 over 40 s, LCD updates growing, ex=[0,0,0,0], no `>>EXIT<<`.

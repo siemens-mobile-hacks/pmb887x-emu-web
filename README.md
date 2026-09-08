@@ -27,6 +27,10 @@ writable-flash) and an on-screen keypad with every phone key as its own
                     # for any host other than localhost/127.0.0.1)
 ```
 
+`serve.mjs` keeps a gzip'd sidecar of the 45 MB wasm (~11 MB on the wire;
+`GZIP=0` disables) and revalidates with ETags, so repeat visits skip the
+re-download (`tools/loadbench.mjs` measures the startup path).
+
 Everything runs client-side: the picked fullflash is written into the
 emscripten MEMFS, board configs are unpacked from `dist/boards.tar`, and
 qemu boots with a small `-display wasm` backend (see below). The TCG

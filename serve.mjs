@@ -8,7 +8,13 @@
 import http from "node:http";
 import https from "node:https";
 import { execFileSync } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync,
+  statSync, writeFileSync,
+} from "node:fs";
+import { rename, stat as statP } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { createGzip } from "node:zlib";
 import { extname, join, normalize, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -80,7 +86,43 @@ function ensureCert() {
 
 const isLoopback = (addr) => !addr || /^(127\.|::1$|::ffff:127\.)/.test(addr);
 
-function handler(req, res) {
+// The 45 MB wasm dominates page-load time on slow links (phone/LAN use), so
+// keep a pre-gzip'd sidecar next to it (~4x smaller) and regenerate it when
+// the source changes (ninja-fast redeploys). One compressor per file,
+// shared by concurrent requests. GZIP=0 disables.
+const gzInflight = new Map();
+async function gzSidecar(path) {
+  if (process.env.GZIP === "0") return null;
+  const gz = path + ".gz";
+  const fresh = async () => {
+    try {
+      const [src, side] = await Promise.all([statP(path), statP(gz)]);
+      return side.mtimeMs >= src.mtimeMs;
+    } catch {
+      return false;
+    }
+  };
+  if (await fresh()) return gz;
+  let done = gzInflight.get(gz);
+  if (!done) {
+    done = pipeline(
+      createReadStream(path),
+      createGzip({ level: 6 }),
+      // tmp+rename so a partial sidecar is never served
+      createWriteStream(gz + ".tmp"),
+    )
+      .then(() => rename(gz + ".tmp", gz))
+      .catch(() => null);
+    gzInflight.set(gz, done);
+    await done;
+    gzInflight.delete(gz);
+  } else {
+    await done;
+  }
+  return (await fresh()) ? gz : null;
+}
+
+async function handler(req, res) {
   const url = new URL(req.url, "http://localhost");
   let path = normalize(join(root, decodeURIComponent(url.pathname)));
   if (!path.startsWith(root)) { res.writeHead(403); res.end(); return; }
@@ -91,27 +133,43 @@ function handler(req, res) {
     return;
   }
 
+  // Prefer the pre-gzip'd sidecar for the wasm (see gzSidecar above).
+  let servePath = path;
+  if (extname(path) === ".wasm" && (req.headers["accept-encoding"] || "").includes("gzip"))
+    servePath = (await gzSidecar(path)) || path;
+
   const headers = {
     "content-type": MIME[extname(path)] || "application/octet-stream",
     // require-corp (not credentialless): Safari supports only require-corp,
     // and this page loads same-origin resources exclusively.
     "cross-origin-opener-policy": "same-origin",
     "cross-origin-embedder-policy": "require-corp",
+    // no-cache + a strong ETag: every visit revalidates (dev-friendly — a
+    // redeployed dist is always picked up), and unchanged files come back
+    // as 304s served from the HTTP cache. That also lets Chromium keep and
+    // reuse its wasm code cache for qemu-system-arm.wasm on repeat visits
+    // (streaming-compiled modules only), skipping the multi-second Liftoff
+    // compile of the 45 MB module — and the cached code includes whatever
+    // TurboFan had tiered up, i.e. the V8 warm-up too.
     "cache-control": "no-cache",
+    etag: etagOf(servePath),
   };
-
-  // Prefer the pre-gzip'd sidecar if present (qemu-system-arm.wasm.gz)
-  const gz = path + ".gz";
-  if ((req.headers["accept-encoding"] || "").includes("gzip") && existsSync(gz)) {
-    headers["content-encoding"] = "gzip";
-    res.writeHead(200, headers);
-    createReadStream(gz).pipe(res);
+  if (extname(path) === ".wasm") headers["vary"] = "accept-encoding";
+  if (req.headers["if-none-match"] === headers.etag) {
+    res.writeHead(304, headers);
+    res.end();
     return;
   }
 
-  headers["content-length"] = statSync(path).size;
+  if (servePath !== path) headers["content-encoding"] = "gzip";
+  headers["content-length"] = statSync(servePath).size;
   res.writeHead(200, headers);
-  createReadStream(path).pipe(res);
+  createReadStream(servePath).pipe(res);
+}
+
+function etagOf(p) {
+  const st = statSync(p);
+  return `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
 }
 
 const redirectNonLoopbackToHttps = (req, res) => {

@@ -112,6 +112,9 @@ let rafHandle = 0;
 let serialTimer = 0;
 let boards = [];         // [{id, file}] parsed from boards.tar
 let boardsBuf = null;
+let boardsReady = null;   // loadBoards() promise — boot() awaits it
+let pendingDevice = null; // device inferred from a fullflash picked before
+                          // boards.tar finished loading (slow links)
 
 function setStatus(cls, text) {
   statusEl.className = "status " + cls;
@@ -138,6 +141,12 @@ async function loadBoards() {
     opt.value = b.id;
     opt.textContent = b.id;
     sel.appendChild(opt);
+  }
+  // A fullflash picked before boards.tar arrived (slow link) could not set
+  // the device — apply the deferred inference now that the options exist.
+  if (pendingDevice && boards.some((b) => b.id === pendingDevice)) {
+    sel.value = pendingDevice;
+    pendingDevice = null;
   }
 }
 
@@ -179,8 +188,9 @@ $("fullflash").addEventListener("change", (e) => {
   const { main } = pickFiles(e.target.files);
   if (!main) return;
   const dev = inferDevice(main.name);
-  if (dev && boards.some((b) => b.id === dev)) {
-    $("device").value = dev;
+  if (dev) {
+    if (boards.some((b) => b.id === dev)) $("device").value = dev;
+    else if (boardsReady) pendingDevice = dev; // boards.tar still loading
   }
   const kbd = inferKbdLayout(dev);
   if (kbd && kbd in KBD_LAYOUTS
@@ -198,6 +208,16 @@ $("fullflash").addEventListener("change", (e) => {
 async function boot() {
   const fileInput = $("fullflash");
   if (!fileInput.files.length) { alert("pick a fullflash .bin first"); return; }
+
+  // boards.tar populates the device list and feeds preRun's untar — never
+  // start a boot that could race it (device inference would be lost and
+  // qemu would get an empty board dir).
+  if (boardsReady) await boardsReady;
+  if (!boardsBuf) {
+    setStatus("error", "boards.tar failed to load — reload the page");
+    return;
+  }
+
 
   const { main: file, sidecars } = pickFiles(fileInput.files);
   if (!file) { alert("no fullflash .bin among the picked files"); return; }
@@ -538,4 +558,7 @@ async function diagnoseIsolation() {
 }
 
 if (!crossOriginIsolated) diagnoseIsolation();
-loadBoards().catch((e) => setStatus("error", "boards.tar: " + e));
+boardsReady = loadBoards().catch((e) => {
+  setStatus("error", "boards.tar: " + e);
+  return null; // resolved-with-null: boot() re-checks boardsBuf below
+});

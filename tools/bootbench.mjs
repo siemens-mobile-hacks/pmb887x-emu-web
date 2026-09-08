@@ -32,7 +32,13 @@ const LO = Number(process.env.LO || 2.0);
 const HI = Number(process.env.HI || 7.0);
 const port = process.env.PORT || "8080";
 
-const b = await chromium.launch({ headless: true });
+// JS_FLAGS: V8 flags for the benchmarked browser, e.g.
+//   JS_FLAGS="--no-wasm-lazy-compilation" node tools/bootbench.mjs 110
+// Lets us measure V8-side levers (lazy compilation, tiering budget) that a
+// plain page cannot set — the numbers quantify what a page-side workaround
+// would be worth.
+const jsFlags = process.env.JS_FLAGS || "";
+const b = await chromium.launch({ headless: true, args: jsFlags ? [`--js-flags=${jsFlags}`] : [] });
 const p = await b.newPage();
 const samples = [];
 let exitSeen = false;
@@ -78,4 +84,9 @@ const out = {
   finalInsns: (last[1] / 1e6).toFixed(0),
   exit: exitSeen,
 };
+// RATES=1: per-sample guest insns/s (Minsns/s over each 10 s WATCH interval)
+// — shows the V8 tier-up warm-up curve directly.
+if (process.env.RATES)
+  out.rates = samples.map(([v, i], k) =>
+    k === 0 ? null : Number(((i - samples[k - 1][1]) / 1e7).toFixed(2)));
 console.log(`BOOTBENCH ${JSON.stringify(out)}`);
