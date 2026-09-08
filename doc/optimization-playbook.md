@@ -270,3 +270,38 @@ everything).
   sizing, pool alignment; invalidates the 0005 wasm32 draft's emitter
   assumptions.  Effort ~2–4 h, best done as its own session with the
   histogram + interleaved-bootbench loop from this one.
+
+### Register-file expansion experiment (measured, rejected — 2026-09-08)
+
+Motivated by the op-mix (~31% of TCI ops are register↔stack traffic with
+only 14 allocatable registers vs ~20 ARM globals), a full 5-bit register
+encoding was implemented and measured: 32 virtual registers (28
+allocatable), all decoders/emitters re-laid-out (uniform reg slots at
+bits 8/13/18/23), 19-bit labels, 24-bit bare-label/payload forms,
+`qemu_ld/st`/`deposit`/5-reg ops taking a trailing word for the fields
+that no longer fit, immediate forms narrowed S16→S14 / S12→S10.
+
+Mechanically it worked (built, booted, no crash).  Measured
+(interleaved, headless Chromium):
+
+  v=2..7 window   0011: 36.5 s   +28regs: 43.2 / 43.6 s  (~+18% worse)
+  @110 s          0011: v=92, 1670M insns   +28regs: v=48, 1616M insns
+  @50 s           both nearly identical (127M vs 130M TBs, 502M vs 516M
+                  insns, v 4.3 vs 4.4) — no TB-size change, spills were
+                  NOT the bottleneck
+
+Conclusions: (a) the env/stack ld/st ops are already single-memory-op
+cheap — register pressure is not the limiter on this workload;
+(b) the 2-word `qemu_ld/st` encoding cost (~30% of ops) plus
+whole-TB-icount timing drift (the v-stall at ~48 suggests a longer
+firmware busy phase from shifted MMIO-in-TB positions) makes the
+encoding change a net loss as implemented.  A 64-bit single-word
+encoding would avoid (b)'s word-count overhead, but given (a) the
+expected upside is small.  Patch preserved at
+`/tmp/regfile-expansion-attempt.diff` (574 lines) if anyone wants to
+re-try with the 64-bit word form.
+
+Tooling note: `capture-patch.sh`'s verify only compares files that
+appear in `git status` of build/qemu — a file reverted to pristine HEAD
+silently escapes detection (bit us once; always also cmp the
+backend/*.h.inc files against the stack when doing surgery there).
