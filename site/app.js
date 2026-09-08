@@ -44,7 +44,10 @@ const CODE_TO_KEY = {
 };
 
 // filename substring -> device id (mirrors pmb887x-emu-mcp/src/instance.ts)
+// LG phones: their EEPROM lives in the NOR flash EFA block, so their
+// fullflashes need the .cfi-efa sidecar (see SIDE_CAR_RE below).
 const DEVICE_RULES = [
+  ["KE800", "lg-ke800"], ["KE970", "lg-ke970"],
   ["EL71", "siemens-el71"], ["E71", "siemens-e71"], ["C81", "siemens-c81"],
   ["S75", "siemens-s75"], ["S65", "siemens-s65"], ["CX75", "siemens-cx75"],
   ["CX70", "siemens-cx70"], ["CX65", "siemens-cx65"], ["SL75", "siemens-sl75"],
@@ -136,16 +139,34 @@ async function loadBoards() {
   }
 }
 
+// Fullflash sidecars: qemu derives <fullflash>.cfi-{efa,otp0,otp1} paths
+// from the pflash filename (in MEMFS: /data/fullflash.bin.cfi-*).
+// The EFA block ("extra flash area") holds the LG EEPROM — without it an LG
+// firmware boots, complains "EEP DOES NOT FIT TO SW-VERSION" and factory-
+// resets. Siemens fullflashes only use the otp0/otp1 sidecars (optional).
+const SIDE_CAR_RE = /\.cfi-[a-z0-9]+$/i;
+const FULLFLASH_PATH = "/data/fullflash.bin";
+
 function inferDevice(filename) {
   const up = filename.toUpperCase();
   for (const [pat, dev] of DEVICE_RULES) if (up.includes(pat)) return dev;
   return null;
 }
 
+// The main fullflash plus its picked .cfi-* sidecars; the largest non-sidecar
+// file wins so a directory pick cannot accidentally swap main and sidecar.
+function pickFiles(fileList) {
+  const files = [...fileList];
+  const sidecars = files.filter((f) => SIDE_CAR_RE.test(f.name));
+  const mains = files.filter((f) => !SIDE_CAR_RE.test(f.name));
+  const main = mains.sort((a, z) => z.size - a.size)[0] || null;
+  return { main, sidecars };
+}
+
 $("fullflash").addEventListener("change", (e) => {
-  const f = e.target.files[0];
-  if (!f) return;
-  const dev = inferDevice(f.name);
+  const { main } = pickFiles(e.target.files);
+  if (!main) return;
+  const dev = inferDevice(main.name);
   if (dev && boards.some((b) => b.id === dev)) {
     $("device").value = dev;
   }
@@ -159,7 +180,8 @@ async function boot() {
   const fileInput = $("fullflash");
   if (!fileInput.files.length) { alert("pick a fullflash .bin first"); return; }
 
-  const file = fileInput.files[0];
+  const { main: file, sidecars } = pickFiles(fileInput.files);
+  if (!file) { alert("no fullflash .bin among the picked files"); return; }
   const device = $("device").value;
   const imei = $("imei").value.trim();
   const esn = $("esn").value.trim();
@@ -180,12 +202,23 @@ async function boot() {
   setStatus("booting", "loading…");
   $("btn-start").disabled = true;
 
+  // [[".cfi-efa", bytes], ...] — filled below, checked again after the boot
+  let sidecarBytes = [];
+
   try {
     // Compile the factory fresh per boot (the emscripten ES6 factory is
     // single-use once main() has run through exit()).
     const factory = (await import("./qemu-system-arm.js")).default;
 
     const flashBytes = new Uint8Array(await file.arrayBuffer());
+    for (const sc of sidecars) {
+      const suffix = sc.name.match(SIDE_CAR_RE)[0].toLowerCase();
+      if (sidecarBytes.some(([s]) => s === suffix)) {
+        alert(`duplicate ${suffix} sidecar picked — keeping the first`);
+        continue;
+      }
+      sidecarBytes.push([suffix, new Uint8Array(await sc.arrayBuffer())]);
+    }
 
     // qemu stderr -> browser console, deduped (madvise/mprotect spam otherwise).
     // ?tracebuf=1 keeps the raw last lines in window.__qemulog instead (no CDP flood).
@@ -212,7 +245,7 @@ async function boot() {
       "-display", "wasm",
       ...(icount === "none" ? [] : ["-icount", icount]),
       "-machine", "pmb887x",
-      "-drive", `if=pflash,format=raw,file=/data/fullflash.bin${rw ? "" : ",readonly=on"}`,
+      "-drive", `if=pflash,format=raw,file=${FULLFLASH_PATH}${rw ? "" : ",readonly=on"}`,
       "-serial", "file:/serial.log",
       "-monitor", "none",
       ...extraArgs,
@@ -228,6 +261,7 @@ async function boot() {
         $("btn-start").disabled = false;
         $("btn-stop").disabled = true;
         $("btn-save-flash").disabled = true;
+        $("btn-save-efa").disabled = true;
       },
       preRun: (mod) => {
         mod.FS.mkdirTree("/boards");
@@ -237,7 +271,9 @@ async function boot() {
           mod.FS.writeFile(path, data);
         });
         mod.FS.mkdirTree("/data");
-        mod.FS.writeFile("/data/fullflash.bin", flashBytes);
+        mod.FS.writeFile(FULLFLASH_PATH, flashBytes);
+        for (const [suffix, bytes] of sidecarBytes)
+          mod.FS.writeFile(FULLFLASH_PATH + suffix, bytes);
         mod.ENV.PMB887X_BOARD = `/boards/${device}.toml`;
         mod.ENV.PMB887X_STARTUP = startup;
         mod.ENV.PMB887X_SIM = sim;
@@ -271,11 +307,14 @@ async function boot() {
 
   $("btn-stop").disabled = false;
   $("btn-save-flash").disabled = !rw;
+  $("btn-save-efa").disabled = true;
+  // LG firmware without the EFA block factory-resets its EEPROM; warn but boot.
+  const noEfa = device.startsWith("lg-") && !sidecarBytes.some(([s]) => s === ".cfi-efa");
   $("lcd-overlay").classList.add("hidden");
   window.__qemu = qemuModule; // debugging hook
   startPainting();
   startSerialPoll();
-  setStatus("running", `running — ${device}`);
+  setStatus("running", `running — ${device}` + (noEfa ? " (no EFA block — firmware may factory-reset)" : ""));
 }
 
 function stop() {
@@ -286,14 +325,25 @@ function stop() {
 $("boot-form").addEventListener("submit", (e) => { e.preventDefault(); boot(); });
 $("btn-stop").addEventListener("click", stop);
 $("btn-save-flash").addEventListener("click", () => {
-  if (!qemuModule?.FS?.analyzePath("/data/fullflash.bin")?.exists) return;
-  const data = qemuModule.FS.readFile("/data/fullflash.bin");
+  downloadMemfs(FULLFLASH_PATH, "fullflash-modified.bin");
+});
+
+// EFA blocks are written lazily (only once the firmware actually programs
+// the EFA), so the button is enabled by the poller when the file appears.
+$("btn-save-efa").addEventListener("click", () => {
+  downloadMemfs(FULLFLASH_PATH + ".cfi-efa", "fullflash-modified.bin.cfi-efa");
+});
+
+function downloadMemfs(path, name) {
+  const m = qemuModule;
+  if (!m?.FS?.analyzePath(path)?.exists) return;
+  const data = m.FS.readFile(path);
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([data], { type: "application/octet-stream" }));
-  a.download = "fullflash-modified.bin";
+  a.download = name;
   a.click();
   URL.revokeObjectURL(a.href);
-});
+}
 
 /* ------------------------------------------------------------------ */
 /* LCD painting                                                         */
@@ -345,6 +395,10 @@ function startSerialPoll() {
   serialTimer = setInterval(() => {
     const m = qemuModule;
     if (!m?.FS) return;
+    // firmware writes the EFA lazily — offer the download once it exists
+    try {
+      $("btn-save-efa").disabled = !m.FS.analyzePath(FULLFLASH_PATH + ".cfi-efa").exists;
+    } catch { /* not there yet */ }
     try {
       if (!m.FS.analyzePath("/serial.log").exists) return;
       const data = m.FS.readFile("/serial.log", { encoding: "binary" });

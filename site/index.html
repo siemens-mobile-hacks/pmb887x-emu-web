@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>qemu-pmb887x — Siemens phone emulator (WASM)</title>
+<title>qemu-pmb887x — Siemens/LG phone emulator (WASM)</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
-  <h1>Siemens PMB887X <span>emulator — qemu compiled to WebAssembly</span></h1>
+  <h1>Siemens / LG PMB887X <span>emulator — qemu compiled to WebAssembly</span></h1>
   <div id="status" class="status idle">idle</div>
 </header>
 
@@ -86,7 +86,9 @@
         <legend>Boot</legend>
 
         <label class="file-label" for="fullflash">Fullflash (.bin)
-          <input type="file" id="fullflash" accept=".bin" required>
+          <input type="file" id="fullflash" accept=".bin,.cfi-efa,.cfi-otp0,.cfi-otp1" multiple required>
+          <small class="file-hint">LG phones: also pick the <code>.cfi-efa</code> sidecar
+            (their EEPROM lives in the EFA block)</small>
         </label>
 
         <label>Device
@@ -129,6 +131,7 @@
           <button type="submit" id="btn-start">Start</button>
           <button type="button" id="btn-stop" disabled>Stop</button>
           <button type="button" id="btn-save-flash" disabled>Download flash</button>
+          <button type="button" id="btn-save-efa" disabled title="EFA block (LG EEPROM) — appears once the firmware wrote it">Download EFA</button>
         </div>
       </fieldset>
     </form>

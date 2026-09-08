@@ -1,6 +1,6 @@
 # qemu-pmb887x in the browser
 
-The Siemens-phone emulator, running **entirely in the browser**:
+The Siemens/LG-phone emulator, running **entirely in the browser**:
 qemu-system-arm compiled to WebAssembly (`./build.sh` + `./serve.mjs`) —
 deterministic boot, splash draws, keypad/serial work — **boots in slow
 motion** (fixed 104 MHz virtual clock, see below; full boot takes minutes
@@ -8,7 +8,9 @@ to tens of minutes at current TCI speed). See
 [doc/livelock-postmortem.md](doc/livelock-postmortem.md) +
 [doc/performance-handoff.md](doc/performance-handoff.md).
 
-The page has a fullflash file picker, all `load`
+The page has a fullflash file picker (multi-select: LG fullflashes can be
+picked together with their `.cfi-efa` sidecar — the EFA block holding the
+LG EEPROM; a missing EFA makes LG firmware factory-reset), all `load`
 options (device inference, IMEI/ESN→OTP, SIM, operator, startup scenario,
 writable-flash) and an on-screen keypad with every phone key as its own
 `<button>` (plus physical-keyboard mapping).
@@ -62,6 +64,9 @@ wasm TCI build; full boot to the idle screen takes ~1–2 minutes):
 ```bash
 scripts/build-native.sh                          # worktree of the pinned rev → build/qemu-native-build
 scripts/run-native.sh fullflashes/s75_working20060710172101.bin
+# LG (device auto-inferred; the EFA block is picked up from
+# <fullflash>.cfi-efa next to the flash — keep them together):
+scripts/run-native.sh fullflashes/KE800-v11b.bin
 ```
 
 `run-native.sh` mirrors the web boot exactly (same `-icount

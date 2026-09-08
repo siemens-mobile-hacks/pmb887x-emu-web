@@ -1,7 +1,10 @@
 # Test suite
 
 Boot + benchmark tests for the pmb887x emulator (native build), run over
-the fullflashes that currently work: **s75, el71, c81** (`fullflashes/`).
+the fullflashes that currently work: **s75, el71, c81, ke800**
+(`fullflashes/`). The LG ke800 flash carries its EEPROM in the NOR flash
+EFA block — its `KE800-v11b.bin.cfi-efa` sidecar must sit next to the
+fullflash (the emulator picks it up automatically).
 
 ## Running
 
@@ -20,7 +23,7 @@ Useful options:
 | `--label NAME` | `run` | labels results JSON + tmp dirs |
 | `--timeout SECS` | 180 | per-flash hard deadline |
 | `--bench-secs SECS` | 45 | benchmark window (see below) |
-| `--flash a,b` | all | subset of `s75,el71,c81` |
+| `--flash a,b` | all | subset of `s75,el71,c81,ke800` |
 | `--keep` | – | keep per-run dirs under `/tmp` for inspection |
 
 Env overrides `QEMU_BIN` / `BOARDS_DIR` select the emulator binary and

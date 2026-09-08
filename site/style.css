@@ -134,6 +134,7 @@ label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem;
 label small { color: var(--muted); font-weight: 400; }
 label.checkbox-label { flex-direction: row; align-items: center; gap: 0.5rem; grid-column: 1 / -1; }
 .file-label { grid-column: 1 / -1; }
+.file-hint { display: block; margin-top: 0.25rem; }
 
 input[type=text], select {
   font: inherit; color: var(--text); background: var(--bg);

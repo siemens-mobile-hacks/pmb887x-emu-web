@@ -14,6 +14,8 @@
 #   IMEI=490154203237518 15 digits
 #   ESN=12345678         8 hex chars
 #   RW=1                 writable flash (firmware can modify the .bin)
+#   EFA_FILE=path        explicit EFA block for FLASH0 (default: derived
+#                        as <fullflash>.cfi-efa, e.g. the LG EEPROM block)
 #   DISPLAY_MODE=none    none | vnc=[:display] | sdl | gtk
 #   SERIAL=path          serial log file     (default /tmp/pmb887x-serial.log)
 #   MONITOR=stdio        stdio | unix:path | none
@@ -32,7 +34,8 @@ FLASH="$(realpath "$1")"; shift
 BOARD="${BOARD:-}"
 if [ -z "$BOARD" ]; then
   UP="$(basename "$FLASH" | tr '[:lower:]' '[:upper:]')"
-  for rule in "EL71 siemens-el71" "E71 siemens-e71" "C81 siemens-c81" \
+  for rule in "KE800 lg-ke800" "KE970 lg-ke970" \
+              "EL71 siemens-el71" "E71 siemens-e71" "C81 siemens-c81" \
               "S75 siemens-s75" "S65 siemens-s65" "CX75 siemens-cx75" \
               "CX70 siemens-cx70" "CX65 siemens-cx65" "SL75 siemens-sl75" \
               "CL61 siemens-cl61" "C75 siemens-c75" "C72 siemens-c72" \
@@ -77,6 +80,9 @@ export PMB887X_SIM="$SIM"
 export PMB887X_SIM_OPERATOR="$OPERATOR"
 export PMB887X_FLASH0_OTP0="$OTP0"
 export PMB887X_FLASH0_OTP1="$OTP1"
+if [ -n "${EFA_FILE:-}" ]; then
+  export PMB887X_FLASH0_EFA_FILE="$(realpath "$EFA_FILE")"
+fi
 
 echo "board:    $BOARD"
 echo "fullflash: $FLASH$([ "${RW:-0}" = 1 ] && echo ' (writable)')"
