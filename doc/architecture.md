@@ -8,6 +8,11 @@ The Siemens phone emulator runs entirely in the browser. Repo layout:
   patches/0001-ui-*.patch                   -display wasm backend
   patches/0002-wasm-*.patch                 condvar/crash/icount2 fixes
   patches/0003-tci-*.patch, 0006-icount2-*   TCI fast paths; fixed 104 MHz clock
+  patches/0007..0012-*.patch                TCI perf series (TB chaining, immediate
+                                            forms, main-loop futex, io-recompile
+                                            skip, inlined ldst, size-specialized ops)
+  patches/0013..0015-*.patch                longjmp elimination (SVC inline exit,
+                                            io barriers) + diagnostics counters
   patches/attic/                            dropped patches (0004: boot regression)
   site/                                     WASM-mode page
   dist/                                     build output (served)

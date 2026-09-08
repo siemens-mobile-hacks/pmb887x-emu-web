@@ -56,11 +56,15 @@ devices by default. Override either default with `?icount=<spec>`
 (`precise-clocks=on`, `shift=N`, `none`, …). History: the interim
 hard-coded 104 MHz icount2 patch (0006) lives in `patches/attic/`.
 
-**Known limitation (raw speed):** boot wall-time is minutes (patch 0007
-restores TB chaining, roughly doubling guest throughput: ~7–17M insns/s
-sustained, S75 boots to its idle screen in ~4–5 minutes). Keypad and LCD
+**Known limitation (raw speed):** boot wall-time is minutes (through
+patches 0007–0014 the guest runs at ~15M insns/s sustained — TB
+chaining, size-specialized memory ops, SVC exceptions without the
+emscripten longjmp and no recurring io-recompile rewinds; S75 reaches
+its idle screen in ~3 minutes on a quiet host). Keypad and LCD
 remain live throughout. Full analysis: [doc/](doc/) — in
-particular [doc/performance-handoff.md](doc/performance-handoff.md)
+particular [doc/optimization-playbook.md](doc/optimization-playbook.md)
+(the measurement method + what landed/rejected, per session),
+[doc/performance-handoff.md](doc/performance-handoff.md)
 (targets + next steps), [doc/livelock-postmortem.md](doc/livelock-postmortem.md)
 (the Asyncify-condvar fix, the wild-TB crash, the icount timing model)
 and [doc/early-crash-postmortem.md](doc/early-crash-postmortem.md)
@@ -126,6 +130,19 @@ lands in `/tmp/pmb887x-serial.log`.
                               MO_ATOM_NONE family; dead re-probe removed;
                               -1.4..-16% v-window, +18-25% boot progress
                               @110s, wins every interleaved A/B pair)
+    0013-svc-inline-exception-*.patch take SVC exceptions without the
+                              cpu_loop_exit longjmp (frontend stores the
+                              exception state + exit_tb; cpu_handle_interrupt
+                              delivers pending exceptions first; the ~15us
+                              JS-exception unwind was paid ~9.4k/s for guest
+                              SWIs; -26% v-window, +30-77% boot progress)
+    0014-wasm-io-barriers-*.patch stop the recurring ROM-device io_recompile
+                              (barrier insns get single-insn TBs so can_do_io
+                              is set - stock clock precision, no unwind;
+                              ioRewind 1.67k/s -> ~0; +3-5% insns@110s)
+    0015-wasm-diag-counters-*.patch cold-path diagnostics counters
+                              (txn-failed / tb-gen / tb-flush / io-rewind /
+                              lookup-tb; killed several profiler ghosts)
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression; superseded by the reworked 0004)
   site/                 WASM-mode page (index.html / app.js / style.css)
@@ -178,7 +195,7 @@ Notes for bumping:
 
 ## Performance work (see doc/performance-handoff.md + doc/wasm32-port-status.md)
 
-- `dist/` — TCI build (patches 0001–0004 + 0007–0009; timing model is
+- `dist/` — TCI build (patches 0001–0004 + 0007–0015; timing model is
   stock `-icount shift=3,sleep=off`, no fork-specific clock patch — see
   the interim 0006 in patches/attic; 0004 reworked: the
   io-recompile longjmp storm is gone, MMIO accounted at the rewind's

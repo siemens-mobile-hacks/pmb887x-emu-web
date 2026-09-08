@@ -113,11 +113,16 @@ workers:
 | 0008 TCI immediate forms | `tci_add/and/or/xor/andc_ri`, `tci_setcond32_ri` + constraint letters + `tcg_target_const_match` + outop `out_rri`/`out_ri` wiring — constants stop materializing through `tci_movi` (18.9 %→12.8 % of ops; `add` 7.4 %→1.0 %) | window 46.7→42.9–43.7 s (+8 %); idle screen ~235 s |
 | 0009 futex main-loop wait | emscripten `poll()` cannot sleep (it ignores the timeout — the browser main thread must not block), so the main loop busy-spun ~23k iterations/s through a proxied syscall, 2 BQL handoffs each, and the aio eventfd wake never worked at all.  Replaced with a worker-local ns-precision futex wait woken by `qemu_notify_event`/`aio_notify`; main-loop wait no longer times out on virtual deadlines (the vCPU runs those) | window 43.7→40.1–40.4 s (+8 %); +22 % boot progress @110 s; idle screen ~195 s |
 | 0012 tci size-specialized ldst | eight appended opcodes (tci_qemu_ld8..st32) for the exact mop family MO_ALIGN\|MO_ATOM_NONE\|size\|sign — every plain pmb887x data access: the generic probe reduces to `(addr & (page_mask\|size-1)) == tlb_addr`, baked in as constants, no mask math/atom branch/size switch, mmu_idx-only stream word; tci_qemu_ld/st dead re-probe removed (0 hits in >1M calls); cold-path diag counters (wasm-diag.h + tools/memstat.mjs) | window wins all 4 interleaved pairs (34.1/33.9/34.0/34.0 vs 40.6/34.4/34.9/34.5; −1.4…−16 %, bigger under host load); boot progress @110 s v 91–102 → 114–121 (+18–25 %); native suite PASS ×4 |
+| 0013 wasm: SVC inline exception exit | ARM frontend stores exception_index/syndrome/target_el + `exit_tb(0)` instead of the `helper_exception_with_syndrome` call (its `cpu_loop_exit` longjmp = ~15 µs JS-exception unwind × ~9.4k SWIs/s); new early-return in `cpu_handle_interrupt` delivers a pending exception_index before running/chaining any other TB — exactly the longjmp outcome, incl. IRQ-vs-exception ordering. Gated `__EMSCRIPTEN__` + !EL2/EL3/!M/!AA64 (target_el fixed 1, no TGE redirect); ss_active keeps the helper | window 34→25 s (−26 % quiet, −39 % loaded; 3/3 interleaved pairs); finalV@110 s +30…77 % (92–126 → 164); insns@110 s +6–10 %; `__emscripten_throw_longjmp` 18.5 %→2.6 % of vCPU; idle screen v=245 in ~185 s; native suite PASS ×4 |
+| 0014 wasm: io barriers | recurring ROM-device io_recompile (0010 kept the stock rewind for flash-command accesses; the unsplit cached TB re-paid the ~17 µs unwind on every status-poll iteration, 1.67k/s) — on rewind, record the faulting insn pc (64-entry direct-mapped set) + `tb_phys_invalidate` the TB; the translator keeps barrier insns in single-insn TBs (stop before mid-TB / after at TB start), so `can_do_io` is true and the access completes with stock 1-insn-clock precision — no further unwinding | ioRewind 1.67k/s → ~0; window wins 3/3 pairs (25.2–24.8 vs 25.3–27.5); insns@110 s +3–5 % on all pairs; soak v=373 @330 s, keypad works; native suite PASS ×4 |
+| 0015 wasm: diagnostics counters | txnF/tbGen/tbFlush/ioRewind/lookupTB cold-path counters (killed two wprof2 ghost theories — see session log) | zero hot-path cost; measurement infra |
 
 ## What was tried and REJECTED (do not retry without new ideas)
 
 | Experiment | Result | Why |
 |---|---|---|
+| **MMIO dispatch fast path** (memory.c: direct `ops->read/write` call for exact-size aligned accesses, skipping valid-check + access_with_adjusted_size + accessor layers; reentrancy guard replicated; `__EMSCRIPTEN__`-gated) | window 24.9–25.2 → 25.1–25.3 s (**consistently 0.1–0.7 s WORSE on a quiet host**, 4/4 pairs); finalV ±noise; insns@110 s +0.1–5.8 % inconsistent; a late-window A/B (LO=30 HI=60) was flat too | the pre-dispatch condition chain (accepts/align/size/trace/ioeventfd checks) costs as much as the ~3 non-inlined calls it saves at ~90k dispatches/s; V8 already keeps the dispatch path hot. Reverted; don't retry without cross-TU inlining (LTO) |
+| **TLB table-base caching in the TCI interpreter** (cache `(fast->table, fast->mask)` per mmu_idx across ops, dropped after helper calls and ldst fallbacks — the only paths that can resize/flush the tlb on this single-cpu machine) | window 25.9/25.2/25.2/25.2 → 24.5/25.3/25.1/25.1 (flat, ±0.1); late-window LO=30 HI=60: 19.7/20.3 → 19.6/20.0 (flat); finalInsns won 4/4 (+1…5.7 %) but finalV-at-200 s varies ±45 v run-to-run — no reproducible win | the two saved loads are L1-hot; the memory-op path is at its practical floor for micro-tweaks (0011+0012 already removed the real work). Reverted; only a big lever (64-bit TCI encoding, wasm32 JIT) can move the interpreter now |
 | Lazy flash romd restore (flip back to array mode on first array read, not eagerly on every `0xFF`) | 7.4× fewer topology flips but **32 % slower** in the flash-heavy window | keeping romd off during bursts turns array reads (incl. fetches) into MMIO dispatches, which costs more than the flips save |
 | icount2_advance thread-local batching (single-writer mirror, publish every 256 calls) | no measurable change (±noise) | the per-TB atomics are cheap on wasm; reverted |
 | TCI store-immediate ops (`tci_st32_ri`/`st8_ri`, incl. the `tcg_out_sti` constant-spill hook) | window 42.9→50.6–50.7 s, final insns −20 % — consistent regression across runs | not root-caused; suspected interaction with allocator behavior/stream size; documented in 0008's header |
@@ -126,32 +131,30 @@ workers:
 
 ## Remaining opportunities (ranked, with the analysis already done)
 
-1. **Exception longjmps, ~15–17 % of vCPU** — the firmware takes ~1 SVC
-   (RTOS syscall) per ~1200 guest insns; each pays ~15 µs of
-   JS-exception unwinding (`__emscripten_throw_longjmp`).  Blocked by
-   the Asyncify/wasm-EH incompatibility above.  Ideas: re-test the
-   incompatibility on newer emsdk; or the 0005 wasm32 JIT's
-   block-restart protocol (its own dispatch returns normally instead of
-   unwinding).  Do NOT try per-helper setjmp trampolines — the cost is
-   the JS throw itself, not the distance.
-2. **TCI interpreter dispatch, ~35 % of vCPU** — 0008 removed constant
-   materialization; 0012 specialized the memory ops (the single hottest
-   op class: st32/ld32u/st8 now run mask-math-free inline cases).
-   Remaining: `movi` 13 % (wide constants), branches/compares ~15 %.
-   The known big lever is more allocatable registers (13 today) to cut
-   the spill traffic — but that needs 5-bit register fields = a full TCI
-   stream-format change (conflicts heavily with 0005's shared emitters;
-   see the measured-and-rejected regfile experiment below).  Smaller
-   ideas not yet tried: `tci_call_tag()` memoization (~1 %, sub-noise
-   alone).
-3. **Flash romd topology churn, ~5.6 % of vCPU** — the firmware's
-   status-poll loop (`[write 0x70, read status, write 0xFF]` × ~7 k/s)
-   flips the flash partitions out of romd mode twice per poll, each
-   flip a full `generate_memory_topology` rebuild (~7 ms on wasm: radix
-   tree + dispatch rebuild for the whole machine).  Device-level fixes
-   fail (see rejected table).  The real fix is qemu-core: make a romd
-   flip not re-render identical FlatViews (romd_mode participates in
-   `flatrange_equal`) — medium-large, upstream-relevant surgery.
+1. **Exception longjmps — mostly CLOSED by 0013/0014.** SVC (the bulk,
+   ~15 % of vCPU) is gone; the recurring ROM-device io_recompile rewind
+   (~2.8 %) is gone. What remains of `__emscripten_throw_longjmp` is
+   ~2.6 % and falling (the one-shot io_recompile per barrier pc,
+   interrupt exits, rare traps) — no longer worth chasing. The generic
+   wasm-EH longjmp replacement stays blocked (asyncify/fiber conflict,
+   see rejected table).
+2. **TCI interpreter dispatch, ~57 % of vCPU** — 0012 specialized the
+   memory ops; the TLB table-base caching and MMIO dispatch fast-path
+   experiments (session 2026-09-08/09 evening) both measured FLAT and
+   were reverted — this path is at its micro-optimization floor.
+   Remaining levers are the big ones: the 64-bit TCI encoding (est.
+   8–15 %, 2–4 h, see regfile experiment below for why 5-bit regs
+   alone lost) or the 0005 wasm32 runtime JIT (10–100× ceiling,
+   porting effort, separate session).
+3. **Flash romd topology churn, ~4–5 % of vCPU** — still open. The
+   measured flip cost is ~0.4 ms × ~2/s per poll loop (status polls at
+   ~7k/s, 2 flips each). All device-level fixes failed (rejected
+   table). The qemu-core fix sketched in the 2026-09-09 session log
+   (alternating FlatView+dispatch stash keyed by (root, romd-signature,
+   non-romd-generation)) is ~100–150 lines in system/memory.c with RCU
+   lifetime care — genuinely upstream-relevant, but the biggest-risk
+   patch of the series; do it as its own session with the interleave
+   loop and a full soak.
 4. **V8 tier-up warm-up — measured 2026-09-08, no in-window effect (closed).**
    `--no-wasm-lazy-compilation`, `--wasm-tiering-budget=100000`, and both
    together leave the v-window at 33.9–34.1 s vs 34.2 s baseline (flags
@@ -164,8 +167,9 @@ workers:
    day, the browser's wasm code cache (not observed to engage in headless
    Chromium 153, possibly disabled there — revisit on real hardware).
 5. **Main-loop residuals** — after 0009 the main loop sleeps properly;
-   remaining cost is per-wake glib iteration + BQL handoffs (vCPU BQL
-   waits ≈ 3 %).  Only worth revisiting if a profile shows it again.
+   remaining cost is per-wake glib iteration + BQL handoffs (measured
+   2026-09-09 evening: vCPU `qemu_cond_timedwait_bql` ≈ 0.8 % — not a
+   target anymore).
 
 ## Gotchas cheat-sheet
 
@@ -420,3 +424,93 @@ Findings worth keeping:
 correctness bar: native suite PASS ×4 (s75/el71/c81/ke800), wasm soak to
 v=245 with growing LCD updates, idle-screen screenshot verified (wallpaper,
 clock, «Поиск сети»), no `>>EXIT<<` anywhere.
+
+## Session log: 2026-09-09 evening (patches 0013–0015 — killing the longjmp tax)
+
+Followed the loop strictly: baseline → profile → counters → ONE patch →
+interleaved A/B → keep/revert → capture with measured header → native
+suite + soak.  Two landed, one tiny diagnostics patch, two measured-flat
+reverts.  Net: **v-window 34.3–34.6 → 24.5–25.4 s (−26 %), finalV@110 s
+97–126 → 164 (+30–77 %), idle screen (v=245) at ~185 s, 2.82G insns
+@190 s, no `>>EXIT<<` anywhere, native suite PASS ×4.**
+
+### Landed
+
+- **0013 wasm: SVC inline exception exit** (−26 % window, the big one).
+  wprof2 caller stacks showed 79 % of `__emscripten_throw_longjmp` under
+  `helper_exception_with_syndrome(_el)` — guest SWIs.  Instead of
+  fighting the asyncify/wasm-EH blockage (rejected table), the ARM
+  frontend now emits the exception state stores + `exit_tb(0)` for
+  translate-time-fully-known exceptions on EL2/EL3-less cores; a new
+  early-return in `cpu_handle_interrupt` delivers a pending
+  exception_index before running or chaining any other TB.  Key
+  equivalence arguments (all verified in code before writing the patch):
+  the helper only writes exception_index/syndrome/target_el; the
+  longjmp lands in the same `cpu_handle_exception` → `do_interrupt`;
+  icount budget for the SVC TB is spent identically (whole-TB at TB
+  start, either path); the early-return also *prevents* `tb_add_jump`
+  from chaining the SVC TB (the interpreter would otherwise execute the
+  post-SVC PC — that check is what makes the whole scheme correct);
+  IRQ-vs-exception ordering preserved (exception first, like the
+  longjmp); `ss_active` single-step keeps the helper path.
+- **0014 wasm: io barriers.**  Counter ioRewind proved the remaining
+  longjmps were the recurring ROM-flash io_recompile (1.67k/s): the
+  unsplit cached TB re-rewinds every poll iteration.  On rewind we now
+  record the faulting insn pc and invalidate the TB; the translator
+  gives barrier insns single-insn TBs, where `can_do_io` is true
+  throughout → no rewind, identical 1-insn clock precision.  (The direct
+  no-unwind conversion of io_recompile itself was REJECTED before
+  implementation: cpu_io_recompile runs *before* the access completes, so
+  returning normally would double-execute non-idempotent flash program
+  commands; the barrier keeps stock semantics for the one recording
+  occurrence.)
+- **0015 wasm: diagnostics counters** (txnF/tbGen/tbFlush/ioRewind/
+  lookupTB) — zero-cost, cold paths only.
+
+### Measured and rejected this session (do not retry blind)
+
+- **MMIO dispatch fast path** (memory.c direct-call for exact-size
+  aligned accesses): window consistently 0.1–0.7 s WORSE on a quiet host
+  (4/4 pairs); the saved ~3 non-inlined calls ≈ the added condition
+  chain at 90k dispatches/s.  Reverted.
+- **TLB table-base caching in the TCI interpreter** (table/mask cached
+  per mmu_idx, dropped on helper calls + ldst fallbacks): flat on both
+  the v=2..7 window (±0.1 s) and a late LO=30 HI=60 window; finalInsns
+  won 4/4 (+1…5.7 %) but is inside its run-to-run spread at 200 s
+  (finalV varies ±45 v between identical builds).  Reverted.  The
+  memory-op fast path is done — only big levers remain.
+
+### wprof2 ghost catalogue (verified by counters, never trust these
+frames again without a counter)
+
+- `io_failed ← cpu_io_recompile` stacks: **txnF = 0.00M/60 s** — no
+  transaction failures exist; the frames are mislabeled.
+- `helper_lookup_tb_ptr` 3 % self-time: **lookupTB = 0 calls** — the
+  symbol covers inlined `tb_lookup` in cpu_exec_loop + tb_gen bits.
+- `emscripten_fiber_init_from_current_context` on parked workers
+  (82–98 %): actually `emscripten_futex_wait`.
+- `qemu_mutex_lock_ramlist` self-time: real, but the repeated
+  same-symbol caller frames are inflate — the stack shape
+  (`flash_io_read → address_space_set_flatview`) is what matters.
+
+### Facts for the next session
+
+- Post-0013/0014 vCPU profile: interpreter ~57 % (tci_qemu_ld/st ghost),
+  romd churn ~4–5 % (ramlist + flatview_translate + mtree ghosts),
+  tb_gen ~3 % (2k new TBs/s while boot explores code, tbFlush = 0),
+  MMIO dispatch ~2–4 %, BQL waits 0.8 %, futex/idle ~8 %.
+- MMIO dispatch rate measured 48–66k/s early, ~94k/s (4.3M ioLd + 4.2M
+  ioSt per 90 s) in later phases.
+- The romd fix sketch (not attempted this session, too big for the
+  remaining budget): stash the last ~4 generated FlatViews per root with
+  their (non-romd-generation, romd-signature) tags; `generate_memory_topology`
+  reuses a stashed view when the tag matches, skipping render + dispatch
+  rebuild.  Needs: a global generation counter bumped only by non-romd
+  commits (a `romd_only_pending` flag beside `memory_region_update_pending`),
+  a romd-MR registry for the signature, and RCU-safe stash eviction
+  (~100–150 lines in system/memory.c).
+- Tools added: `tools/compare-lcd.mjs` (pixel-diff of the live LCD vs
+  `tools/final-lcd.png` with a 16×16 block map; note the live canvas is
+  132×176 vs the reference's 133×177 — the comparison now tolerates ±2 px
+  and crops to the overlap).  A/B harness pattern: `/tmp/ab-one.sh`
+  (scoped server per dist, alternating runs; recreate as needed).
