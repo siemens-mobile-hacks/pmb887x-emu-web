@@ -1,58 +1,67 @@
-From 8b1c3d02a1f4e5a6b7c8d9e0a1b2c3d4e5f60712 Mon Sep 17 00:00:00 2001
 From: sie-mcp web <web@sie-mcp.local>
-Date: Mon, 7 Sep 2026 00:00:00 +0000
-Subject: [PATCH] tci: wasm fast paths - inline TLB probe + direct helper
- dispatch
+Subject: [PATCH 3/7] tci: inline TLB probe + direct helper dispatch
+ (all TCI builds, not just wasm)
 
-TCI on wasm routes every guest memory access and every helper call
-through libffi's ffi_call, which emscripten implements as a JS
-round-trip (ffi_call_js: argument arrays + BigInt marshalling +
-getWasmTableEntry(fn).apply(), ~1.7us).  The S75 firmware's busy-poll
-loops are dominated by exactly these two paths.
+TCI routes every guest memory access and every helper call through
+libffi's ffi_call, which emscripten implements as a JS round-trip
+(ffi_call_js: argument arrays + BigInt marshalling +
+getWasmTableEntry(fn).apply(), ~1.7us) - and which on native hosts
+still re-marshals every argument.  The S75 firmware's busy-poll loops
+are dominated by exactly these two paths.
 
 - tci_qemu_ld/tci_qemu_st: probe the softmmu TLB inline before calling
   the helper, mirroring the compare native TCG backends emit
   (prepare_host_addr / tlb_set_compare): on (addr[+s-a] &
   (page_mask|a_mask)) == tlb_addr the entry is valid RAM, dirty,
   watchpoint-free and cannot straddle a page, so addr+addend is the
-  host address and a single wasm load/store suffices.  Byte swapping,
+  host address and a single load/store suffices.  Byte swapping,
   sign extension, alignment and MO_ATOM_* requirements handled;
   everything else falls back to the helpers.
-- INDEX_op_call: classify the call's libffi signature at runtime; when
-  it uses only i32/i64 words (<= 5 args, void/u32/u64 return) call the
-  helper through an exactly-typed function pointer instead of
-  ffi_call - a native wasm call_indirect with no JS involvement.
+- INDEX_op_call: classify the call's libffi signature (i32/i64 words,
+  <= 5 args, void/u32/u64 return; pointers per host pointer size) and
+  call the helper through an exactly-typed function pointer instead of
+  ffi_call - a native wasm call_indirect with no JS involvement
+  (a plain indirect call on native hosts).  TCI_TAG_UNCLASSIFIED marks
+  signatures that must keep using libffi (note: distinct from the valid
+  tag of a (void)->void helper, which the first revision of this patch
+  accidentally routed through libffi).
 
-Both paths are __EMSCRIPTEN__-only; native TCI builds are unchanged.
+NOT wasm-gated: measured on native Linux TCI (S75 fullflash,
+tools/tcibench.mjs / icount2 debug):
+  default timing model   splash milestone   40.9 s -> 36.9 s  (-10%)
+  icount2 (helper/insn)  steady rate        13.8  -> 19.9 MHz (+44%)
+wasm (headless Chromium, v=2..7 window): unchanged-to-better vs the
+emscripten-gated revision (interleaved runs, host-noise +-6%).
+Native TCG backends are untouched.
 ---
 diff --git a/tcg/tci.c b/tcg/tci.c
-index 29ecb39929..0817f13a81 100644
+index 29ecb39929..03b9294935 100644
 --- a/tcg/tci.c
 +++ b/tcg/tci.c
-@@ -25,6 +25,18 @@
+@@ -25,6 +25,19 @@
  #include "tcg-has.h"
  #include <ffi.h>
  
-+#ifdef __EMSCRIPTEN__
 +/*
-+ * wasm fast paths (see web/patches/0003 in the sie-mcp repo):
-+ * libffi's ffi_call is a JS round-trip (~1.7us per call), so route both
-+ * guest memory accesses and plain i32/i64 helper calls around it.
++ * TCI fast paths: both guest memory accesses and plain i32/i64 helper
++ * calls normally route through libffi's ffi_call, which on wasm is a JS
++ * round-trip (~1.7us per call) and on native hosts still re-marshals every
++ * argument.  Probe the softmmu TLB inline before calling the load/store
++ * helpers and dispatch simple-signature helpers through exactly-typed
++ * function pointers instead (see tci_tlb_probe / tci_call_direct below).
 + */
 +#include "hw/core/cpu.h"
 +#include "exec/cpu-common.h"
 +#include "exec/tlb-flags.h"
 +#include "exec/target_page.h"
-+#endif
 +
  
  /*
   * Enable TCI assertions only when debugging TCG (and without NDEBUG defined).
-@@ -257,12 +269,90 @@ static bool tci_compare64(uint64_t u0, uint64_t u1, TCGCond condition)
+@@ -257,12 +270,86 @@ static bool tci_compare64(uint64_t u0, uint64_t u1, TCGCond condition)
      return result;
  }
  
-+#ifdef __EMSCRIPTEN__
 +/*
 + * Inline TLB probe, mirroring the compare that native TCG backends emit
 + * (prepare_host_addr() in the native tcg-target.c.inc backends and tlb_set_compare() in
@@ -94,7 +103,6 @@ index 29ecb39929..0817f13a81 100644
 +    }
 +    return NULL;
 +}
-+#endif /* __EMSCRIPTEN__ */
 +
  static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
                              MemOpIdx oi, const void *tb_ptr)
@@ -102,7 +110,6 @@ index 29ecb39929..0817f13a81 100644
      MemOp mop = get_memop(oi);
      uintptr_t ra = (uintptr_t)tb_ptr;
  
-+#ifdef __EMSCRIPTEN__
 +    {
 +        void *haddr = tci_tlb_probe(env, taddr, oi, true);
 +        if (likely(haddr != NULL)) {
@@ -134,16 +141,14 @@ index 29ecb39929..0817f13a81 100644
 +            }
 +        }
 +    }
-+#endif /* __EMSCRIPTEN__ */
 +
      switch (mop & MO_SSIZE) {
      case MO_UB:
          return helper_ldub_mmu(env, taddr, oi, ra);
-@@ -289,6 +379,33 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+@@ -289,6 +376,31 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
      MemOp mop = get_memop(oi);
      uintptr_t ra = (uintptr_t)tb_ptr;
  
-+#ifdef __EMSCRIPTEN__
 +    {
 +        void *haddr = tci_tlb_probe(env, taddr, oi, false);
 +        if (likely(haddr != NULL)) {
@@ -168,34 +173,38 @@ index 29ecb39929..0817f13a81 100644
 +            }
 +        }
 +    }
-+#endif /* __EMSCRIPTEN__ */
 +
      switch (mop & MO_SIZE) {
      case MO_UB:
          helper_stb_mmu(env, taddr, val, oi, ra);
-@@ -307,6 +424,655 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+@@ -307,6 +419,672 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
      }
  }
  
-+#ifdef __EMSCRIPTEN__
 +/*
 + * Direct C dispatch for helper calls whose libffi signature uses only
 + * i32/i64 words and at most 5 arguments.  On wasm, ffi_call() marshals
 + * every argument through JS (ffi_call_js, ~1.7us); calling the helper
 + * through a correctly typed function pointer is a native wasm
-+ * call_indirect instead.  Argument words have already been stored into
-+ * stack[0..n-1] by the preceding TCI store ops (one 8-byte slot each for
-+ * both i32 and i64 arguments); the result is written back to stack[0]
-+ * for the caller's return-length switch.  Anything else returns false
-+ * and the caller falls back to libffi.
++ * call_indirect instead.  On native hosts ffi_call() still re-marshals
++ * every argument, so the same dispatch is a win there too.  Argument
++ * words have already been stored into stack[0..n-1] by the preceding
++ * TCI store ops (one 8-byte slot each for both i32 and i64 arguments);
++ * the result is written back to stack[0] for the caller's
++ * return-length switch.  Anything else returns false and the caller
++ * falls back to libffi.
 + *
 + * The signature tag is encoded as
 + *   bits 0-2  number of arguments
 + *   bits 3-4  return class (0 = void, 1 = u32, 2 = u64)
 + *   bits 5+   2 bits per argument (1 = u32, 2 = u64)
++ * TCI_TAG_UNCLASSIFIED marks signatures that must use libffi (more
++ * than 5 arguments, floating point/struct words); it is distinct from
++ * the valid tag 0 of a (void) -> void helper.
 + */
 +#define TCI_CLS_U32 1
 +#define TCI_CLS_U64 2
++#define TCI_TAG_UNCLASSIFIED UINT32_MAX
 +
 +static uint32_t tci_call_tag(const ffi_cif *cif)
 +{
@@ -203,7 +212,7 @@ index 29ecb39929..0817f13a81 100644
 +    unsigned i;
 +
 +    if (cif->nargs > 5) {
-+        return 0;
++        return TCI_TAG_UNCLASSIFIED;
 +    }
 +    switch (cif->rtype->type) {
 +    case FFI_TYPE_VOID:
@@ -219,11 +228,18 @@ index 29ecb39929..0817f13a81 100644
 +        break;
 +    case FFI_TYPE_UINT64:
 +    case FFI_TYPE_SINT64:
++#if UINTPTR_MAX == UINT64_MAX
 +    case FFI_TYPE_POINTER:
++#endif
 +        tag |= TCI_CLS_U64 << 3;
 +        break;
++#if UINTPTR_MAX < UINT64_MAX
++    case FFI_TYPE_POINTER:
++        tag |= TCI_CLS_U32 << 3;
++        break;
++#endif
 +    default:
-+        return 0;
++        return TCI_TAG_UNCLASSIFIED;
 +    }
 +
 +    for (i = 0; i < cif->nargs; i++) {
@@ -239,11 +255,18 @@ index 29ecb39929..0817f13a81 100644
 +            break;
 +        case FFI_TYPE_UINT64:
 +        case FFI_TYPE_SINT64:
++#if UINTPTR_MAX == UINT64_MAX
 +        case FFI_TYPE_POINTER:
++#endif
 +            tag |= TCI_CLS_U64 << (5 + 2 * i);
 +            break;
++#if UINTPTR_MAX < UINT64_MAX
++        case FFI_TYPE_POINTER:
++            tag |= TCI_CLS_U32 << (5 + 2 * i);
++            break;
++#endif
 +        default:
-+            return 0;
++            return TCI_TAG_UNCLASSIFIED;
 +        }
 +    }
 +    return tag;
@@ -824,38 +847,45 @@ index 29ecb39929..0817f13a81 100644
 +    }
 +}
 +
-+#endif /* __EMSCRIPTEN__ */
-+
  /* Interpret pseudo code in tb. */
  /*
   * Disable CFI checks.
-@@ -354,6 +1120,19 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+@@ -354,6 +1132,18 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
                  func = ((void **)ptr)[0];
                  cif = ((void **)ptr)[1];
  
-+#ifdef __EMSCRIPTEN__
 +                {
 +                    uint32_t tag = tci_call_tag(cif);
-+                    if (tag != 0) {
-+                        /* Helper functions may need the "return address" */
++
++                    if (tag != TCI_TAG_UNCLASSIFIED) {
++                        /* Helpers may need the "return address" */
 +                        tci_tb_ptr = (uintptr_t)tb_ptr;
 +                        if (tci_call_direct(func, tag, stack)) {
 +                            goto tci_call_done;
 +                        }
 +                    }
 +                }
-+#endif
 +
                  n = cif->nargs;
                  for (i = s = 0; i < n; ++i) {
                      ffi_type *t = cif->arg_types[i];
-@@ -365,6 +1144,9 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+@@ -365,6 +1155,7 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
                  tci_tb_ptr = (uintptr_t)tb_ptr;
                  ffi_call(cif, func, stack, call_slots);
              }
-+#ifdef __EMSCRIPTEN__
 +        tci_call_done: ;
-+#endif
  
              switch (len) {
              case 0: /* void */
+@@ -952,6 +1743,11 @@ int print_insn_tci(bfd_vma addr, disassemble_info *info)
+     case INDEX_op_subbio:
+     case INDEX_op_subbo:
+     case INDEX_op_xor:
++        tci_args_rrr(insn, &r0, &r1, &r2);
++        info->fprintf_func(info->stream, "%-12s  %s, %s, %s",
++                           op_name, str_r(r0), str_r(r1), str_r(r2));
++        break;
++
+     case INDEX_op_tci_ctz32:
+     case INDEX_op_tci_clz32:
+     case INDEX_op_tci_divs32:

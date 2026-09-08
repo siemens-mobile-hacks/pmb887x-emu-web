@@ -1,5 +1,5 @@
-From: sie-mcp web <web@sie-mcp.local>
-Subject: [PATCH] tci: immediate-form ALU/setcond ops (no tci_movi
+From: sie-mcp web <web@sie-mcp.local
+Subject: [PATCH 6/7] tci: immediate-form ALU/setcond ops (no tci_movi
  materialization for small constants)
 
 TCI materialized every constant into a register with tci_movi before
@@ -28,6 +28,13 @@ Wire TCI into the existing immediate-operand machinery:
   ori/brcondi compare each constant against the constraint and skip
   the movi; constants that do not fit fall back to the stock path.
 
+The interpreter decodes the immediate into a local int32_t (an earlier
+revision passed &t1, a tcg_target_ulong, to an int32_t* out-parameter:
+a compile error under gcc-14+ pointer-type checking and stale upper
+bits for the i64 forms); the disassembler cases likewise decode into
+their own int32_t and no longer hijack the stock 3-reg ALU group's
+tci_args_rrr decoder.
+
 Measured (S75 fullflash, headless Chromium, WATCH samples; the same
 deterministic v=2.0 -> 7.0 virtual-time window as the patch 0007
 baseline run, page-start skew eliminated by v-milestone interpolation):
@@ -50,13 +57,11 @@ the tcg_out_sti constant-spill hook, two-word encoding) was measured
 on top of this and REJECTED: deterministic-window wall time regressed
 from 42.9-43.7 s to 50.6-50.7 s (two runs each), so it is not part of
 this patch.  Do not re-add it without re-measuring.
-
-Date: Mon, 8 Sep 2026 00:00:00 +0000
-
 diff --git a/tcg/tci.c b/tcg/tci.c
---- a/tcg/tci.c	2026-09-08 01:45:52.169169806 +0000
-+++ b/tcg/tci.c	2026-09-08 01:45:43.902243616 +0000
-@@ -125,6 +125,22 @@
+index 16737166bb..70b8258486 100644
+--- a/tcg/tci.c
++++ b/tcg/tci.c
+@@ -126,6 +126,22 @@ static void tci_args_rrs(uint32_t insn, TCGReg *r0, TCGReg *r1, int32_t *i2)
      *i2 = sextract32(insn, 16, 16);
  }
  
@@ -79,65 +84,90 @@ diff --git a/tcg/tci.c b/tcg/tci.c
  static void tci_args_rrbb(uint32_t insn, TCGReg *r0, TCGReg *r1,
                            uint8_t *i2, uint8_t *i3)
  {
-@@ -1194,6 +1210,31 @@
+@@ -1203,6 +1219,49 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
              break;
  #endif
  
 +        case INDEX_op_tci_add_ri:
-+            tci_args_rri(insn, &r0, &r1, &t1);
-+            regs[r0] = regs[r1] + t1;
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] + imm;
 +            break;
++        }
 +        case INDEX_op_tci_and_ri:
-+            tci_args_rri(insn, &r0, &r1, &t1);
-+            regs[r0] = regs[r1] & t1;
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] & imm;
 +            break;
++        }
 +        case INDEX_op_tci_or_ri:
-+            tci_args_rri(insn, &r0, &r1, &t1);
-+            regs[r0] = regs[r1] | t1;
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] | imm;
 +            break;
++        }
 +        case INDEX_op_tci_xor_ri:
-+            tci_args_rri(insn, &r0, &r1, &t1);
-+            regs[r0] = regs[r1] ^ t1;
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] ^ imm;
 +            break;
++        }
 +        case INDEX_op_tci_andc_ri:
-+            tci_args_rri(insn, &r0, &r1, &t1);
-+            regs[r0] = regs[r1] & ~t1;
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] & ~imm;
 +            break;
++        }
 +        case INDEX_op_tci_setcond32_ri:
-+            tci_args_rrci(insn, &r0, &r1, &condition, &t1);
-+            regs[r0] = tci_compare32(regs[r1], t1, condition);
++        {
++            int32_t imm;
++            tci_args_rrci(insn, &r0, &r1, &condition, &imm);
++            regs[r0] = tci_compare32(regs[r1], imm, condition);
 +            break;
++        }
 +
          case INDEX_op_br:
              tci_args_l(insn, tb_ptr, &ptr);
              tb_ptr = ptr;
-@@ -1754,6 +1795,22 @@
-     case INDEX_op_subbio:
-     case INDEX_op_subbo:
-     case INDEX_op_xor:
+@@ -1768,6 +1827,28 @@ int print_insn_tci(bfd_vma addr, disassemble_info *info)
+                            op_name, str_r(r0), str_r(r1), str_r(r2));
+         break;
+ 
 +    case INDEX_op_tci_add_ri:
 +    case INDEX_op_tci_and_ri:
 +    case INDEX_op_tci_or_ri:
 +    case INDEX_op_tci_xor_ri:
 +    case INDEX_op_tci_andc_ri:
-+        tci_args_rri(insn, &r0, &r1, &i1);
++    {
++        int32_t imm;
++        tci_args_rri(insn, &r0, &r1, &imm);
 +        info->fprintf_func(info->stream, "%-12s  %s, %s, %d",
-+                           op_name, str_r(r0), str_r(r1), (int)i1);
++                           op_name, str_r(r0), str_r(r1), (int)imm);
 +        break;
++    }
 +
 +    case INDEX_op_tci_setcond32_ri:
-+        tci_args_rrci(insn, &r0, &r1, &c, &i1);
++    {
++        int32_t imm;
++        tci_args_rrci(insn, &r0, &r1, &c, &imm);
 +        info->fprintf_func(info->stream, "%-12s  %s, %s, %s, %d",
-+                           op_name, str_r(r0), str_r(r1), str_c(c), (int)i1);
++                           op_name, str_r(r0), str_r(r1), str_c(c), (int)imm);
 +        break;
++    }
 +
      case INDEX_op_tci_ctz32:
      case INDEX_op_tci_clz32:
      case INDEX_op_tci_divs32:
 diff --git a/tcg/tci/tcg-target-con-set.h b/tcg/tci/tcg-target-con-set.h
---- a/tcg/tci/tcg-target-con-set.h	2026-09-08 01:45:51.862160499 +0000
-+++ b/tcg/tci/tcg-target-con-set.h	2026-09-08 01:37:54.092069574 +0000
-@@ -19,3 +19,6 @@
+index ae2dc3b844..01d890758c 100644
+--- a/tcg/tci/tcg-target-con-set.h
++++ b/tcg/tci/tcg-target-con-set.h
+@@ -19,3 +19,6 @@ C_O1_I4(r, r, r, r, r)
  C_O2_I1(r, r, r)
  C_O2_I2(r, r, r, r)
  C_O2_I4(r, r, r, r, r, r)
@@ -145,8 +175,9 @@ diff --git a/tcg/tci/tcg-target-con-set.h b/tcg/tci/tcg-target-con-set.h
 +C_O1_I2(r, r, rB)
 +C_O0_I2(r, rB)
 diff --git a/tcg/tci/tcg-target-con-str.h b/tcg/tci/tcg-target-con-str.h
---- a/tcg/tci/tcg-target-con-str.h	2026-09-08 01:45:51.862160499 +0000
-+++ b/tcg/tci/tcg-target-con-str.h	2026-09-08 01:39:38.902925469 +0000
+index 87c0f19e9c..44350c28f9 100644
+--- a/tcg/tci/tcg-target-con-str.h
++++ b/tcg/tci/tcg-target-con-str.h
 @@ -9,3 +9,10 @@
   * REGS(letter, register_mask)
   */
@@ -159,9 +190,10 @@ diff --git a/tcg/tci/tcg-target-con-str.h b/tcg/tci/tcg-target-con-str.h
 +CONST('S', TCG_CT_CONST_S16)
 +CONST('B', TCG_CT_CONST_S12)
 diff --git a/tcg/tci/tcg-target-opc.h.inc b/tcg/tci/tcg-target-opc.h.inc
---- a/tcg/tci/tcg-target-opc.h.inc	2026-09-08 01:45:52.169169806 +0000
-+++ b/tcg/tci/tcg-target-opc.h.inc	2026-09-08 01:37:54.091820997 +0000
-@@ -15,6 +15,18 @@
+index a8ec938955..d39c748866 100644
+--- a/tcg/tci/tcg-target-opc.h.inc
++++ b/tcg/tci/tcg-target-opc.h.inc
+@@ -15,6 +15,18 @@ DEF(tci_setcond32, 1, 2, 1, TCG_OPF_NOT_PRESENT)
  DEF(tci_movcond32, 1, 2, 1, TCG_OPF_NOT_PRESENT)
  DEF(tci_qemu_ld_rrr, 1, 2, 0, TCG_OPF_NOT_PRESENT)
  DEF(tci_qemu_st_rrr, 0, 3, 0, TCG_OPF_NOT_PRESENT)
@@ -181,8 +213,9 @@ diff --git a/tcg/tci/tcg-target-opc.h.inc b/tcg/tci/tcg-target-opc.h.inc
  /* wasm only: TB header carrying the guest-insn count, executed at every
   * TB entry (cpu_tb_exec call, goto_tb chain jump, goto_ptr target) so the
 diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
---- a/tcg/tci/tcg-target.c.inc	2026-09-08 01:45:52.169303390 +0000
-+++ b/tcg/tci/tcg-target.c.inc	2026-09-08 01:39:38.903176586 +0000
+index 26c409648c..6a707075bb 100644
+--- a/tcg/tci/tcg-target.c.inc
++++ b/tcg/tci/tcg-target.c.inc
 @@ -28,6 +28,10 @@
  #define TCG_TARGET_CALL_ARG_I32         TCG_CALL_ARG_NORMAL
  #define TCG_TARGET_CALL_ARG_I64         TCG_CALL_ARG_NORMAL
@@ -194,7 +227,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
  #define TCG_TARGET_CALL_RET_I128        TCG_CALL_RET_NORMAL
  
  static TCGConstraintSetIndex
-@@ -210,6 +214,33 @@
+@@ -210,6 +214,33 @@ static void tcg_out_op_rrr(TCGContext *s, TCGOpcode op,
      tcg_out32(s, insn);
  }
  
@@ -228,7 +261,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
  static void tcg_out_op_rrs(TCGContext *s, TCGOpcode op,
                             TCGReg r0, TCGReg r1, intptr_t i2)
  {
-@@ -484,9 +515,16 @@
+@@ -484,9 +515,16 @@ static void tgen_add(TCGContext *s, TCGType type,
      tcg_out_op_rrr(s, INDEX_op_add, a0, a1, a2);
  }
  
@@ -246,7 +279,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
  };
  
  static TCGConstraintSetIndex cset_addsubcarry(TCGType type, unsigned flags)
-@@ -541,9 +579,16 @@
+@@ -541,9 +579,16 @@ static void tgen_and(TCGContext *s, TCGType type,
      tcg_out_op_rrr(s, INDEX_op_and, a0, a1, a2);
  }
  
@@ -264,7 +297,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
  };
  
  static void tgen_andc(TCGContext *s, TCGType type,
-@@ -552,9 +597,16 @@
+@@ -552,9 +597,16 @@ static void tgen_andc(TCGContext *s, TCGType type,
      tcg_out_op_rrr(s, INDEX_op_andc, a0, a1, a2);
  }
  
@@ -282,7 +315,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
  };
  
  static void tgen_clz(TCGContext *s, TCGType type,
-@@ -729,9 +781,16 @@
+@@ -729,9 +781,16 @@ static void tgen_or(TCGContext *s, TCGType type,
      tcg_out_op_rrr(s, INDEX_op_or, a0, a1, a2);
  }
  
@@ -300,7 +333,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
  };
  
  static void tgen_orc(TCGContext *s, TCGType type,
-@@ -900,9 +959,16 @@
+@@ -900,9 +959,16 @@ static void tgen_xor(TCGContext *s, TCGType type,
      tcg_out_op_rrr(s, INDEX_op_xor, a0, a1, a2);
  }
  
@@ -318,7 +351,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
  };
  
  static void tgen_ctpop(TCGContext *s, TCGType type, TCGReg a0, TCGReg a1)
-@@ -988,9 +1054,23 @@
+@@ -988,9 +1054,23 @@ static void tgen_setcond(TCGContext *s, TCGType type, TCGCond cond,
      tcg_out_op_rrrc(s, opc, dest, arg1, arg2, cond);
  }
  
@@ -343,7 +376,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
  };
  
  static void tgen_negsetcond(TCGContext *s, TCGType type, TCGCond cond,
-@@ -1012,9 +1092,25 @@
+@@ -1012,9 +1092,25 @@ static void tgen_brcond(TCGContext *s, TCGType type, TCGCond cond,
      tcg_out_op_rl(s, INDEX_op_brcond, TCG_REG_TMP, l);
  }
  
@@ -370,7 +403,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
  };
  
  static void tgen_movcond(TCGContext *s, TCGType type, TCGCond cond,
-@@ -1196,6 +1292,23 @@
+@@ -1196,6 +1292,23 @@ static inline bool tcg_out_sti(TCGContext *s, TCGType type, TCGArg val,
  static bool tcg_target_const_match(int64_t val, int ct,
                                     TCGType type, TCGCond cond, int vece)
  {
