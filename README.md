@@ -3,7 +3,7 @@
 The Siemens/LG-phone emulator, running **entirely in the browser**:
 qemu-system-arm compiled to WebAssembly (`./build.sh` + `./serve.mjs`) —
 deterministic boot, splash draws, keypad/serial work — **boots in slow
-motion** (fixed 104 MHz virtual clock, see below; full boot takes minutes
+motion** (stock icount timing model, see below; full boot takes minutes
 to tens of minutes at current TCI speed). See
 [doc/livelock-postmortem.md](doc/livelock-postmortem.md) +
 [doc/performance-handoff.md](doc/performance-handoff.md).
@@ -33,18 +33,24 @@ qemu boots with a small `-display wasm` backend (see below). The TCG
 interpreter (TCI) is the only TCG backend available on wasm64, so it is
 several times slower than native.
 
-**Timing model (fixed 104 MHz virtual clock):** the fork's
-`precise-clocks=on` (icount2) normally adapts the virtual clock to the
-host's measured execution rate so virtual ≈ real time — correct natively
-(where the host outruns the 104 MHz guest) but fatal on wasm: it locks
-the virtual CPU to ~0.5 MHz and every firmware wall-clock budget (the
-L1↔DSP handshake first of all) starves → `>>EXIT<< FILE: l1bbcsg`. The
-wasm build instead runs the virtual clock at the **fixed real-hardware
-rate (104 MHz)**: virtual time is strictly instruction-proportional, so
-all firmware deadlines carry the full native instruction budget and the
-phone boots without crashing — just in slow motion (~0.5–5% of real
-time while executing; WFI idle windows still advance at real pace).
-Override for experiments with `?icount2freq=<hz>`.
+**Timing model (stock icount, `-icount shift=3,sleep=off`):** Siemens
+firmware needs a virtual clock that is decoupled from wall time — with
+virtual≈real (no icount, or the fork's adaptive `precise-clocks=on`)
+every firmware wall-clock budget, the L1↔DSP handshake first of all,
+gets only ~1/130th of the native instruction budget on wasm-TCI and the
+phone crashes (`>>EXIT<< FILE: l1bbcsg`). The fix is plain upstream
+QEMU icount, no fork-specific virtual-clock patch: `shift=3` (8 ns per
+guest insn, ≈ the phones' 104 MHz ARM9) makes virtual time strictly
+instruction-proportional, and `sleep=off` makes idle deterministic too
+(virtual time jumps to the next timer deadline instead of the vCPU
+parking in realtime) — with the default `sleep=on` the handshake still
+dies on any host slower than the phone. Deadlines then always arrive
+with the full native instruction budget, so the machine merely boots in
+slow motion. **LG firmware needs no icount at all** — it boots fine on
+the plain realtime clock — so the page omits `-icount` for `lg-*`
+devices by default. Override either default with `?icount=<spec>`
+(`precise-clocks=on`, `shift=N`, `none`, …). History: the interim
+hard-coded 104 MHz icount2 patch (0006) lives in `patches/attic/`.
 
 **Known limitation (raw speed):** boot wall-time is minutes (patch 0007
 restores TB chaining, roughly doubling guest throughput: ~7–17M insns/s
@@ -52,9 +58,13 @@ sustained, S75 boots to its idle screen in ~4–5 minutes). Keypad and LCD
 remain live throughout. Full analysis: [doc/](doc/) — in
 particular [doc/performance-handoff.md](doc/performance-handoff.md)
 (targets + next steps), [doc/livelock-postmortem.md](doc/livelock-postmortem.md)
-(the Asyncify-condvar fix, the wild-TB crash, the fixed-clock timing model)
+(the Asyncify-condvar fix, the wild-TB crash, the icount timing model)
 and [doc/early-crash-postmortem.md](doc/early-crash-postmortem.md)
 (the 0004 io-recompile saga: dropped, then reworked correctly).
+Also [doc/wasm-threads-audit.md](doc/wasm-threads-audit.md): the runtime
+threading audit — the build really is multi-threaded in the browser (5
+pthread workers; one vCPU thread executing guest code, the rest parked in
+futex waits; no spin).
 
 ## Native (Linux) build
 
@@ -70,9 +80,11 @@ scripts/run-native.sh fullflashes/KE800-v11b.bin
 ```
 
 `run-native.sh` mirrors the web boot exactly (same `-icount
-precise-clocks=on`, `-drive if=pflash…`, `-serial file:…` and `PMB887X_*`
-env vars; board inferred from the fullflash filename, IMEI/ESN → OTP
-included). Options via env: `BOARD= STARTUP= SIM= OPERATOR= IMEI= ESN=`
+shift=3,sleep=off` — or no `-icount` at all for LG boards —, `-drive
+if=pflash…`, `-serial file:…` and `PMB887X_*` env vars; board inferred
+from the fullflash filename, IMEI/ESN → OTP included; `ICOUNT=<spec>`
+overrides the timing model). Options via env: `BOARD= STARTUP= SIM=`
+`OPERATOR= IMEI= ESN=`
 `RW=1 DISPLAY_MODE=vnc=[:N] MONITOR=unix:/tmp/pmb.sock SERIAL=path`,
 extra qemu args as positional args. Headless by default; the serial log
 lands in `/tmp/pmb887x-serial.log`.
@@ -91,7 +103,6 @@ web/
     run-native.sh       native launcher (same boot recipe as the web page)
   patches/
     0001-ui-add-wasm-*.patch   wasm display/input backend (applied to the clone)
-    0006-wasm-icount2-*.patch  fixed 104 MHz virtual clock on emscripten
     0007-wasm-tci-*.patch      TCI TB chaining + in-interpreter icount2
                               accounting (~2x guest throughput; conflicts
                               with the 0005 draft, see its header)
@@ -153,7 +164,9 @@ Notes for bumping:
 
 ## Performance work (see doc/performance-handoff.md + doc/wasm32-port-status.md)
 
-- `dist/` — TCI build (patches 0001–0004 + 0006; 0004 reworked: the
+- `dist/` — TCI build (patches 0001–0004 + 0007–0009; timing model is
+  stock `-icount shift=3,sleep=off`, no fork-specific clock patch — see
+  the interim 0006 in patches/attic; 0004 reworked: the
   io-recompile longjmp storm is gone, MMIO accounted at the rewind's
   clock, stock rewind kept for flash-command accesses — boots 2.5–12×
   further per wall second, see doc/early-crash-postmortem.md §9).

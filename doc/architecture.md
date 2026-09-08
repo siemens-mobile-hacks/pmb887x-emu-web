@@ -78,21 +78,20 @@ The pinned revision predates the fork's "native TCG DSP emulation"
   real TBs still happens via `tb_add_jump`).
 - `system/icount2.c`: frequency floor 1 kHz instead of 1 MHz on emscripten
   so the precise-clocks controller can lock to the real interpreter rate
-  (superseded by 0006 — see below — which disables the controller
-  entirely).
+  (only used with `?icount=precise-clocks=on` — the default timing model
+  is stock icount `shift=3,sleep=off` and does not involve icount2 at all;
+  see below and [livelock-postmortem.md](livelock-postmortem.md) §4).
 - `configs/meson/emscripten.txt`: `-sASYNCIFY_REMOVE=tcg_qemu_tb_exec`
   (the interpreter must not run Asyncify-instrumented).
 
-`0006-wasm-icount2-fixed-104MHz-virtual-clock.patch`
-(see [livelock-postmortem.md](livelock-postmortem.md) §4)
-- `system/icount2.c`: on emscripten the virtual clock runs at the **fixed
-  real-hardware rate (104 MHz)** instead of adapting to the host's
-  measured rate. Locking virtual time to wall time on a host ~130×
-  slower than the guest starves every firmware wall-clock budget (the
-  L1↔DSP handshake → `>>EXIT<< l1bbcsg`); a fixed rate makes virtual
-  time instruction-proportional — the phone boots in slow motion with
-  native timing semantics. `QEMU_ICOUNT2_FREQUENCY` / `?icount2freq=`
-  override; native builds keep the adaptive controller.
+`0006-wasm-icount2-fixed-104MHz-virtual-clock.patch` — **dropped
+2026-09-08, superseded** (see [livelock-postmortem.md](livelock-postmortem.md)
+§4): it ran icount2 at a hard-coded 104 MHz on emscripten. The stock
+configuration `-icount shift=3,sleep=off` (site default; LG boards boot
+without any `-icount`) does the same job with zero fork-specific
+clock code — virtual time is instruction-proportional, idle jumps to
+the next timer deadline, and the L1↔DSP handshake completes at any
+host speed. The patch lives in `patches/attic/`.
 
 ### Page (site/)
 
@@ -100,8 +99,9 @@ The pinned revision predates the fork's "native TCG DSP emulation"
   (IMEI/ESN→OTP, SIM, operator, startup, rw) become `PMB887X_*` env vars —
   the exact set the pmb887x-emu-mcp `load` tool uses.
 - `boards.tar` unpacked into `/boards`; qemu args mirror the MCP
-  (`-display wasm -icount precise-clocks=on -machine pmb887x -drive
-  if=pflash… -serial file:/serial.log`).
+  (`-display wasm -icount shift=3,sleep=off -machine pmb887x -drive
+  if=pflash… -serial file:/serial.log`; no `-icount` for `lg-*`
+  devices).
 - LCD canvas repaints from the staging buffer on `requestAnimationFrame`;
   every phone key is a `<button>` mapped to the same qcodes the MCP
   `press_key` tool uses (converted to linux keycodes), plus physical-key

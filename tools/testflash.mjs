@@ -26,3 +26,8 @@ if (!p)
 if (!existsSync(p)) throw new Error(`test fullflash not found: ${p}`);
 
 export const fullflash = p;
+
+// The fullflash plus its .cfi-efa sidecar when one sits next to it
+// (LG fullflashes need the EFA block — without it the firmware
+// factory-resets its EEPROM). Used for multi-select page boots.
+export const files = existsSync(p + ".cfi-efa") ? [p, p + ".cfi-efa"] : [p];

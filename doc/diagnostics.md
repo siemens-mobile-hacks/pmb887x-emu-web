@@ -7,9 +7,8 @@ playwright-downloaded `chromium-headless-shell`; `npm i` in that dir once).
 
 | Param | Effect |
 |---|---|
-| `?icount=<spec>` | override `-icount` (`precise-clocks=on` default, `shift=N`, `none`) |
-| `?icount2debug=1` | `QEMU_ICOUNT2_DEBUG=1` — on wasm prints the fixed-clock pace every second (rate, frequency, virtual/real); natively prints the precise-clocks controller state |
-| `?icount2freq=<hz>` | `QEMU_ICOUNT2_FREQUENCY` — override the fixed wasm virtual-clock frequency (default 104 MHz, the real phone CPU). Lower = faster wall-clock boot but tighter-than-native firmware budgets (risk); higher = slower but looser |
+| `?icount=<spec>` | override `-icount` (default `shift=3,sleep=off`; `none` for `lg-*` devices — `precise-clocks=on`, `shift=N`, `none`, …) |
+| `?icount2debug=1` | `QEMU_ICOUNT2_DEBUG=1` — only meaningful with `?icount=precise-clocks=on`: prints the controller state each second |
 | `?trace=<channels>` | `PMB887X_TRACE_IO/LOG` (e.g. `trace=dsp,scu`); channels: dsp, scu, gptu, tpu, vic, capcom, usart, … |
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
 | `?debug=1` | print every stderr line to console (no dedup) |
@@ -44,7 +43,7 @@ env PMB887X_TRACE_IO=dsp,scu PMB887X_TRACE_LOG=dsp,scu \
     PMB887X_BOARD=<bsp>/lib/data/board/siemens-s75.toml \
     PMB887X_STARTUP=ONLINE PMB887X_SIM=virtual PMB887X_SIM_OPERATOR=00101 \
     PMB887X_FLASH0_OTP0=02004AB3C31100000000 PMB887X_FLASH0_OTP1=000094104502237315FF \
-  qemu-system-arm -display none -icount precise-clocks=on -machine pmb887x \
+  qemu-system-arm -display none -icount shift=3,sleep=off -machine pmb887x \
     -drive if=pflash,format=raw,file=<fullflash>,readonly=on \
     -serial file:serial.log -D trace.log
 ```

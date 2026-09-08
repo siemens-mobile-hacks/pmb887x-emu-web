@@ -83,25 +83,45 @@ the rate).
 
 ### 4. The remaining blocker: raw interpreter speed
 
-### 4. The remaining blocker: raw interpreter speed — UPDATE: fixed by 0006
+**Update 2026-09-07: root cause found — it was not raw speed.**
 
-**Update (2026-09-07): root cause found and fixed — it was not raw
-speed.** The controller's raison d'être (virtual ≈ real time) is itself
+The controller's raison d'être (virtual ≈ real time) is itself
 wrong on a host ~130× slower than the guest: locking virtual time to
 wall time *starves the guest of instructions per virtual second*, and
 the L1↔DSP handshake — which has a firmware wall-clock budget — can
-never fit. `0006-wasm-icount2-fixed-104MHz-virtual-clock.patch` runs the
-virtual clock at the **fixed real-hardware rate (104 MHz)** instead:
-virtual time is strictly instruction-proportional, every deadline
-arrives with the full native instruction budget, real-time actors (the
-DSP worker) are effectively instantaneous on the lagging virtual clock,
-and the phone boots through the L1 handshake in slow motion. Raw speed
-now only affects *how long* boot takes, not whether it completes.
+never fit.
+
+**Update 2026-09-08: superseded — no fork-specific clock patch at all.**
+The interim fix (`0006-wasm-icount2-fixed-104MHz-virtual-clock.patch`,
+now in `patches/attic/`) ran icount2 at a hard-coded 104 MHz. A stock
+upstream configuration does the same job better: **`-icount
+shift=3,sleep=off`**. `shift=3` makes virtual time strictly
+instruction-proportional (8 ns per guest insn — ≈ the phones' 104 MHz
+ARM9 cycle budget, slightly looser than real hardware since an ARM9
+sustains well under 1 insn/cycle), so every deadline arrives with the
+full native instruction budget at any host speed. `sleep=off` — the
+indispensable half — makes guest idle deterministic as well: virtual
+time jumps straight to the next timer deadline instead of the vCPU
+parking in realtime while the virtual clock catches up at 1×. With the
+default `sleep=on`, the vCPU burns real wall time in every idle window
+while execution runs at ~0.05×, and the half-host-paced L1↔DSP
+handshake (the DSP worker's spin deadlines run on `QEMU_CLOCK_HOST`,
+see `hw/arm/pmb887x/dsp.c`) desyncs — `shift=3` *and* `shift=4` with
+`sleep=on` die with the very same `>>EXIT<< FILE: l1bbcsg`, both on
+wasm and natively (`tools/bootmatrix.mjs`, `tests/run.mjs`), while
+`shift=3,sleep=off` boots in the browser and natively. Raw speed now
+only affects *how long* boot takes, not whether it completes.
+
+LG firmware, notably, needs no icount at all: it boots to content on
+the plain realtime clock (wasm + native) — the page and
+`scripts/run-native.sh` omit `-icount` for `lg-*` boards.
+
 (Patch 0004, whose skip-`cpu_io_recompile` shortcut caused the even
 earlier `FILE: flash` abort, was dropped — see
 [early-crash-postmortem.md](early-crash-postmortem.md).)
 
-Historical analysis (why the adaptive clock crashed, kept for context):
+Historical analysis (why locking virtual to wall time crashed, kept for
+context):
 
 After all fixes the emulator is stable and deterministic: no traps, virtual
 clock advances at wall rate, exit histogram clean (no interrupt storm —
@@ -130,5 +150,6 @@ what remains is a pure usability question of boot wall-time
 | LCD framebuffer path (splash draws, canvas repaints) | ✅ |
 | Keypad input path, quit path, serial, options | ✅ |
 | Deterministic execution, no worker traps | ✅ |
-| L1↔DSP handshake / no `>>EXIT<<` (fixed 104 MHz virtual clock, 0006) | ✅ slow-motion |
+| L1↔DSP handshake / no `>>EXIT<<` (stock icount `shift=3,sleep=off`) | ✅ slow-motion |
 | S75 full boot to idle screen (WASM) | ⏳ slow motion — minutes to tens of minutes of wall time at current TCI speed |
+| LG full boot without icount (`-icount` omitted) | ✅ wasm + native (LG firmware has no wall-clock-starved budgets) |

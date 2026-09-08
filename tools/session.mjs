@@ -11,7 +11,7 @@
 // Then drive it with tools/ctl.mjs:
 //   boot [k=v ...]   fresh page (+fullflash upload, ONLINE start); waits
 //                    until the module is up. Extra args become query params
-//                    (iorewind=1, iopace=20, icount2freq=...).
+//                    (iorewind=1, iopace=20, icount=shift=4 ...).
 //   status           one compact line: uptime, insns (+rate since last call),
 //                    tbs, vclock, fb updates, serial size, page status
 //   wait <pred>      block until: exit | fb=N | insns=N | splash | secs=N
@@ -30,7 +30,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { fullflash } from "./testflash.mjs";
+import { fullflash, files as fullflashFiles } from "./testflash.mjs";
 
 const TOOLS = path.dirname(fileURLToPath(import.meta.url));
 const SOCK = path.join(TOOLS, ".session.sock");
@@ -91,7 +91,7 @@ async function boot(params = []) {
   const q = params.length ? "?" + params.join("&") : "";
   await page.goto(URL_() + q, { waitUntil: "networkidle", timeout: 120000 });
   await page.selectOption("#startup", "ONLINE");
-  await page.setInputFiles("#fullflash", fullflash);
+  await page.setInputFiles("#fullflash", fullflashFiles); // + .cfi-efa sidecar if present (LG)
   await page.click("#btn-start");
   bootAt = Date.now();
   lastSample = null;

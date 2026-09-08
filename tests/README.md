@@ -34,7 +34,8 @@ if any test fails.
 ## What is tested
 
 Every fullflash boots **in parallel** with the exact `run-native.sh`
-recipe (`-icount precise-clocks=on`, OTP words derived from IMEI/ESN,
+recipe (`-icount shift=3,sleep=off` — omitted for LG boards — OTP
+words derived from IMEI/ESN,
 virtual SIM, ONLINE startup). The harness drives the HMP monitor
 (screendump, `info registers`) and reads the serial log + the
 instruction-count plugin.

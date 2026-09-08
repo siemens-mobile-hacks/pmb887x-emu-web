@@ -1,5 +1,28 @@
  Dropped patches
 
+## 0006 — wasm: run icount2 at the fixed hardware frequency (104 MHz)
+
+Dropped 2026-09-08: **superseded by a stock-icount boot configuration.**
+No wasm-specific virtual-clock patch is needed at all: `-icount
+shift=3,sleep=off` (plain upstream QEMU icount) gives virtual time that
+is strictly instruction-proportional (8 ns per guest insn, ≈ the phones'
+104 MHz ARM9 cycle budget) and — the crucial part — `sleep=off` also
+makes idle deterministic (virtual time jumps to the next timer deadline
+instead of the vCPU parking in realtime while the clock catches up).
+With the default `sleep=on`, every guest idle window burns wall time at
+1× while execution runs at ~0.05×, and the L1↔DSP handshake — half of
+which lives on host-paced timers (QEMU_CLOCK_HOST, dsp.c) — desyncs and
+starves exactly like the adaptive icount2 controller did (`shift=3`
+and `shift=4` both die with `>>EXIT<< FILE: l1bbcsg`; `shift=3,sleep=off`
+boots — verified in the browser *and* natively, `tools/bootmatrix.mjs`
++ `tests/run.mjs`).
+
+The icount2 code path stays available for experiments via
+`?icount=precise-clocks=on` (0002's emscripten `ICOUNT2_MIN_FREQUENCY`
+branch still applies), it just is not the default anywhere anymore.
+LG firmware additionally needs no icount at all (`?icount=none`, now
+the LG default — it boots on the plain realtime clock).
+
 ## 0004 — wasm: skip io-recompile longjmp storm
 
 Dropped 2026-09-07: **boot regression.** Skipping `cpu_io_recompile()`

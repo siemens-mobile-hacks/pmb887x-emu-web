@@ -9,10 +9,12 @@ boot-ROM abort) and was dropped; the reworked 0004 (MMIO-boundary
 accounting, see post-mortem §9) removes the storm correctly: the
 stock rewind's icount2 clock is reproduced without the ~150 µs
 longjmp (kept only for ROM-device flash-command accesses).
-Patch 0006 runs icount2 at the fixed hardware rate (104 MHz) so
-virtual time is instruction-proportional and every firmware deadline
-carries the full native instruction budget — the phone boots with
-**no `>>EXIT<<`**. Measured on the reworked build: splash in ~25–30 s
+The timing model no longer uses icount2 at all (2026-09-08): the
+interim patch 0006 (fixed 104 MHz icount2 clock) was dropped in favor
+of stock **`-icount shift=3,sleep=off`** — same instruction-proportional
+clock with zero fork-specific code; LG boards boot without any
+`-icount` (see [livelock-postmortem.md](livelock-postmortem.md) §4 and
+`patches/attic/`). Measured on the reworked build: splash in ~25–30 s
 (stock rewind path: ~85 s), 4–17M insns/s sustained (stock path:
 0.2–5M), 49.8 s of virtual time / 1.25B insns in the first 180 s.
 What remains
@@ -113,6 +115,10 @@ realistically we want ≥50M insns/s for a comfortable boot).
 
 ## Non-goals / notes for whoever picks this up
 
+- (2026-09-08 update: the timing model is now stock `-icount
+  shift=3,sleep=off` — icount2 is not in the default path anymore; the
+  notes below are kept for the `?icount=precise-clocks=on` experiment
+  path.)
 - Do not "fix" timing by pinning icount2's frequency high without also
   raising execution speed: virtual time would outrun instructions and every
   deadline fires early (measured: boot hangs in the BROM delay loops).
