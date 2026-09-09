@@ -230,6 +230,8 @@ post-mortem live in patches/attic/wasm32-rebase/.
 - The wasm32 runtime-JIT experiment (the old 0005 draft) is **closed**:
   fully rebased, benchmarked at ~1.3–2.3x TCI ceiling with an unresolved
   boot-hang — discarded. See doc/wasm32-port-status.md and
-  patches/attic/wasm32-rebase/.
+  patches/attic/wasm32-rebase/. A redesigned backend (tail-call chaining,
+  regs-as-locals, batched modules) is assessed + planned in
+  doc/wasm-tcg-backend-plan.md.
 - Fast iteration: `scripts/ninja-fast.sh` (incremental, correct env);
   profiling: `tools/wprof2.mjs` (per-worker CDP CPU profiles).
