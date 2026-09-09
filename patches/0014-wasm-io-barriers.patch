@@ -1,0 +1,282 @@
+From 95b2aab0ccabe98efe5b9ff5e41ccc4faa609947 Mon Sep 17 00:00:00 2001
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Date: Wed, 9 Sep 2026 06:34:54 +0000
+Subject: [PATCH 12/12] wasm: io barriers - stop the recurring ROM-device
+ io_recompile unwind
+
+Why: after the SVC-exit patch the largest remaining
+__emscripten_throw_longjmp source was cpu_io_recompile()'s
+cpu_loop_exit().  The stock-icount skip kept the rewind for ROM-device
+(flash command) accesses because the boot ROM's program/verify
+handshake needs the clock-precise 1-insn TB it produces - but the
+unsplit TB stays cached, so the firmware's ~7k/s flash status-poll
+loop re-pays the ~15-17 us JS-exception unwind on every iteration
+(counter ioRewind: 1.67k/s; wprof: ~2.8% of vCPU).
+
+Fix: when io_recompile rewinds, remember the faulting insn (a small
+direct-mapped set of 64 guest PCs) and invalidate the offending TB.
+The translator keeps barrier insns in single-insn TBs of their own
+(stop before one mid-TB, stop after one at TB start): can_do_io is
+true throughout a 1-insn TB, so the access completes without
+rewinding, with exactly the clock precision the stock rewind produced
+- but no further unwinding, ever.  Non-idempotent flash commands are
+never double-executed (the stock rewind semantics are kept for the one
+occurrence that records the barrier).
+
+Counters after: ioRewind 1.67k/s -> ~0 (one rewind per barrier pc),
+tbFlush 0, no >>EXIT<<.  Measured (interleaved A/B vs the previous
+build, bootbench window s / finalV / insns @110 s):
+  prev  : 27.5 / 154.2 / 1738M   25.3 / 163.7 / 1784M   25.5 / 164.0 / 1818M
+  +this : 24.8 / 163.5 / 1756M   25.2 / 164.4 / 1871M   25.2 / 164.4 / 1872M
+Candidate wins every pair on all three metrics (+3-5% insns @110 s;
+the window improvement is mostly visible when the host is loaded).
+
+Correctness: soak v=373 @330 s, keypad works, native suite PASS x4
+(s75/el71/c81/ke800).
+
+Assisted-by: GLM-5.3
+---
+ accel/tcg/cputlb.c          |  4 ++-
+ accel/tcg/internal-common.h |  6 +++++
+ accel/tcg/tb-maint.c        |  6 +++++
+ accel/tcg/translate-all.c   | 49 ++++++++++++++++++++++++++++++++++---
+ accel/tcg/translator.c      | 20 +++++++++++++++
+ include/qemu/wasm-diag.h    |  5 ++++
+ target/arm/tcg/tlb_helper.c |  7 ++++++
+ 7 files changed, 93 insertions(+), 4 deletions(-)
+
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index 20e9ab875a..9bb84b49c0 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -19,7 +19,7 @@
+ 
+ #include "qemu/osdep.h"
+ 
+-#include "qemu/wasm-diag.h"
++
+ #include "qemu/main-loop.h"
+ #include "qemu/target-info.h"
+ #include "accel/tcg/cpu-loop.h"
+@@ -28,6 +28,7 @@
+ #include "accel/tcg/probe.h"
+ #include "exec/page-protection.h"
+ #include "system/memory.h"
++#include "qemu/wasm-diag.h"
+ #include "system/physmem.h"
+ #include "accel/tcg/cpu-ldst-common.h"
+ #include "system/cpu-timers.h"
+@@ -1330,6 +1331,7 @@ io_prepare(hwaddr *out_offset, CPUState *cpu, CPUTLBEntryFull *full,
+          * everywhere (A/B testing / fallback).
+          */
+         if (rewind_mode || section->mr->rom_device) {
++            wasm_diag_stat[WASM_DIAG_IO_REWIND]++;
+             cpu_io_recompile(cpu, retaddr);
+         } else if (icount2_enabled()) {
+             /*
+diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
+index 9e7be2d78d..4d110598f7 100644
+--- a/accel/tcg/internal-common.h
++++ b/accel/tcg/internal-common.h
+@@ -135,6 +135,12 @@ void page_table_config_init(void);
+ 
+ #ifndef CONFIG_USER_ONLY
+ G_NORETURN void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr);
++
++#ifdef __EMSCRIPTEN__
++/* MMIO barrier insns: single-insn TBs to avoid recurring io_recompile. */
++void wasm_add_io_barrier(vaddr pc);
++bool wasm_is_io_barrier(vaddr pc);
++#endif
+ #endif /* CONFIG_USER_ONLY */
+ 
+ void tb_phys_invalidate(TranslationBlock *tb, tb_page_addr_t page_addr);
+diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
+index 4313864d2c..959aa69388 100644
+--- a/accel/tcg/tb-maint.c
++++ b/accel/tcg/tb-maint.c
+@@ -18,6 +18,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef __EMSCRIPTEN__
++#include "qemu/wasm-diag.h"
++#endif
+ #include "qemu/interval-tree.h"
+ #include "qemu/qtree.h"
+ #include "exec/cputlb.h"
+@@ -772,6 +775,9 @@ void tb_flush__exclusive_or_serial(void)
+ {
+     CPUState *cpu;
+ 
++#ifdef __EMSCRIPTEN__
++    wasm_diag_stat[WASM_DIAG_TB_FLUSH]++;
++#endif
+     trace_tb_flush();
+     assert(tcg_enabled());
+     /* Note that cpu_in_serial_context checks cpu_in_exclusive_context. */
+diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
+index 328d96aba3..871f5a4567 100644
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -18,6 +18,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef __EMSCRIPTEN__
++#include "qemu/wasm-diag.h"
++#endif
+ 
+ #include "trace.h"
+ #include "disas/disas.h"
+@@ -261,6 +264,9 @@ static int setjmp_gen_code(CPUArchState *env, TranslationBlock *tb,
+ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
+ {
+     CPUArchState *env = cpu_env(cpu);
++#ifdef __EMSCRIPTEN__
++    wasm_diag_stat[WASM_DIAG_TB_GEN]++;
++#endif
+     TranslationBlock *tb, *existing_tb;
+     tb_page_addr_t phys_pc, phys_p2;
+     tcg_insn_unit *gen_code_buf;
+@@ -572,6 +578,27 @@ void tb_check_watchpoint(CPUState *cpu, uintptr_t retaddr)
+  *
+  * Called by softmmu_template.h, with iothread mutex not held.
+  */
++/*
++ * wasm io barriers (see cpu_io_recompile): a small direct-mapped set of
++ * guest insns whose first memory access in a multi-insn TB turned out to
++ * be MMIO.  The translator keeps those insns in single-insn TBs so their
++ * device callbacks run with can_do_io set (stock rewound-and-resplit
++ * semantics) without the recurring cpu_loop_exit() unwind.
++ */
++static vaddr wasm_io_barriers[64];
++
++void wasm_add_io_barrier(vaddr pc)
++{
++    uint32_t h = (pc >> 2) & (ARRAY_SIZE(wasm_io_barriers) - 1);
++    wasm_io_barriers[h] = pc;
++}
++
++bool wasm_is_io_barrier(vaddr pc)
++{
++    uint32_t h = (pc >> 2) & (ARRAY_SIZE(wasm_io_barriers) - 1);
++    return wasm_io_barriers[h] == pc;
++}
++
+ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
+ {
+     TranslationBlock *tb;
+@@ -585,11 +612,27 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
+     }
+     cpu_restore_state_from_tb(cpu, tb, retaddr);
+ 
++#ifdef __EMSCRIPTEN__
+     /*
+-     * Some guests must re-execute the branch when re-executing a delay
+-     * slot instruction.  When this is the case, adjust icount and N
+-     * to account for the re-execution of the branch.
++     * wasm: the JS-exception unwind in cpu_loop_exit_noexc costs ~15 us,
++     * and this TB stays cached with the MMIO in its middle - a polling
++     * loop re-pays the rewind on every iteration forever.  Remember the
++     * faulting insn as an io barrier and drop the TB: the next translation
++     * of this code splits the TB around the barrier (see translator.c),
++     * the MMIO insn executes as a single-insn TB with can_do_io set, and
++     * the rewind (and its clock semantics: the callback sees the clock
++     * of exactly that insn) is reproduced without any further unwinding.
+      */
++    wasm_add_io_barrier(cpu->cc->get_pc(cpu));
++    tb_phys_invalidate(tb, -1);
++#endif
++
++
++/*
++ * Some guests must re-execute the branch when re-executing a delay
++ * slot instruction.  When this is the case, adjust icount and N
++ * to account for the re-execution of the branch.
++ */
+     n = 1;
+     if (cc->tcg_ops->io_recompile_replay_branch &&
+         cc->tcg_ops->io_recompile_replay_branch(cpu, tb)) {
+diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
+index cd7d079fe0..4a9faaa8f1 100644
+--- a/accel/tcg/translator.c
++++ b/accel/tcg/translator.c
+@@ -169,6 +169,19 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+             plugin_gen_insn_start(cpu, db);
+         }
+ 
++#ifdef __EMSCRIPTEN__
++        bool io_barrier = wasm_is_io_barrier(db->pc_next);
++        if (unlikely(io_barrier) && db->num_insns > 1) {
++            /*
++             * Keep a barrier insn out of the middle of a TB: stop here so
++             * it starts a single-insn TB of its own (can_do_io is true
++             * there; see cpu_io_recompile in translate-all.c).
++             */
++            db->is_jmp = DISAS_TOO_MANY;
++            break;
++        }
++#endif
++
+         /*
+          * Disassemble one instruction.  The translate_insn hook should
+          * update db->pc_next and db->is_jmp to indicate what should be
+@@ -177,6 +190,13 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+          */
+         ops->translate_insn(db, cpu);
+ 
++#ifdef __EMSCRIPTEN__
++        if (unlikely(io_barrier) && db->is_jmp == DISAS_NEXT) {
++            /* Barrier is the first insn of this TB: make it single-insn. */
++            db->is_jmp = DISAS_TOO_MANY;
++        }
++#endif
++
+         /*
+          * We can't instrument after instructions that change control
+          * flow although this only really affects post-load operations.
+diff --git a/include/qemu/wasm-diag.h b/include/qemu/wasm-diag.h
+index 0677848133..c76f408474 100644
+--- a/include/qemu/wasm-diag.h
++++ b/include/qemu/wasm-diag.h
+@@ -15,6 +15,11 @@ enum {
+     WASM_DIAG_IO_LD,         /* cputlb MMIO load dispatches */
+     WASM_DIAG_IO_ST,         /* cputlb MMIO store dispatches */
+     WASM_DIAG_TLB_FILL,      /* tlb_fill_align calls */
++    WASM_DIAG_TXN_FAILED,    /* arm_cpu_do_transaction_failed raises */
++    WASM_DIAG_TXN_NOEXIT,    /* ...converted to no-unwind exits */
++    WASM_DIAG_TB_GEN,        /* tb_gen_code calls (translation) */
++    WASM_DIAG_TB_FLUSH,      /* tb_flush calls (code buffer full) */
++    WASM_DIAG_IO_REWIND,     /* ROM-device io_prepare rewinds (longjmp) */
+     WASM_DIAG_N
+ };
+ 
+diff --git a/target/arm/tcg/tlb_helper.c b/target/arm/tcg/tlb_helper.c
+index 392b77eafd..4b03bf0f9c 100644
+--- a/target/arm/tcg/tlb_helper.c
++++ b/target/arm/tcg/tlb_helper.c
+@@ -6,6 +6,7 @@
+  * SPDX-License-Identifier: GPL-2.0-or-later
+  */
+ #include "qemu/osdep.h"
++#include "qemu/wasm-diag.h"
+ #include "cpu.h"
+ #include "helper.h"
+ #include "accel/tcg/cpu-loop.h"
+@@ -323,6 +324,12 @@ void arm_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
+     CPUARMState *env = &cpu->env;
+     ARMMMUFaultInfo fi = {};
+ 
++#ifdef __EMSCRIPTEN__
++    {
++        wasm_diag_stat[WASM_DIAG_TXN_FAILED]++;
++    }
++#endif
++
+     /*
+      * For M-profile, CCR.BFHFNMIGN lets software executing at a negative
+      * priority (in HardFault/NMI, or with FAULTMASK set) suppress precise
+-- 
+2.53.0
+
