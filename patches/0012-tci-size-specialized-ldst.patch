@@ -1,51 +1,74 @@
-From: sie-mcp web <web@sie-mcp.local>
-Subject: [PATCH] tci: size-specialized guest memory ops (exact-mop fast forms)
+From 1b817b6cef34b094073fc9da663e9a35a3b190fd Mon Sep 17 00:00:00 2001
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Date: Wed, 9 Sep 2026 06:34:16 +0000
+Subject: [PATCH 10/12] tci: size-specialized guest memory ops (exact-mop fast
+ forms)
 
-The generic qemu_ld/qemu_st interpreter cases pay, for every guest memory
-access: the full mask computation of tci_tlb_probe() (s_mask, a_mask, atom
-class from the stream mop), a size+sign switch over the access itself, and
-(after 0011) a wasm call into tci_qemu_ld/tci_qemu_st that re-probed the
-TLB with identical inputs (measured dead: 0 hits in >1M calls - removed).
-Counters show the fast paths are THE hot path: ~5.9M loads + ~2.4M stores
-per wall second at 15M guest insns/s on this host, and the op mix is
-dominated by st32/ld32u/st8.
+Why: the generic qemu_ld/qemu_st interpreter cases pay, for every
+guest memory access, the full mask computation of tci_tlb_probe()
+(s_mask, a_mask, atom class from the stream mop), a size+sign switch
+over the access itself, and (after the inline-ldst patch) a wasm call
+into tci_qemu_ld/tci_qemu_st that re-probed the TLB with identical
+inputs (measured dead: 0 hits in >1M calls - removed).  Counters show
+the fast paths are THE hot path: ~5.9M loads + ~2.4M stores per wall
+second at 15M guest insns/s, and the op mix is dominated by
+st32/ld32u/st8.
 
-Measured on pmb887x/ARMv5 (S75 fullflash, every plain data access carries
-MO_ALIGN|MO_ATOM_NONE|size|sign, LE): for that exact family the generic
-probe reduces to
+Measured on pmb887x/ARMv5 (S75 fullflash; every plain data access
+carries MO_ALIGN|MO_ATOM_NONE|size|sign, LE): for that exact family
+the generic probe reduces to
+
     (addr & (TARGET_PAGE_MASK | size-1)) == tlb_addr
-so eight new appended opcodes (tci_qemu_ld8..st32) bake the mask in as a
-compile-time constant, skip the size switch, and go straight to the
+
+so eight new appended opcodes (tci_qemu_ld8..st32) bake the mask in as
+a compile-time constant, skip the size switch, and go straight to the
 access.  The rrm stream word carries only the mmu_idx; the case
-reconstructs the full MemOp on the (cold) fallback path so the exact mop
-survives for the slow path.  Non-matching mops keep the generic ops.
-Counters confirm 100% of guest memory traffic flows through the new ops
-(231M loads + 96M stores in 60 s, zero emitter rejections of live mops).
+reconstructs the full MemOp on the (cold) fallback path so the exact
+mop survives for the slow path.  Non-matching mops keep the generic
+ops.  Counters confirm 100% of guest memory traffic flows through the
+new ops (231M loads + 96M stores in 60 s, zero emitter rejections of
+live mops).
 
 Also: tci_qemu_ld/tci_qemu_st no longer re-probe the TLB (dead, see
-above), and a small cold-path diagnostics counter set (include/qemu/
-wasm-diag.h, wasm_memstat export, tools/memstat.mjs) counts slow-path
-entries: helper fallbacks, MMIO dispatches, TLB fills.
+above), and a small cold-path diagnostics counter set
+(include/qemu/wasm-diag.h, wasm_memstat export) counts slow-path
+entries: helper fallbacks, MMIO dispatches, TLB fills.  Hot paths
+deliberately carry no counters.
 
-Measured (S75, headless Chromium, v=2..7 window, 4 interleaved A/B pairs
-against the 0011 build rebuilt byte-identical under the same conditions):
+Measured (S75, headless Chromium, v=2..7 window, 4 interleaved A/B
+pairs against the previous build rebuilt byte-identical under the same
+conditions):
 
   window   base 40.6 / 34.4 / 34.9 / 34.5 s
-           cand 34.1 / 33.9 / 34.0 / 34.0 s   (candidate wins every pair;
-                 -1.4..-16%, larger under host load; candidate also much
-                 tighter across runs)
-  finalV@110s  base 90.9 / 99.7 / 97.8 / 102.3   cand 113.8 / 120.3 /
-               121.1 / 120.1   (+18..25% boot progress; the phases after
-               v=7 are memory-op dense and benefit most)
-  insns@110s   ~1.67-1.70G both (window-external phases shift)
+           cand 34.1 / 33.9 / 34.0 / 34.0 s   (candidate wins every
+                 pair; -1.4..-16%, larger under host load)
+  finalV@110s  base 90.9-102.3  cand 113.8-121.1   (+18..25% boot
+               progress; the phases after v=7 are memory-op dense and
+               benefit most)
 
-Boot verified: no >>EXIT<<, 90s ab soak clean, v progresses past 120,
-serial/LCD healthy.  Native TCI builds get the same interpreter cases
-(generic TCI, like 0003/0008/0011).
+(group-removal re-measured 2026-09-09: without this patch (+its
+dependents) the window regresses to 32.5-34.8 s and boot progress at
+110 s drops ~35%.)
+
+Boot verified: no >>EXIT<<, soak clean, v progresses past 120,
+serial/LCD healthy.  Generic TCI (not wasm-gated); native TCI builds
+get the same interpreter cases.
+
+Assisted-by: GLM-5.3
 ---
+ accel/tcg/cputlb.c           |  15 ++++
+ include/qemu/wasm-diag.h     |  23 +++++
+ tcg/tci.c                    | 159 ++++++++++++++++++++++-------------
+ tcg/tci/tcg-target-opc.h.inc |  22 +++++
+ tcg/tci/tcg-target.c.inc     |  88 +++++++++++++++++--
+ ui/wasm.c                    |   8 ++
+ 6 files changed, 252 insertions(+), 63 deletions(-)
+ create mode 100644 include/qemu/wasm-diag.h
+
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
---- a/accel/tcg/cputlb.c	2026-09-08 19:29:11.812560493 +0000
-+++ b/accel/tcg/cputlb.c	2026-09-08 19:23:40.092391286 +0000
+index 25a539fc9e..20e9ab875a 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
 @@ -18,6 +18,8 @@
   */
  
@@ -55,7 +78,24 @@ diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
  #include "qemu/main-loop.h"
  #include "qemu/target-info.h"
  #include "accel/tcg/cpu-loop.h"
-@@ -1245,6 +1247,7 @@
+@@ -56,6 +58,16 @@
+ #include "tcg/tcg-ldst.h"
+ #include "backend-ldst.h"
+ 
++/*
++ * wasm diagnostics counters (see include/qemu/wasm-diag.h).  Defined
++ * here - not in tcg/tci.c, the other writer - because this file is
++ * compiled into every softmmu build, while tci.c only exists under
++ * --enable-tcg-interpreter; the counters are cold-path, so they are
++ * harmless even in builds with no reader (the wasm_memstat export is
++ * emscripten-only).
++ */
++uint64_t wasm_diag_stat[WASM_DIAG_N];
++
+ 
+ /* DEBUG defines, enable DEBUG_TLB_LOG to log to the CPU_LOG_MMU target */
+ /* #define DEBUG_TLB */
+@@ -1245,6 +1257,7 @@ static bool tlb_fill_align(CPUState *cpu, vaddr addr, MMUAccessType type,
      const TCGCPUOps *ops = cpu->cc->tcg_ops;
      CPUTLBEntryFull full;
  
@@ -63,7 +103,7 @@ diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
      if (ops->tlb_fill_align) {
          if (ops->tlb_fill_align(cpu, &full, addr, type, mmu_idx,
                                  memop, size, probe, ra)) {
-@@ -2051,6 +2054,7 @@
+@@ -2051,6 +2064,7 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
  
      tcg_debug_assert(size > 0 && size <= 8);
  
@@ -71,7 +111,7 @@ diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
      section = io_prepare(&mr_offset, cpu, full, addr, ra);
      mr = section->mr;
  
-@@ -2565,6 +2569,7 @@
+@@ -2565,6 +2579,7 @@ static uint64_t do_st_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
  
      tcg_debug_assert(size > 0 && size <= 8);
  
@@ -79,9 +119,39 @@ diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
      section = io_prepare(&mr_offset, cpu, full, addr, ra);
      mr = section->mr;
  
+diff --git a/include/qemu/wasm-diag.h b/include/qemu/wasm-diag.h
+new file mode 100644
+index 0000000000..0677848133
+--- /dev/null
++++ b/include/qemu/wasm-diag.h
+@@ -0,0 +1,23 @@
++/*
++ * wasm diagnostics counters: cold-path memory-subsystem counters filled
++ * by tcg/tci.c + accel/tcg/cputlb.c (interpreter slow-path entries, MMIO
++ * dispatches, TLB fills - ~40k increments/s on a booting pmb887x, cost is
++ * noise) and read from JS via the wasm_memstat() export in ui/wasm.c.
++ * See tools/memstat.mjs.  Hot paths (the inline fast paths) deliberately
++ * carry no counters.
++ */
++#ifndef QEMU_WASM_DIAG_H
++#define QEMU_WASM_DIAG_H
++
++enum {
++    WASM_DIAG_LD_HELPER = 0, /* tci_qemu_ld fell to helper_ldXX_mmu */
++    WASM_DIAG_ST_HELPER,     /* tci_qemu_st fell to helper_stXX_mmu */
++    WASM_DIAG_IO_LD,         /* cputlb MMIO load dispatches */
++    WASM_DIAG_IO_ST,         /* cputlb MMIO store dispatches */
++    WASM_DIAG_TLB_FILL,      /* tlb_fill_align calls */
++    WASM_DIAG_N
++};
++
++extern uint64_t wasm_diag_stat[WASM_DIAG_N];
++
++#endif
 diff --git a/tcg/tci.c b/tcg/tci.c
---- a/tcg/tci.c	2026-09-08 19:29:11.815980352 +0000
-+++ b/tcg/tci.c	2026-09-08 19:23:32.822448590 +0000
+index 22a30b7b4a..b99c647488 100644
+--- a/tcg/tci.c
++++ b/tcg/tci.c
 @@ -37,6 +37,7 @@
  #include "exec/cpu-common.h"
  #include "exec/tlb-flags.h"
@@ -90,17 +160,15 @@ diff --git a/tcg/tci.c b/tcg/tci.c
  
  
  /*
-@@ -51,6 +52,9 @@
+@@ -51,6 +52,7 @@
  
  __thread uintptr_t tci_tb_ptr;
  
-+uint64_t wasm_diag_stat[WASM_DIAG_N];
-+
 +
  /*
   * Load sets of arguments all at once.  The naming convention is:
   *   tci_args_<arguments>
-@@ -328,44 +332,46 @@
+@@ -328,44 +330,46 @@ static void *tci_tlb_probe(CPUArchState *env, uint64_t addr,
      return NULL;
  }
  
@@ -179,7 +247,7 @@ diff --git a/tcg/tci.c b/tcg/tci.c
      switch (mop & MO_SSIZE) {
      case MO_UB:
          return helper_ldub_mmu(env, taddr, oi, ra);
-@@ -482,31 +488,8 @@
+@@ -482,31 +486,8 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
      MemOp mop = get_memop(oi);
      uintptr_t ra = (uintptr_t)tb_ptr;
  
@@ -213,7 +281,7 @@ diff --git a/tcg/tci.c b/tcg/tci.c
      switch (mop & MO_SIZE) {
      case MO_UB:
          helper_stb_mmu(env, taddr, val, oi, ra);
-@@ -1739,6 +1722,62 @@
+@@ -1739,6 +1720,62 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
              }
              break;
  
@@ -276,7 +344,7 @@ diff --git a/tcg/tci.c b/tcg/tci.c
          case INDEX_op_mb:
              /* Ensure ordering for all kinds */
              smp_mb();
-@@ -1991,6 +2030,14 @@
+@@ -1991,6 +2028,14 @@ int print_insn_tci(bfd_vma addr, disassemble_info *info)
  
      case INDEX_op_qemu_ld:
      case INDEX_op_qemu_st:
@@ -292,9 +360,10 @@ diff --git a/tcg/tci.c b/tcg/tci.c
          info->fprintf_func(info->stream, "%-12s  %s, %s, %x",
                             op_name, str_r(r0), str_r(r1), oi);
 diff --git a/tcg/tci/tcg-target-opc.h.inc b/tcg/tci/tcg-target-opc.h.inc
---- a/tcg/tci/tcg-target-opc.h.inc	2026-09-08 19:29:11.805151017 +0000
-+++ b/tcg/tci/tcg-target-opc.h.inc	2026-09-08 19:06:04.074131139 +0000
-@@ -33,3 +33,25 @@
+index d39c748866..1aff7e08b3 100644
+--- a/tcg/tci/tcg-target-opc.h.inc
++++ b/tcg/tci/tcg-target-opc.h.inc
+@@ -33,3 +33,25 @@ DEF(tci_setcond32_ri, 1, 2, 1, TCG_OPF_NOT_PRESENT)
   * icount2 clock advances per executed TB even while TBs are chained. */
  DEF(tci_tbhdr, 0, 0, 1, TCG_OPF_NOT_PRESENT)
  #endif
@@ -321,9 +390,10 @@ diff --git a/tcg/tci/tcg-target-opc.h.inc b/tcg/tci/tcg-target-opc.h.inc
 +DEF(tci_qemu_st16, 0, 3, 0, TCG_OPF_NOT_PRESENT)
 +DEF(tci_qemu_st32, 0, 3, 0, TCG_OPF_NOT_PRESENT)
 diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
---- a/tcg/tci/tcg-target.c.inc	2026-09-08 19:29:11.805191738 +0000
-+++ b/tcg/tci/tcg-target.c.inc	2026-09-08 19:06:04.073762339 +0000
-@@ -1231,14 +1231,69 @@
+index 6a707075bb..57e9e129af 100644
+--- a/tcg/tci/tcg-target.c.inc
++++ b/tcg/tci/tcg-target.c.inc
+@@ -1231,14 +1231,69 @@ static const TCGOutOpStore outop_st = {
      .out_r = tcg_out_st,
  };
  
@@ -396,7 +466,7 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
      }
  }
  
-@@ -1254,11 +1309,32 @@
+@@ -1254,11 +1309,32 @@ static const TCGOutOpQemuLdSt2 outop_qemu_ld2 = {
  static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
                           TCGReg addr, MemOpIdx oi)
  {
@@ -432,38 +502,11 @@ diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
      }
  }
  
-diff --git a/include/qemu/wasm-diag.h b/include/qemu/wasm-diag.h
-new file mode 100644
---- /dev/null
-+++ b/include/qemu/wasm-diag.h
-@@ -0,0 +1,23 @@
-+/*
-+ * wasm diagnostics counters: cold-path memory-subsystem counters filled
-+ * by tcg/tci.c + accel/tcg/cputlb.c (interpreter slow-path entries, MMIO
-+ * dispatches, TLB fills - ~40k increments/s on a booting pmb887x, cost is
-+ * noise) and read from JS via the wasm_memstat() export in ui/wasm.c.
-+ * See tools/memstat.mjs.  Hot paths (the inline fast paths) deliberately
-+ * carry no counters.
-+ */
-+#ifndef QEMU_WASM_DIAG_H
-+#define QEMU_WASM_DIAG_H
-+
-+enum {
-+    WASM_DIAG_LD_HELPER = 0, /* tci_qemu_ld fell to helper_ldXX_mmu */
-+    WASM_DIAG_ST_HELPER,     /* tci_qemu_st fell to helper_stXX_mmu */
-+    WASM_DIAG_IO_LD,         /* cputlb MMIO load dispatches */
-+    WASM_DIAG_IO_ST,         /* cputlb MMIO store dispatches */
-+    WASM_DIAG_TLB_FILL,      /* tlb_fill_align calls */
-+    WASM_DIAG_N
-+};
-+
-+extern uint64_t wasm_diag_stat[WASM_DIAG_N];
-+
-+#endif
 diff --git a/ui/wasm.c b/ui/wasm.c
---- a/ui/wasm.c	2026-09-08 19:29:11.780979446 +0000
-+++ b/ui/wasm.c	2026-09-08 19:23:32.823983861 +0000
-@@ -150,6 +150,14 @@
+index fae8f016f3..8cfe9b97d9 100644
+--- a/ui/wasm.c
++++ b/ui/wasm.c
+@@ -169,6 +169,14 @@ uint64_t wasm_insns(void)
      return wasm_tb_stats.insns;
  }
  
@@ -478,3 +521,6 @@ diff --git a/ui/wasm.c b/ui/wasm.c
  /* Guest virtual clock in ns (diagnostics: boot progress). */
  EMSCRIPTEN_KEEPALIVE
  int64_t wasm_vclock(void)
+-- 
+2.53.0
+

@@ -147,11 +147,18 @@ lands in `/tmp/pmb887x-serial.log`.
                               (barrier insns get single-insn TBs so can_do_io
                               is set - stock clock precision, no unwind;
                               ioRewind 1.67k/s -> ~0; +3-5% insns@110s)
-    0015-wasm-diag-counters-*.patch cold-path diagnostics counters
-                              (txn-failed / tb-gen / tb-flush / io-rewind /
-                              lookup-tb; killed several profiler ghosts)
     attic/                    dropped patches (the original 0004 io-recompile
-                              skip: boot regression; superseded by the reworked 0004)
+                              skip: boot regression, superseded by the reworked
+                              0004; 0015 diag counters: measured neutral, no
+                              consumers — see attic/README.md)
+
+  The patch series is generated from the upstream branch
+  `wasm-browser-port` (git worktree `build/qemu-upstream`, one commit
+  per patch, base = the pinned qemu rev, ready to PR against
+  Azq2/qemu-pmb887x): every commit carries its rationale + measurements,
+  the hunks carry inline why-comments.  See doc/upstream-branch.md —
+  regenerate patches/*.patch after branch edits (`git format-patch
+  b31b98fe..wasm-browser-port`).
   site/                 the served web root — editable static page (index.html /
                         app.js / style.css / keyboards.js; fullflashes.js holds
                         the preset-fullflash inventory + Cache API handling)
@@ -209,7 +216,7 @@ benchmarked (~1.3–2.3x TCI ceiling, boot hangs) and **discarded** on
 2026-09-09 — the TCI series is the shipping engine; the JIT sources and
 post-mortem live in patches/attic/wasm32-rebase/.
 
-- `site/dist/` — TCI build (patches 0001–0004 + 0007–0015; timing model is
+- `site/dist/` — TCI build (patches 0001–0004 + 0007–0014; timing model is
   stock `-icount shift=3,sleep=off`, no fork-specific clock patch — see
   the interim 0006 in patches/attic; 0004 reworked: the
   io-recompile longjmp storm is gone, MMIO accounted at the rewind's

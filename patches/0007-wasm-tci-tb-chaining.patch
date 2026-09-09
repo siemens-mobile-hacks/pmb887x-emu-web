@@ -1,33 +1,33 @@
-From: sie-mcp web <web@sie-mcp.local>
-Subject: [PATCH 5/7] wasm: account icount2 per TB inside the TCI
- interpreter (TB header op)
+From 33418ae3bcb56ec23535ef0acf9359940398dc8b Mon Sep 17 00:00:00 2001
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Date: Wed, 9 Sep 2026 06:32:19 +0000
+Subject: [PATCH 05/12] wasm: account icount2 per TB inside the TCI interpreter
+ (TB header op)
 
-With patch 0002 skipping the per-guest-insn icount2 helper on
-emscripten (a libffi/JS roundtrip per instruction), something must
-credit the icount2 clock per executed TB - including TBs reached via
-goto_tb/goto_ptr chaining, which execute entirely inside one
+Why: with the Asyncify/futex patch skipping the per-guest-insn icount2
+helper on emscripten (a libffi/JS roundtrip per instruction), something
+must credit the icount2 clock per executed TB - including TBs reached
+via goto_tb/goto_ptr chaining, which execute entirely inside one
 tcg_qemu_tb_exec() call and never pass through cpu_tb_exec again.
 
-- tcg/tci: tcg_out_tb_start() emits an INDEX_op_tci_tbhdr header op
-  (opcode appended after tci_qemu_st_rrr, numbering-compatible with the
-  0005 wasm32 DRAFT) carrying the TB's guest-insn count in its 20-bit
-  immediate.
-- tcg/tci.c: the header runs at EVERY TB entry - cpu_tb_exec call,
-  goto_tb chain target, goto_ptr target - and advances the icount2
-  clock (icount2_advance) + diagnostics (wasm_tb_account) by the TB's
-  icount.  The clock stays strictly instruction-proportional while
-  chained; interrupt checks are unaffected (gen_tb_start's icount_decr
-  brcond runs at each TB start, chained or not).
+  * tcg/tci: tcg_out_tb_start() emits an INDEX_op_tci_tbhdr header op
+    (opcode appended after tci_qemu_st_rrr) carrying the TB's
+    guest-insn count in its 20-bit immediate.
+  * tcg/tci.c: the header runs at EVERY TB entry - cpu_tb_exec call,
+    goto_tb chain target, goto_ptr target - and advances the icount2
+    clock (icount2_advance) + diagnostics (wasm_tb_account) by the TB's
+    icount.  The clock stays strictly instruction-proportional while
+    chained; interrupt checks are unaffected (gen_tb_start's icount_decr
+    brcond runs at each TB start, chained or not).
 
 Device-visible clock semantics change by at most one TB (typically a
 few guest insns): an MMIO access mid-TB now sees a clock that already
 includes the whole TB instead of the exact io-insn boundary.  Boot
 verified: the S75 fullflash reaches the idle screen (wallpaper, clock,
-"Поиск сети") with no >>EXIT<<, LCD updating.
+network-search banner) with no >>EXIT<<, LCD updating.
 
-Measured (S75 fullflash, headless Chromium, tools/serialwatch.mjs,
-10 s WATCH samples; baseline = two runs of the pre-chaining build,
-both within ±2% of each other):
+Measured (S75 fullflash, headless Chromium, 10 s WATCH samples;
+baseline = two runs of the pre-chaining build, both within +-2%):
 
   insns executed at fixed wall time   gain
   t=20 s    93M           -> 197M    +113%
@@ -38,16 +38,21 @@ both within ±2% of each other):
   virtual time at t=60 s: 3.96 s -> 7.21 s (+82%)
 
 Known accepted deviations (rare paths, measured harmless on the boot):
-- goto_ptr-chained TBs (indirect branches) used to be uncounted; they
-  are counted now (more accurate than before).
-- the rom_device cpu_io_recompile rewind re-executes insns that the
-  header already credited (over-counts the rewound prefix; flash
-  commands are rare).
+  * goto_ptr-chained TBs (indirect branches) used to be uncounted; they
+    are counted now (more accurate than before).
+  * the rom_device cpu_io_recompile rewind re-executes insns that the
+    header already credited (over-counts the rewound prefix; flash
+    commands are rare).
 
-Wasm/fork-only (icount2).  Conflicts with the 0005 wasm32 DRAFT
-(goto_tb/tci emitters); that patch needs a rebase onto this per-TB
-header model.
+Wasm/fork-only (icount2 + __EMSCRIPTEN__ gated).
+
+Assisted-by: GLM-5.3
 ---
+ tcg/tci.c                    | 20 ++++++++++++++++++++
+ tcg/tci/tcg-target-opc.h.inc |  6 ++++++
+ tcg/tci/tcg-target.c.inc     | 10 +++++++++-
+ 3 files changed, 35 insertions(+), 1 deletion(-)
+
 diff --git a/tcg/tci.c b/tcg/tci.c
 index 03b9294935..16737166bb 100644
 --- a/tcg/tci.c
@@ -114,3 +119,6 @@ index 1b22c70616..26c409648c 100644
  }
  
  bool tcg_target_has_memory_bswap(MemOp memop)
+-- 
+2.53.0
+

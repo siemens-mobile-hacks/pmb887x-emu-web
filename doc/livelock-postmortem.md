@@ -1,5 +1,17 @@
 # Livelock post-mortem (WASM boot)
 
+> **Update 2026-09-09 (patch-isolation testing):** the condvar/futex fix
+> (patch 0002's threading half) is **no longer required for boot on the
+> current stack** — with the fix surgically removed, S75 boots to v=166
+> with LCD updates growing and no `>>EXIT<<`; the v-window is baseline-
+nneutral (25.1–25.8 s vs 25.1–28.5).  The likeliest cause: patch 0009's
+> futex-based main-loop wait + `qemu_notify_event`/`aio_notify` wakes
+> replaced exactly the broken wake path described below.  The fix is kept
+> as insurance for untested cross-worker wake paths (RCU/pool/DSP) and
+> because 0004/0007 build on the patch's icount2 half.  Details:
+> [optimization-playbook.md](optimization-playbook.md) § Patch-isolation
+> testing.
+
 Symptom chain as observed, root causes found, and what was fixed. All
 evidence reproducible with the tools in `tools/` (see
 [diagnostics.md](diagnostics.md)).

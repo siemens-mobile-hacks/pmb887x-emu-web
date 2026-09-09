@@ -1,64 +1,98 @@
-From: sie-mcp web <web@sie-mcp.local>
-Subject: [PATCH 2/7] wasm: Asyncify-safe futex/condvar + skip the
- per-insn icount2 helper
+From 4da9b9f75e3c2ae427fe4cc5df4a8420656721e1 Mon Sep 17 00:00:00 2001
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Date: Wed, 9 Sep 2026 06:29:17 +0000
+Subject: [PATCH 02/12] wasm: Asyncify-safe futex/condvar + skip the per-insn
+ icount2 helper
+
+Two things an emscripten/Asyncify build needs; both are no-ops on every
+other platform (__EMSCRIPTEN__-gated).
+
+1) Correct cross-worker condvar wakes.
 
 Under Asyncify, emscripten's pthread_cond_signal/broadcast between web
-workers is only delivered when the waiter times out, so QemuCond used
-for cross-thread wakeup (the pmb887x DSP worker boot-command handshake)
-sleeps forever: the L1 task times out and the phone never draws its
-splash screen.  The engine-level futex (Atomics.wait/notify) is
-Asyncify-safe.
+workers is only delivered when the waiter times out, so a QemuCond used
+for cross-thread wakeup (e.g. the pmb887x DSP worker boot-command
+handshake) can sleep forever: observed as the L1 task timing out and
+the phone never drawing its splash screen.  The engine-level futex
+(Atomics.wait/notify) does not go through the Asyncify machinery and
+wakes reliably.
 
-- include/qemu/futex.h: implement the qemu_futex wrappers on
-  emscripten_futex_wait/wake; HAVE_FUTEX now defined on emscripten,
-  switching QemuEvent/LockCnt to their futex fast paths.
-- util/qemu-thread-posix.c + include/qemu/thread-posix.h: futex/seq
-  based QemuCond for emscripten (pthread-based everywhere else).
-  qemu_cond_timedwait now reports timeouts (emscripten_futex_wait
-  returns -ETIMEDOUT): qemu_sem_timedwait and the thread-pool idle
-  exit actually time out on wasm, like on POSIX.
+  * include/qemu/futex.h: qemu_futex_* on emscripten_futex_wait/wake;
+    HAVE_FUTEX becomes defined on emscripten, switching QemuEvent and
+    LockCnt to their futex fast paths.
+  * util/qemu-thread-posix.c + include/qemu/thread-posix.h: a
+    seq+futex QemuCond for emscripten (pthread_cond everywhere else).
+    qemu_cond_timedwait now reports real timeouts: qemu_sem_timedwait
+    and the thread-pool idle exit actually time out on wasm, like on
+    POSIX.
 
-Additionally, TCI helper calls route through libffi, which on wasm is a
-JS roundtrip; the per-guest-instruction icount2 cycle helper capped the
-interpreter at ~0.6M insns/s.  On emscripten, skip the per-instruction
-helper (target/arm/tcg/translate.c) — the per-TB accounting that
-replaces it is the tci_tbhdr header op of patch 0007.  icount2's 1 MHz
-frequency floor is likewise relaxed on emscripten only (the TCI rate on
-wasm is far below it; the controller converges to the real rate).
+(Isolation note: with the later futex-based main-loop wait in place the
+S75 boot no longer deadlocks without this - the broken wake path is no
+longer on the critical path - but correct condvar semantics are still
+required by any other cross-worker QemuCond user (RCU, thread pool,
+device workers), so this stays.)
 
-Wasm-only by nature (Asyncify/emscripten does not exist elsewhere);
-icount2 parts are fork-specific either way.  config-host bits:
--sASYNCIFY_REMOVE=tcg_qemu_tb_exec keeps the interpreter itself out of
-the Asyncify instrumentation (reachable via libffi's ffi_call_js import,
-never suspends itself; ~2x interpreter speed).
+2) Do not pay the icount2 cycle helper per guest instruction.
+
+TCI helper calls route through libffi, which on wasm is a JS roundtrip
+(~us each): a helper per guest instruction capped the interpreter at
+~0.6M insns/s.  On emscripten the translator skips the per-insn
+gen_helper_cycle_counter (target/arm/tcg/translate.c); the replacement
+per-TB accounting is the tci_tbhdr TB-header op of the later
+"wasm: tci tb chaining" patch.
+
+Also icount2's 1 MHz frequency floor is relaxed to 1 kHz on emscripten
+only (system/icount2.c) - a slow-host guard for the opt-in
+precise-clocks mode: on a fast host the controller converges to 3-17
+MHz and the floor never binds, but on a phone that sustains <1 MHz the
+stock floor makes virtual time run ahead of executed instructions
+(deadlines arrive with a fraction of the expected instruction budget).
+Measured under 16x CPU starvation (sustained ~2.5 kHz): with the 1 kHz
+floor the virtual clock tracks reality (v=377 after 420 s, idle-bias
+jumps included); with the stock floor the frequency pins at 1.000 MHz
+and virtual time is frozen (v=0.88 after 420 s) - the guest never sees
+its timers.  The default timing model (stock -icount) has no frequency
+controller and is unaffected.
+
+Also -sASYNCIFY_REMOVE=tcg_qemu_tb_exec (configs/meson/emscripten.txt):
+the interpreter is reachable from the asyncify import (libffi's
+ffi_call_js), would run fully instrumented (~2x slower) and never
+suspends itself - drop it from instrumentation.
+
+ui/wasm.c: wasm_tb_account()/wasm_tbs()/wasm_insns() - per-TB
+execution counters the benchmark tooling reads as the throughput
+metric; fed from the TCI TB header op.
 ---
+ configs/meson/emscripten.txt | 10 +++-
+ include/qemu/futex.h         | 25 +++++++++
+ include/qemu/thread-posix.h  | 11 ++++
+ system/icount2.c             | 25 +++++++++
+ target/arm/tcg/translate.c   | 11 ++++
+ ui/wasm.c                    | 29 +++++++++++
+ util/qemu-thread-posix.c     | 99 ++++++++++++++++++++++++++++++++++++
+ 7 files changed, 208 insertions(+), 2 deletions(-)
+
 diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
-index 735d0cdf7c..c7df5ab9af 100644
+index a4b1be3ede..9776ab44fc 100644
 --- a/configs/meson/emscripten.txt
 +++ b/configs/meson/emscripten.txt
-@@ -4,10 +4,18 @@ cpp_args = ['-pthread']
- objc_args = ['-pthread']
- # -sPROXY_TO_PTHREAD link time flag always requires -pthread even during
- # configuration so explicitly add the flag here.
+@@ -9,8 +9,14 @@ objc_args = ['-pthread']
+ #                       (reads the framebuffer export, sets PMB887X_* vars)
+ #   -sEXIT_RUNTIME=1    run global destructors on qemu_system_shutdown
+ #                       (the page polls the runstate to detect exit)
 -c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
 -cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
++#   -sASYNCIFY_REMOVE=tcg_qemu_tb_exec: the TCI interpreter is reachable
++#                       from the asyncify import (libffi's ffi_call_js) and
++#                       would run fully instrumented (2x slower); it never
++#                       suspends itself, so drop it from instrumentation.
 +c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
-+  # The TCI interpreter is reachable from the asyncify import (libffi's
-+  # ffi_call_js) and would run fully instrumented (2x slower); it never
-+  # suspends itself, so drop it from instrumentation.
 +  '-sASYNCIFY_REMOVE=tcg_qemu_tb_exec','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
 +cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
-+  # The TCI interpreter is reachable from the asyncify import (libffi's
-+  # ffi_call_js) and would run fully instrumented (2x slower); it never
-+  # suspends itself, so drop it from instrumentation.
 +  '-sASYNCIFY_REMOVE=tcg_qemu_tb_exec','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
  
  [project options]
  # Workaround for failure to find glib-2.0 when building idef parser,
- # this may be a bug in the cross-build setup used by emscripten:
--hexagon_idef_parser = false
-+hexagon_idef_parser = false
-\ No newline at end of file
 diff --git a/include/qemu/futex.h b/include/qemu/futex.h
 index 607613eec8..2fb9c49c75 100644
 --- a/include/qemu/futex.h
@@ -122,21 +156,34 @@ index 758808b705..1f20095a25 100644
  struct QemuSemaphore {
      QemuMutex mutex;
 diff --git a/system/icount2.c b/system/icount2.c
-index b742b8e2df..9ccc301eb3 100644
+index b742b8e2df..0125101ff1 100644
 --- a/system/icount2.c
 +++ b/system/icount2.c
-@@ -21,7 +21,19 @@ bool use_icount2 = false;
+@@ -21,7 +21,32 @@ bool use_icount2 = false;
  static bool icount2_debug;
  
  #define ICOUNT2_INITIAL_FREQUENCY 314000000
 +#ifdef __EMSCRIPTEN__
 +/*
-+ * The frequency is clamped to the actually measured execution rate.  The
-+ * stock 1 MHz floor is far above what the TCI interpreter sustains on
-+ * wasm: virtual time would run ahead of executed instructions, guest
-+ * timer deadlines would arrive ~20x "early" and the icount2_sync() work
-+ * triggered by every deadline would dominate the interpreter.  Let the
-+ * controller converge to the real rate instead.
++ * Slow-host guard (phones): let the controller converge to the actually
++ * measured execution rate instead of the stock 1 MHz floor.
++ *
++ * On a fast host this never binds (controller converges to 3-17 MHz,
++ * measured).  On a host where the TCI interpreter sustains less than
++ * 1 MHz, the stock floor makes virtual time run ahead of executed
++ * instructions - guest deadlines arrive with a fraction of the
++ * expected instruction budget and the boot dies.  Measured under 16x
++ * CPU starvation (sustained ~2.5 kHz, 2026-09-09):
++ *   floor 1 kHz: virtual clock tracks reality, v=377 after 420 s
++ *                (idle-bias deadline jumps included), boots in slow
++ *                motion, no crash;
++ *   floor 1 MHz: frequency pins at 1.000 MHz, virtual time frozen at
++ *                v=0.88 after 420 s (advances insns/1e6 ~= 2 ms/s) -
++ *                the guest never sees its timers.
++ *
++ * The default timing model (stock -icount shift=3,sleep=off) has no
++ * frequency controller at all; this only guards the opt-in
++ * precise-clocks (icount2) mode on slow hosts.
 + */
 +#define ICOUNT2_MIN_FREQUENCY 1000
 +#else
@@ -178,14 +225,19 @@ index 2b5a8d8320..bf25f4c42e 100644
          gen_helper_cycle_counter(tcg_env, tcg_constant_i32(cycles));
      }
 diff --git a/ui/wasm.c b/ui/wasm.c
-index 63cedd5d5a..80cf472a96 100644
+index 91d53fc4db..fae8f016f3 100644
 --- a/ui/wasm.c
 +++ b/ui/wasm.c
-@@ -126,6 +126,30 @@ uint64_t wasm_fb_updates(void)
+@@ -140,6 +140,35 @@ uint64_t wasm_fb_updates(void)
      return wasm_fb.updates;
  }
  
-+/* Per-TB execution statistics (diagnostics: wasm interpreter speed). */
++/*
++ * Per-TB execution statistics (diagnostics): fed once per executed TB
++ * from the TCI interpreter's TB header op (see the wasm-tci-tb-chaining
++ * patch); wasm_tbs()/wasm_insns() are what the page and the benchmark
++ * tooling read as the guest-throughput metric.
++ */
 +static struct {
 +    uint64_t tbs;
 +    uint64_t insns;
@@ -336,3 +388,6 @@ index 089606c93f..44f2dd3e4c 100644
  
  void qemu_sem_init(QemuSemaphore *sem, int init)
  {
+-- 
+2.53.0
+

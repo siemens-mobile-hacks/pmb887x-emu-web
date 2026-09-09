@@ -1,6 +1,8 @@
-From: sie-mcp web <web@sie-mcp.local>
-Subject: [PATCH 3/7] tci: inline TLB probe + direct helper dispatch
- (all TCI builds, not just wasm)
+From bc6568ae266d969727cc883f7d7f876d06eafb06 Mon Sep 17 00:00:00 2001
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Date: Wed, 9 Sep 2026 06:31:05 +0000
+Subject: [PATCH 03/12] tci: inline TLB probe + direct helper dispatch (all TCI
+ builds, not just wasm)
 
 TCI routes every guest memory access and every helper call through
 libffi's ffi_call, which emscripten implements as a JS round-trip
@@ -9,31 +11,39 @@ getWasmTableEntry(fn).apply(), ~1.7us) - and which on native hosts
 still re-marshals every argument.  The S75 firmware's busy-poll loops
 are dominated by exactly these two paths.
 
-- tci_qemu_ld/tci_qemu_st: probe the softmmu TLB inline before calling
-  the helper, mirroring the compare native TCG backends emit
-  (prepare_host_addr / tlb_set_compare): on (addr[+s-a] &
-  (page_mask|a_mask)) == tlb_addr the entry is valid RAM, dirty,
-  watchpoint-free and cannot straddle a page, so addr+addend is the
-  host address and a single load/store suffices.  Byte swapping,
-  sign extension, alignment and MO_ATOM_* requirements handled;
-  everything else falls back to the helpers.
-- INDEX_op_call: classify the call's libffi signature (i32/i64 words,
-  <= 5 args, void/u32/u64 return; pointers per host pointer size) and
-  call the helper through an exactly-typed function pointer instead of
-  ffi_call - a native wasm call_indirect with no JS involvement
-  (a plain indirect call on native hosts).  TCI_TAG_UNCLASSIFIED marks
-  signatures that must keep using libffi (note: distinct from the valid
-  tag of a (void)->void helper, which the first revision of this patch
-  accidentally routed through libffi).
+  * tci_qemu_ld/tci_qemu_st: probe the softmmu TLB inline before
+    calling the helper, mirroring the compare native TCG backends emit
+    (prepare_host_addr / tlb_set_compare): on (addr[+s-a] &
+    (page_mask|a_mask)) == tlb_addr the entry is valid RAM, dirty,
+    watchpoint-free and cannot straddle a page, so addr+addend is the
+    host address and a single load/store suffices.  Byte swapping,
+    sign extension, alignment and MO_ATOM_* requirements handled;
+    everything else falls back to the helpers.
 
-NOT wasm-gated: measured on native Linux TCI (S75 fullflash,
-tools/tcibench.mjs / icount2 debug):
+  * INDEX_op_call: classify the call's libffi signature (i32/i64
+    words, <= 5 args, void/u32/u64 return; pointers per host pointer
+    size) and call the helper through an exactly-typed function
+    pointer instead of ffi_call - a native wasm call_indirect with no
+    JS involvement (a plain indirect call on native hosts).
+    TCI_TAG_UNCLASSIFIED marks signatures that must keep using libffi
+    (note: distinct from the valid tag of a (void)->void helper, which
+    the first revision of this patch accidentally routed through
+    libffi).
+
+NOT wasm-gated; measured on native Linux TCI (S75 fullflash):
   default timing model   splash milestone   40.9 s -> 36.9 s  (-10%)
   icount2 (helper/insn)  steady rate        13.8  -> 19.9 MHz (+44%)
-wasm (headless Chromium, v=2..7 window): unchanged-to-better vs the
-emscripten-gated revision (interleaved runs, host-noise +-6%).
-Native TCG backends are untouched.
+wasm (headless Chromium, v=2..7 window): unchanged-to-better vs an
+emscripten-gated revision (interleaved runs, host noise +-6%).
+Native TCG backends are untouched; removing this patch (with its
+dependents) collapses wasm boot progress ~25x (isolation testing,
+2026-09-09).
+
+Assisted-by: GLM-5.3
 ---
+ tcg/tci.c | 796 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 796 insertions(+)
+
 diff --git a/tcg/tci.c b/tcg/tci.c
 index 29ecb39929..03b9294935 100644
 --- a/tcg/tci.c
@@ -889,3 +899,6 @@ index 29ecb39929..03b9294935 100644
      case INDEX_op_tci_ctz32:
      case INDEX_op_tci_clz32:
      case INDEX_op_tci_divs32:
+-- 
+2.53.0
+

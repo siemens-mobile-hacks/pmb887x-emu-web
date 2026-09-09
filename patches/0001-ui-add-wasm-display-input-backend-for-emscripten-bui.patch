@@ -1,30 +1,70 @@
-From: sie-mcp web <web@sie-mcp.local>
-Subject: [PATCH 1/7] ui: add wasm display/input backend for emscripten builds
+From e961670d6354e51f743aa6b3fee40f0e28bb64fe Mon Sep 17 00:00:00 2001
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Date: Wed, 9 Sep 2026 06:26:06 +0000
+Subject: [PATCH 01/12] ui: add wasm display/input backend for emscripten
+ builds
 
-Adds ui/wasm.c (emscripten-only): XRGB8888 staging framebuffer exported
-to JS (dirty-flag guarded), linux-keycode input via SPSC ring drained by
-a bottom half, thread-safe wasm_quit(); adaptive dpy_refresh polling
-(pmb887x LCD redraws via GraphicHwOps.gfx_update polls); extends
-configs/meson/emscripten.txt link settings with ENV/HEAP exports and
-EXIT_RUNTIME needed by the browser frontend.
+Needed for running qemu-system-arm inside a browser page: there is no
+sdl/gtk/curses there, and the page must both see the guest framebuffer
+and feed it keyboard input while the vCPU runs on a pthread worker.
 
-Wasm-only by nature (a platform display backend, like sdl/gtk).  The
-exported accessors are exactly what the page and the bench tooling use
-(fb + key + quit + vclock + per-TB insn counters); the debug-only
-exit-code histogram and cpu-halted probe of earlier revisions are gone.
+Adds ui/wasm.c (emscripten-only):
 
-Select with: qemu-system-arm ... -display wasm
+  * Framebuffer: XRGB8888 staging buffer on the wasm heap, exported to
+    JS via wasm_fb_ptr/width/height/stride + a dirty-flag protocol
+    (wasm_fb_take_dirty). A staging copy (not the pixman surface) is
+    used because JS needs a stable linear layout at a fixed heap
+    address; surface format/stride is a pixman implementation detail.
+
+  * Input: wasm_send_key(linux_keycode, down) from the browser main
+    thread -> lock-free SPSC ring -> bottom half on the QEMU main loop
+    -> qemu_input_event_send_key_linux(). The indirection exists
+    because the input API must run under the BQL while the producer is
+    another (JS) thread.
+
+  * Quit: wasm_quit() -> thread-safe qemu_system_shutdown_request().
+
+  * Adaptive dpy_refresh (16..500 ms): the pmb887x LCD model has no
+    dirty interrupt and only repaints while GraphicHwOps.gfx_update is
+    polled, so the display must be polled - but backing off to 500 ms
+    when idle keeps the browser main loop cheap.
+
+  * Diagnostics exports used by the page/bench tooling: wasm_vclock()
+    (boot progress), wasm_fb_updates() (repaint counter).
+
+Also wires the backend into meson/qapi (CONFIG_WASM_UI on emscripten;
+-display wasm) and extends configs/meson/emscripten.txt link settings
+with the ENV/HEAPU8/HEAPU32 exports + -sEXIT_RUNTIME=1 the browser
+frontend needs.
+
+Wasm-only by nature (a platform display backend, like sdl/gtk); zero
+effect on native builds.
+
+Assisted-by: GLM-5.3
 ---
+ configs/meson/emscripten.txt |   9 +-
+ meson.build                  |   1 +
+ qapi/ui.json                 |   6 +-
+ ui/meson.build               |   6 +
+ ui/wasm.c                    | 302 +++++++++++++++++++++++++++++++++++
+ 5 files changed, 321 insertions(+), 3 deletions(-)
+ create mode 100644 ui/wasm.c
+
 diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
-index 56c39763bb..735d0cdf7c 100644
+index 56c39763bb..a4b1be3ede 100644
 --- a/configs/meson/emscripten.txt
 +++ b/configs/meson/emscripten.txt
-@@ -4,8 +4,8 @@ cpp_args = ['-pthread']
+@@ -4,8 +4,13 @@ cpp_args = ['-pthread']
  objc_args = ['-pthread']
  # -sPROXY_TO_PTHREAD link time flag always requires -pthread even during
  # configuration so explicitly add the flag here.
 -c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS']
 -cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS']
++# The browser frontend additionally needs:
++#   ENV,HEAPU8,HEAPU32  page-side access to the wasm heap and environ
++#                       (reads the framebuffer export, sets PMB887X_* vars)
++#   -sEXIT_RUNTIME=1    run global destructors on qemu_system_shutdown
++#                       (the page polls the runstate to detect exit)
 +c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
 +cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
  
@@ -85,12 +125,19 @@ index d345f6c70d..a7a21a1117 100644
    curses_ss.add(when: [curses, iconv], if_true: [files('curses.c'), pixman])
 diff --git a/ui/wasm.c b/ui/wasm.c
 new file mode 100644
-index 0000000000..63cedd5d5a
+index 0000000000..91d53fc4db
 --- /dev/null
 +++ b/ui/wasm.c
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,302 @@
 +/*
 + * QEMU wasm display/input backend (for emscripten builds).
++ *
++ * Needed because a browser build has none of the host toolkits (no
++ * sdl/gtk/curses): the page in front of the emulator needs (a) the guest
++ * framebuffer on the wasm heap where JS can read it, (b) a way to inject
++ * key events from the browser main thread while the vCPU runs on a
++ * pthread, and (c) a thread-safe quit. All three are provided here as
++ * EMSCRIPTEN_KEEPALIVE exports.
 + *
 + * Exposes the guest framebuffer to JavaScript and accepts linux-keycode
 + * input + a quit request from JavaScript. All JS entry points are safe to
@@ -130,6 +177,13 @@ index 0000000000..63cedd5d5a
 +} wasm_fb;
 +
 +static uint8_t *wasm_fb_data;   /* XRGB8888, width*height*4, wasm heap */
++
++/*
++ * Why a staging copy instead of exposing the console surface directly:
++ * JS reads a fixed linear XRGB8888 layout at a stable address on the wasm
++ * heap (HEAPU32 view), while the pixman surface's format/layout/stride is
++ * an implementation detail and can change per guest mode switch.
++ */
 +
 +static void wasm_fb_free(void)
 +{
@@ -239,6 +293,14 @@ index 0000000000..63cedd5d5a
 +
 +static QEMUBH *key_bh;
 +
++/*
++ * Why the ring + bottom half: wasm_send_key() runs on the browser main
++ * thread, but qemu_input_event_send_* must run on the QEMU main loop under
++ * the BQL. The lock-free SPSC ring hands the events over; the BH drains
++ * them in QEMU's context. (A mutex would need cross-thread blocking,
++ * which Asyncify cannot do on the JS main thread.)
++ */
++
 +static void wasm_key_bh(void *opaque)
 +{
 +    while (qatomic_read(&key_ring_tail) != key_ring_head) {
@@ -287,7 +349,14 @@ index 0000000000..63cedd5d5a
 +{
 +    uint64_t before = wasm_fb.updates;
 +
-+    /* poll the device (GraphicHwOps.gfx_update): pushes dpy_gfx_update */
++    /*
++     * Why polling (and why adaptive): the pmb887x LCD model has no dirty
++     * interrupt — it only repaints while GraphicHwOps.gfx_update is called,
++     * so the display goes stale unless we poll. Polling at max rate would
++     * burn the single-threaded-ish browser main loop; the adaptive interval
++     * backs off to 500 ms when nothing changed and spins up to ~60 fps as
++     * soon as the guest animates (boot splash, menus).
++     */
 +    qemu_console_hw_update(dcl->con);
 +
 +    if (wasm_fb.updates != before) {
@@ -362,3 +431,6 @@ index 0000000000..63cedd5d5a
 +    qemu_display_register(&qemu_display_wasm);
 +}
 +type_init(register_wasm_display);
+-- 
+2.53.0
+

@@ -83,6 +83,18 @@ fi
 # sanity: the patch must apply on top of the pristine+patches baseline
 git -C "$TMP/base" apply --check "$TMP/wip.patch"
 
+# lint: flag hunks whose +/- lines are all blank (whitespace-only changes).
+# Such hunks are capture artifacts (e.g. editor trailing-newline noise) —
+# 0015 shipped one unnoticed for a day. Warning only; review by hand.
+awk '
+  function flush() { if (hunk != "" && changed == 0 && blanks > 0)
+                   printf "capture-patch: WARNING whitespace-only hunk in %s (%s)\n", file, hunk > "/dev/stderr" }
+  /^diff --git / { flush(); file = $0; sub(/^diff --git a\//, "", file); sub(/ b\/.*/, "", file); hunk = "" }
+  /^@@/          { flush(); hunk = $0; changed = 0; blanks = 0; next }
+  /^[+-]/ && !/^(\+\+\+|---)/ { if ($0 ~ /^[+-][[:space:]]*$/) blanks++; else changed = 1 }
+  END            { flush() }
+' "$TMP/wip.patch" >&2 || true
+
 NEXT=$(( 10#$(ls "$PATCHES" | grep -oE "^[0-9]{4}" | sort -n | tail -1) + 1 ))
 OUT="$(printf '%s/%04d-%s.patch' "$PATCHES" "$NEXT" "$NAME")"
 cp "$TMP/wip.patch" "$OUT"

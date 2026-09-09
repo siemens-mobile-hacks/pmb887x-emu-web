@@ -1,60 +1,55 @@
-From: sie-mcp web <web@sie-mcp.local>
-Subject: [PATCH 7/7] wasm: replace the main-loop poll() with a futex wait
+From 4cdf2facf948d88ce2cab0a16c790cdc3ad100c6 Mon Sep 17 00:00:00 2001
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Date: Wed, 9 Sep 2026 06:33:02 +0000
+Subject: [PATCH 07/12] wasm: replace the main-loop poll() with a futex wait
 
-emscripten's poll() cannot sleep: __syscall_poll (libsyscall.js)
-checks each fd once and returns, ignoring the timeout - the browser
-main thread must never block.  The stock os_host_main_loop_wait
+Why: emscripten's poll() cannot sleep - __syscall_poll (libsyscall.js)
+checks each fd once and returns, ignoring the timeout, because the
+browser main thread must never block.  The stock os_host_main_loop_wait
 therefore never actually waited: it busy-spun through a
 synchronously-proxied poll() at ~23k iterations/s during boot
 (measured with counters in qemu_poll_ns), each iteration costing a
-proxy round-trip plus two BQL handoffs, and the aio eventfd wake
-never worked at all (over 950k polls, no fd ever reported ready -
-the emscripten pipe poll mask stays 0; the spin itself was the only
-wake mechanism).
+proxy round-trip plus two BQL handoffs, and the aio eventfd wake never
+worked at all (over 950k polls, no fd ever reported ready - the
+emscripten pipe poll mask stays 0; the spin itself was the only wake
+mechanism).
 
 Replace the wait with a worker-local emscripten futex wait
-(ns-precision - the qemu condvar paths truncate to whole
-milliseconds on wasm, which measurably slows the firmware's ~100 us
-WFI windows), woken by:
+(ns-precision - the qemu condvar paths truncate to whole milliseconds
+on wasm, which measurably slows the firmware's ~100 us WFI windows),
+woken by:
 
   - qemu_notify_event()  (BH kicks / clock notifies)
   - aio_notify()         (BH schedules, aio kicks)
 
-and time out per the main loop's computed deadline.  Because the
-vCPU thread executes virtual-clock timers itself (icount2_sync on
-deadline crossings; the realtime idle timer covers halts), the main
-loop's wait no longer times out on QEMU_CLOCK_VIRTUAL deadlines -
-waking ~23k/s for virtual timers the vCPU had already run was most
-of the spin.  The fd set is not watched (measured: never ready;
-device input arrives via BHs, chardev I/O is proxy-based).
+and timing out per the main loop's computed deadline.  Because the vCPU
+thread executes virtual-clock timers itself (icount2_sync on deadline
+crossings; the realtime idle timer covers halts), the main loop's wait
+no longer times out on QEMU_CLOCK_VIRTUAL deadlines - waking ~23k/s for
+virtual timers the vCPU had already run was most of the spin.  The fd
+set is not watched (measured: never ready; device input arrives via
+BHs, chardev I/O is proxy-based).
 
-Measured (S75 fullflash, headless Chromium, deterministic
-v=2.0->7.0 window; baseline = two runs of the 0001-0008 build):
+Measured (S75 fullflash, headless Chromium, deterministic v=2.0->7.0
+window; baseline = two runs of the pre-0009 build):
 
   window wall time      43.7 / 42.9 s -> 40.1 / 40.4 s   (+8%)
   boot progress @110 s  v=28.9/29.3, ~1.06G insns
                        -> v=34.9/35.5, ~1.31G insns      (+22%)
-  full boot trajectory  v=131.4 @240 s vs 111.9 @240 s for 0007
+
+(removal re-measured 2026-09-09: without it the window regresses to
+29.3-31.7 s and boot progress at 110 s roughly halves - the spinning
+main loop steals the vCPU worker's CPU.)
 
 Boot verified: no >>EXIT<<, LCD updating, deep boot past every
-historical crash point; native test suite unaffected (all PASS -
-the change is __EMSCRIPTEN__-gated).
+historical crash point.  __EMSCRIPTEN__-gated; native builds untouched.
 
-A millisecond-quantized QemuCond variant of this wait was also
-measured: same early-window numbers but +1 ms latency on every WFI
-window cost ~20% of the end-to-end gain - keep the raw futex.
+Assisted-by: GLM-5.3
 ---
-diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
-index c7df5ab9af..49f424a7a8 100644
---- a/configs/meson/emscripten.txt
-+++ b/configs/meson/emscripten.txt
-@@ -18,4 +18,4 @@ cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILES
- [project options]
- # Workaround for failure to find glib-2.0 when building idef parser,
- # this may be a bug in the cross-build setup used by emscripten:
--hexagon_idef_parser = false
-\ No newline at end of file
-+hexagon_idef_parser = false
+ util/async.c     |  8 +++++
+ util/main-loop.c | 80 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 88 insertions(+)
+
 diff --git a/util/async.c b/util/async.c
 index 741fcfd6a7..f5b3427943 100644
 --- a/util/async.c
@@ -198,3 +193,6 @@ index 65e5dbcc94..5d0abf45fe 100644
  
      ret = os_host_main_loop_wait(timeout_ns);
      mlpoll.state = ret < 0 ? MAIN_LOOP_POLL_ERR : MAIN_LOOP_POLL_OK;
+-- 
+2.53.0
+

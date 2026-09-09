@@ -52,3 +52,27 @@ DSP-core locking) are in `../doc/early-crash-postmortem.md` §9.
 
 Acceptance test: boots past `0x400118c` with SRR set at the first poll,
 reaches the L1 phase, no `FILE: flash` exit.
+
+## 0015 — wasm: diagnostics counters (txn-failed, tb-gen/flush, io-rewind, lookup-tb)
+
+Dropped 2026-09-09 after patch-isolation benchmarking (method: see
+doc/optimization-playbook.md § "Patch-isolation testing"; harness:
+scripts/switch-test.sh + tools/bootbench.mjs, S75, 110 s runs).
+
+Empirically **not required and not performance-relevant**:
+
+- boot: no `>>EXIT<<`, v and LCD updates advance normally (serialwatch);
+- window (v=2→7 wall secs, primary metric): 25.8 / 25.9 / 25.8 s
+  (one 31.8 s outlier under host load) vs full-stack baseline
+  25.1–28.5 s over 5 runs — indistinguishable;
+- nothing consumes its counters: `tools/memstat.mjs` reads the 0012-era
+  `wasm_memstat(0..4)` counters (ldHelp/stHelp/ioLd/ioSt/fill), which
+  stay; the 0015 additions (txnF/tbGen/tbFlush/ioRewind readout via the
+  enum tail, lookupTB) had no reader;
+- the patch also carried a whitespace-only junk hunk in tcg/tci.c (three
+  blank lines — a capture-patch.sh artifact).
+
+The cold-path counter *infrastructure* (include/qemu/wasm-diag.h, the
+wasm_diag_stat array, `_wasm_memstat` export) comes from 0012/0014 and
+remains; future ad-hoc counters can be added as un-captured local edits
+or a fresh patch when a session needs them.

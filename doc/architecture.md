@@ -11,8 +11,10 @@ The Siemens phone emulator runs entirely in the browser. Repo layout:
   patches/0007..0012-*.patch                TCI perf series (TB chaining, immediate
                                             forms, main-loop futex, io-recompile
                                             skip, inlined ldst, size-specialized ops)
-  patches/0013..0015-*.patch                longjmp elimination (SVC inline exit,
-                                            io barriers) + diagnostics counters
+  patches/0013..0014-*.patch                longjmp elimination (SVC inline exit,
+                                            io barriers)
+  (patches/*.patch are generated from the upstream branch
+   build/qemu-upstream · wasm-browser-port — see doc/upstream-branch.md)
   patches/attic/                            dropped patches (0004: boot regression)
   site/                                     WASM-mode page (dist/ inside it:
                                             wasm build output, gitignored)

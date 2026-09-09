@@ -1,32 +1,35 @@
-From: sie-mcp web <web@sie-mcp.local
-Subject: [PATCH 6/7] tci: immediate-form ALU/setcond ops (no tci_movi
+From 0bc7e89666947021f17b409310d4d7ca9bb2dff1 Mon Sep 17 00:00:00 2001
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Date: Wed, 9 Sep 2026 06:32:37 +0000
+Subject: [PATCH 06/12] tci: immediate-form ALU/setcond ops (no tci_movi
  materialization for small constants)
 
-TCI materialized every constant into a register with tci_movi before
-any op that consumes it - there are no immediate operand forms, unlike
-every native backend (x86 folds constants via tcg_target_const_match +
-out_rri, which the qemu-11 outop tables already provide).  On this
-workload tci_movi was 18.9% of all interpreted ops, mostly feeding
-`add` (guest ldr/str base+offset addressing - 7.4% of all ops) and
-`setcond`/`brcond` comparisons against 0 (7.0% + 5.9%).
+Why: TCI materialized every constant into a register with tci_movi
+before any op that consumes it - there are no immediate operand forms,
+unlike every native backend (x86 folds constants via
+tcg_target_const_match + out_rri, which the qemu-11 outop tables
+already provide).  On the S75 firmware tci_movi was 18.9% of all
+interpreted ops, mostly feeding `add` (guest ldr/str base+offset
+addressing - 7.4% of all ops) and `setcond`/`brcond` comparisons
+against 0 (7.0% + 5.9%).
 
 Wire TCI into the existing immediate-operand machinery:
 
-- new TCI-only ops (appended to the tci extra-opc list, before the
-  wasm-only tci_tbhdr of patch 0007, keeping numbering compatible):
-    tci_add_ri, tci_and_ri, tci_or_ri, tci_xor_ri, tci_andc_ri
-      (r0, r1, sext16 imm) and
-    tci_setcond32_ri (r0, r1, cond, sext12 imm).
-- constraint letters 'S' (fits sext16) / 'B' (fits sext12), a
-  tcg_target_const_match that for TCG_TYPE_I32 accepts any constant
-  whose low bits match (TCI i32 register upper bits are undefined;
-  consumers truncate - see the i32 ops in tcg/tci.c), and outop
-  wiring (.out_rri/.out_ri/.out_i hooks) for add/and/or/xor/andc,
-  setcond (i32 only, C_Dynamic) and brcond (i32 only, C_Dynamic:
-  setcond32_ri into TMP + brcond, mirroring tgen_brcond).
-- the middle-end picks the forms automatically: tcg_gen_addi/andi/xori/
-  ori/brcondi compare each constant against the constraint and skip
-  the movi; constants that do not fit fall back to the stock path.
+  * new TCI-only ops (appended to the tci extra-opc list):
+      tci_add_ri, tci_and_ri, tci_or_ri, tci_xor_ri, tci_andc_ri
+        (r0, r1, sext16 imm) and
+      tci_setcond32_ri (r0, r1, cond, sext12 imm).
+  * constraint letters 'S' (fits sext16) / 'B' (fits sext12), a
+    tcg_target_const_match that for TCG_TYPE_I32 accepts any constant
+    whose low bits match (TCI i32 register upper bits are undefined;
+    consumers truncate - see the i32 ops in tcg/tci.c), and outop
+    wiring (.out_rri/.out_ri/.out_i hooks) for add/and/or/xor/andc,
+    setcond (i32 only, C_Dynamic) and brcond (i32 only, C_Dynamic:
+    setcond32_ri into TMP + brcond, mirroring tgen_brcond).
+  * the middle-end picks the forms automatically: tcg_gen_addi/andi/
+    xori/ori/brcondi compare each constant against the constraint and
+    skip the movi; constants that do not fit fall back to the stock
+    path.
 
 The interpreter decodes the immediate into a local int32_t (an earlier
 revision passed &t1, a tcg_target_ulong, to an int32_t* out-parameter:
@@ -35,28 +38,28 @@ bits for the i64 forms); the disassembler cases likewise decode into
 their own int32_t and no longer hijack the stock 3-reg ALU group's
 tci_args_rrr decoder.
 
-Measured (S75 fullflash, headless Chromium, WATCH samples; the same
-deterministic v=2.0 -> 7.0 virtual-time window as the patch 0007
-baseline run, page-start skew eliminated by v-milestone interpolation):
+Measured (S75 fullflash, headless Chromium, deterministic v=2.0 -> 7.0
+virtual-time window, page-start skew eliminated by v-milestone
+interpolation):
 
   window wall time      46.7 s -> 43.7 s / 42.9 s   (+6.8-9.0%)
   opcode histogram      tci_movi   18.94% -> 12.75%
                         add         7.37% ->  1.04% (+ tci_add_ri 6.85%)
-                        tci_setcond32 7.03% -> 2.97%
-                          (+ tci_setcond32_ri 4.20%)
-  boot                  no >>EXIT<<; reaches v=29 in 110 s where the
-                        0007 build reaches v=23.4
+                        tci_setcond32 7.03% ->  2.97%
+  (removal re-measured 2026-09-09: window 29.9-32.3 s vs full-stack
+  25.1-28.5 s, i.e. ~15% regression without it)
 
-This is generic TCI work (not emscripten-gated); native TCI builds
-benefit identically.  Native TCG backends are untouched.
+All TCI builds, not wasm-gated; native TCG backends untouched.
 
-Conflicts with the 0005 wasm32 DRAFT (tcg/tci emitters).
+Assisted-by: GLM-5.3
 ---
-Note: a store-immediate extension (tci_st32_ri/st8_ri + implementing
-the tcg_out_sti constant-spill hook, two-word encoding) was measured
-on top of this and REJECTED: deterministic-window wall time regressed
-from 42.9-43.7 s to 50.6-50.7 s (two runs each), so it is not part of
-this patch.  Do not re-add it without re-measuring.
+ tcg/tci.c                    |  81 ++++++++++++++++++++++
+ tcg/tci/tcg-target-con-set.h |   3 +
+ tcg/tci/tcg-target-con-str.h |   7 ++
+ tcg/tci/tcg-target-opc.h.inc |  12 ++++
+ tcg/tci/tcg-target.c.inc     | 127 +++++++++++++++++++++++++++++++++--
+ 5 files changed, 223 insertions(+), 7 deletions(-)
+
 diff --git a/tcg/tci.c b/tcg/tci.c
 index 16737166bb..70b8258486 100644
 --- a/tcg/tci.c
@@ -427,3 +430,6 @@ index 26c409648c..6a707075bb 100644
      return ct & TCG_CT_CONST;
  }
  
+-- 
+2.53.0
+

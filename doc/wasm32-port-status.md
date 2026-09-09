@@ -105,5 +105,5 @@ accounting runs per dispatch-loop TB (reading the `[icount]` header slot).
 
 Real-time needed ≥50M insns/s sustained. The wasm32 JIT measured ~2x
 TCI at its best; TCI itself reached ~15M insns/s through patches
-0007–0015. Any future big-lever work should start from the TCI series,
+0007–0014. Any future big-lever work should start from the TCI series,
 not from this backend.

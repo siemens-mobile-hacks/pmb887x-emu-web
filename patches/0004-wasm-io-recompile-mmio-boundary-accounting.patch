@@ -1,5 +1,7 @@
-From: sie-mcp web <web@sie-mcp.local>
-Subject: [PATCH 4/7] wasm: io-recompile MMIO boundary accounting
+From 98e585aac5fb1e0019d19ea8d8b16c64098f0266 Mon Sep 17 00:00:00 2001
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Date: Wed, 9 Sep 2026 06:31:30 +0000
+Subject: [PATCH 04/12] wasm: io-recompile MMIO boundary accounting
 
 Every MMIO access from a TB whose instruction is not the TB's last
 (!can_do_io, qemu 11's strict io placement for icount) triggers
@@ -15,10 +17,14 @@ __emscripten_throw_longjmp (caller stack: cpu_io_recompile <-
 do_ld_mmio_beN <- do_ld4_mmu <- tci_qemu_ld).
 
 On emscripten (icount2 only), io_prepare() skips the rewind for regular
-MMIO: the tci_tbhdr header op (patch 0007) already credited the whole
-TB at its start, so a device callback mid-TB sees a clock that includes
-the TB - at most a few guest insns ahead of the access.  Only the
-virtual-timer sync (wasm_io_advance(0), system/icount2.c) remains.
+MMIO: the tci_tbhdr header op (later "wasm: tci tb chaining" patch)
+already credited the whole TB at its start, so a device callback mid-TB
+sees a clock that includes the TB - at most a few guest insns ahead of
+the access.  Only the virtual-timer sync (wasm_io_advance(0),
+system/icount2.c) remains: if a virtual-timer deadline is crossed the
+timers are synced before the callback runs (but never nested under the
+BQL; the next per-TB icount2_advance() syncs instead).
+
 ROM devices (the flash command interface) keep the stock rewind: the
 boot-ROM's program/verify handshake over the flash command registers
 aborts without it (FILE: flash 0x0552; the romd-mode toggling on every
@@ -32,7 +38,13 @@ as the stock build, draws the splash ~3x earlier in wall time and boots
 2.5-12x further per wall second (sustained 4-14M insns/s vs 0.2-5M
 stock; TCI + V8 tier-up), no >>EXIT<<.  Native builds are unchanged
 (everything is __EMSCRIPTEN__ + icount2 gated).
+
+Assisted-by: GLM-5.3
 ---
+ accel/tcg/cputlb.c | 49 ++++++++++++++++++++++++++++++++++++++++++++++
+ system/icount2.c   | 26 ++++++++++++++++++++++++
+ 2 files changed, 75 insertions(+)
+
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
 index 28c864839e..1dbcd07f2a 100644
 --- a/accel/tcg/cputlb.c
@@ -102,10 +114,10 @@ index 28c864839e..1dbcd07f2a 100644
  
      *out_offset = mr_offset;
 diff --git a/system/icount2.c b/system/icount2.c
-index 9ccc301eb3..72ca7c2a88 100644
+index 0125101ff1..7621836e7d 100644
 --- a/system/icount2.c
 +++ b/system/icount2.c
-@@ -112,6 +112,32 @@ void icount2_advance(uint32_t cycles) {
+@@ -125,6 +125,32 @@ void icount2_advance(uint32_t cycles) {
  	}
  }
  
@@ -138,3 +150,6 @@ index 9ccc301eb3..72ca7c2a88 100644
  static int64_t icount2_get_locked(void) {
  	int64_t ticks = qatomic_read(&timers_state.icount2_ticks);
  	int64_t offset = qatomic_read(&timers_state.icount2_offset);
+-- 
+2.53.0
+

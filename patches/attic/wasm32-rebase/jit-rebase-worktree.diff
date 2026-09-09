@@ -1,0 +1,3598 @@
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index 257211235d..f85a8f4695 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -18,6 +18,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef __EMSCRIPTEN__
++#include "qemu/wasm-diag.h"
++#endif
+ #include "qemu/qemu-print.h"
+ #include "qapi/error.h"
+ #include "qapi/type-helpers.h"
+@@ -388,6 +391,8 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+      */
+     cpu->neg.can_do_io = true;
+ 
++    wasm_diag_stat[WASM_DIAG_LOOKUP_TB]++;
++
+     TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+     s.cflags = curr_cflags(cpu);
+ 
+@@ -438,6 +443,18 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
+         log_cpu_exec(log_pc(cpu, itb), cpu, itb);
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    {
++        static int k;
++        extern void w32_note_pc(uint64_t pc);
++        if (k++ < 3) w32_note_pc(itb->pc);
++    }
++    if (itb->pc == 0x4012a0ull || itb->pc == 0x4012f8ull || itb->pc == 0x4012fcull) { (void)0;
++        static int n;
++        extern void w32_dump_regs(int n, void *env);
++        if (n < 4) w32_dump_regs(n++, cpu_env(cpu));
++    }
++#endif
+     qemu_thread_jit_execute();
+     ret = tcg_qemu_tb_exec(cpu_env(cpu), tb_ptr);
+     cpu->neg.can_do_io = true;
+@@ -780,6 +797,19 @@ static inline bool icount_exit_request(CPUState *cpu)
+ static inline bool cpu_handle_interrupt(CPUState *cpu,
+                                         TranslationBlock **last_tb)
+ {
++    /*
++     * A guest exception left pending by generated code that ended its
++     * TB with a plain exit instead of a cpu_loop_exit() unwind (see
++     * gen_exception_exit in the target frontends): deliver it before
++     * anything else, exactly like the longjmp would have.  Clear the
++     * exit-kick flag the same way the normal path below does so a kick
++     * that raced with the TB cannot force one-exit-per-TB spinning.
++     */
++    if (unlikely(cpu->exception_index >= 0)) {
++        qatomic_set_mb(&cpu->neg.icount_decr.u16.high, 0);
++        return true;
++    }
++
+     /*
+      * If we have requested custom cflags with CF_NOIRQ we should
+      * skip checking here. Any pending interrupts will get picked up
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index 28c864839e..4d7c8173fb 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -18,6 +18,8 @@
+  */
+ 
+ #include "qemu/osdep.h"
++
++
+ #include "qemu/main-loop.h"
+ #include "qemu/target-info.h"
+ #include "accel/tcg/cpu-loop.h"
+@@ -26,8 +28,11 @@
+ #include "accel/tcg/probe.h"
+ #include "exec/page-protection.h"
+ #include "system/memory.h"
++#include "qemu/wasm-diag.h"
+ #include "system/physmem.h"
+ #include "accel/tcg/cpu-ldst-common.h"
++#include "system/cpu-timers.h"
++#include "exec/icount.h"
+ #include "accel/tcg/cpu-mmu-index.h"
+ #include "exec/cputlb.h"
+ #include "exec/tb-flush.h"
+@@ -1243,6 +1248,7 @@ static bool tlb_fill_align(CPUState *cpu, vaddr addr, MMUAccessType type,
+     const TCGCPUOps *ops = cpu->cc->tcg_ops;
+     CPUTLBEntryFull full;
+ 
++    wasm_diag_stat[WASM_DIAG_TLB_FILL]++;
+     if (ops->tlb_fill_align) {
+         if (ops->tlb_fill_align(cpu, &full, addr, type, mmu_idx,
+                                 memop, size, probe, ra)) {
+@@ -1281,7 +1287,77 @@ io_prepare(hwaddr *out_offset, CPUState *cpu, CPUTLBEntryFull *full,
+     mr_offset = full->xlat_offset + addr;
+     cpu->mem_io_pc = retaddr;
+     if (!cpu->neg.can_do_io) {
++#ifdef __EMSCRIPTEN__
++        /*
++         * wasm: do not rewind the TB.  The rewind (cpu_io_recompile)
++         * exists so icount-mode device callbacks see the clock of the
++         * io insn, not of the TB boundary; but its cpu_loop_exit()
++         * longjmp costs ~150us under emscripten (JS-exception based)
++         * and an MMIO polling loop re-pays it on every iteration
++         * forever (the unsplit TB stays cached).
++         *
++         * With TB chaining the clock is advanced per TB by the
++         * tci_tbhdr header op (tcg/tci.c), so the callback already
++         * sees a clock that includes this TB - skipping the rewind
++         * changes nothing about clock visibility.  The earlier
++         * batched-after-TB accounting (patches 0002/0004 era) needed
++         * the boundary move here; a dropped patch that skipped it
++         * entirely left the GPTU SRC7 poll at 0x400118c reading a
++         * timer armed earlier in the same TB as never elapsed and
++         * aborted the boot (FILE: flash 0x0552,
++         * doc/early-crash-postmortem.md).
++         */
++        static bool rewind_mode, rewind_mode_init;
++        if (unlikely(!rewind_mode_init)) {
++            rewind_mode = getenv("QEMU_IO_REWIND") != NULL;
++            rewind_mode_init = true;
++        }
++        /*
++         * ROM devices (the flash command interface): keep the stock
++         * rewind.  The boot ROM's program/verify handshake over the
++         * flash command registers aborts without it (FILE: flash
++         * 0x0552); those accesses are rare, so the ~150us longjmp
++         * costs nothing.  QEMU_IO_REWIND=1 forces the stock rewind
++         * everywhere (A/B testing / fallback).
++         */
++        if (rewind_mode || section->mr->rom_device) {
++            wasm_diag_stat[WASM_DIAG_IO_REWIND]++;
++            cpu_io_recompile(cpu, retaddr);
++        } else if (icount2_enabled()) {
++            /*
++             * The chained-TB clock is already at/after this access
++             * (tci_tbhdr credited the whole TB at its start); just run
++             * any virtual timers whose deadline it crossed so the
++             * callback sees their effects (system/icount2.c).
++             */
++            extern void wasm_io_advance(unsigned cycles);
++            wasm_io_advance(0);
++        } else if (icount_enabled()) {
++            /*
++             * Stock icount: gen_tb_start() has already subtracted the
++             * whole TB's insn count from icount_decr.u16.low and stored
++             * it back, so committing it now (icount_update) makes the
++             * callback see a clock that includes this TB - at most one
++             * TB (~5 guest insns on this firmware) ahead of the access,
++             * the same deviation the chained icount2 accounting above
++             * accepts, and in the safe direction (elapsed, never
++             * frozen - the GPTU SRC7 poll failure mode).  can_do_io
++             * re-opens the clock-read window (icount_get_raw_locked
++             * would otherwise "Bad icount read" abort); the next TB
++             * entry clears it again (the translator sets it false
++             * before the first insn of every multi-insn TB).  Mid-TB
++             * accesses after the first in the same TB see the same
++             * clock: their commits are idempotent.
++             */
++            cpu->neg.can_do_io = true;
++            icount_update(cpu);
++        } else {
++            /* !can_do_io without any icount mode: not expected. */
++            cpu_io_recompile(cpu, retaddr);
++        }
++#else
+         cpu_io_recompile(cpu, retaddr);
++#endif
+     }
+ 
+     *out_offset = mr_offset;
+@@ -1980,6 +2056,7 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
+ 
+     tcg_debug_assert(size > 0 && size <= 8);
+ 
++    wasm_diag_stat[WASM_DIAG_IO_LD]++;
+     section = io_prepare(&mr_offset, cpu, full, addr, ra);
+     mr = section->mr;
+ 
+@@ -2494,6 +2571,7 @@ static uint64_t do_st_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
+ 
+     tcg_debug_assert(size > 0 && size <= 8);
+ 
++    wasm_diag_stat[WASM_DIAG_IO_ST]++;
+     section = io_prepare(&mr_offset, cpu, full, addr, ra);
+     mr = section->mr;
+ 
+diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
+index 9e7be2d78d..4d110598f7 100644
+--- a/accel/tcg/internal-common.h
++++ b/accel/tcg/internal-common.h
+@@ -135,6 +135,12 @@ void page_table_config_init(void);
+ 
+ #ifndef CONFIG_USER_ONLY
+ G_NORETURN void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr);
++
++#ifdef __EMSCRIPTEN__
++/* MMIO barrier insns: single-insn TBs to avoid recurring io_recompile. */
++void wasm_add_io_barrier(vaddr pc);
++bool wasm_is_io_barrier(vaddr pc);
++#endif
+ #endif /* CONFIG_USER_ONLY */
+ 
+ void tb_phys_invalidate(TranslationBlock *tb, tb_page_addr_t page_addr);
+diff --git a/accel/tcg/ldst_common.c.inc b/accel/tcg/ldst_common.c.inc
+index 57f3e06192..739967ab8c 100644
+--- a/accel/tcg/ldst_common.c.inc
++++ b/accel/tcg/ldst_common.c.inc
+@@ -12,32 +12,52 @@
+  * Load helpers for tcg-ldst.h
+  */
+ 
++#ifdef CONFIG_TCG_WASM32
++#include "tcg/wasm32.h"
++#endif
++
+ tcg_target_ulong helper_ldub_mmu(CPUArchState *env, uint64_t addr,
+                                  MemOpIdx oi, uintptr_t retaddr)
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_8);
+-    return do_ld1_mmu(env_cpu(env), addr, oi, retaddr, MMU_DATA_LOAD);
++    tcg_target_ulong r = do_ld1_mmu(env_cpu(env), addr, oi, retaddr, MMU_DATA_LOAD);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
++    return r;
+ }
+ 
+ tcg_target_ulong helper_lduw_mmu(CPUArchState *env, uint64_t addr,
+                                  MemOpIdx oi, uintptr_t retaddr)
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_16);
+-    return do_ld2_mmu(env_cpu(env), addr, oi, retaddr, MMU_DATA_LOAD);
++    tcg_target_ulong r = do_ld2_mmu(env_cpu(env), addr, oi, retaddr, MMU_DATA_LOAD);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
++    return r;
+ }
+ 
+ tcg_target_ulong helper_ldul_mmu(CPUArchState *env, uint64_t addr,
+                                  MemOpIdx oi, uintptr_t retaddr)
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_32);
+-    return do_ld4_mmu(env_cpu(env), addr, oi, retaddr, MMU_DATA_LOAD);
++    tcg_target_ulong r = do_ld4_mmu(env_cpu(env), addr, oi, retaddr, MMU_DATA_LOAD);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
++    return r;
+ }
+ 
+ uint64_t helper_ldq_mmu(CPUArchState *env, uint64_t addr,
+                         MemOpIdx oi, uintptr_t retaddr)
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_64);
+-    return do_ld8_mmu(env_cpu(env), addr, oi, retaddr, MMU_DATA_LOAD);
++    uint64_t r = do_ld8_mmu(env_cpu(env), addr, oi, retaddr, MMU_DATA_LOAD);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
++    return r;
+ }
+ 
+ /*
+@@ -84,6 +104,9 @@ void helper_stb_mmu(CPUArchState *env, uint64_t addr, uint32_t val,
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_8);
+     do_st1_mmu(env_cpu(env), addr, val, oi, ra);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
+ }
+ 
+ void helper_stw_mmu(CPUArchState *env, uint64_t addr, uint32_t val,
+@@ -91,6 +114,9 @@ void helper_stw_mmu(CPUArchState *env, uint64_t addr, uint32_t val,
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_16);
+     do_st2_mmu(env_cpu(env), addr, val, oi, retaddr);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
+ }
+ 
+ void helper_stl_mmu(CPUArchState *env, uint64_t addr, uint32_t val,
+@@ -98,6 +124,9 @@ void helper_stl_mmu(CPUArchState *env, uint64_t addr, uint32_t val,
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_32);
+     do_st4_mmu(env_cpu(env), addr, val, oi, retaddr);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
+ }
+ 
+ void helper_stq_mmu(CPUArchState *env, uint64_t addr, uint64_t val,
+@@ -105,6 +134,9 @@ void helper_stq_mmu(CPUArchState *env, uint64_t addr, uint64_t val,
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_64);
+     do_st8_mmu(env_cpu(env), addr, val, oi, retaddr);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
+ }
+ 
+ void helper_st16_mmu(CPUArchState *env, uint64_t addr, Int128 val,
+@@ -217,6 +249,9 @@ void cpu_stw_mmu(CPUArchState *env, vaddr addr, uint16_t val,
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_16);
+     do_st2_mmu(env_cpu(env), addr, val, oi, retaddr);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
+     plugin_store_cb(env, addr, val, 0, oi);
+ }
+ 
+@@ -225,6 +260,9 @@ void cpu_stl_mmu(CPUArchState *env, vaddr addr, uint32_t val,
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_32);
+     do_st4_mmu(env_cpu(env), addr, val, oi, retaddr);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
+     plugin_store_cb(env, addr, val, 0, oi);
+ }
+ 
+@@ -233,6 +271,9 @@ void cpu_stq_mmu(CPUArchState *env, vaddr addr, uint64_t val,
+ {
+     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_64);
+     do_st8_mmu(env_cpu(env), addr, val, oi, retaddr);
++#ifdef CONFIG_TCG_WASM32
++    set_done_flag();
++#endif
+     plugin_store_cb(env, addr, val, 0, oi);
+ }
+ 
+diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
+index 4313864d2c..7fe330b7e3 100644
+--- a/accel/tcg/tb-maint.c
++++ b/accel/tcg/tb-maint.c
+@@ -18,6 +18,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef __EMSCRIPTEN__
++#include "qemu/wasm-diag.h"
++#endif
+ #include "qemu/interval-tree.h"
+ #include "qemu/qtree.h"
+ #include "exec/cputlb.h"
+@@ -772,6 +775,9 @@ void tb_flush__exclusive_or_serial(void)
+ {
+     CPUState *cpu;
+ 
++#ifdef __EMSCRIPTEN__
++    wasm_diag_stat[WASM_DIAG_TB_FLUSH]++;
++#endif
+     trace_tb_flush();
+     assert(tcg_enabled());
+     /* Note that cpu_in_serial_context checks cpu_in_exclusive_context. */
+@@ -871,7 +877,11 @@ static inline void tb_remove_from_jmp_list(TranslationBlock *orig, int n_orig)
+ void tb_reset_jump(TranslationBlock *tb, int n)
+ {
+     uintptr_t addr = (uintptr_t)(tb->tc.ptr + tb->jmp_reset_offset[n]);
++#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_WASM32)
++    tb_set_jmp_target(tb, n, 0);
++#else
+     tb_set_jmp_target(tb, n, addr);
++#endif
+ }
+ 
+ /* remove any jumps to the TB */
+diff --git a/accel/tcg/tcg-accel-ops-mttcg.c b/accel/tcg/tcg-accel-ops-mttcg.c
+index e7c067b4e2..e99067d5c0 100644
+--- a/accel/tcg/tcg-accel-ops-mttcg.c
++++ b/accel/tcg/tcg-accel-ops-mttcg.c
+@@ -37,6 +37,9 @@
+ #include "tcg/startup.h"
+ #include "tcg-accel-ops.h"
+ #include "tcg-accel-ops-mttcg.h"
++#ifdef CONFIG_TCG_WASM32
++#include "tcg/wasm32.h"
++#endif
+ 
+ typedef struct MttcgForceRcuNotifier {
+     Notifier notifier;
+@@ -66,6 +69,9 @@ static void mttcg_force_rcu(Notifier *notify, void *data)
+ 
+ static void *mttcg_cpu_thread_fn(void *arg)
+ {
++#ifdef CONFIG_TCG_WASM32
++    init_wasm32();
++#endif
+     MttcgForceRcuNotifier force_rcu;
+     CPUState *cpu = arg;
+ 
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index cdaa3e1180..1eec4009d4 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -36,6 +36,9 @@
+ #include "tcg/startup.h"
+ #include "tcg-accel-ops.h"
+ #include "tcg-accel-ops-rr.h"
++#ifdef CONFIG_TCG_WASM32
++#include "tcg/wasm32.h"
++#endif
+ #include "tcg-accel-ops-icount.h"
+ 
+ /* Kick all RR vCPUs */
+@@ -183,6 +186,9 @@ static void *rr_cpu_thread_fn(void *arg)
+     Notifier force_rcu;
+     CPUState *cpu = arg;
+ 
++#ifdef CONFIG_TCG_WASM32
++    init_wasm32();
++#endif
+     assert(tcg_enabled());
+     rcu_register_thread();
+     force_rcu.notify = rr_force_rcu;
+diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
+index 328d96aba3..218ff6620f 100644
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -18,6 +18,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef __EMSCRIPTEN__
++#include "qemu/wasm-diag.h"
++#endif
+ 
+ #include "trace.h"
+ #include "disas/disas.h"
+@@ -260,7 +263,21 @@ static int setjmp_gen_code(CPUArchState *env, TranslationBlock *tb,
+ /* Called with mmap_lock held for user mode emulation.  */
+ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
+ {
++#ifdef __EMSCRIPTEN__
++    {
++        extern void w32_note_pc(uint64_t pc);
++        w32_note_pc(s.pc);
++    }
++    if (s.pc == 0x4012a0) {
++        extern void w32_dump_usart(int n, CPUState *cpu);
++        static int n;
++        if (n < 2) w32_dump_usart(n++, cpu);
++    }
++#endif
+     CPUArchState *env = cpu_env(cpu);
++#ifdef __EMSCRIPTEN__
++    wasm_diag_stat[WASM_DIAG_TB_GEN]++;
++#endif
+     TranslationBlock *tb, *existing_tb;
+     tb_page_addr_t phys_pc, phys_p2;
+     tcg_insn_unit *gen_code_buf;
+@@ -572,6 +589,27 @@ void tb_check_watchpoint(CPUState *cpu, uintptr_t retaddr)
+  *
+  * Called by softmmu_template.h, with iothread mutex not held.
+  */
++/*
++ * wasm io barriers (see cpu_io_recompile): a small direct-mapped set of
++ * guest insns whose first memory access in a multi-insn TB turned out to
++ * be MMIO.  The translator keeps those insns in single-insn TBs so their
++ * device callbacks run with can_do_io set (stock rewound-and-resplit
++ * semantics) without the recurring cpu_loop_exit() unwind.
++ */
++static vaddr wasm_io_barriers[64];
++
++void wasm_add_io_barrier(vaddr pc)
++{
++    uint32_t h = (pc >> 2) & (ARRAY_SIZE(wasm_io_barriers) - 1);
++    wasm_io_barriers[h] = pc;
++}
++
++bool wasm_is_io_barrier(vaddr pc)
++{
++    uint32_t h = (pc >> 2) & (ARRAY_SIZE(wasm_io_barriers) - 1);
++    return wasm_io_barriers[h] == pc;
++}
++
+ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
+ {
+     TranslationBlock *tb;
+@@ -585,11 +623,27 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
+     }
+     cpu_restore_state_from_tb(cpu, tb, retaddr);
+ 
++#ifdef __EMSCRIPTEN__
+     /*
+-     * Some guests must re-execute the branch when re-executing a delay
+-     * slot instruction.  When this is the case, adjust icount and N
+-     * to account for the re-execution of the branch.
++     * wasm: the JS-exception unwind in cpu_loop_exit_noexc costs ~15 us,
++     * and this TB stays cached with the MMIO in its middle - a polling
++     * loop re-pays the rewind on every iteration forever.  Remember the
++     * faulting insn as an io barrier and drop the TB: the next translation
++     * of this code splits the TB around the barrier (see translator.c),
++     * the MMIO insn executes as a single-insn TB with can_do_io set, and
++     * the rewind (and its clock semantics: the callback sees the clock
++     * of exactly that insn) is reproduced without any further unwinding.
+      */
++    wasm_add_io_barrier(cpu->cc->get_pc(cpu));
++    tb_phys_invalidate(tb, -1);
++#endif
++
++
++/*
++ * Some guests must re-execute the branch when re-executing a delay
++ * slot instruction.  When this is the case, adjust icount and N
++ * to account for the re-execution of the branch.
++ */
+     n = 1;
+     if (cc->tcg_ops->io_recompile_replay_branch &&
+         cc->tcg_ops->io_recompile_replay_branch(cpu, tb)) {
+diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
+index cd7d079fe0..4a9faaa8f1 100644
+--- a/accel/tcg/translator.c
++++ b/accel/tcg/translator.c
+@@ -169,6 +169,19 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+             plugin_gen_insn_start(cpu, db);
+         }
+ 
++#ifdef __EMSCRIPTEN__
++        bool io_barrier = wasm_is_io_barrier(db->pc_next);
++        if (unlikely(io_barrier) && db->num_insns > 1) {
++            /*
++             * Keep a barrier insn out of the middle of a TB: stop here so
++             * it starts a single-insn TB of its own (can_do_io is true
++             * there; see cpu_io_recompile in translate-all.c).
++             */
++            db->is_jmp = DISAS_TOO_MANY;
++            break;
++        }
++#endif
++
+         /*
+          * Disassemble one instruction.  The translate_insn hook should
+          * update db->pc_next and db->is_jmp to indicate what should be
+@@ -177,6 +190,13 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+          */
+         ops->translate_insn(db, cpu);
+ 
++#ifdef __EMSCRIPTEN__
++        if (unlikely(io_barrier) && db->is_jmp == DISAS_NEXT) {
++            /* Barrier is the first insn of this TB: make it single-insn. */
++            db->is_jmp = DISAS_TOO_MANY;
++        }
++#endif
++
+         /*
+          * We can't instrument after instructions that change control
+          * flow although this only really affects post-load operations.
+diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
+index 56c39763bb..49f424a7a8 100644
+--- a/configs/meson/emscripten.txt
++++ b/configs/meson/emscripten.txt
+@@ -4,8 +4,16 @@ cpp_args = ['-pthread']
+ objc_args = ['-pthread']
+ # -sPROXY_TO_PTHREAD link time flag always requires -pthread even during
+ # configuration so explicitly add the flag here.
+-c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS']
+-cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS']
++c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
++  # The TCI interpreter is reachable from the asyncify import (libffi's
++  # ffi_call_js) and would run fully instrumented (2x slower); it never
++  # suspends itself, so drop it from instrumentation.
++  '-sASYNCIFY_REMOVE=tcg_qemu_tb_exec','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
++cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
++  # The TCI interpreter is reachable from the asyncify import (libffi's
++  # ffi_call_js) and would run fully instrumented (2x slower); it never
++  # suspends itself, so drop it from instrumentation.
++  '-sASYNCIFY_REMOVE=tcg_qemu_tb_exec','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
+ 
+ [project options]
+ # Workaround for failure to find glib-2.0 when building idef parser,
+diff --git a/include/qemu/futex.h b/include/qemu/futex.h
+index 607613eec8..2fb9c49c75 100644
+--- a/include/qemu/futex.h
++++ b/include/qemu/futex.h
+@@ -55,6 +55,31 @@ static inline void qemu_futex_wait(void *f, unsigned val)
+         }
+     }
+ }
++#elif defined(__EMSCRIPTEN__)
++/*
++ * Emscripten: pthread_cond signal/broadcast between web workers is not
++ * delivered while the waiter runs under Asyncify (wakes only happen when
++ * the wait times out).  The engine-level futex (Atomics.wait/notify) is
++ * Asyncify-safe, so implement the futex wrappers on top of it.  This also
++ * defines HAVE_FUTEX below, switching QemuEvent to its futex fast path.
++ */
++#include <emscripten/threading.h>
++
++static inline void qemu_futex_wake_all(void *f)
++{
++    emscripten_futex_wake(f, INT_MAX);
++}
++
++static inline void qemu_futex_wake_single(void *f)
++{
++    emscripten_futex_wake(f, 1);
++}
++
++static inline void qemu_futex_wait(void *f, unsigned val)
++{
++    /* 0 timeout = wait indefinitely; spurious wakes are allowed by design */
++    emscripten_futex_wait(f, val, 0);
++}
+ #elif defined(CONFIG_WIN32)
+ #include <synchapi.h>
+ 
+diff --git a/include/qemu/thread-posix.h b/include/qemu/thread-posix.h
+index 758808b705..1f20095a25 100644
+--- a/include/qemu/thread-posix.h
++++ b/include/qemu/thread-posix.h
+@@ -21,10 +21,21 @@ typedef struct QemuRecMutex {
+     QemuMutex m;
+ } QemuRecMutex;
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * Asyncify-safe futex-based condition variable (see util/qemu-thread-posix.c
++ * for the rationale: pthread_cond signals are unreliable under Asyncify).
++ */
++struct QemuCond {
++    int seq;      /* bumped by every signal/broadcast; futex word */
++    int waiters;  /* number of threads blocked in qemu_cond_wait */
++};
++#else
+ struct QemuCond {
+     pthread_cond_t cond;
+     bool initialized;
+ };
++#endif
+ 
+ struct QemuSemaphore {
+     QemuMutex mutex;
+diff --git a/include/tcg/helper-info.h b/include/tcg/helper-info.h
+index d5bda83a2e..3ea406b9cc 100644
+--- a/include/tcg/helper-info.h
++++ b/include/tcg/helper-info.h
+@@ -9,7 +9,7 @@
+ #ifndef TCG_HELPER_INFO_H
+ #define TCG_HELPER_INFO_H
+ 
+-#ifdef CONFIG_TCG_INTERPRETER
++#if defined(CONFIG_TCG_INTERPRETER) || defined(CONFIG_TCG_WASM32)
+ /*
+  * MacOSX 15 uses an old version of libffi which contains
+  *   #if FFI_GO_CLOSURES
+@@ -60,7 +60,7 @@ struct TCGHelperInfo {
+     const char *name;
+ 
+     /* Used with g_once_init_enter. */
+-#ifdef CONFIG_TCG_INTERPRETER
++#if defined(CONFIG_TCG_INTERPRETER) || defined(CONFIG_TCG_WASM32)
+     ffi_cif *cif;
+ #else
+     uintptr_t init;
+diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
+index 7669dc1c2d..b9cea16977 100644
+--- a/include/tcg/tcg.h
++++ b/include/tcg/tcg.h
+@@ -435,6 +435,9 @@ struct TCGContext {
+ 
+     uint16_t gen_insn_end_off[TCG_MAX_INSNS];
+     uint64_t *gen_insn_data;
++#ifdef CONFIG_TCG_WASM32
++    uint32_t *gen_wasm32_icount_slot;   /* wasm32 TB header icount slot */
++#endif
+ 
+     /* Exit to translator on overflow. */
+     sigjmp_buf jmp_trans;
+@@ -934,7 +937,7 @@ static inline size_t tcg_current_code_size(TCGContext *s)
+ #define TB_EXIT_IDXMAX    1
+ #define TB_EXIT_REQUESTED 3
+ 
+-#ifdef CONFIG_TCG_INTERPRETER
++#if defined(CONFIG_TCG_INTERPRETER) || defined(CONFIG_TCG_WASM32)
+ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, const void *tb_ptr);
+ #else
+ typedef uintptr_t tcg_prologue_fn(CPUArchState *env, const void *tb_ptr);
+diff --git a/meson.build b/meson.build
+index e859c90129..01374c144c 100644
+--- a/meson.build
++++ b/meson.build
+@@ -55,7 +55,7 @@ qapi_trace_events = []
+ bsd_oses = ['gnu/kfreebsd', 'freebsd', 'netbsd', 'openbsd', 'dragonfly', 'darwin']
+ supported_oses = ['windows', 'freebsd', 'netbsd', 'openbsd', 'darwin', 'sunos', 'linux', 'emscripten']
+ supported_cpus = ['ppc64', 's390x', 'riscv64', 'x86_64',
+-  'aarch64', 'loongarch64', 'sparc64', 'wasm64']
++  'aarch64', 'loongarch64', 'sparc64', 'wasm64', 'wasm32']
+ 
+ cpu = host_machine.cpu_family()
+ 
+@@ -321,7 +321,8 @@ endif
+ # Compiler flags #
+ ##################
+ 
+-if (cc.sizeof('void *') < 8) and (have_system or have_user)
++if (cc.sizeof('void *') < 8) and (have_system or have_user) and host_arch != 'wasm32'
++  # wasm32 is allowed: guest RAM offsets fit in 32 bits (see tcg/wasm32)
+   error('QEMU emulator requires a 64-bit CPU host architecture. Only tools may be built for 32-bit.')
+ endif
+ 
+@@ -927,6 +928,8 @@ if have_tcg
+     if not get_option('tcg_interpreter')
+       error('WebAssembly host requires --enable-tcg-interpreter')
+     endif
++  elif host_arch == 'wasm32'
++    # wasm32 ships the runtime-JIT wasm32 TCG backend (tcg/wasm32*)
+   elif get_option('tcg_interpreter')
+     warning('Use of the TCG interpreter is not recommended on this host')
+     warning('architecture. There is a native TCG execution backend available')
+@@ -1364,7 +1367,7 @@ endif
+ spice_headers = spice.partial_dependency(compile_args: true, includes: true)
+ 
+ rt = not_found
+-if host_os != 'windows'
++if host_os != 'windows' and host_os != 'emscripten'
+   have_shm_open = cc.has_function('shm_open')
+   if not have_shm_open
+     rt = cc.find_library('rt', required: true)
+@@ -2492,6 +2495,7 @@ config_host_data.set('CONFIG_SOLARIS', host_os == 'sunos')
+ if have_tcg
+   config_host_data.set('CONFIG_TCG', 1)
+   config_host_data.set('CONFIG_TCG_INTERPRETER', tcg_arch == 'tci')
++  config_host_data.set('CONFIG_TCG_WASM32', tcg_arch == 'wasm32')
+ endif
+ config_host_data.set('CONFIG_TPM', have_tpm)
+ config_host_data.set('CONFIG_TSAN', get_option('tsan'))
+@@ -2547,6 +2551,7 @@ endif
+ config_host_data.set('CONFIG_SPICE', spice.found())
+ config_host_data.set('CONFIG_X11', x11.found())
+ config_host_data.set('CONFIG_DBUS_DISPLAY', dbus_display)
++config_host_data.set('CONFIG_WASM_UI', host_os == 'emscripten')
+ config_host_data.set('CONFIG_CFI', get_option('cfi'))
+ config_host_data.set('CONFIG_SELINUX', selinux.found())
+ config_host_data.set('CONFIG_XEN_BACKEND', xen.found())
+diff --git a/qapi/ui.json b/qapi/ui.json
+index b2c42a7f57..94513b90e9 100644
+--- a/qapi/ui.json
++++ b/qapi/ui.json
+@@ -1517,6 +1517,9 @@
+ #
+ # @dbus: Start a D-Bus service for the display.  (Since 7.0)
+ #
++# @wasm: Render to a browser-controlled framebuffer via the wasm UI
++#     backend (emscripten builds only).
++#
+ # Since: 2.12
+ ##
+ { 'enum'    : 'DisplayType',
+@@ -1529,7 +1532,8 @@
+     { 'name': 'curses', 'if': 'CONFIG_CURSES' },
+     { 'name': 'cocoa', 'if': 'CONFIG_COCOA' },
+     { 'name': 'spice-app', 'if': 'CONFIG_SPICE' },
+-    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' }
++    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' },
++    { 'name': 'wasm', 'if': 'CONFIG_WASM_UI' }
+   ]
+ }
+ 
+diff --git a/system/icount2.c b/system/icount2.c
+index b742b8e2df..72ca7c2a88 100644
+--- a/system/icount2.c
++++ b/system/icount2.c
+@@ -21,7 +21,19 @@ bool use_icount2 = false;
+ static bool icount2_debug;
+ 
+ #define ICOUNT2_INITIAL_FREQUENCY 314000000
++#ifdef __EMSCRIPTEN__
++/*
++ * The frequency is clamped to the actually measured execution rate.  The
++ * stock 1 MHz floor is far above what the TCI interpreter sustains on
++ * wasm: virtual time would run ahead of executed instructions, guest
++ * timer deadlines would arrive ~20x "early" and the icount2_sync() work
++ * triggered by every deadline would dominate the interpreter.  Let the
++ * controller converge to the real rate instead.
++ */
++#define ICOUNT2_MIN_FREQUENCY 1000
++#else
+ #define ICOUNT2_MIN_FREQUENCY 1000000
++#endif
+ #define ICOUNT2_MAX_FREQUENCY 500000000
+ #define ICOUNT2_ADJUST_INTERVAL NANOSECONDS_PER_SECOND
+ #define ICOUNT2_ADJUST_P_GAIN 200000
+@@ -100,6 +112,32 @@ void icount2_advance(uint32_t cycles) {
+ 	}
+ }
+ 
++int64_t icount2_ticks_now(void) {
++	return qatomic_read(&timers_state.icount2_ticks);
++}
++
++#ifdef __EMSCRIPTEN__
++/*
++ * wasm: mid-TB MMIO accounting (see io_prepare(), cputlb.c).  Called
++ * from a load/store helper: if a virtual-timer deadline is crossed the
++ * timers are synced here so the upcoming device callback sees their
++ * effects, but never when the BQL is already held by this thread (a
++ * nested dispatch); the next per-TB icount2_advance() syncs instead.
++ */
++void wasm_io_advance(unsigned cycles) {
++	int64_t ticks = qatomic_read(&timers_state.icount2_ticks);
++	int64_t new_ticks = ticks + cycles;
++	qatomic_set(&timers_state.icount2_ticks, new_ticks);
++
++	int64_t deadline = qatomic_read(&timers_state.icount2_deadline);
++	if (deadline > 0 && new_ticks >= deadline && !bql_locked()) {
++		bql_lock();
++		icount2_sync();
++		bql_unlock();
++	}
++}
++#endif
++
+ static int64_t icount2_get_locked(void) {
+ 	int64_t ticks = qatomic_read(&timers_state.icount2_ticks);
+ 	int64_t offset = qatomic_read(&timers_state.icount2_offset);
+diff --git a/target/arm/tcg/tlb_helper.c b/target/arm/tcg/tlb_helper.c
+index 392b77eafd..4b03bf0f9c 100644
+--- a/target/arm/tcg/tlb_helper.c
++++ b/target/arm/tcg/tlb_helper.c
+@@ -6,6 +6,7 @@
+  * SPDX-License-Identifier: GPL-2.0-or-later
+  */
+ #include "qemu/osdep.h"
++#include "qemu/wasm-diag.h"
+ #include "cpu.h"
+ #include "helper.h"
+ #include "accel/tcg/cpu-loop.h"
+@@ -323,6 +324,12 @@ void arm_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
+     CPUARMState *env = &cpu->env;
+     ARMMMUFaultInfo fi = {};
+ 
++#ifdef __EMSCRIPTEN__
++    {
++        wasm_diag_stat[WASM_DIAG_TXN_FAILED]++;
++    }
++#endif
++
+     /*
+      * For M-profile, CCR.BFHFNMIGN lets software executing at a negative
+      * priority (in HardFault/NMI, or with FAULTMASK set) suppress precise
+diff --git a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
+index 2b5a8d8320..c337c10f68 100644
+--- a/target/arm/tcg/translate.c
++++ b/target/arm/tcg/translate.c
+@@ -1050,6 +1050,42 @@ static void gen_exception_el_v(int excp, uint32_t syndrome, TCGv_i32 tcg_el)
+                                           tcg_constant_i32(syndrome), tcg_el);
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * On emscripten, cpu_loop_exit() unwinds out of the TB via a JS
++ * exception (~15 µs each; this guest takes ~9k SWIs per second while
++ * booting, which used to cost ~15 % of the vCPU worker).  For an
++ * exception whose full state is known at translate time on cores
++ * without EL2/EL3 — no HCR.TGE redirect, target_el always 1 — we can
++ * instead store the exception state and end the TB with a plain
++ * exit_tb: cpu_handle_interrupt() sees the pending exception_index
++ * first and delivers it before running any other TB, exactly like the
++ * longjmp would have.  PC/condexec sync is the caller's job, same as
++ * with the helper form.
++ */
++static bool arm_excp_exit_ok(DisasContext *s)
++{
++    return !s->aarch64
++        && !arm_dc_feature(s, ARM_FEATURE_EL2)
++        && !arm_dc_feature(s, ARM_FEATURE_EL3)
++        && !arm_dc_feature(s, ARM_FEATURE_M);
++}
++
++static void gen_exception_exit(int excp, uint32_t syndrome)
++{
++    /* cs->exception_index = excp */
++    tcg_gen_st_i32(tcg_constant_i32(excp), tcg_env,
++                   offsetof(CPUState, exception_index) - sizeof(CPUState));
++    /* env->exception.syndrome (32-bit form; high half never used on A32) */
++    tcg_gen_st_i32(tcg_constant_i32(syndrome), tcg_env,
++                   offsetof(CPUARMState, exception.syndrome));
++    /* env->exception.target_el = 1 (fixed without EL2/EL3) */
++    tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
++                   offsetof(CPUARMState, exception.target_el));
++    tcg_gen_exit_tb(NULL, 0);
++}
++#endif /* __EMSCRIPTEN__ */
++
+ static void gen_exception_el(int excp, uint32_t syndrome, uint32_t target_el)
+ {
+     gen_exception_el_v(excp, syndrome, tcg_constant_i32(target_el));
+@@ -5362,9 +5398,11 @@ static bool trans_B_cond_thumb(DisasContext *s, arg_ci *a)
+         return true;
+     }
+     arm_skip_unless(s, a->cond);
++#if !defined(__EMSCRIPTEN__)
+     if (icount2_enabled()) {
+         gen_helper_cycle_counter(tcg_env, tcg_constant_i32(2));
+     }
++#endif
+     gen_jmp(s, jmp_diff(s, a->imm));
+     return true;
+ }
+@@ -6087,6 +6125,15 @@ static bool trans_CSEL(DisasContext *s, arg_CSEL *a)
+ 
+ static void gen_icount2_cycles(uint32_t cycles)
+ {
++#ifdef __EMSCRIPTEN__
++    /*
++     * TCI helper calls route through libffi, which on wasm is a JS
++     * roundtrip (~µs each); a helper per guest instruction limits the
++     * interpreter to <1M insns/s.  On emscripten the accounting is done
++     * once per executed TB in cpu_tb_exec() instead.
++     */
++    return;
++#endif
+     if (icount2_enabled()) {
+         gen_helper_cycle_counter(tcg_env, tcg_constant_i32(cycles));
+     }
+@@ -7024,6 +7071,12 @@ static void arm_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
+             gen_helper_yield(tcg_env);
+             break;
+         case DISAS_SWI:
++#ifdef __EMSCRIPTEN__
++            if (arm_excp_exit_ok(dc)) {
++                gen_exception_exit(EXCP_SWI, syn_aa32_svc(dc->svc_imm, dc->thumb));
++                break;
++            }
++#endif
+             gen_exception(EXCP_SWI, syn_aa32_svc(dc->svc_imm, dc->thumb));
+             break;
+         case DISAS_HVC:
+diff --git a/tcg/meson.build b/tcg/meson.build
+index 706a6eb260..d26993b6be 100644
+--- a/tcg/meson.build
++++ b/tcg/meson.build
+@@ -20,6 +20,14 @@ if get_option('tcg_interpreter')
+                       method: 'pkg-config')
+   tcg_ss.add(libffi)
+   tcg_ss.add(files('tci.c'))
++elif host_machine.cpu_family() == 'wasm32'
++  # runtime wasm32 TCG backend: wasm emitter (wasm32.c) + TCI fallback
++  # interpreter (tci.c; used when a TB's wasm instance is not alive)
++  libffi = dependency('libffi', version: '>=3.0', required: true,
++                      method: 'pkg-config')
++  specific_ss.add(libffi)
++  specific_ss.add(files('wasm32.c'))
++  tcg_ss.add(files('tci.c'))
+ endif
+ 
+ tcg_ss.add(when: libdw, if_true: files('debuginfo.c'))
+diff --git a/tcg/tcg.c b/tcg/tcg.c
+index 1e77f2365a..b878affdec 100644
+--- a/tcg/tcg.c
++++ b/tcg/tcg.c
+@@ -70,6 +70,10 @@ static bool patch_reloc(tcg_insn_unit *code_ptr, int type,
+                         intptr_t value, intptr_t addend);
+ static void tcg_out_nop_fill(tcg_insn_unit *p, int count);
+ 
++#if defined(EMSCRIPTEN) && !defined(CONFIG_TCG_INTERPRETER)
++static void tcg_out_label_cb(TCGContext *s, TCGLabel *l);
++static void tcg_out_init(void);
++#endif
+ typedef struct TCGLabelQemuLdst TCGLabelQemuLdst;
+ static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
+ static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
+@@ -246,13 +250,152 @@ TCGv_env tcg_env;
+ const void *tcg_code_gen_epilogue;
+ ptrdiff_t tcg_splitwx_diff;
+ 
+-#ifndef CONFIG_TCG_INTERPRETER
++#if !defined(CONFIG_TCG_INTERPRETER) && !defined(CONFIG_TCG_WASM32)
+ tcg_prologue_fn *tcg_qemu_tb_exec;
+ #endif
+ 
+ static TCGRegSet tcg_target_available_regs[TCG_TYPE_COUNT];
+ static TCGRegSet tcg_target_call_clobber_regs;
+ 
++#if defined(__EMSCRIPTEN__) && !defined(CONFIG_TCG_INTERPRETER)
++/* wasm32 runtime-JIT support: TCI bytecode goes to s->code_ptr while the
++ * wasm module body is built in a side buffer (sub_buf), assembled into a
++ * module blob after the TB (ported from ktock/qemu-wasm). */
++#define SUB_BUF_MAX 100000
++__thread uint8_t sub_buf[SUB_BUF_MAX];
++__thread uint8_t *sub_buf_ptr;
++
++static inline void tcg_sub_out8(TCGContext *s, uint8_t v)
++{
++    *sub_buf_ptr++ = v;
++    if ((sub_buf_ptr - sub_buf) > SUB_BUF_MAX) {
++        printf("buffer too small\n"); fflush(stdout);
++        exit(1);
++    }
++}
++
++static inline void tcg_sub_out32(TCGContext *s, uint32_t v)
++{
++    memcpy(sub_buf_ptr, &v, sizeof(v));
++    sub_buf_ptr += 4;
++}
++
++static inline void* cur_sub_buf_ptr()
++{
++    return sub_buf_ptr;
++}
++
++static inline int cur_sub_buf_off_rel()
++{
++    return (int)sub_buf_ptr - (int)sub_buf;
++}
++
++#define LABEL_MAX 200
++
++struct label_placeholder {
++    int label;
++    uintptr_t ptr;
++};
++
++struct label_context {
++    int block_idx;
++};
++
++#define WASM_NUM_HELPER_FUNCS_MAX 200
++#define WASM_HELPER_ADDED_TYPES_SECTION_MAX 200
++__thread uint32_t num_helper_funcs;
++__thread uint32_t target_helper_funcs[WASM_NUM_HELPER_FUNCS_MAX];
++__thread uint8_t target_helper_types[WASM_HELPER_ADDED_TYPES_SECTION_MAX];
++__thread int target_helper_types_pos;
++__thread int wasm_block_idx;
++__thread struct label_placeholder block_ptr_placeholder[LABEL_MAX];
++__thread int block_ptr_placeholder_idx_pos;
++__thread int label_to_block[LABEL_MAX];
++
++static int wasm_block_current_idx(TCGContext *s)
++{
++    return wasm_block_idx;
++}
++
++static int wasm_alloc_block_idx(TCGContext *s)
++{
++    return ++wasm_block_idx;
++}
++
++static void fill_uint32_leb128(uintptr_t bi, uint32_t v) {
++    uint8_t *b = (uint8_t *)bi;
++    uint32_t low7 = 0x7f;
++    // assuems higher bit already written as placeholders
++    do {
++        *b |= v & low7;
++        v >>= 7;
++        b++;
++    } while (v != 0);
++}
++
++static int write_uint32_leb128(uintptr_t bi, uint32_t v) {
++    uint8_t *b = (uint8_t *)bi;
++    uint32_t low7 = 0x7f;
++    do {
++        *b = (uint8_t)(v & low7);
++        v >>= 7;
++        if (v != 0)
++            *b |= 0x80;
++        b++;
++    } while (v != 0);
++
++    return (int)((uintptr_t)b - (uintptr_t)bi);
++}
++
++static uint8_t * wasm_get_helper_types_begin(TCGContext *s)
++{
++    return &(target_helper_types[target_helper_types_pos]);
++}
++
++static void wasm_add_helper_types_pos(TCGContext *s, int i)
++{
++    target_helper_types_pos += i;
++    tcg_debug_assert(target_helper_types_pos <= WASM_HELPER_ADDED_TYPES_SECTION_MAX);
++}
++
++static int wasm_register_helper_alloc_num(TCGContext *s)
++{
++    tcg_debug_assert(num_helper_funcs <= WASM_NUM_HELPER_FUNCS_MAX);
++    return num_helper_funcs++;
++}
++
++static void wasm_register_helper(TCGContext *s, int idx_on_tb, int helper_idx_on_qemu)
++{
++    tcg_debug_assert(idx_on_tb <= WASM_NUM_HELPER_FUNCS_MAX);
++    target_helper_funcs[idx_on_tb] = helper_idx_on_qemu;
++}
++
++static int get_wasm_helper_idx(TCGContext *s, int helper_idx_on_qemu)
++{
++    for (int i = 0; i < num_helper_funcs; i++) {
++        if (target_helper_funcs[i] == helper_idx_on_qemu) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++static void wasm_add_label_context(TCGContext *s, int label, int block)
++{
++    tcg_debug_assert(label <= LABEL_MAX);
++    label_to_block[label] = block;
++}
++
++static void wasm_add_label_block_ptr_placeholder(int label, uintptr_t code_ptr)
++{
++    int i = block_ptr_placeholder_idx_pos++;
++    tcg_debug_assert(i <= LABEL_MAX);
++    block_ptr_placeholder[i].label = label;
++    block_ptr_placeholder[i].ptr = code_ptr;
++}
++
++#endif /* __EMSCRIPTEN__ && !CONFIG_TCG_INTERPRETER (tcg.c wasm helpers) */
++
+ #if TCG_TARGET_INSN_UNIT_SIZE == 1
+ static __attribute__((unused)) inline void tcg_out8(TCGContext *s, uint8_t v)
+ {
+@@ -353,6 +496,9 @@ static void tcg_out_label(TCGContext *s, TCGLabel *l)
+     tcg_debug_assert(!l->has_value);
+     l->has_value = 1;
+     l->u.value_ptr = tcg_splitwx_to_rx(s->code_ptr);
++#if defined(EMSCRIPTEN) && !defined(CONFIG_TCG_INTERPRETER)
++    tcg_out_label_cb(s, l);
++#endif
+ }
+ 
+ TCGLabel *gen_new_label(void)
+@@ -1408,7 +1554,7 @@ static TCGHelperInfo info_helper_st128_mmu = {
+               | dh_typemask(ptr, 5)  /* uintptr_t ra */
+ };
+ 
+-#ifdef CONFIG_TCG_INTERPRETER
++#if defined(CONFIG_TCG_INTERPRETER) || defined(CONFIG_TCG_WASM32)
+ static ffi_type *typecode_to_ffi(int argmask)
+ {
+     /*
+@@ -1480,6 +1626,10 @@ static ffi_cif *init_ffi_layout(TCGHelperInfo *info)
+     return &ca->cif;
+ }
+ 
++#define HELPER_INFO_INIT(I)      (&(I)->cif)
++#define HELPER_INFO_INIT_VAL(I)  init_ffi_layout(I)
++#elif defined(CONFIG_TCG_WASM32)
++/* wasm32 backend: the TCI fallback interpreter calls helpers via cif too */
+ #define HELPER_INFO_INIT(I)      (&(I)->cif)
+ #define HELPER_INFO_INIT_VAL(I)  init_ffi_layout(I)
+ #else
+@@ -1853,7 +2003,7 @@ void tcg_prologue_init(void)
+     s->code_buf = s->code_gen_ptr;
+     s->data_gen_ptr = NULL;
+ 
+-#ifndef CONFIG_TCG_INTERPRETER
++#if !defined(CONFIG_TCG_INTERPRETER) && !defined(CONFIG_TCG_WASM32)
+     tcg_qemu_tb_exec = (tcg_prologue_fn *)tcg_splitwx_to_rx(s->code_ptr);
+ #endif
+ 
+@@ -6553,6 +6703,150 @@ static void tcg_out_st_helper_args(TCGContext *s, const TCGLabelQemuLdst *ldst,
+     tcg_out_helper_load_common_args(s, ldst, parm, info, next_arg);
+ }
+ 
++#if defined(__EMSCRIPTEN__) && !defined(CONFIG_TCG_INTERPRETER)
++
++static const uint8_t mod_header_a[] = {
++    0x0, 0x61, 0x73, 0x6d,               // magic
++    0x01, 0x0, 0x0, 0x0,                 // version
++    // type section
++    0x01, 0x80, 0x80, 0x80, 0x80, 0x00,
++    0x80, 0x80, 0x80, 0x80, 0x00,
++    0x60,
++    0x01, 0x7f,
++    0x01, 0x7f,
++    
++};
++static const uint8_t mod_header_b[] = {
++    // import section
++    0x02, 0x80, 0x80, 0x80, 0x80, 0x00,
++    0x80, 0x80, 0x80, 0x80, 0x00,
++    0x03, 0x65, 0x6e, 0x76,
++    0x06, 0x62, 0x75, 0x66, 0x66, 0x65, 0x72,
++    0x02, 0x03, 0x00, 0x80, 0x80, 0x80, 0x80, 0x00,
++};
++
++static const uint8_t mod_header_c[] = {
++    // function section
++    0x03, 2, 1, 0x00,
++    // global section
++    0x06, 0x7e,
++    25,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    0x7e, 0x01, 0x42, 0x00, 0x0b,
++    // export section
++    0x07, 13,
++    1,
++    0x05, 0x73, 0x74, 0x61, 0x72, 0x74,
++    0x00, 0x80, 0x80, 0x80, 0x80, 0x00,
++};
++
++static const uint8_t mod_header_d[] = {
++    0x0a, 0x80, 0x80, 0x80, 0x80, 0x00,
++    0x80, 0x80, 0x80, 0x80, 0x00,
++    0x80, 0x80, 0x80, 0x80, 0x00,
++
++    0x2, 0x2, 0x7f, 0x5, 0x7e,
++    
++    // initialize the instance
++    0x20, 0x0,               // local.get $ctx
++    0x28, 0, DO_INIT_OFF,    // i32.load do_init_ptr
++    0x41, 0,                 // i32.const 0
++    0x47,                    // i32.ne
++    0x04, 0x40,              // if
++
++    0x23, 14,                // global.get $env
++    0x50,                    // i64.eqz
++    0x04, 0x40,              // if
++    // fundamental variables
++    0x20, 0x0,               // local.get $ctx
++    0x28, 0, ENV_OFF,        // i32.load env
++    0xad,                    // extend
++    0x24, 14,                // global.set $14
++    0x20, 0x0,               // local.get $ctx
++    0x28, 0, STACK_OFF,      // i32.load stack
++    0xad,                    // extend
++    0x24, 15,                // global.set $15
++    0x0b,                    // end
++
++    0x20, 0x0,               // local.get $ctx
++    0x41, 0x00,              // i32.const 0
++    0x36, 0x00, DO_INIT_OFF, // i32.store do_init
++    0x42, 0x00,              // i64.const 0
++    0x24, 16,                // global.set $block_ptr
++    0x0b,                    // end
++
++    0x03, 0x40,              // loop
++    0x23, 16,                // global.get $block_ptr
++    0x50,                    // i64.eqz
++    0x04, 0x40,              // if
++};
++
++static void write_wasm_type_section_size(TCGContext *s, void *header_a_ptr, uint32_t added) {
++    uint32_t type_section_size = added + 10;
++    fill_uint32_leb128((uintptr_t)header_a_ptr + 9, type_section_size);
++    fill_uint32_leb128((uintptr_t)header_a_ptr + 14, num_helper_funcs + 1);
++}
++static void write_wasm_memory_size(TCGContext *s, void *header_b_ptr) {
++    fill_uint32_leb128((uintptr_t)header_b_ptr + 25, (uint32_t)(~0) / 65536);
++}
++static void write_wasm_import_section_size(TCGContext *s, void *header_b_ptr, uint32_t added, uint32_t num_imported_funcs) {
++    uint32_t import_section_size = 35 + added - 11;
++    fill_uint32_leb128((uintptr_t)header_b_ptr + 1, import_section_size);
++    fill_uint32_leb128((uintptr_t)header_b_ptr + 6, num_imported_funcs + 1/*buffer+helpers...*/);
++}
++static void write_wasm_export_section_size(TCGContext *s, void *header_c_ptr, uint32_t startidx) {
++    fill_uint32_leb128((uintptr_t)header_c_ptr + 142, startidx);
++}
++static void write_wasm_code_size(TCGContext *s, void *header_d_ptr, int code_size, int code_nums) {
++    code_size = code_size + 66;
++    fill_uint32_leb128((uintptr_t)header_d_ptr + 1, code_size);
++    fill_uint32_leb128((uintptr_t)header_d_ptr + 6, code_nums);
++    fill_uint32_leb128((uintptr_t)header_d_ptr + 11, code_size - 10);
++}
++
++uint8_t *tcg_out_import_entry(TCGContext *s, uint8_t* wasm_blob_ptr, int i, int typeidx)
++{
++    *wasm_blob_ptr++ = 6; // helper
++    *wasm_blob_ptr++ = 0x68;
++    *wasm_blob_ptr++ = 0x65;
++    *wasm_blob_ptr++ = 0x6c;
++    *wasm_blob_ptr++ = 0x70;
++    *wasm_blob_ptr++ = 0x65;
++    *wasm_blob_ptr++ = 0x72;
++    char buf[100];
++    int n = snprintf(buf, sizeof(buf), "%d", i);
++    wasm_blob_ptr += write_uint32_leb128((uintptr_t)wasm_blob_ptr, n);
++    memcpy(wasm_blob_ptr, buf, n);
++    wasm_blob_ptr += n;
++    *wasm_blob_ptr++ = 0x00;    //type(0)
++    *wasm_blob_ptr++ = typeidx; //typeidx
++    return wasm_blob_ptr;
++}
++#endif /* __EMSCRIPTEN__ && !CONFIG_TCG_INTERPRETER */
++
+ int tcg_gen_code(TCGContext *s, TranslationBlock *tb, uint64_t pc_start)
+ {
+     int i, num_insns;
+@@ -6641,6 +6935,43 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb, uint64_t pc_start)
+     s->code_buf = tcg_splitwx_to_rw(tb->tc.ptr);
+     s->code_ptr = s->code_buf;
+     s->data_gen_ptr = NULL;
++#if defined(__EMSCRIPTEN__) && !defined(CONFIG_TCG_INTERPRETER)
++    uint32_t *tci_code_off;
++    uint8_t *code_begin;
++    uint32_t *size_base;
++    sub_buf_ptr = sub_buf;
++    tcg_out_init();
++    num_helper_funcs = 0;
++    wasm_block_idx = 0;
++    block_ptr_placeholder_idx_pos = 0;
++    target_helper_types_pos = 0;
++    memset(label_to_block, -1, LABEL_MAX);
++    memset(target_helper_funcs, -1, WASM_NUM_HELPER_FUNCS_MAX);
++
++    tci_code_off = (uint32_t*)s->code_ptr;
++    s->code_ptr += 4;
++    size_base = (uint32_t*)s->code_ptr;
++    s->code_ptr += 4;
++    uint32_t *export_vec_base = (uint32_t*)s->code_ptr;
++    int export_size = get_core_nums() * 4;
++    memset(s->code_ptr, 0, export_size);
++    s->code_ptr += export_size;
++    *size_base = export_size;
++
++    size_base = (uint32_t*)s->code_ptr;
++    s->code_ptr += 4;
++    int counter_size = get_core_nums() * 4;
++    memset(s->code_ptr, 0, counter_size);
++    s->code_ptr += counter_size;
++    *size_base = counter_size;
++    
++    uint32_t *tb_icount_slot = (uint32_t*)s->code_ptr;
++    s->code_ptr += 4;
++    code_begin = s->code_ptr;
++    s->code_ptr += 4; // placeholder for size
++    *tci_code_off = s->code_ptr - s->code_buf;
++    s->gen_wasm32_icount_slot = tb_icount_slot;
++#endif
+ 
+     QSIMPLEQ_INIT(&s->ldst_labels);
+     s->pool_labels = NULL;
+@@ -6756,13 +7087,113 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb, uint64_t pc_start)
+         return -2;
+     }
+ 
+-#ifndef CONFIG_TCG_INTERPRETER
++#if !defined(CONFIG_TCG_INTERPRETER) && !defined(__EMSCRIPTEN__)
+     /* flush instruction cache */
+     flush_idcache_range((uintptr_t)tcg_splitwx_to_rx(s->code_buf),
+                         (uintptr_t)s->code_buf,
+                         tcg_ptr_byte_diff(s->code_ptr, s->code_buf));
+ #endif
+ 
++#if defined(__EMSCRIPTEN__) && !defined(CONFIG_TCG_INTERPRETER)
++    tcg_sub_out8(s, 0x0b); //end if
++    tcg_sub_out8(s, 0x0b); //end loop
++    tcg_sub_out8(s, 0x0); // unreachable
++    tcg_sub_out8(s, 0x0b); //end func
++
++    // fill blocks
++    for (int i = 0; i < block_ptr_placeholder_idx_pos; i++) {
++        int label = block_ptr_placeholder[i].label;
++        int ph = block_ptr_placeholder[i].ptr;
++        int blk = label_to_block[label];
++        tcg_debug_assert(blk >= 0);
++        *(uint8_t*)ph = 0x80;
++        fill_uint32_leb128(ph, blk);
++    }
++
++    uint32_t code_size = (uint32_t)((uintptr_t)s->code_ptr - (uintptr_t)code_begin - 4);
++    *(uint32_t *)code_begin = code_size;
++
++    uint32_t sub_buf_len = sub_buf_ptr - sub_buf;
++    int wasm_body_size = sub_buf_len;
++
++    // write header
++    uint8_t *wasm_blob_ptr = s->code_ptr;
++    uint8_t *wasm_blob_ptr_base = s->code_ptr;
++    wasm_blob_ptr += 4; // placeholder for size
++
++    if (unlikely(((void *)wasm_blob_ptr + sizeof(mod_header_a) + target_helper_types_pos) > s->code_gen_highwater)) {
++        return -1;
++    }
++    uint8_t *header_a_base = wasm_blob_ptr;
++    memcpy(wasm_blob_ptr, mod_header_a, sizeof(mod_header_a));
++    wasm_blob_ptr += sizeof(mod_header_a);
++    memcpy(wasm_blob_ptr, target_helper_types, target_helper_types_pos);
++    wasm_blob_ptr += target_helper_types_pos;
++    write_wasm_type_section_size(s, header_a_base, target_helper_types_pos);
++    
++    if (unlikely(((void *)wasm_blob_ptr + sizeof(mod_header_b)) > s->code_gen_highwater)) {
++        return -1;
++    }
++    uint8_t *header_b_base = wasm_blob_ptr;
++    memcpy(wasm_blob_ptr, mod_header_b, sizeof(mod_header_b));
++    wasm_blob_ptr += sizeof(mod_header_b);
++    uint8_t *header_b_adding_base = wasm_blob_ptr;
++    for (int i = 0; i < num_helper_funcs; i++) {
++        wasm_blob_ptr = tcg_out_import_entry(s, wasm_blob_ptr, i, i+1/*type0=start,1=helpers...*/);
++    }
++    write_wasm_import_section_size(s, header_b_base, (uint32_t)wasm_blob_ptr - (uint32_t)header_b_adding_base, num_helper_funcs);
++    write_wasm_memory_size(s, header_b_base);
++
++    if (unlikely(((void *)wasm_blob_ptr + sizeof(mod_header_c)) > s->code_gen_highwater)) {
++        return -1;
++    }
++    uint8_t *header_c_base = wasm_blob_ptr;
++    memcpy(wasm_blob_ptr, mod_header_c, sizeof(mod_header_c));
++    wasm_blob_ptr += sizeof(mod_header_c);
++    write_wasm_export_section_size(s, header_c_base, num_helper_funcs);
++
++    if (unlikely(((void *)wasm_blob_ptr + sizeof(mod_header_d)) > s->code_gen_highwater)) {
++        return -1;
++    }
++    uint8_t *header_d_ptr = wasm_blob_ptr;
++    memcpy(wasm_blob_ptr, mod_header_d, sizeof(mod_header_d));
++    wasm_blob_ptr += sizeof(mod_header_d);
++    write_wasm_code_size(s, header_d_ptr, wasm_body_size, 1);
++    s->code_ptr = wasm_blob_ptr;
++
++    // write body
++    if (unlikely(((void *)s->code_ptr + sub_buf_len) > s->code_gen_highwater)) {
++        return -1;
++    }
++    memcpy(s->code_ptr, sub_buf, sub_buf_len);
++    s->code_ptr += sub_buf_len;
++
++    // write blob size
++    if (sub_buf_len > SUB_BUF_MAX) {
++        printf("sub too large sub_buf_len: %d\n", sub_buf_len); fflush(stdout);
++        exit(1);
++    }
++    *(uint32_t *)wasm_blob_ptr_base = s->code_ptr - wasm_blob_ptr_base - 4;
++
++    // record importing helper functions
++    if (unlikely(((void *)s->code_ptr + 4 + num_helper_funcs * 4) > s->code_gen_highwater)) {
++        return -1;
++    }
++    size_base = (uint32_t*)s->code_ptr;
++    s->code_ptr += 4;
++    memcpy(s->code_ptr, target_helper_funcs, num_helper_funcs * 4);
++    s->code_ptr += num_helper_funcs * 4;
++    *size_base = num_helper_funcs * 4;
++
++    *s->gen_wasm32_icount_slot = s->gen_tb->icount;
++    
++    if (unlikely((void *)s->code_ptr > s->code_gen_highwater)) {
++        return -1;
++    }
++#endif
++
++
++
+     return tcg_current_code_size(s);
+ }
+ 
+diff --git a/tcg/tci.c b/tcg/tci.c
+index 29ecb39929..96646ace09 100644
+--- a/tcg/tci.c
++++ b/tcg/tci.c
+@@ -25,6 +25,20 @@
+ #include "tcg-has.h"
+ #include <ffi.h>
+ 
++/*
++ * TCI fast paths: both guest memory accesses and plain i32/i64 helper
++ * calls normally route through libffi's ffi_call, which on wasm is a JS
++ * round-trip (~1.7us per call) and on native hosts still re-marshals every
++ * argument.  Probe the softmmu TLB inline before calling the load/store
++ * helpers and dispatch simple-signature helpers through exactly-typed
++ * function pointers instead (see tci_tlb_probe / tci_call_direct below).
++ */
++#include "hw/core/cpu.h"
++#include "exec/cpu-common.h"
++#include "exec/tlb-flags.h"
++#include "exec/target_page.h"
++#include "qemu/wasm-diag.h"
++
+ 
+ /*
+  * Enable TCI assertions only when debugging TCG (and without NDEBUG defined).
+@@ -38,6 +52,16 @@
+ 
+ __thread uintptr_t tci_tb_ptr;
+ 
++#ifdef CONFIG_TCG_WASM32
++/* wasm32 dispatch context (tcg/wasm32.c): set by tcg_qemu_tb_exec there,
++ * read by the tci_w32_next* ops to hand the next TB to its dispatch loop. */
++#include "wasm32.h"
++extern __thread struct wasmContext *tci_w32_ctx;
++#endif
++
++uint64_t wasm_diag_stat[WASM_DIAG_N];
++
++
+ /*
+  * Load sets of arguments all at once.  The naming convention is:
+  *   tci_args_<arguments>
+@@ -113,6 +137,22 @@ static void tci_args_rrs(uint32_t insn, TCGReg *r0, TCGReg *r1, int32_t *i2)
+     *i2 = sextract32(insn, 16, 16);
+ }
+ 
++static void tci_args_rri(uint32_t insn, TCGReg *r0, TCGReg *r1, int32_t *i2)
++{
++    *r0 = extract32(insn, 8, 4);
++    *r1 = extract32(insn, 12, 4);
++    *i2 = sextract32(insn, 16, 16);
++}
++
++static void tci_args_rrci(uint32_t insn, TCGReg *r0, TCGReg *r1,
++                          TCGCond *c2, int32_t *i3)
++{
++    *r0 = extract32(insn, 8, 4);
++    *r1 = extract32(insn, 12, 4);
++    *c2 = extract32(insn, 16, 4);
++    *i3 = sextract32(insn, 20, 12);
++}
++
+ static void tci_args_rrbb(uint32_t insn, TCGReg *r0, TCGReg *r1,
+                           uint8_t *i2, uint8_t *i3)
+ {
+@@ -257,12 +297,91 @@ static bool tci_compare64(uint64_t u0, uint64_t u1, TCGCond condition)
+     return result;
+ }
+ 
++/*
++ * Inline TLB probe, mirroring the compare that native TCG backends emit
++ * (prepare_host_addr() in the native tcg-target.c.inc backends and tlb_set_compare() in
++ * accel/tcg/cputlb.c).  When (addr[+s-a adjust] & (page_mask | a_mask))
++ * equals tlb_addr, the entry is valid, RAM-backed, writable (clean pages
++ * get TLB_NOTDIRTY and watchpointed entries TLB_FORCE_SLOW, both of which
++ * live in tlb_addr's flag bits and make the compare fail) and the access
++ * cannot straddle a page: addr + addend is then the host address.
++ * Returns NULL when the helper slow path must be taken instead.
++ */
++static void *tci_tlb_probe(CPUArchState *env, uint64_t addr,
++                           MemOpIdx oi, bool is_load)
++{
++    MemOp opc = get_memop(oi);
++    unsigned s_mask = (1u << (opc & MO_SIZE)) - 1;
++    unsigned a_mask = (1u << memop_alignment_bits(opc)) - 1;
++    unsigned atom = opc & (7u << MO_ATOM_SHIFT);
++    uint64_t page_mask = (uint64_t)(int64_t)TARGET_PAGE_MASK;
++    CPUTLBDescFast *fast = cpu_tlb_fast(env_cpu(env), get_mmuidx(oi));
++    CPUTLBEntry *entry;
++    uint64_t tlb_addr, cmp;
++
++    /*
++     * The interpreter emits single plain wasm loads/stores; only aligned
++     * ones may stand in for accesses with atomicity requirements.
++     */
++    if (atom != MO_ATOM_NONE && atom != MO_ATOM_IFALIGN &&
++        (addr & s_mask) != 0) {
++        return NULL;
++    }
++
++    entry = &fast->table[(addr >> TARGET_PAGE_BITS) &
++                         (fast->mask >> CPU_TLB_ENTRY_BITS)];
++    tlb_addr = is_load ? entry->addr_read : entry->addr_write;
++    cmp = a_mask >= s_mask ? addr : addr + (s_mask - a_mask);
++
++    if (likely((cmp & (page_mask | a_mask)) == tlb_addr)) {
++        return (void *)(uintptr_t)(addr + entry->addend);
++    }
++    return NULL;
++}
++
++/*
++ * Specialized probe for tci_qemu_ld8..st32: the emitters pick these ops only
++ * for mops of the exact family MO_ALIGN|MO_ATOM_NONE|size(|sign) (see
++ * tci_mop_specializes in tcg-target.c.inc).  For those, a_mask == s_mask, so
++ * the generic tci_tlb_probe() compare reduces to
++ *     (addr & (TARGET_PAGE_MASK | s_mask)) == tlb_addr
++ * - no mask math, no atom branch, no size switch; s_mask is a compile-time
++ * constant at each call site.  Misaligned addresses fail the compare (the
++ * low bits hit tlb_addr's flag bits) and take the generic slow path, exactly
++ * like the full probe.
++ */
++static void *QEMU_ALWAYS_INLINE tci_probe_a(CPUArchState *env, uint64_t addr,
++                                            unsigned s_mask, bool is_load,
++                                            unsigned mmu_idx)
++{
++    CPUTLBDescFast *fast = cpu_tlb_fast(env_cpu(env), mmu_idx);
++    CPUTLBEntry *entry = &fast->table[(addr >> TARGET_PAGE_BITS) &
++                           (fast->mask >> CPU_TLB_ENTRY_BITS)];
++    uint64_t tlb_addr = is_load ? entry->addr_read : entry->addr_write;
++
++    if (likely((addr & ((uint64_t)(int64_t)TARGET_PAGE_MASK | s_mask))
++               == tlb_addr)) {
++        return (void *)(uintptr_t)(addr + entry->addend);
++    }
++    return NULL;
++}
++
++
++
++
+ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+                             MemOpIdx oi, const void *tb_ptr)
+ {
+     MemOp mop = get_memop(oi);
+     uintptr_t ra = (uintptr_t)tb_ptr;
+ 
++    /*
++     * No TLB probe here: every caller (tci_ld_fast and the size-specialized
++     * cases below) has just probed with the same inputs - nothing can change
++     * the TLB in between, so a re-probe can never hit (measured: 0 hits in
++     * 1.1M+ calls).  Straight to the full slow path.
++     */
++    wasm_diag_stat[WASM_DIAG_LD_HELPER]++;
+     switch (mop & MO_SSIZE) {
+     case MO_UB:
+         return helper_ldub_mmu(env, taddr, oi, ra);
+@@ -283,12 +402,104 @@ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+     }
+ }
+ 
++/*
++ * Inline fast paths for the interpreter loop: probe the TLB and, on a
++ * hit, perform the access right here (mirroring what native TCG backends
++ * emit inline); fall back to tci_qemu_ld/st (helper slow path) on a miss.
++ * Kept small so the compiler inlines them into tcg_qemu_tb_exec.
++ */
++static bool QEMU_ALWAYS_INLINE tci_ld_fast(CPUArchState *env, uint64_t taddr,
++                                      MemOpIdx oi, tcg_target_ulong *res)
++{
++    void *haddr = tci_tlb_probe(env, taddr, oi, true);
++    MemOp mop = get_memop(oi);
++    uint64_t v;
++
++    if (unlikely(haddr == NULL)) {
++        return false;
++    }
++    switch (mop & MO_SSIZE) {
++    case MO_UB:
++        v = *(uint8_t *)haddr;
++        break;
++    case MO_SB:
++        v = (int8_t)*(uint8_t *)haddr;
++        break;
++    case MO_UW:
++        v = *(uint16_t *)haddr;
++        if (mop & MO_BSWAP) {
++            v = bswap16(v);
++        }
++        break;
++    case MO_SW:
++        v = *(uint16_t *)haddr;
++        if (mop & MO_BSWAP) {
++            v = bswap16(v);
++        }
++        v = (int16_t)v;
++        break;
++    case MO_UL:
++        v = *(uint32_t *)haddr;
++        if (mop & MO_BSWAP) {
++            v = bswap32(v);
++        }
++        break;
++    case MO_SL:
++        v = *(uint32_t *)haddr;
++        if (mop & MO_BSWAP) {
++            v = bswap32(v);
++        }
++        v = (int32_t)v;
++        break;
++    case MO_UQ:
++        v = *(uint64_t *)haddr;
++        if (mop & MO_BSWAP) {
++            v = bswap64(v);
++        }
++        break;
++    default:
++        g_assert_not_reached();
++    }
++    *res = v;
++    return true;
++}
++
++static bool QEMU_ALWAYS_INLINE tci_st_fast(CPUArchState *env, uint64_t taddr,
++                                      MemOpIdx oi, uint64_t val)
++{
++    void *haddr = tci_tlb_probe(env, taddr, oi, false);
++    MemOp mop = get_memop(oi);
++
++    if (unlikely(haddr == NULL)) {
++        return false;
++    }
++    switch (mop & MO_SIZE) {
++    case MO_UB:
++        *(uint8_t *)haddr = (uint8_t)val;
++        break;
++    case MO_UW:
++        *(uint16_t *)haddr = (mop & MO_BSWAP) ? bswap16(val) : (uint16_t)val;
++        break;
++    case MO_UL:
++        *(uint32_t *)haddr = (mop & MO_BSWAP) ? bswap32(val) : (uint32_t)val;
++        break;
++    case MO_UQ:
++        *(uint64_t *)haddr = (mop & MO_BSWAP) ? bswap64(val) : val;
++        break;
++    default:
++        g_assert_not_reached();
++    }
++    return true;
++}
++
+ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+                         MemOpIdx oi, const void *tb_ptr)
+ {
+     MemOp mop = get_memop(oi);
+     uintptr_t ra = (uintptr_t)tb_ptr;
+ 
++    /* no re-probe here either - see tci_qemu_ld */
++    wasm_diag_stat[WASM_DIAG_ST_HELPER]++;
+     switch (mop & MO_SIZE) {
+     case MO_UB:
+         helper_stb_mmu(env, taddr, val, oi, ra);
+@@ -307,12 +518,691 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+     }
+ }
+ 
+-/* Interpret pseudo code in tb. */
++/*
++ * Direct C dispatch for helper calls whose libffi signature uses only
++ * i32/i64 words and at most 5 arguments.  On wasm, ffi_call() marshals
++ * every argument through JS (ffi_call_js, ~1.7us); calling the helper
++ * through a correctly typed function pointer is a native wasm
++ * call_indirect instead.  On native hosts ffi_call() still re-marshals
++ * every argument, so the same dispatch is a win there too.  Argument
++ * words have already been stored into stack[0..n-1] by the preceding
++ * TCI store ops (one 8-byte slot each for both i32 and i64 arguments);
++ * the result is written back to stack[0] for the caller's
++ * return-length switch.  Anything else returns false and the caller
++ * falls back to libffi.
++ *
++ * The signature tag is encoded as
++ *   bits 0-2  number of arguments
++ *   bits 3-4  return class (0 = void, 1 = u32, 2 = u64)
++ *   bits 5+   2 bits per argument (1 = u32, 2 = u64)
++ * TCI_TAG_UNCLASSIFIED marks signatures that must use libffi (more
++ * than 5 arguments, floating point/struct words); it is distinct from
++ * the valid tag 0 of a (void) -> void helper.
++ */
++#define TCI_CLS_U32 1
++#define TCI_CLS_U64 2
++#define TCI_TAG_UNCLASSIFIED UINT32_MAX
++
++static uint32_t tci_call_tag(const ffi_cif *cif)
++{
++    uint32_t tag = cif->nargs;
++    unsigned i;
++
++    if (cif->nargs > 5) {
++        return TCI_TAG_UNCLASSIFIED;
++    }
++    switch (cif->rtype->type) {
++    case FFI_TYPE_VOID:
++        break;
++    case FFI_TYPE_INT:
++    case FFI_TYPE_UINT8:
++    case FFI_TYPE_SINT8:
++    case FFI_TYPE_UINT16:
++    case FFI_TYPE_SINT16:
++    case FFI_TYPE_UINT32:
++    case FFI_TYPE_SINT32:
++        tag |= TCI_CLS_U32 << 3;
++        break;
++    case FFI_TYPE_UINT64:
++    case FFI_TYPE_SINT64:
++#if UINTPTR_MAX == UINT64_MAX
++    case FFI_TYPE_POINTER:
++#endif
++        tag |= TCI_CLS_U64 << 3;
++        break;
++#if UINTPTR_MAX < UINT64_MAX
++    case FFI_TYPE_POINTER:
++        tag |= TCI_CLS_U32 << 3;
++        break;
++#endif
++    default:
++        return TCI_TAG_UNCLASSIFIED;
++    }
++
++    for (i = 0; i < cif->nargs; i++) {
++        switch (cif->arg_types[i]->type) {
++        case FFI_TYPE_INT:
++        case FFI_TYPE_UINT8:
++        case FFI_TYPE_SINT8:
++        case FFI_TYPE_UINT16:
++        case FFI_TYPE_SINT16:
++        case FFI_TYPE_UINT32:
++        case FFI_TYPE_SINT32:
++            tag |= TCI_CLS_U32 << (5 + 2 * i);
++            break;
++        case FFI_TYPE_UINT64:
++        case FFI_TYPE_SINT64:
++#if UINTPTR_MAX == UINT64_MAX
++        case FFI_TYPE_POINTER:
++#endif
++            tag |= TCI_CLS_U64 << (5 + 2 * i);
++            break;
++#if UINTPTR_MAX < UINT64_MAX
++        case FFI_TYPE_POINTER:
++            tag |= TCI_CLS_U32 << (5 + 2 * i);
++            break;
++#endif
++        default:
++            return TCI_TAG_UNCLASSIFIED;
++        }
++    }
++    return tag;
++}
++
++static bool tci_call_direct(void *func, uint32_t tag, uint64_t *stack)
++{
++    switch (tag) {
++    case 0x0000: /* (void) -> void */
++        ((void (*)(void))func)();
++        return true;
++    case 0x0008: /* (void) -> u32 */
++        stack[0] = ((uint32_t (*)(void))func)();
++        return true;
++    case 0x0010: /* (void) -> u64 */
++        stack[0] = ((uint64_t (*)(void))func)();
++        return true;
++    case 0x0021: /* (i32) -> void */
++        ((void (*)(uint32_t))func)((uint32_t)stack[0]);
++        return true;
++    case 0x0041: /* (i64) -> void */
++        ((void (*)(uint64_t))func)(stack[0]);
++        return true;
++    case 0x0029: /* (i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t))func)((uint32_t)stack[0]);
++        return true;
++    case 0x0049: /* (i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t))func)(stack[0]);
++        return true;
++    case 0x0031: /* (i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t))func)((uint32_t)stack[0]);
++        return true;
++    case 0x0051: /* (i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t))func)(stack[0]);
++        return true;
++    case 0x00a2: /* (i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x00c2: /* (i64,i32) -> void */
++        ((void (*)(uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x0122: /* (i32,i64) -> void */
++        ((void (*)(uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1]);
++        return true;
++    case 0x0142: /* (i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t))func)(stack[0], stack[1]);
++        return true;
++    case 0x00aa: /* (i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x00ca: /* (i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x012a: /* (i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1]);
++        return true;
++    case 0x014a: /* (i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t))func)(stack[0], stack[1]);
++        return true;
++    case 0x00b2: /* (i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x00d2: /* (i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1]);
++        return true;
++    case 0x0132: /* (i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1]);
++        return true;
++    case 0x0152: /* (i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t))func)(stack[0], stack[1]);
++        return true;
++    case 0x02a3: /* (i32,i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x02c3: /* (i64,i32,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x0323: /* (i32,i64,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x0343: /* (i64,i64,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x04a3: /* (i32,i32,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x04c3: /* (i64,i32,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x0523: /* (i32,i64,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2]);
++        return true;
++    case 0x0543: /* (i64,i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2]);
++        return true;
++    case 0x02ab: /* (i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x02cb: /* (i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x032b: /* (i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x034b: /* (i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x04ab: /* (i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x04cb: /* (i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x052b: /* (i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2]);
++        return true;
++    case 0x054b: /* (i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2]);
++        return true;
++    case 0x02b3: /* (i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x02d3: /* (i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x0333: /* (i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x0353: /* (i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2]);
++        return true;
++    case 0x04b3: /* (i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x04d3: /* (i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2]);
++        return true;
++    case 0x0533: /* (i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2]);
++        return true;
++    case 0x0553: /* (i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2]);
++        return true;
++    case 0x0aa4: /* (i32,i32,i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0ac4: /* (i64,i32,i32,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b24: /* (i32,i64,i32,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b44: /* (i64,i64,i32,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0ca4: /* (i32,i32,i64,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0cc4: /* (i64,i32,i64,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d24: /* (i32,i64,i64,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d44: /* (i64,i64,i64,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x12a4: /* (i32,i32,i32,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x12c4: /* (i64,i32,i32,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x1324: /* (i32,i64,i32,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x1344: /* (i64,i64,i32,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x14a4: /* (i32,i32,i64,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x14c4: /* (i64,i32,i64,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x1524: /* (i32,i64,i64,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x1544: /* (i64,i64,i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x0aac: /* (i32,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0acc: /* (i64,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b2c: /* (i32,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b4c: /* (i64,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0cac: /* (i32,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0ccc: /* (i64,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d2c: /* (i32,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d4c: /* (i64,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x12ac: /* (i32,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x12cc: /* (i64,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x132c: /* (i32,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x134c: /* (i64,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x14ac: /* (i32,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x14cc: /* (i64,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x152c: /* (i32,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x154c: /* (i64,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x0ab4: /* (i32,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0ad4: /* (i64,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b34: /* (i32,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0b54: /* (i64,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0cb4: /* (i32,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0cd4: /* (i64,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d34: /* (i32,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x0d54: /* (i64,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3]);
++        return true;
++    case 0x12b4: /* (i32,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x12d4: /* (i64,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x1334: /* (i32,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x1354: /* (i64,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3]);
++        return true;
++    case 0x14b4: /* (i32,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x14d4: /* (i64,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3]);
++        return true;
++    case 0x1534: /* (i32,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x1554: /* (i64,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3]);
++        return true;
++    case 0x2aa5: /* (i32,i32,i32,i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2ac5: /* (i64,i32,i32,i32,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b25: /* (i32,i64,i32,i32,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b45: /* (i64,i64,i32,i32,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2ca5: /* (i32,i32,i64,i32,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2cc5: /* (i64,i32,i64,i32,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d25: /* (i32,i64,i64,i32,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d45: /* (i64,i64,i64,i32,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32a5: /* (i32,i32,i32,i64,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32c5: /* (i64,i32,i32,i64,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3325: /* (i32,i64,i32,i64,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3345: /* (i64,i64,i32,i64,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34a5: /* (i32,i32,i64,i64,i32) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34c5: /* (i64,i32,i64,i64,i32) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3525: /* (i32,i64,i64,i64,i32) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3545: /* (i64,i64,i64,i64,i32) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x4aa5: /* (i32,i32,i32,i32,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4ac5: /* (i64,i32,i32,i32,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b25: /* (i32,i64,i32,i32,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b45: /* (i64,i64,i32,i32,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4ca5: /* (i32,i32,i64,i32,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4cc5: /* (i64,i32,i64,i32,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d25: /* (i32,i64,i64,i32,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d45: /* (i64,i64,i64,i32,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x52a5: /* (i32,i32,i32,i64,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x52c5: /* (i64,i32,i32,i64,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5325: /* (i32,i64,i32,i64,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5345: /* (i64,i64,i32,i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54a5: /* (i32,i32,i64,i64,i64) -> void */
++        ((void (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54c5: /* (i64,i32,i64,i64,i64) -> void */
++        ((void (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5525: /* (i32,i64,i64,i64,i64) -> void */
++        ((void (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5545: /* (i64,i64,i64,i64,i64) -> void */
++        ((void (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x2aad: /* (i32,i32,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2acd: /* (i64,i32,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b2d: /* (i32,i64,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b4d: /* (i64,i64,i32,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2cad: /* (i32,i32,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2ccd: /* (i64,i32,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d2d: /* (i32,i64,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d4d: /* (i64,i64,i64,i32,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32ad: /* (i32,i32,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32cd: /* (i64,i32,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x332d: /* (i32,i64,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x334d: /* (i64,i64,i32,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34ad: /* (i32,i32,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34cd: /* (i64,i32,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x352d: /* (i32,i64,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x354d: /* (i64,i64,i64,i64,i32) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x4aad: /* (i32,i32,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4acd: /* (i64,i32,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b2d: /* (i32,i64,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b4d: /* (i64,i64,i32,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4cad: /* (i32,i32,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4ccd: /* (i64,i32,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d2d: /* (i32,i64,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d4d: /* (i64,i64,i64,i32,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x52ad: /* (i32,i32,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x52cd: /* (i64,i32,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x532d: /* (i32,i64,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x534d: /* (i64,i64,i32,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54ad: /* (i32,i32,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54cd: /* (i64,i32,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x552d: /* (i32,i64,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x554d: /* (i64,i64,i64,i64,i64) -> u32 */
++        stack[0] = ((uint32_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x2ab5: /* (i32,i32,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2ad5: /* (i64,i32,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b35: /* (i32,i64,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2b55: /* (i64,i64,i32,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2cb5: /* (i32,i32,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2cd5: /* (i64,i32,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d35: /* (i32,i64,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x2d55: /* (i64,i64,i64,i32,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint32_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32b5: /* (i32,i32,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x32d5: /* (i64,i32,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3335: /* (i32,i64,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3355: /* (i64,i64,i32,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint32_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34b5: /* (i32,i32,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x34d5: /* (i64,i32,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint32_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3535: /* (i32,i64,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint32_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x3555: /* (i64,i64,i64,i64,i32) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t))func)(stack[0], stack[1], stack[2], stack[3], (uint32_t)stack[4]);
++        return true;
++    case 0x4ab5: /* (i32,i32,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4ad5: /* (i64,i32,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b35: /* (i32,i64,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4b55: /* (i64,i64,i32,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4cb5: /* (i32,i32,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4cd5: /* (i64,i32,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint32_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d35: /* (i32,i64,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint32_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x4d55: /* (i64,i64,i64,i32,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint32_t, uint64_t))func)(stack[0], stack[1], stack[2], (uint32_t)stack[3], stack[4]);
++        return true;
++    case 0x52b5: /* (i32,i32,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x52d5: /* (i64,i32,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5335: /* (i32,i64,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint32_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5355: /* (i64,i64,i32,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint32_t, uint64_t, uint64_t))func)(stack[0], stack[1], (uint32_t)stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54b5: /* (i32,i32,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint32_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x54d5: /* (i64,i32,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint32_t, uint64_t, uint64_t, uint64_t))func)(stack[0], (uint32_t)stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5535: /* (i32,i64,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t))func)((uint32_t)stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    case 0x5555: /* (i64,i64,i64,i64,i64) -> u64 */
++        stack[0] = ((uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))func)(stack[0], stack[1], stack[2], stack[3], stack[4]);
++        return true;
++    default:
++        return false;
++    }
++}
++
++/* Interpret pseudo code in tb.
++ *
++ * The function is named tcg_qemu_tb_exec for the TCI backend and
++ * tcg_qemu_tb_exec_tci for the wasm32 runtime-JIT backend, whose
++ * dispatcher (tcg/wasm32.c) uses it as the fallback interpreter for TBs
++ * without a live wasm instance.  The TCI stack is per-TB scratch (call
++ * arguments and spills only), so the fallback needs no stack sharing;
++ * do NOT pass the stack in as a pointer - a parameter would alias every
++ * local array in the interpreter loop and destroy its code quality
++ * (measured: -60% on the v-window benchmark).
++ */
+ /*
+  * Disable CFI checks.
+  * One possible operation in the pseudo code is a call to binary code.
+  * Therefore, disable CFI checks in the interpreter function
+  */
++#ifdef CONFIG_TCG_WASM32
++#define tcg_qemu_tb_exec tcg_qemu_tb_exec_tci
++#endif
+ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+                                             const void *v_tb_ptr)
+ {
+@@ -342,6 +1232,7 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+         insn = *tb_ptr++;
+         opc = extract32(insn, 0, 8);
+ 
++
+         switch (opc) {
+         case INDEX_op_call:
+             {
+@@ -354,6 +1245,18 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+                 func = ((void **)ptr)[0];
+                 cif = ((void **)ptr)[1];
+ 
++                {
++                    uint32_t tag = tci_call_tag(cif);
++
++                    if (tag != TCI_TAG_UNCLASSIFIED) {
++                        /* Helpers may need the "return address" */
++                        tci_tb_ptr = (uintptr_t)tb_ptr;
++                        if (tci_call_direct(func, tag, stack)) {
++                            goto tci_call_done;
++                        }
++                    }
++                }
++
+                 n = cif->nargs;
+                 for (i = s = 0; i < n; ++i) {
+                     ffi_type *t = cif->arg_types[i];
+@@ -365,6 +1268,7 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+                 tci_tb_ptr = (uintptr_t)tb_ptr;
+                 ffi_call(cif, func, stack, call_slots);
+             }
++        tci_call_done: ;
+ 
+             switch (len) {
+             case 0: /* void */
+@@ -392,6 +1296,69 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+             }
+             break;
+ 
++#ifdef __EMSCRIPTEN__
++        case INDEX_op_tci_tbhdr:
++            /*
++             * TB header (emitted by tcg_out_tb_start): advance the
++             * icount2 clock by this TB's guest-insn count.  Executed at
++             * every TB entry, including goto_tb/goto_ptr chain targets,
++             * so TB chaining (see tcg_out_goto_tb) keeps the clock
++             * instruction-proportional.  cpu_tb_exec() no longer
++             * accounts executed TBs.
++             */
++            tci_args_ri(insn, &r0, &t1);
++            {
++                extern void wasm_tb_account(unsigned insns);
++                extern void icount2_advance(uint32_t cycles);
++                wasm_tb_account((unsigned)t1);
++                icount2_advance((uint32_t)t1);
++            }
++            break;
++#endif
++
++        case INDEX_op_tci_add_ri:
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] + imm;
++            break;
++        }
++        case INDEX_op_tci_and_ri:
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] & imm;
++            break;
++        }
++        case INDEX_op_tci_or_ri:
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] | imm;
++            break;
++        }
++        case INDEX_op_tci_xor_ri:
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] ^ imm;
++            break;
++        }
++        case INDEX_op_tci_andc_ri:
++        {
++            int32_t imm;
++            tci_args_rri(insn, &r0, &r1, &imm);
++            regs[r0] = regs[r1] & ~imm;
++            break;
++        }
++        case INDEX_op_tci_setcond32_ri:
++        {
++            int32_t imm;
++            tci_args_rrci(insn, &r0, &r1, &condition, &imm);
++            regs[r0] = tci_compare32(regs[r1], imm, condition);
++            break;
++        }
++
+         case INDEX_op_br:
+             tci_args_l(insn, tb_ptr, &ptr);
+             tb_ptr = ptr;
+@@ -738,6 +1705,27 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+             tb_ptr = *(void **)ptr;
+             break;
+ 
++#ifdef CONFIG_TCG_WASM32
++        /* wasm32 dispatch protocol (see tcg-target-opc.h.inc): hand the
++         * next TB to tcg/wasm32.c's dispatch loop via its thread-local
++         * context.  A null pointer (unchained goto_tb) keeps tb_ptr null:
++         * return to cpu_exec for lookup + tb_add_jump. */
++        case INDEX_op_tci_w32_next:
++            tci_args_l(insn, tb_ptr, &ptr);
++            ptr = *(void **)ptr;
++            if (ptr) {
++                tci_w32_ctx->tb_ptr = ptr;
++            }
++            return 0;
++        case INDEX_op_tci_w32_next_r:
++            tci_args_r(insn, &r0);
++            ptr = (void *)(uint32_t)regs[r0];
++            if (ptr) {
++                tci_w32_ctx->tb_ptr = ptr;
++            }
++            return 0;
++#endif
++
+         case INDEX_op_goto_ptr:
+             tci_args_r(insn, &r0);
+             ptr = (void *)regs[r0];
+@@ -750,27 +1738,91 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+         case INDEX_op_qemu_ld:
+             tci_args_rrm(insn, &r0, &r1, &oi);
+             taddr = regs[r1];
+-            regs[r0] = tci_qemu_ld(env, taddr, oi, tb_ptr);
++            if (unlikely(!tci_ld_fast(env, taddr, oi, &regs[r0]))) {
++                regs[r0] = tci_qemu_ld(env, taddr, oi, tb_ptr);
++            }
+             break;
+         case INDEX_op_tci_qemu_ld_rrr:
+             tci_args_rrr(insn, &r0, &r1, &r2);
+             taddr = regs[r1];
+             oi = regs[r2];
+-            regs[r0] = tci_qemu_ld(env, taddr, oi, tb_ptr);
++            if (unlikely(!tci_ld_fast(env, taddr, oi, &regs[r0]))) {
++                regs[r0] = tci_qemu_ld(env, taddr, oi, tb_ptr);
++            }
+             break;
+ 
+         case INDEX_op_qemu_st:
+             tci_args_rrm(insn, &r0, &r1, &oi);
+             taddr = regs[r1];
+-            tci_qemu_st(env, taddr, regs[r0], oi, tb_ptr);
++            if (unlikely(!tci_st_fast(env, taddr, oi, regs[r0]))) {
++                tci_qemu_st(env, taddr, regs[r0], oi, tb_ptr);
++            }
+             break;
+         case INDEX_op_tci_qemu_st_rrr:
+             tci_args_rrr(insn, &r0, &r1, &r2);
+             taddr = regs[r1];
+             oi = regs[r2];
+-            tci_qemu_st(env, taddr, regs[r0], oi, tb_ptr);
++            if (unlikely(!tci_st_fast(env, taddr, oi, regs[r0]))) {
++                tci_qemu_st(env, taddr, regs[r0], oi, tb_ptr);
++            }
+             break;
+ 
++        /*
++         * Size-specialized guest memory ops (see tcg-target-opc.h.inc):
++         * probe with the size mask baked in, then the access itself; fall
++         * back to the generic path on a miss.  These are the interpreter's
++         * hottest cases, so they stay branch-minimal.  The rrm immediate
++         * field carries only the mmu_idx; the mop is fully reconstructed
++         * from the opcode (exact family, tci_mop_specializes()).
++         */
++#define TCI_SPEC_LD(op, s_mask, mop_const, expr)                        \
++        case op:                                                         \
++            tci_args_rrm(insn, &r0, &r1, &oi);                           \
++            taddr = regs[r1];                                            \
++            ptr = tci_probe_a(env, taddr, s_mask, true, oi & 31);        \
++            if (likely(ptr != NULL)) {                                   \
++                regs[r0] = (expr);                                       \
++            } else {                                                     \
++                regs[r0] = tci_qemu_ld(env, taddr,                       \
++                    make_memop_idx(mop_const, oi & 31), tb_ptr);         \
++            }                                                            \
++            break;
++
++#define TCI_SPEC_ST(op, s_mask, mop_const, expr)                         \
++        case op:                                                         \
++            tci_args_rrm(insn, &r0, &r1, &oi);                           \
++            taddr = regs[r1];                                            \
++            ptr = tci_probe_a(env, taddr, s_mask, false, oi & 31);       \
++            if (likely(ptr != NULL)) {                                   \
++                expr;                                                    \
++            } else {                                                     \
++                tci_qemu_st(env, taddr, regs[r0],                        \
++                    make_memop_idx(mop_const, oi & 31), tb_ptr);         \
++            }                                                            \
++            break;
++
++        TCI_SPEC_LD(INDEX_op_tci_qemu_ld8, 0,
++                    MO_ALIGN | MO_ATOM_NONE | MO_UB, *(uint8_t *)ptr)
++        TCI_SPEC_LD(INDEX_op_tci_qemu_ld8s, 0,
++                    MO_ALIGN | MO_ATOM_NONE | MO_SB, (int8_t)*(uint8_t *)ptr)
++        TCI_SPEC_LD(INDEX_op_tci_qemu_ld16, 1,
++                    MO_ALIGN | MO_ATOM_NONE | MO_UW, *(uint16_t *)ptr)
++        TCI_SPEC_LD(INDEX_op_tci_qemu_ld16s, 1,
++                    MO_ALIGN | MO_ATOM_NONE | MO_SW, (int16_t)*(uint16_t *)ptr)
++        TCI_SPEC_LD(INDEX_op_tci_qemu_ld32, 3,
++                    MO_ALIGN | MO_ATOM_NONE | MO_UL, *(uint32_t *)ptr)
++        TCI_SPEC_ST(INDEX_op_tci_qemu_st8, 0,
++                    MO_ALIGN | MO_ATOM_NONE | MO_UB,
++                    *(uint8_t *)ptr = (uint8_t)regs[r0])
++        TCI_SPEC_ST(INDEX_op_tci_qemu_st16, 1,
++                    MO_ALIGN | MO_ATOM_NONE | MO_UW,
++                    *(uint16_t *)ptr = (uint16_t)regs[r0])
++        TCI_SPEC_ST(INDEX_op_tci_qemu_st32, 3,
++                    MO_ALIGN | MO_ATOM_NONE | MO_UL,
++                    *(uint32_t *)ptr = (uint32_t)regs[r0])
++#undef TCI_SPEC_LD
++#undef TCI_SPEC_ST
++
+         case INDEX_op_mb:
+             /* Ensure ordering for all kinds */
+             smp_mb();
+@@ -952,6 +2004,33 @@ int print_insn_tci(bfd_vma addr, disassemble_info *info)
+     case INDEX_op_subbio:
+     case INDEX_op_subbo:
+     case INDEX_op_xor:
++        tci_args_rrr(insn, &r0, &r1, &r2);
++        info->fprintf_func(info->stream, "%-12s  %s, %s, %s",
++                           op_name, str_r(r0), str_r(r1), str_r(r2));
++        break;
++
++    case INDEX_op_tci_add_ri:
++    case INDEX_op_tci_and_ri:
++    case INDEX_op_tci_or_ri:
++    case INDEX_op_tci_xor_ri:
++    case INDEX_op_tci_andc_ri:
++    {
++        int32_t imm;
++        tci_args_rri(insn, &r0, &r1, &imm);
++        info->fprintf_func(info->stream, "%-12s  %s, %s, %d",
++                           op_name, str_r(r0), str_r(r1), (int)imm);
++        break;
++    }
++
++    case INDEX_op_tci_setcond32_ri:
++    {
++        int32_t imm;
++        tci_args_rrci(insn, &r0, &r1, &c, &imm);
++        info->fprintf_func(info->stream, "%-12s  %s, %s, %s, %d",
++                           op_name, str_r(r0), str_r(r1), str_c(c), (int)imm);
++        break;
++    }
++
+     case INDEX_op_tci_ctz32:
+     case INDEX_op_tci_clz32:
+     case INDEX_op_tci_divs32:
+@@ -996,6 +2075,14 @@ int print_insn_tci(bfd_vma addr, disassemble_info *info)
+ 
+     case INDEX_op_qemu_ld:
+     case INDEX_op_qemu_st:
++    case INDEX_op_tci_qemu_ld8:
++    case INDEX_op_tci_qemu_ld8s:
++    case INDEX_op_tci_qemu_ld16:
++    case INDEX_op_tci_qemu_ld16s:
++    case INDEX_op_tci_qemu_ld32:
++    case INDEX_op_tci_qemu_st8:
++    case INDEX_op_tci_qemu_st16:
++    case INDEX_op_tci_qemu_st32:
+         tci_args_rrm(insn, &r0, &r1, &oi);
+         info->fprintf_func(info->stream, "%-12s  %s, %s, %x",
+                            op_name, str_r(r0), str_r(r1), oi);
+diff --git a/tcg/tci/tcg-target-con-set.h b/tcg/tci/tcg-target-con-set.h
+index ae2dc3b844..01d890758c 100644
+--- a/tcg/tci/tcg-target-con-set.h
++++ b/tcg/tci/tcg-target-con-set.h
+@@ -19,3 +19,6 @@ C_O1_I4(r, r, r, r, r)
+ C_O2_I1(r, r, r)
+ C_O2_I2(r, r, r, r)
+ C_O2_I4(r, r, r, r, r, r)
++C_O1_I2(r, r, rS)
++C_O1_I2(r, r, rB)
++C_O0_I2(r, rB)
+diff --git a/tcg/tci/tcg-target-con-str.h b/tcg/tci/tcg-target-con-str.h
+index 87c0f19e9c..44350c28f9 100644
+--- a/tcg/tci/tcg-target-con-str.h
++++ b/tcg/tci/tcg-target-con-str.h
+@@ -9,3 +9,10 @@
+  * REGS(letter, register_mask)
+  */
+ REGS('r', MAKE_64BIT_MASK(0, TCG_TARGET_NB_REGS))
++
++/* Constraint letters for constants (bits defined in tcg-target.c.inc):
++ * 'S' fits a signed 16-bit immediate (ALU _ri forms),
++ * 'B' fits a signed 12-bit immediate (tci_setcond32_ri).
++ */
++CONST('S', TCG_CT_CONST_S16)
++CONST('B', TCG_CT_CONST_S12)
+diff --git a/tcg/tci/tcg-target-opc.h.inc b/tcg/tci/tcg-target-opc.h.inc
+index f8bfffc125..888ad5f4aa 100644
+--- a/tcg/tci/tcg-target-opc.h.inc
++++ b/tcg/tci/tcg-target-opc.h.inc
+@@ -15,3 +15,57 @@ DEF(tci_setcond32, 1, 2, 1, TCG_OPF_NOT_PRESENT)
+ DEF(tci_movcond32, 1, 2, 1, TCG_OPF_NOT_PRESENT)
+ DEF(tci_qemu_ld_rrr, 1, 2, 0, TCG_OPF_NOT_PRESENT)
+ DEF(tci_qemu_st_rrr, 0, 3, 0, TCG_OPF_NOT_PRESENT)
++/*
++ * Immediate-form ops: the register allocator passes small constants
++ * directly (tcg_target_const_match + out_rri in the outop tables),
++ * saving the separate tci_movi materialization.  Signed 16-bit
++ * immediates for the ALU forms, 12-bit for the setcond form.
++ */
++DEF(tci_add_ri, 1, 2, 1, TCG_OPF_NOT_PRESENT)
++DEF(tci_and_ri, 1, 2, 1, TCG_OPF_NOT_PRESENT)
++DEF(tci_or_ri, 1, 2, 1, TCG_OPF_NOT_PRESENT)
++DEF(tci_xor_ri, 1, 2, 1, TCG_OPF_NOT_PRESENT)
++DEF(tci_andc_ri, 1, 2, 1, TCG_OPF_NOT_PRESENT)
++DEF(tci_setcond32_ri, 1, 2, 1, TCG_OPF_NOT_PRESENT)
++#ifdef __EMSCRIPTEN__
++/* wasm only: TB header carrying the guest-insn count, executed at every
++ * TB entry (cpu_tb_exec call, goto_tb chain jump, goto_ptr target) so the
++ * icount2 clock advances per executed TB even while TBs are chained. */
++DEF(tci_tbhdr, 0, 0, 1, TCG_OPF_NOT_PRESENT)
++#endif
++/*
++ * Size-specialized guest memory ops: the generic qemu_ld/st interpreter
++ * cases recompute the TLB compare masks (s_mask/a_mask/atom) and dispatch
++ * on the size for every access.  For mops of the exact family
++ * MO_ALIGN|MO_ATOM_NONE|size(|sign) - which on pmb887x/ARMv5 is every
++ * plain guest data access - the generic probe tci_tlb_probe() reduces to
++ *     (addr & (TARGET_PAGE_MASK | size-1)) == tlb_addr
++ * (a_mask == s_mask, atom bits = NONE, LE host) so these variants bake that
++ * in: no mask math, no atom branch, no size switch, straight to the access
++ * on a hit.  The rrm immediate field carries only the mmu_idx; the case
++ * reconstructs the full MemOp (see TCI_SPEC_LD/ST in tcg/tci.c).
++ * The emitters (tgen_qemu_ld/st) pick them only on the exact family match;
++ * everything else keeps the generic path.
++ */
++DEF(tci_qemu_ld8, 1, 2, 0, TCG_OPF_NOT_PRESENT)
++DEF(tci_qemu_ld8s, 1, 2, 0, TCG_OPF_NOT_PRESENT)
++DEF(tci_qemu_ld16, 1, 2, 0, TCG_OPF_NOT_PRESENT)
++DEF(tci_qemu_ld16s, 1, 2, 0, TCG_OPF_NOT_PRESENT)
++DEF(tci_qemu_ld32, 1, 2, 0, TCG_OPF_NOT_PRESENT)
++DEF(tci_qemu_st8, 0, 3, 0, TCG_OPF_NOT_PRESENT)
++DEF(tci_qemu_st16, 0, 3, 0, TCG_OPF_NOT_PRESENT)
++DEF(tci_qemu_st32, 0, 3, 0, TCG_OPF_NOT_PRESENT)
++
++/*
++ * wasm32 runtime-JIT backend only (CONFIG_TCG_WASM32): terminate the
++ * fallback interpreter's TB and hand the next TB to the wasm32 dispatch
++ * loop via the thread-local wasmContext (see tcg/wasm32.c).  The stock
++ * goto_tb/goto_ptr encodings cannot be used there: the wasm32 TB prefix
++ * sits at tc.ptr, so a chained jmp slot holds a prefix pointer, not a
++ * TCI stream pointer.
++ *   tci_w32_next   operand: address of the TB jmp slot (0 = unchained,
++ *                   return to cpu_exec for lookup + tb_add_jump)
++ *   tci_w32_next_r operand: register holding the next TB prefix pointer
++ */
++DEF(tci_w32_next, 0, 0, 1, TCG_OPF_NOT_PRESENT)
++DEF(tci_w32_next_r, 0, 0, 1, TCG_OPF_NOT_PRESENT)
+diff --git a/tcg/tci/tcg-target.c.inc b/tcg/tci/tcg-target.c.inc
+index 1b22c70616..dc4a1e727e 100644
+--- a/tcg/tci/tcg-target.c.inc
++++ b/tcg/tci/tcg-target.c.inc
+@@ -28,6 +28,10 @@
+ #define TCG_TARGET_CALL_ARG_I32         TCG_CALL_ARG_NORMAL
+ #define TCG_TARGET_CALL_ARG_I64         TCG_CALL_ARG_NORMAL
+ #define TCG_TARGET_CALL_ARG_I128        TCG_CALL_ARG_NORMAL
++
++/* Constants we accept as inline immediates (see tcg-target-con-str.h).  */
++#define TCG_CT_CONST_S16 0x100
++#define TCG_CT_CONST_S12 0x200
+ #define TCG_TARGET_CALL_RET_I128        TCG_CALL_RET_NORMAL
+ 
+ static TCGConstraintSetIndex
+@@ -102,212 +106,7 @@ static bool patch_reloc(tcg_insn_unit *code_ptr, int type,
+     return false;
+ }
+ 
+-static void stack_bounds_check(TCGReg base, intptr_t offset)
+-{
+-    if (base == TCG_REG_CALL_STACK) {
+-        tcg_debug_assert(offset >= 0);
+-        tcg_debug_assert(offset < (TCG_STATIC_CALL_ARGS_SIZE +
+-                                   TCG_STATIC_FRAME_SIZE));
+-    }
+-}
+-
+-static void tcg_out_op_l(TCGContext *s, TCGOpcode op, TCGLabel *l0)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    tcg_out_reloc(s, s->code_ptr, 20, l0, 0);
+-    insn = deposit32(insn, 0, 8, op);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_p(TCGContext *s, TCGOpcode op, void *p0)
+-{
+-    tcg_insn_unit insn = 0;
+-    intptr_t diff;
+-
+-    /* Special case for exit_tb: map null -> 0. */
+-    if (p0 == NULL) {
+-        diff = 0;
+-    } else {
+-        diff = p0 - (void *)(s->code_ptr + 1);
+-        tcg_debug_assert(diff != 0);
+-        if (diff != sextract32(diff, 0, 20)) {
+-            tcg_raise_tb_overflow(s);
+-        }
+-    }
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 12, 20, diff);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_r(TCGContext *s, TCGOpcode op, TCGReg r0)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_v(TCGContext *s, TCGOpcode op)
+-{
+-    tcg_out32(s, (uint8_t)op);
+-}
+-
+-static void tcg_out_op_ri(TCGContext *s, TCGOpcode op, TCGReg r0, int32_t i1)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    tcg_debug_assert(i1 == sextract32(i1, 0, 20));
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 20, i1);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rl(TCGContext *s, TCGOpcode op, TCGReg r0, TCGLabel *l1)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    tcg_out_reloc(s, s->code_ptr, 20, l1, 0);
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rr(TCGContext *s, TCGOpcode op, TCGReg r0, TCGReg r1)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 4, r1);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rrm(TCGContext *s, TCGOpcode op,
+-                           TCGReg r0, TCGReg r1, TCGArg m2)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    tcg_debug_assert(m2 == extract32(m2, 0, 16));
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 4, r1);
+-    insn = deposit32(insn, 16, 16, m2);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rrr(TCGContext *s, TCGOpcode op,
+-                           TCGReg r0, TCGReg r1, TCGReg r2)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 4, r1);
+-    insn = deposit32(insn, 16, 4, r2);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rrs(TCGContext *s, TCGOpcode op,
+-                           TCGReg r0, TCGReg r1, intptr_t i2)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    tcg_debug_assert(i2 == sextract32(i2, 0, 16));
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 4, r1);
+-    insn = deposit32(insn, 16, 16, i2);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rrbb(TCGContext *s, TCGOpcode op, TCGReg r0,
+-                            TCGReg r1, uint8_t b2, uint8_t b3)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    tcg_debug_assert(b2 == extract32(b2, 0, 6));
+-    tcg_debug_assert(b3 == extract32(b3, 0, 6));
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 4, r1);
+-    insn = deposit32(insn, 16, 6, b2);
+-    insn = deposit32(insn, 22, 6, b3);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rrrc(TCGContext *s, TCGOpcode op,
+-                            TCGReg r0, TCGReg r1, TCGReg r2, TCGCond c3)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 4, r1);
+-    insn = deposit32(insn, 16, 4, r2);
+-    insn = deposit32(insn, 20, 4, c3);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rrrbb(TCGContext *s, TCGOpcode op, TCGReg r0,
+-                             TCGReg r1, TCGReg r2, uint8_t b3, uint8_t b4)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    tcg_debug_assert(b3 == extract32(b3, 0, 6));
+-    tcg_debug_assert(b4 == extract32(b4, 0, 6));
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 4, r1);
+-    insn = deposit32(insn, 16, 4, r2);
+-    insn = deposit32(insn, 20, 6, b3);
+-    insn = deposit32(insn, 26, 6, b4);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rrrr(TCGContext *s, TCGOpcode op,
+-                            TCGReg r0, TCGReg r1, TCGReg r2, TCGReg r3)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 4, r1);
+-    insn = deposit32(insn, 16, 4, r2);
+-    insn = deposit32(insn, 20, 4, r3);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_op_rrrrrc(TCGContext *s, TCGOpcode op,
+-                              TCGReg r0, TCGReg r1, TCGReg r2,
+-                              TCGReg r3, TCGReg r4, TCGCond c5)
+-{
+-    tcg_insn_unit insn = 0;
+-
+-    insn = deposit32(insn, 0, 8, op);
+-    insn = deposit32(insn, 8, 4, r0);
+-    insn = deposit32(insn, 12, 4, r1);
+-    insn = deposit32(insn, 16, 4, r2);
+-    insn = deposit32(insn, 20, 4, r3);
+-    insn = deposit32(insn, 24, 4, r4);
+-    insn = deposit32(insn, 28, 4, c5);
+-    tcg_out32(s, insn);
+-}
+-
+-static void tcg_out_ldst(TCGContext *s, TCGOpcode op, TCGReg val,
+-                         TCGReg base, intptr_t offset)
+-{
+-    stack_bounds_check(base, offset);
+-    if (offset != sextract32(offset, 0, 16)) {
+-        tcg_out_movi(s, TCG_TYPE_PTR, TCG_REG_TMP, offset);
+-        tcg_out_op_rrr(s, INDEX_op_add, TCG_REG_TMP, TCG_REG_TMP, base);
+-        base = TCG_REG_TMP;
+-        offset = 0;
+-    }
+-    tcg_out_op_rrs(s, op, val, base, offset);
+-}
++#include "tci-emitters.h.inc"
+ 
+ static void tcg_out_ld(TCGContext *s, TCGType type, TCGReg val, TCGReg base,
+                        intptr_t offset)
+@@ -484,9 +283,16 @@ static void tgen_add(TCGContext *s, TCGType type,
+     tcg_out_op_rrr(s, INDEX_op_add, a0, a1, a2);
+ }
+ 
++static void tgen_addi(TCGContext *s, TCGType type,
++                       TCGReg a0, TCGReg a1, tcg_target_long a2)
++{
++    tcg_out_op_rri(s, INDEX_op_tci_add_ri, a0, a1, a2);
++}
++
+ static const TCGOutOpBinary outop_add = {
+-    .base.static_constraint = C_O1_I2(r, r, r),
++    .base.static_constraint = C_O1_I2(r, r, rS),
+     .out_rrr = tgen_add,
++    .out_rri = tgen_addi,
+ };
+ 
+ static TCGConstraintSetIndex cset_addsubcarry(TCGType type, unsigned flags)
+@@ -541,9 +347,16 @@ static void tgen_and(TCGContext *s, TCGType type,
+     tcg_out_op_rrr(s, INDEX_op_and, a0, a1, a2);
+ }
+ 
++static void tgen_andi(TCGContext *s, TCGType type,
++                        TCGReg a0, TCGReg a1, tcg_target_long a2)
++{
++    tcg_out_op_rri(s, INDEX_op_tci_and_ri, a0, a1, a2);
++}
++
+ static const TCGOutOpBinary outop_and = {
+-    .base.static_constraint = C_O1_I2(r, r, r),
++    .base.static_constraint = C_O1_I2(r, r, rS),
+     .out_rrr = tgen_and,
++    .out_rri = tgen_andi,
+ };
+ 
+ static void tgen_andc(TCGContext *s, TCGType type,
+@@ -552,9 +365,16 @@ static void tgen_andc(TCGContext *s, TCGType type,
+     tcg_out_op_rrr(s, INDEX_op_andc, a0, a1, a2);
+ }
+ 
++static void tgen_andci(TCGContext *s, TCGType type,
++                         TCGReg a0, TCGReg a1, tcg_target_long a2)
++{
++    tcg_out_op_rri(s, INDEX_op_tci_andc_ri, a0, a1, a2);
++}
++
+ static const TCGOutOpBinary outop_andc = {
+-    .base.static_constraint = C_O1_I2(r, r, r),
++    .base.static_constraint = C_O1_I2(r, r, rS),
+     .out_rrr = tgen_andc,
++    .out_rri = tgen_andci,
+ };
+ 
+ static void tgen_clz(TCGContext *s, TCGType type,
+@@ -729,9 +549,16 @@ static void tgen_or(TCGContext *s, TCGType type,
+     tcg_out_op_rrr(s, INDEX_op_or, a0, a1, a2);
+ }
+ 
++static void tgen_ori(TCGContext *s, TCGType type,
++                       TCGReg a0, TCGReg a1, tcg_target_long a2)
++{
++    tcg_out_op_rri(s, INDEX_op_tci_or_ri, a0, a1, a2);
++}
++
+ static const TCGOutOpBinary outop_or = {
+-    .base.static_constraint = C_O1_I2(r, r, r),
++    .base.static_constraint = C_O1_I2(r, r, rS),
+     .out_rrr = tgen_or,
++    .out_rri = tgen_ori,
+ };
+ 
+ static void tgen_orc(TCGContext *s, TCGType type,
+@@ -900,9 +727,16 @@ static void tgen_xor(TCGContext *s, TCGType type,
+     tcg_out_op_rrr(s, INDEX_op_xor, a0, a1, a2);
+ }
+ 
++static void tgen_xori(TCGContext *s, TCGType type,
++                        TCGReg a0, TCGReg a1, tcg_target_long a2)
++{
++    tcg_out_op_rri(s, INDEX_op_tci_xor_ri, a0, a1, a2);
++}
++
+ static const TCGOutOpBinary outop_xor = {
+-    .base.static_constraint = C_O1_I2(r, r, r),
++    .base.static_constraint = C_O1_I2(r, r, rS),
+     .out_rrr = tgen_xor,
++    .out_rri = tgen_xori,
+ };
+ 
+ static void tgen_ctpop(TCGContext *s, TCGType type, TCGReg a0, TCGReg a1)
+@@ -988,9 +822,23 @@ static void tgen_setcond(TCGContext *s, TCGType type, TCGCond cond,
+     tcg_out_op_rrrc(s, opc, dest, arg1, arg2, cond);
+ }
+ 
++static void tgen_setcondi(TCGContext *s, TCGType type, TCGCond cond,
++                            TCGReg dest, TCGReg arg1, tcg_target_long arg2)
++{
++    tcg_out_op_rrci(s, INDEX_op_tci_setcond32_ri, dest, arg1, cond, arg2);
++}
++
++static TCGConstraintSetIndex cset_setcond(TCGType type, unsigned flags)
++{
++    /* the _ri form decodes a 12-bit immediate; i64 keeps registers only */
++    return type == TCG_TYPE_I32 ? C_O1_I2(r, r, rB) : C_O1_I2(r, r, r);
++}
++
+ static const TCGOutOpSetcond outop_setcond = {
+-    .base.static_constraint = C_O1_I2(r, r, r),
++    .base.static_constraint = C_Dynamic,
++    .base.dynamic_constraint = cset_setcond,
+     .out_rrr = tgen_setcond,
++    .out_rri = tgen_setcondi,
+ };
+ 
+ static void tgen_negsetcond(TCGContext *s, TCGType type, TCGCond cond,
+@@ -1012,9 +860,25 @@ static void tgen_brcond(TCGContext *s, TCGType type, TCGCond cond,
+     tcg_out_op_rl(s, INDEX_op_brcond, TCG_REG_TMP, l);
+ }
+ 
++static void tgen_brcondi(TCGContext *s, TCGType type, TCGCond cond,
++                         TCGReg arg0, tcg_target_long arg1, TCGLabel *l)
++{
++    tcg_out_op_rrci(s, INDEX_op_tci_setcond32_ri,
++                    TCG_REG_TMP, arg0, cond, arg1);
++    tcg_out_op_rl(s, INDEX_op_brcond, TCG_REG_TMP, l);
++}
++
++static TCGConstraintSetIndex cset_brcond(TCGType type, unsigned flags)
++{
++    /* the _ri form decodes a 12-bit immediate; i64 keeps registers only */
++    return type == TCG_TYPE_I32 ? C_O0_I2(r, rB) : C_O0_I2(r, r);
++}
++
+ static const TCGOutOpBrcond outop_brcond = {
+-    .base.static_constraint = C_O0_I2(r, r),
++    .base.static_constraint = C_Dynamic,
++    .base.dynamic_constraint = cset_brcond,
+     .out_rr = tgen_brcond,
++    .out_ri = tgen_brcondi,
+ };
+ 
+ static void tgen_movcond(TCGContext *s, TCGType type, TCGCond cond,
+@@ -1135,14 +999,69 @@ static const TCGOutOpStore outop_st = {
+     .out_r = tcg_out_st,
+ };
+ 
++/*
++ * Does this mop reduce tci_tlb_probe() to the specialized compare
++ * (addr + size-1) & TARGET_PAGE_MASK == tlb_addr (see tci_probe_1)?
++ * Requires: no bswap, a_mask == 0 (no MO_ALIGN bits, MO_ALIGN_TLB_ONLY ok),
++ * and atomicity that never forces the helper path for a probe hit
++ * (IFALIGN - the default - and NONE; a plain aligned load/store satisfies
++ * IFALIGN, and misaligned accesses the specialized compare still admits
++ * have no atomicity requirement).
++ */
++static bool tci_mop_specializes(MemOp mop)
++{
++    if ((mop & ~(MO_SIZE | MO_SIGN)) != (MO_ALIGN | MO_ATOM_NONE)) {
++        return false;
++    }
++    if ((mop & MO_SIZE) > MO_32) {
++        return false;
++    }
++    return true;
++}
++
+ static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
+                          TCGReg addr, MemOpIdx oi)
+ {
+-    if (oi & ~0xffff) {
++    if (oi & ~0xffff && !tci_mop_specializes(get_memop(oi))) {
+         tcg_out_movi(s, TCG_TYPE_I32, TCG_REG_TMP, oi);
+         tcg_out_op_rrr(s, INDEX_op_tci_qemu_ld_rrr, data, addr, TCG_REG_TMP);
+-    } else {
+-        tcg_out_op_rrm(s, INDEX_op_qemu_ld, data, addr, oi);
++        return;
++    }
++    {
++        MemOp mop = get_memop(oi);
++        TCGOpcode op = INDEX_op_qemu_ld;
++
++        if (tci_mop_specializes(mop)) {
++            switch (mop & (MO_SIZE | MO_SIGN)) {
++            case MO_UB:
++                op = INDEX_op_tci_qemu_ld8;
++                break;
++            case MO_SB:
++                op = INDEX_op_tci_qemu_ld8s;
++                break;
++            case MO_UW:
++                op = INDEX_op_tci_qemu_ld16;
++                break;
++            case MO_SW:
++                op = INDEX_op_tci_qemu_ld16s;
++                break;
++            case MO_UL:
++                op = INDEX_op_tci_qemu_ld32;
++                break;
++            case MO_SL:
++                /* i64 + MO_SL sign-extends to 64 bits; i32 does not care. */
++                op = type == TCG_TYPE_I32
++                    ? INDEX_op_tci_qemu_ld32 : INDEX_op_qemu_ld;
++                break;
++            default:
++                g_assert_not_reached();
++            }
++            if (op != INDEX_op_qemu_ld) {
++                    /* the case reconstructs the mop; the stream carries the idx */
++                oi = get_mmuidx(oi);
++            }
++        }
++        tcg_out_op_rrm(s, op, data, addr, oi);
+     }
+ }
+ 
+@@ -1158,11 +1077,32 @@ static const TCGOutOpQemuLdSt2 outop_qemu_ld2 = {
+ static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
+                          TCGReg addr, MemOpIdx oi)
+ {
+-    if (oi & ~0xffff) {
++    if (oi & ~0xffff && !tci_mop_specializes(get_memop(oi))) {
+         tcg_out_movi(s, TCG_TYPE_I32, TCG_REG_TMP, oi);
+         tcg_out_op_rrr(s, INDEX_op_tci_qemu_st_rrr, data, addr, TCG_REG_TMP);
+-    } else {
+-        tcg_out_op_rrm(s, INDEX_op_qemu_st, data, addr, oi);
++        return;
++    }
++    {
++        MemOp mop = get_memop(oi);
++        TCGOpcode op = INDEX_op_qemu_st;
++
++        if (tci_mop_specializes(mop)) {
++            switch (mop & MO_SIZE) {
++            case MO_8:
++                op = INDEX_op_tci_qemu_st8;
++                break;
++            case MO_16:
++                op = INDEX_op_tci_qemu_st16;
++                break;
++            case MO_32:
++                op = INDEX_op_tci_qemu_st32;
++                break;
++            default:
++                g_assert_not_reached();
++            }
++            oi = get_mmuidx(oi);
++        }
++        tcg_out_op_rrm(s, op, data, addr, oi);
+     }
+ }
+ 
+@@ -1196,6 +1136,23 @@ static inline bool tcg_out_sti(TCGContext *s, TCGType type, TCGArg val,
+ static bool tcg_target_const_match(int64_t val, int ct,
+                                    TCGType type, TCGCond cond, int vece)
+ {
++    if (ct & TCG_CT_CONST_S16) {
++        /*
++         * For i32 the upper bits of a register are undefined in TCI
++         * (consumers truncate), so only the low 16 bits must match;
++         * the interpreter applies the sign-extended immediate.
++         */
++        if (type == TCG_TYPE_I32) {
++            return (uint32_t)val == (uint32_t)(int16_t)val;
++        }
++        return val == (int64_t)(int16_t)val;
++    }
++    if (ct & TCG_CT_CONST_S12) {
++        if (type == TCG_TYPE_I32) {
++            return (uint32_t)val == (uint32_t)sextract64(val, 0, 12);
++        }
++        return val == sextract64(val, 0, 12);
++    }
+     return ct & TCG_CT_CONST;
+ }
+ 
+@@ -1238,7 +1195,15 @@ static inline void tcg_target_qemu_prologue(TCGContext *s)
+ 
+ static void tcg_out_tb_start(TCGContext *s)
+ {
+-    /* nothing to do */
++#ifdef __EMSCRIPTEN__
++    /*
++     * Emit the TB header (see INDEX_op_tci_tbhdr): the interpreter
++     * executes it at every TB entry and advances the icount2 clock by
++     * the TB's guest-insn count there.  This keeps the clock strictly
++     * instruction-proportional even when TBs are chained via goto_tb.
++     */
++    tcg_out_op_ri(s, INDEX_op_tci_tbhdr, 0, s->gen_tb->icount);
++#endif
+ }
+ 
+ bool tcg_target_has_memory_bswap(MemOp memop)
+diff --git a/ui/meson.build b/ui/meson.build
+index d345f6c70d..a7a21a1117 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -92,6 +92,12 @@ system_ss.add(when: vnc, if_true: files('vnc-system.c'), if_false: files('vnc-st
+ 
+ ui_modules = {}
+ 
++if host_os == 'emscripten'
++  wasm_ss = ss.source_set()
++  wasm_ss.add(when: [pixman], if_true: [files('wasm.c')])
++  ui_modules += {'wasm' : wasm_ss}
++endif
++
+ if curses.found()
+   curses_ss = ss.source_set()
+   curses_ss.add(when: [curses, iconv], if_true: [files('curses.c'), pixman])
+diff --git a/util/async.c b/util/async.c
+index 741fcfd6a7..f5b3427943 100644
+--- a/util/async.c
++++ b/util/async.c
+@@ -464,6 +464,14 @@ LinuxAioState *aio_get_linux_aio(AioContext *ctx)
+ 
+ void aio_notify(AioContext *ctx)
+ {
++#ifdef __EMSCRIPTEN__
++    /* wake the condvar-based main-loop wait (util/main-loop.c); the
++     * event_notifier pipe wake does not work on wasm */
++    {
++        extern void qemu_main_loop_wake(void);
++        qemu_main_loop_wake();
++    }
++#endif
+     /*
+      * Write e.g. ctx->bh_list before writing ctx->notified.  Pairs with
+      * smp_mb() in aio_notify_accept().
+diff --git a/util/main-loop.c b/util/main-loop.c
+index 65e5dbcc94..5d0abf45fe 100644
+--- a/util/main-loop.c
++++ b/util/main-loop.c
+@@ -23,6 +23,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef __EMSCRIPTEN__
++#include <emscripten/threading.h>
++#endif
+ #include "qapi/error.h"
+ #include "qemu/cutils.h"
+ #include "qemu/timer.h"
+@@ -147,14 +150,60 @@ AioContext *qemu_get_aio_context(void)
+     return qemu_aio_context;
+ }
+ 
++#ifdef __EMSCRIPTEN__
++void qemu_main_loop_wake(void);
++#endif
++
+ void qemu_notify_event(void)
+ {
+     if (!qemu_aio_context) {
+         return;
+     }
+     qemu_bh_schedule(qemu_notify_bh);
++#ifdef __EMSCRIPTEN__
++    /*
++     * wasm: the main loop waits on ml_wait_cond (see
++     * os_host_main_loop_wait) - emscripten's poll() cannot sleep and
++     * its pipe/eventfd poll masks never report readiness, so the BH
++     * kick must also wake the waiter directly.
++     */
++    qemu_main_loop_wake();
++#endif
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * wasm main-loop wait: emscripten's poll() implementation
++ * (__syscall_poll in libsyscall.js) ignores its timeout - it checks
++ * the fds once and returns; the browser main thread must never block.
++ * The stock os_host_main_loop_wait therefore busy-spins through a
++ * synchronously proxied poll() (~23k iterations/s during boot, each
++ * with a proxy round-trip and two BQL handoffs), and the aio eventfd
++ * wake never actually worked (the emscripten pipe poll mask stays 0 -
++ * the spin itself was the only wake mechanism).
++ *
++ * Replace the poll with a worker-local timed wait on a condvar that
++ * qemu_notify_event()/aio_notify() signal.  The fd set is never
++ * watched - measured over 950k polls during boot, no fd ever became
++ * ready (all returns r==0); device input arrives via BHs (wasm.c
++ * input ring) and chardev I/O is proxy-based, not poll-driven.
++ */
++/*
++ * The wait itself is a raw emscripten futex (not QemuCond): the
++ * condvar paths truncate to whole milliseconds on wasm, but the
++ * firmware's WFI windows are as short as ~100 us and are served by
++ * this wait - a 1 ms floor measurably slows the whole boot.
++ */
++static int32_t ml_futex_wake;   /* 0 = sleeping, 1 = wake requested */
++
++void qemu_main_loop_wake(void)
++{
++    if (qatomic_xchg(&ml_futex_wake, 1) == 0) {
++        emscripten_futex_wake(&ml_futex_wake, INT_MAX);
++    }
++}
++#endif
++
+ static GArray *gpollfds;
+ 
+ int qemu_init_main_loop(Error **errp)
+@@ -307,7 +356,19 @@ static int os_host_main_loop_wait(int64_t timeout)
+     bql_unlock();
+     replay_mutex_unlock();
+ 
++#ifdef __EMSCRIPTEN__
++    /* see qemu_main_loop_wake() above: poll() cannot sleep on wasm */
++    qatomic_set(&ml_futex_wake, 0);
++    if (timeout < 0) {
++        emscripten_futex_wait(&ml_futex_wake, 0, INFINITY);
++    } else if (timeout > 0) {
++        emscripten_futex_wait(&ml_futex_wake, 0,
++                              (double)timeout / 1000000.0);
++    }
++    ret = 0;
++#else
+     ret = qemu_poll_ns((GPollFD *)gpollfds->data, gpollfds->len, timeout);
++#endif
+ 
+     replay_mutex_lock();
+     bql_lock();
+@@ -587,9 +648,28 @@ void main_loop_wait(int nonblocking)
+         timeout_ns = (uint64_t)mlpoll.timeout * (int64_t)(SCALE_MS);
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    /*
++     * wasm icount2: virtual-clock deadlines belong to the vCPU thread
++     * (icount2_sync) / the realtime idle timer - the main loop would
++     * wake for every one of them (~24k/s during boot) for nothing.
++     * Time the poll on the remaining clocks only.
++     */
++    {
++        int type;
++        for (type = 0; type < QEMU_CLOCK_MAX; type++) {
++            if (type == QEMU_CLOCK_VIRTUAL) {
++                continue;
++            }
++            timeout_ns = qemu_soonest_timeout(
++                timeout_ns, timerlist_deadline_ns(main_loop_tlg.tl[type]));
++        }
++    }
++#else
+     timeout_ns = qemu_soonest_timeout(timeout_ns,
+                                       timerlistgroup_deadline_ns(
+                                           &main_loop_tlg));
++#endif
+ 
+     ret = os_host_main_loop_wait(timeout_ns);
+     mlpoll.state = ret < 0 ? MAIN_LOOP_POLL_ERR : MAIN_LOOP_POLL_OK;
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index 089606c93f..44f2dd3e4c 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -21,6 +21,9 @@
+ #if defined(CONFIG_PTHREAD_SET_NAME_NP) || defined(CONFIG_PTHREAD_GET_NAME_NP)
+ #include <pthread_np.h>
+ #endif
++#ifdef __EMSCRIPTEN__
++#include <emscripten/threading.h>
++#endif
+ 
+ /*
+  * This is not defined on Linux, but the man page indicates
+@@ -174,6 +177,101 @@ void qemu_rec_mutex_unlock_impl(QemuRecMutex *mutex, const char *file, int line)
+     qemu_mutex_unlock_impl(&mutex->m, file, line);
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * Asyncify-safe condition variable on top of the emscripten futex.
++ *
++ * Emscripten's pthread_cond_signal/broadcast only wakes a waiter when its
++ * wait times out while the waiter executes under Asyncify, so a cond used
++ * for cross-thread wakeup (e.g. the pmb887x DSP worker handshake) can stay
++ * asleep forever.  The engine-level futex (Atomics.wait/notify) does not
++ * go through the Asyncify machinery and wakes reliably.
++ *
++ * Implementation: waiters snapshot cond->seq while still holding the user
++ * mutex and then futex-wait on &cond->seq; signalers bump cond->seq (which
++ * makes any concurrent futex_wait return immediately via its value check)
++ * and notify.  qemu cond users always re-check their predicate around the
++ * wait, so spurious/early wakes are fine.
++ */
++void qemu_cond_init(QemuCond *cond)
++{
++    qatomic_set(&cond->seq, 0);
++    qatomic_set(&cond->waiters, 0);
++}
++
++void qemu_cond_destroy(QemuCond *cond)
++{
++}
++
++static void qemu_cond_wake(QemuCond *cond, int count)
++{
++    qatomic_fetch_inc(&cond->seq);
++    if (qatomic_read(&cond->waiters) > 0) {
++        emscripten_futex_wake(&cond->seq, count);
++    }
++}
++
++void qemu_cond_signal(QemuCond *cond)
++{
++    qemu_cond_wake(cond, 1);
++}
++
++void qemu_cond_broadcast(QemuCond *cond)
++{
++    qemu_cond_wake(cond, INT_MAX);
++}
++
++static bool qemu_cond_wait_common(QemuCond *cond, QemuMutex *mutex,
++                                  double timeout_ms,
++                                  const char *file, const int line)
++{
++    unsigned seq;
++    int rc;
++
++    qatomic_fetch_inc(&cond->waiters);
++    /* Snapshot seq while still holding the user mutex: a signaler that
++     * runs after we release it bumps seq and our futex_wait returns at
++     * once via its value check. */
++    seq = qatomic_read(&cond->seq);
++
++    qemu_mutex_unlock_impl(mutex, file, line);
++
++    rc = emscripten_futex_wait(&cond->seq, seq, timeout_ms);
++
++    qatomic_fetch_dec(&cond->waiters);
++    qemu_mutex_lock_impl(mutex, file, line);
++
++    /* False only on a real timeout: -EWOULDBLOCK is a value change
++     * (i.e. a signal) and rc == 0 is a wake; callers must of course
++     * still re-check their predicate. */
++    return rc != -ETIMEDOUT;
++}
++
++void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex,
++                         const char *file, const int line)
++{
++    qemu_cond_wait_common(cond, mutex, 0, file, line);
++}
++
++bool qemu_cond_timedwait_impl(QemuCond *cond, QemuMutex *mutex, int ms,
++                              const char *file, const int line)
++{
++    return qemu_cond_wait_common(cond, mutex, ms, file, line);
++}
++
++static bool qemu_cond_timedwait_ts(QemuCond *cond, QemuMutex *mutex,
++                                   struct timespec *ts,
++                                   const char *file, const int line)
++{
++    struct timespec now;
++    int64_t ms;
++
++    clock_gettime(qemu_timedwait_clockid(), &now);
++    ms = (int64_t)(ts->tv_sec - now.tv_sec) * 1000
++       + (ts->tv_nsec - now.tv_nsec) / 1000000;
++    return qemu_cond_wait_common(cond, mutex, ms < 0 ? 0 : ms, file, line);
++}
++#else
+ void qemu_cond_init(QemuCond *cond)
+ {
+     pthread_condattr_t attr;
+@@ -267,6 +365,7 @@ bool qemu_cond_timedwait_impl(QemuCond *cond, QemuMutex *mutex, int ms,
+     compute_abs_deadline(&ts, ms);
+     return qemu_cond_timedwait_ts(cond, mutex, &ts, file, line);
+ }
++#endif /* __EMSCRIPTEN__ */
+ 
+ void qemu_sem_init(QemuSemaphore *sem, int init)
+ {

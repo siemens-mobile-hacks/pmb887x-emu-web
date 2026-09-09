@@ -1,0 +1,67 @@
+From the patch series for qemu-pmb887x wasm boot.
+
+Subject: [PATCH 0015] wasm: diagnostics counters (txn-failed, tb-gen/flush,
+ io-rewind, lookup-tb)
+
+Session instrumentation used to verify/refute wprof2 symbol-map ghosts
+before acting on them (the 0012-session rule).  All on cold paths:
+
+  txnF      arm_cpu_do_transaction_failed entries  (measured 0.00M/60 s:
+           the "io_failed <- cpu_io_recompile" caller stacks in wprof2
+           are symbolization ghosts, NOT real transaction failures)
+  tbGen     tb_gen_code calls   (~2k/s steady while boot explores code;
+           tbFlush 0 - no code-buffer storms, dispatch/flush caching
+           would be pointless)
+  ioRewind  ROM-device io_prepare rewinds (1.67k/s before 0014, ~0 after)
+  lookupTB  helper_lookup_tb_ptr calls (measured 0 - the 3 % "lookup"
+           self-time is also a ghost, tb_lookup inlined into cpu_exec)
+
+Zero cost on hot paths; read via _wasm_memstat() (tools/memstat.mjs).
+
+---
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+--- a/accel/tcg/cpu-exec.c	2026-09-08 22:40:37.633279589 +0000
++++ b/accel/tcg/cpu-exec.c	2026-09-08 22:02:11.861967633 +0000
+@@ -18,6 +18,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef __EMSCRIPTEN__
++#include "qemu/wasm-diag.h"
++#endif
+ #include "qemu/qemu-print.h"
+ #include "qapi/error.h"
+ #include "qapi/type-helpers.h"
+@@ -388,6 +391,8 @@
+      */
+     cpu->neg.can_do_io = true;
+ 
++    wasm_diag_stat[WASM_DIAG_LOOKUP_TB]++;
++
+     TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+     s.cflags = curr_cflags(cpu);
+ 
+diff --git a/tcg/tci.c b/tcg/tci.c
+--- a/tcg/tci.c	2026-09-08 22:40:37.628288647 +0000
++++ b/tcg/tci.c	2026-09-08 22:39:53.567835429 +0000
+@@ -359,6 +359,9 @@
+     return NULL;
+ }
+ 
++
++
++
+ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+                             MemOpIdx oi, const void *tb_ptr)
+ {
+diff --git a/include/qemu/wasm-diag.h b/include/qemu/wasm-diag.h
+--- a/include/qemu/wasm-diag.h	2026-09-08 22:40:37.637858429 +0000
++++ b/include/qemu/wasm-diag.h	2026-09-08 22:02:11.861671314 +0000
+@@ -20,6 +20,7 @@
+     WASM_DIAG_TB_GEN,        /* tb_gen_code calls (translation) */
+     WASM_DIAG_TB_FLUSH,      /* tb_flush calls (code buffer full) */
+     WASM_DIAG_IO_REWIND,     /* ROM-device io_prepare rewinds (longjmp) */
++    WASM_DIAG_LOOKUP_TB,     /* helper_lookup_tb_ptr calls */
+     WASM_DIAG_N
+ };
+ 
