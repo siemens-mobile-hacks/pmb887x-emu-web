@@ -272,7 +272,69 @@ fileInput.addEventListener("change", (e) => {
 /* boot / stop                                                          */
 /* ------------------------------------------------------------------ */
 
+/* ?suite=<url>: the phase-0a guest op-suite (doc/wasm-tcg-backend-plan.md) —
+ * boot -M versatilepb with the raw image fetched from <url> (built by
+ * tests/tcg-isa, installed to dist/tcgisa.bin) instead of a phone: the
+ * suite prints TAP + value dumps on the PL011 and exits via semihosting
+ * SYS_EXIT, so the run ends in the normal onExit hook. */
+async function bootSuite(url) {
+  setStatus("booting", "loading suite…");
+  $("btn-start").disabled = true;
+  try {
+    const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    const factory = (await import("./dist/qemu-system-arm.js")).default;
+    let modRef = null; // FS access in onExit (qemuModule not yet assigned)
+    qemuModule = await factory({
+      arguments: [
+        "-display", "wasm",
+        "-M", "versatilepb",
+        "-kernel", "/data/tcgisa.bin",
+        "-semihosting",
+        "-serial", "file:/serial.log",
+        "-monitor", "none",
+      ],
+      printErr: (t) => console.log("[qemu]", t),
+      onExit: (code) => {
+        // hand the finished serial log out before the runtime tears the
+        // page down (the headless runner installs window.__suiteReport)
+        try {
+          const ser = new TextDecoder("latin1")
+            .decode(modRef.FS.readFile("/serial.log"));
+          window.__suiteReport?.(ser, code);
+        } catch (e) { /* page going down anyway */ }
+        setStatus("idle", `exited (${code})`);
+        stopPainting();
+        $("btn-start").disabled = false;
+        $("btn-stop").disabled = true;
+      },
+      preRun: (mod) => {
+        modRef = mod;
+        mod.FS.mkdirTree("/data");
+        mod.FS.writeFile("/data/tcgisa.bin", bytes);
+      },
+    });
+    $("lcd-overlay").classList.add("hidden");
+    window.__qemu = qemuModule; // debugging hook (same as the phone boot)
+    startSerialPoll();
+    setStatus("running", "running — tcg-isa op-suite");
+  } catch (e) {
+    console.error(e);
+    setStatus("error", String(e));
+    $("btn-start").disabled = false;
+  }
+}
+
 async function boot() {
+  // guest op-suite mode (phase 0a): no fullflash, no boards.tar needed
+  {
+    const qsp0 = new URLSearchParams(location.search);
+    const suiteUrl = qsp0.get("suite");
+    if (suiteUrl) {
+      await bootSuite(suiteUrl);
+      return;
+    }
+  }
+
   if (!selectedPreset && !fileInput.files.length) {
     alert("pick a preset fullflash or your own .bin first");
     return;
@@ -478,6 +540,17 @@ function stop() {
 }
 
 $("boot-form").addEventListener("submit", (e) => { e.preventDefault(); boot(); });
+
+// ?suite= runs headlessly (phase-0a runner): submit the boot form once
+// the document is complete — same path as pressing Start
+if (new URLSearchParams(location.search).get("suite")) {
+  const go = () => document.getElementById("boot-form")?.requestSubmit();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", go);
+  } else {
+    go();
+  }
+}
 $("btn-stop").addEventListener("click", stop);
 $("btn-save-flash").addEventListener("click", () => {
   downloadMemfs(FULLFLASH_PATH, "fullflash-modified.bin");

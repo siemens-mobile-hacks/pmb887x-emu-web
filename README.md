@@ -164,6 +164,16 @@ lands in `/tmp/pmb887x-serial.log`.
   the hunks carry inline why-comments.  See doc/upstream-branch.md —
   regenerate patches/*.patch after branch edits (`git format-patch
   b31b98fe..wasm-browser-port`).
+  tests/
+    tcg-isa/               phase-0a guest op-suite (bare-metal ARM926
+                           versatilepb image asserting (value, NZCV)
+                           per op class; runs on native JIT, native TCI
+                           and the wasm page, byte-compared):
+                           scripts/run-tcg-isa.sh is the gate,
+                           tools/tcgisa.mjs drives the page leg,
+                           `?suite=dist/tcgisa.bin` boots it in the
+                           browser — see doc/wasm-tcg-backend-plan.md
+    run.mjs (+ RESULTS-switch.md)  A/B harness for qemu/bsp bumps
   site/                 the served web root — editable static page (index.html /
                         app.js / style.css / keyboards.js; fullflashes.js holds
                         the preset-fullflash inventory + Cache API handling)

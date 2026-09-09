@@ -1,8 +1,10 @@
 # A real WASM TCG backend — feasibility verdict and plan
 
-Status: **in progress** (2026-09-09: phase 0 started — the guest op-suite
-below is specified and its loading path is smoke-verified on native
-JIT/TCI; supersedes the "port a native wasm TCG backend" idea in
+Status: **in progress** (2026-09-09: **phase 0a done** — the guest op-suite
+below is implemented in [tests/tcg-isa/](../tests/tcg-isa/), gate
+`scripts/run-tcg-isa.sh` green on all three backends (native JIT, native
+TCI, wasm TCI page: 1156/1156 each, serial byte-identical, ~8 s total);
+supersedes the "port a native wasm TCG backend" idea in
 [performance-handoff.md](performance-handoff.md) §1 with what was learned
 from actually trying it).
 
@@ -159,6 +161,22 @@ LG (no-icount).
   them for byte-exact cross-backend diffing. This is the "bisect by op"
   tool from phase 0 of the old plan — and the future wasm64 backend's
   per-op unit tests.
+  - **Status: implemented 2026-09-09** — [tests/tcg-isa/](../tests/tcg-isa/)
+    (README has the details), runner `scripts/run-tcg-isa.sh` +
+    `tools/tcgisa.mjs` + the page's `?suite=` boot path
+    ([site/app.js](../site/app.js)). Gate green: 1156 cases, 0 failures on
+    native JIT / native TCI / wasm TCI page, serial byte-identical across
+    all three, full run ≈0.3 s native / ≈3 s wasm (page load included
+    ≈8 s). Two emulator behaviors pinned while authoring (documented in
+    the suite README): qemu's `ror`-by-register with amount ≡ 0 (mod 32)
+    carries C from bit 31 (v7 silicon: bit 0), and same-TB SMC executes
+    the already-translated tail (ARM has no `precise_smc` — only
+    i386/s390x do). One platform limitation found: the semihosting
+    `SYS_EXIT` path kills the wasm page (exit from the vCPU pthread →
+    `PThread.terminateAllThreads` tears the renderer down before
+    `onExit` runs) — the page image parks after printing and the runner
+    verdicts from the TAP text instead; also relevant for phase 1+ exit
+    design.
   - **Machine: `-M versatilepb`** (not pmb887x): same arm926 core, zero
     board/BROM/flash dependencies, and — verified — already compiled into
     the shipping wasm build (`CONFIG_VERSATILE`, `CONFIG_PL011`,
