@@ -115,6 +115,7 @@ workers:
 | 0012 tci size-specialized ldst | eight appended opcodes (tci_qemu_ld8..st32) for the exact mop family MO_ALIGN\|MO_ATOM_NONE\|size\|sign — every plain pmb887x data access: the generic probe reduces to `(addr & (page_mask\|size-1)) == tlb_addr`, baked in as constants, no mask math/atom branch/size switch, mmu_idx-only stream word; tci_qemu_ld/st dead re-probe removed (0 hits in >1M calls); cold-path diag counters (wasm-diag.h + tools/memstat.mjs) | window wins all 4 interleaved pairs (34.1/33.9/34.0/34.0 vs 40.6/34.4/34.9/34.5; −1.4…−16 %, bigger under host load); boot progress @110 s v 91–102 → 114–121 (+18–25 %); native suite PASS ×4 |
 | 0013 wasm: SVC inline exception exit | ARM frontend stores exception_index/syndrome/target_el + `exit_tb(0)` instead of the `helper_exception_with_syndrome` call (its `cpu_loop_exit` longjmp = ~15 µs JS-exception unwind × ~9.4k SWIs/s); new early-return in `cpu_handle_interrupt` delivers a pending exception_index before running/chaining any other TB — exactly the longjmp outcome, incl. IRQ-vs-exception ordering. Gated `__EMSCRIPTEN__` + !EL2/EL3/!M/!AA64 (target_el fixed 1, no TGE redirect); ss_active keeps the helper | window 34→25 s (−26 % quiet, −39 % loaded; 3/3 interleaved pairs); finalV@110 s +30…77 % (92–126 → 164); insns@110 s +6–10 %; `__emscripten_throw_longjmp` 18.5 %→2.6 % of vCPU; idle screen v=245 in ~185 s; native suite PASS ×4 |
 | 0014 wasm: io barriers | recurring ROM-device io_recompile (0010 kept the stock rewind for flash-command accesses; the unsplit cached TB re-paid the ~17 µs unwind on every status-poll iteration, 1.67k/s) — on rewind, record the faulting insn pc (64-entry direct-mapped set) + `tb_phys_invalidate` the TB; the translator keeps barrier insns in single-insn TBs (stop before mid-TB / after at TB start), so `can_do_io` is true and the access completes with stock 1-insn-clock precision — no further unwinding | ioRewind 1.67k/s → ~0; window wins 3/3 pairs (25.2–24.8 vs 25.3–27.5); insns@110 s +3–5 % on all pairs; soak v=373 @330 s, keypad works; native suite PASS ×4 |
+| 0016 memory: romd FlatView variants + range-scoped tlb flush | romd toggle per flash command = full FlatView re-render of every root (~200 µs, 16k radix page inserts over the flash) + full tlb_flush + ~33-entry refill storm, ~18k flips per boot — (a) FlatViews tagged (topo_gen, romd_sig), romd-only commits adopt the recycled variant from a 16-slot stash (roots whose tag already matches are skipped); (b) tcg listener records region_add/del phys ranges, flush drops only entries translating into them (evicted-variant latch falls back to full flush; entries never dereference a dead view) | topo-commit time 3857→421 ms (−89 %), 30894 variant reuses; v-window 25.1–28.3 → 22.5–25.1 s (8/8 interleaved pairs, every candidate run beats every baseline); insns@110 s +4–9 %; idle screen ~160 s; run-to-run variance collapsed; native suite PASS ×4 (see § Session log: 2026-09-10 for the measurement traps this one surfaced) |
 | 0015 wasm: diagnostics counters | txnF/tbGen/tbFlush/ioRewind/lookupTB cold-path counters (killed two wprof2 ghost theories — see session log) | zero hot-path cost; measurement infra — **dropped 2026-09-09**: isolation testing measured it neutral, no tool consumed its counters (see attic/README.md and § Patch-isolation testing) |
 
 ## Patch-isolation testing (2026-09-09 session — is every patch required?)
@@ -200,15 +201,7 @@ no controller).  Numbers in [upstream-branch.md](upstream-branch.md).
    8–15 %, 2–4 h, see regfile experiment below for why 5-bit regs
    alone lost) or the 0005 wasm32 runtime JIT (10–100× ceiling,
    porting effort, separate session).
-3. **Flash romd topology churn, ~4–5 % of vCPU** — still open. The
-   measured flip cost is ~0.4 ms × ~2/s per poll loop (status polls at
-   ~7k/s, 2 flips each). All device-level fixes failed (rejected
-   table). The qemu-core fix sketched in the 2026-09-09 session log
-   (alternating FlatView+dispatch stash keyed by (root, romd-signature,
-   non-romd-generation)) is ~100–150 lines in system/memory.c with RCU
-   lifetime care — genuinely upstream-relevant, but the biggest-risk
-   patch of the series; do it as its own session with the interleave
-   loop and a full soak.
+3. **Flash romd topology churn, ~4–5 % of vCPU — CLOSED by 0016.** The sketched FlatView-variant stash landed together with a range-scoped tcg-commit TLB flush (the two only win together: recycling views without keeping the untouched TLB entries still re-walks the running code per flip; see the 2026-09-10 session log for the three-way interaction and the measurement traps).  The remaining per-flip cost (~20 µs commit bookkeeping + the semantically-required invalidation of the flipped part's own pages) is at the floor.
 4. **V8 tier-up warm-up — measured 2026-09-08, no in-window effect (closed).**
    `--no-wasm-lazy-compilation`, `--wasm-tiering-budget=100000`, and both
    together leave the v-window at 33.9–34.1 s vs 34.2 s baseline (flags
@@ -571,3 +564,89 @@ frames again without a counter)
   132×176 vs the reference's 133×177 — the comparison now tolerates ±2 px
   and crops to the overlap).  A/B harness pattern: `/tmp/ab-one.sh`
   (scoped server per dist, alternating runs; recreate as needed).
+
+## Session log: 2026-09-10 (patch 0016 — romd FlatView variants, range-scoped TLB flush)
+
+Target chosen by the loop (profile → counters → patch → interleave), but
+this session's main lessons are about **measurement traps** — the patch
+measured "flat" twice before a methodology bug was found and it won 8/8.
+
+### What was measured first (counters, not profile shares)
+
+- wprof2 (45 s) showed ~4.5 % of vCPU in generate_memory_topology stacks
+  under flash command writes (`flash_lock_command` is an adjacent-symbol
+  ghost for `flash_io_write`).
+- New cold counters (wasm-diag.h): **romdFlip = 18–20k flips per boot**,
+  all inside v≈2.5–4.4 (the v-window's burst phase); topoCommit ≈ flip.
+- Temporary ns-accumulator (since removed — it cost ~10 µs × 2 clock
+  reads per commit ≈ 0.36 s per boot!): **3857 ms of wall time inside
+  topology commits** for the baseline vs **421 ms** with the variant
+  stash.
+- TLB fills: 1.48M→2.14M across the burst (**~33 fills per flip**) —
+  each flip's full tlb_flush() nuked the running code's translations
+  (S75 = 8×8 MB flash parts; the polled part's own page churn is
+  semantically required, the *code-page* churn was not).
+
+### The three-way interaction (why the patch has two mechanisms)
+
+1. Stash alone (views recycled): commit time −89 %, but the v-window
+   measured FLAT — the refill storm remained (stock full flush per
+   commit).
+2. Selective flush by FlatView identity: wrong tool — entries installed
+   against the *other* variant are still dropped every flip (the code
+   pages refill regardless), and identity alone cannot drop a stale
+   mapping of a protected view.
+3. The correct rule is **physical-range based**: the tcg listener's
+   region_add/region_del callbacks give the exact changed sections, the
+   flush drops only entries translating into them.  Entries outside the
+   changed ranges translate to identical section content — including
+   entries against a recycled variant — so they survive the toggle.
+   Lifetime safety: every view reachable from TLB entries is current or
+   stash-resident; eviction happens only inside a commit whose listener
+   phase latches "variant evicted" and falls back to the full flush;
+   the flush memsets entries and never dereferences their sections.
+
+### Measurement traps that cost this session real time
+
+- **Stale A/B baseline dists**: an early "baseline" site copy actually
+  contained an intermediate build (verified via the topoReuse counter
+  signature: a true baseline shows reuse=0, a stash build shows
+  reuse>0 — always signature-check both ends before believing a flat
+  result).  Two full A/B rounds were wasted on it.
+- **Missing index.html in the site copy**: a copied site root without
+  the page files still boots nothing but can produce plausible-looking
+  console output from a previously-open page; curl the root and check
+  #fullflash resolves before running benchmarks against a copied dist.
+- **Host-load bimodality hides real wins**: the baseline's re-render
+  bursts (0.2 ms × 180/s) are exactly the work that collapses under
+  host contention — baseline windows spread 25.1–28.3 s while the
+  candidate held 22.5–25.1 s.  A "flat" result on a noisy host can
+  mean "the candidate removed the work that was making the baseline
+  *unstable*", not "no improvement" — look at variance too.
+- **Diag-counter overhead is not free at commit rates**: the temporary
+  per-commit wall-clock accumulation (2 × g_get_monotonic_time, a JS
+  roundtrip on wasm) cost ~0.4 s per boot and initially masked part of
+  the win (24.8–25.1 → 22.5–23.2 after removing it).  Measurement
+  scaffolding must be removed before the final A/B.
+
+### Landed
+
+- **0016 memory: romd FlatView variants + range-scoped tlb flush**
+  (system/memory.c, system/physmem.c, accel/tcg/cputlb.c +
+  headers): v-window 25.1–28.3 → 22.5–25.1 s (8/8 pairs; strict
+  criterion "every candidate beats every baseline" holds), insns@110 s
+  +4–9 %, idle screen (v=245) at ~160 s (was ~185 s), topo-commit
+  time −89 %, native suite 4/4, wasm soak to v=827 no EXIT, LCD
+  pixel-diff vs reference equal to the previous build (clock + auto
+  keyboard-lock drift only).
+
+### Rejected along the way (do not retry blind)
+
+- **FlatView-identity TLB flush** (`full->section->fv != current`):
+  implemented, then discarded on the whiteboard — keeps dropping the
+  other variant's entries every flip (no refill win) and cannot
+  invalidate a stale-but-protected mapping.  Range-based is the only
+  correct granularity.
+- **fv pointer cached in CPUTLBEntryFull for a deref-free identity
+  flush**: also discarded with the above (kept entries would need the
+  protected-set argument; ranges subsume it).

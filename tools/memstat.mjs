@@ -5,6 +5,10 @@
 //   ldHelp/stHelp  tci_qemu_ld/st fell through to helper_ld/stXX_mmu
 //   ioLd/ioSt      MMIO dispatches under the BQL
 //   fill           tlb_fill_align calls (page-table walks)
+//   romdFlip       romd mode transitions (flash command/array)
+//   topC/topoReuse memory topology commits / romd FlatView-variant reuses
+//                   (0016: reuse>0 && topC ≈ flip means the variant cache
+//                   is absorbing the re-renders)
 //   exit           >>EXIT<< seen in the guest serial log
 //   node tools/memstat.mjs [secs] [intervalSecs]
 import { chromium } from "playwright-core";
@@ -28,6 +32,7 @@ await p.addScriptTag({ content: `
       " insns=" + f(Number(m._wasm_insns())) +
       " ldHelp=" + f(g(0)) + " stHelp=" + f(g(1)) +
       " ioLd=" + f(g(2)) + " ioSt=" + f(g(3)) + " fill=" + f(g(4)) +
+      " romdFlip=" + f(g(10)) + " topC=" + f(g(11)) + " topoReuse=" + f(g(12)) +
       " exit=" + (ser.includes(">>EXIT<<") ? "YES" : "no"));
   }, ${iv * 1000});
 ` });

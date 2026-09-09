@@ -1,6 +1,6 @@
 # The upstream branch: `wasm-browser-port`
 
-The 12-patch series lives as a git branch, ready to push/PR to
+The 13-patch series lives as a git branch, ready to push/PR to
 [Azq2/qemu-pmb887x](https://github.com/Azq2/qemu-pmb887x) — the QEMU
 fork that [pmb887x-emu](https://github.com/siemens-mobile-hacks/pmb887x-emu)
 embeds as its `qemu` submodule.
@@ -43,6 +43,7 @@ target/arm/tcg/translate.c, ui/, configs/meson/emscripten.txt).
 | 10 | tci: size-specialized guest memory ops | generic TCI + cold-path counters |
 | 11 | wasm: take SVC exceptions without the cpu_loop_exit longjmp | emscripten + ARM frontend |
 | 12 | wasm: io barriers | emscripten + translator/cputlb |
+| 13 | memory: romd FlatView variants + range-scoped tlb flush | generic core (memory.c/physmem.c/cputlb.c) |
 
 Each commit message carries the full rationale ("why this change is
 needed") plus the measured effect; the code hunks carry inline
@@ -55,7 +56,11 @@ users): everything that changes semantics under native builds is
 either `__EMSCRIPTEN__`-gated (patches 1, 2, 4, 5, 7, 8, 11, 12 —
 inert code on native), or confined to the TCI interpreter (patches 3,
 6, 9, 10 — TCI is not the default backend; native TCG codegen is
-untouched).
+untouched).  Patch 13 (romd FlatView variants) is generic core but
+semantics-preserving by construction: a view is reused only when the
+MR tree is bit-identical up to romd flags, the TLB flush is only ever
+strictly smaller than stock's, and any recycle/eviction path falls
+back to the stock full flush; native suite 4/4.
 
 ## Relationship to `patches/*.patch`
 

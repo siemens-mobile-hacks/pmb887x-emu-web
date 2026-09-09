@@ -63,7 +63,7 @@ devices by default. Override either default with `?icount=<spec>`
 hard-coded 104 MHz icount2 patch (0006) lives in `patches/attic/`.
 
 **Known limitation (raw speed):** boot wall-time is minutes (through
-patches 0007–0014 the guest runs at ~15M insns/s sustained — TB
+patches 0007–0016 the guest runs at ~17M insns/s sustained — TB
 chaining, size-specialized memory ops, SVC exceptions without the
 emscripten longjmp and no recurring io-recompile rewinds; S75 reaches
 its idle screen in ~3 minutes on a quiet host). Keypad and LCD
@@ -147,6 +147,11 @@ lands in `/tmp/pmb887x-serial.log`.
                               (barrier insns get single-insn TBs so can_do_io
                               is set - stock clock precision, no unwind;
                               ioRewind 1.67k/s -> ~0; +3-5% insns@110s)
+    0016-memory-romd-flatview-*.patch romd FlatView variants + range-scoped
+                              tlb flush: flash romd toggles (~18k/boot) stop
+                              re-rendering every FlatView and stop flushing
+                              the whole TLB per toggle (commit time -89%,
+                              v-window -10%, variance collapsed)
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression, superseded by the reworked
                               0004; 0015 diag counters: measured neutral, no
@@ -216,7 +221,7 @@ benchmarked (~1.3–2.3x TCI ceiling, boot hangs) and **discarded** on
 2026-09-09 — the TCI series is the shipping engine; the JIT sources and
 post-mortem live in patches/attic/wasm32-rebase/.
 
-- `site/dist/` — TCI build (patches 0001–0004 + 0007–0014; timing model is
+- `site/dist/` — TCI build (patches 0001–0004 + 0007–0016; timing model is
   stock `-icount shift=3,sleep=off`, no fork-specific clock patch — see
   the interim 0006 in patches/attic; 0004 reworked: the
   io-recompile longjmp storm is gone, MMIO accounted at the rewind's
