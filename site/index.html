@@ -85,8 +85,22 @@
       <fieldset>
         <legend>Boot</legend>
 
-        <label class="file-label" for="fullflash">Fullflash (.bin)
-          <input type="file" id="fullflash" accept=".bin,.cfi-efa,.cfi-otp0,.cfi-otp1" multiple required>
+        <label class="file-label" for="ff-preset">Fullflash
+          <span class="ff-preset-line">
+            <select id="ff-preset" size="1">
+              <option value="">— my own file (below) —</option>
+            </select>
+            <button type="button" id="ff-preset-delete" class="ff-trash" disabled
+              title="Delete the cached copy" aria-label="Delete the cached copy">
+              <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+            </button>
+          </span>
+          <small class="file-hint">preset fullflashes download when you press Start, then stay cached in the browser</small>
+          <small class="file-hint" id="ff-preset-status"></small>
+        </label>
+
+        <label class="file-label" for="fullflash">My own file (.bin)
+          <input type="file" id="fullflash" accept=".bin,.cfi-efa,.cfi-otp0,.cfi-otp1" multiple>
           <small class="file-hint">LG phones: also pick the <code>.cfi-efa</code> sidecar
             (their EEPROM lives in the EFA block)</small>
         </label>

@@ -11,6 +11,10 @@
 //     this qemu fork's input layer consumes).
 
 import { KBD_LAYOUTS, applyKbdLayout } from "./keyboards.js";
+import {
+  PRESET_FULLFLASHES, SIDE_CAR_RE, inferDevice,
+  cacheAvailable, entryCacheState, downloadEntry, deleteEntry, readCachedEntry,
+} from "./fullflashes.js";
 
 /* ------------------------------------------------------------------ */
 /* phone key tables (mirrors pmb887x-emu-mcp/src/keys.ts + otp.ts)      */
@@ -45,18 +49,8 @@ const CODE_TO_KEY = {
   Escape: "end",
 };
 
-// filename substring -> device id (mirrors pmb887x-emu-mcp/src/instance.ts)
-// LG phones: their EEPROM lives in the NOR flash EFA block, so their
-// fullflashes need the .cfi-efa sidecar (see SIDE_CAR_RE below).
-const DEVICE_RULES = [
-  ["KE800", "lg-ke800"], ["KE970", "lg-ke970"],
-  ["EL71", "siemens-el71"], ["E71", "siemens-e71"], ["C81", "siemens-c81"],
-  ["S75", "siemens-s75"], ["S65", "siemens-s65"], ["CX75", "siemens-cx75"],
-  ["CX70", "siemens-cx70"], ["CX65", "siemens-cx65"], ["SL75", "siemens-sl75"],
-  ["CL61", "siemens-cl61"], ["C75", "siemens-c75"], ["C72", "siemens-c72"],
-  ["C65", "siemens-c65"], ["S68", "siemens-s68"], ["M81", "siemens-m81"],
-  ["M72", "siemens-m72"],
-];
+// Fullflash sidecars (SIDE_CAR_RE) + filename -> device inference now
+// live in fullflashes.js.
 
 // NOR flash OTP derivation (ported from pmb887x-emu-mcp/src/otp.ts)
 const ESN_KEY = [0x32, 0xe5, 0xf7, 0x03];
@@ -126,7 +120,7 @@ function setStatus(cls, text) {
 /* ------------------------------------------------------------------ */
 
 async function loadBoards() {
-  boardsBuf = await (await fetch("boards.tar")).arrayBuffer();
+  boardsBuf = await (await fetch("dist/boards.tar")).arrayBuffer();
   const files = [];
   untar(boardsBuf, (name, data) => files.push({ name, data }));
   boards = files
@@ -150,19 +144,10 @@ async function loadBoards() {
   }
 }
 
-// Fullflash sidecars: qemu derives <fullflash>.cfi-{efa,otp0,otp1} paths
-// from the pflash filename (in MEMFS: /data/fullflash.bin.cfi-*).
-// The EFA block ("extra flash area") holds the LG EEPROM — without it an LG
-// firmware boots, complains "EEP DOES NOT FIT TO SW-VERSION" and factory-
-// resets. Siemens fullflashes only use the otp0/otp1 sidecars (optional).
-const SIDE_CAR_RE = /\.cfi-[a-z0-9]+$/i;
+// Fullflash sidecars (SIDE_CAR_RE) are documented in fullflashes.js:
+// qemu derives <fullflash>.cfi-{efa,otp0,otp1} paths from the pflash
+// filename (in MEMFS: /data/fullflash.bin.cfi-*).
 const FULLFLASH_PATH = "/data/fullflash.bin";
-
-function inferDevice(filename) {
-  const up = filename.toUpperCase();
-  for (const [pat, dev] of DEVICE_RULES) if (up.includes(pat)) return dev;
-  return null;
-}
 
 // The main fullflash plus its picked .cfi-* sidecars; the largest non-sidecar
 // file wins so a directory pick cannot accidentally swap main and sidecar.
@@ -184,10 +169,10 @@ function inferKbdLayout(dev) {
   return null;
 }
 
-$("fullflash").addEventListener("change", (e) => {
-  const { main } = pickFiles(e.target.files);
-  if (!main) return;
-  const dev = inferDevice(main.name);
+// Device + on-screen keyboard inference from a fullflash filename — shared
+// by the file picker and the preset picker below.
+function applyFullflashName(name) {
+  const dev = inferDevice(name);
   if (dev) {
     if (boards.some((b) => b.id === dev)) $("device").value = dev;
     else if (boardsReady) pendingDevice = dev; // boards.tar still loading
@@ -199,6 +184,88 @@ $("fullflash").addEventListener("change", (e) => {
     applyKbdLayout(kbd, bindKeypad);
     localStorage.setItem("kbd-layout", kbd);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* preset fullflashes (fullflashes.js inventory, cached in the browser) */
+/* ------------------------------------------------------------------ */
+
+const presetSel = $("ff-preset");
+const presetStatus = $("ff-preset-status");
+const presetTrash = $("ff-preset-delete");
+const fileInput = $("fullflash");
+let selectedPreset = null; // PRESET_FULLFLASHES entry, or null = own file
+let presetBusy = false;    // preset download in flight (during boot)
+
+function presetById(id) {
+  return PRESET_FULLFLASHES.find((p) => p.id === id) ?? null;
+}
+
+function fmtMiB(bytes) {
+  const m = bytes / (1024 * 1024);
+  return (m >= 10 ? Math.round(m) : m.toFixed(1)) + " MiB";
+}
+
+// Reflect selectedPreset + cache state: the option texts ("— cached"
+// markers), the trash button, the Browse input (disabled while a preset is
+// chosen) and the status line under the dropdown.
+async function refreshPresetUi() {
+  for (const opt of presetSel.options) {
+    const entry = presetById(opt.value);
+    if (!entry) continue; // the "own file" placeholder
+    const st = await entryCacheState(entry);
+    opt.textContent = entry.label + (st.complete ? " — cached" : "");
+  }
+  if (!cacheAvailable()) {
+    presetSel.disabled = presetTrash.disabled = true;
+    presetStatus.textContent = "browser cache unavailable — use your own file below";
+    return;
+  }
+  presetSel.disabled = false;
+  fileInput.disabled = !!selectedPreset;
+  const entry = selectedPreset;
+  if (!entry) {
+    presetTrash.disabled = true;
+    presetStatus.textContent = "";
+    return;
+  }
+  const st = await entryCacheState(entry);
+  presetTrash.disabled = presetBusy || st.count === 0;
+  presetStatus.textContent =
+    st.complete ? `cached (${fmtMiB(st.totalSize)}) — boots from the local cache`
+    : st.count ? `partially cached (${st.count}/${entry.files.length}) — finishes on Start`
+    : "not downloaded yet — downloads when you press Start";
+}
+
+for (const entry of PRESET_FULLFLASHES) {
+  const opt = document.createElement("option");
+  opt.value = entry.id;
+  opt.textContent = entry.label;
+  presetSel.appendChild(opt);
+}
+refreshPresetUi();
+
+presetSel.addEventListener("change", async () => {
+  selectedPreset = presetById(presetSel.value);
+  if (selectedPreset) {
+    applyFullflashName(selectedPreset.files[0]);
+  } else if (fileInput.files.length) {
+    // back to "my own file": re-apply the inference of the picked files
+    const { main } = pickFiles(fileInput.files);
+    if (main) applyFullflashName(main.name);
+  }
+  await refreshPresetUi();
+});
+
+presetTrash.addEventListener("click", async () => {
+  if (!selectedPreset || presetBusy) return;
+  await deleteEntry(selectedPreset);
+  await refreshPresetUi();
+});
+
+fileInput.addEventListener("change", (e) => {
+  const { main } = pickFiles(e.target.files);
+  if (main) applyFullflashName(main.name);
 });
 
 /* ------------------------------------------------------------------ */
@@ -206,8 +273,14 @@ $("fullflash").addEventListener("change", (e) => {
 /* ------------------------------------------------------------------ */
 
 async function boot() {
-  const fileInput = $("fullflash");
-  if (!fileInput.files.length) { alert("pick a fullflash .bin first"); return; }
+  if (!selectedPreset && !fileInput.files.length) {
+    alert("pick a preset fullflash or your own .bin first");
+    return;
+  }
+  if (selectedPreset && !cacheAvailable()) {
+    alert("the browser cache is unavailable — presets cannot be stored; use your own file");
+    return;
+  }
 
   // boards.tar populates the device list and feeds preRun's untar — never
   // start a boot that could race it (device inference would be lost and
@@ -219,8 +292,13 @@ async function boot() {
   }
 
 
-  const { main: file, sidecars } = pickFiles(fileInput.files);
-  if (!file) { alert("no fullflash .bin among the picked files"); return; }
+  // Own-file boots are resolved up front; preset boots resolve inside the
+  // try below, after a possible first-use download into the browser cache.
+  let picked = null;
+  if (!selectedPreset) {
+    picked = pickFiles(fileInput.files);
+    if (!picked.main) { alert("no fullflash .bin among the picked files"); return; }
+  }
   const device = $("device").value;
   const imei = $("imei").value.trim();
   const esn = $("esn").value.trim();
@@ -245,9 +323,40 @@ async function boot() {
   let sidecarBytes = [];
 
   try {
+    // Boot source: the preset read back from the browser cache, or the
+    // picked local files. Both yield { name, arrayBuffer() } objects (the
+    // preset one wraps the cached bytes).
+    let file, sidecars;
+    if (selectedPreset) {
+      // First Start with this preset: download it into the browser cache
+      // (live progress; later boots come straight from the cache).
+      const st = await entryCacheState(selectedPreset);
+      if (!st.complete) {
+        presetBusy = true;
+        try {
+          await downloadEntry(selectedPreset, (name, loaded, total) => {
+            const pct = total ? Math.round((loaded / total) * 100) : null;
+            setStatus("booting", "downloading fullflash" + (pct != null ? ` — ${pct}%` : "…"));
+            presetStatus.textContent = `downloading ${name}: ${fmtMiB(loaded)}`
+              + (total ? ` of ${fmtMiB(total)}` : "") + (pct != null ? ` — ${pct}%` : "");
+          });
+        } finally {
+          presetBusy = false;
+        }
+        await refreshPresetUi();
+      }
+      const cached = await readCachedEntry(selectedPreset); // main .bin first
+      const shim = (f) => ({ name: f.name, arrayBuffer: async () => f.bytes.buffer });
+      file = shim(cached[0]);
+      sidecars = cached.slice(1).map(shim);
+    } else {
+      file = picked.main;
+      sidecars = picked.sidecars;
+    }
+
     // Compile the factory fresh per boot (the emscripten ES6 factory is
     // single-use once main() has run through exit()).
-    const factory = (await import("./qemu-system-arm.js")).default;
+    const factory = (await import("./dist/qemu-system-arm.js")).default;
 
     const flashBytes = new Uint8Array(await file.arrayBuffer());
     for (const sc of sidecars) {
@@ -347,6 +456,7 @@ async function boot() {
     console.error(e);
     setStatus("error", String(e));
     $("btn-start").disabled = false;
+    refreshPresetUi(); // a failed preset download changed the cache state
     return;
   }
 
@@ -548,7 +658,7 @@ async function diagnoseIsolation() {
       }))
       .catch(() => null);
     if (!h || !h.coop || !h.coep)
-      why.push(`no COOP/COEP headers (got COOP=${h?.coop} COEP=${h?.coep}) — serve dist/ via ./serve.mjs`);
+      why.push(`no COOP/COEP headers (got COOP=${h?.coop} COEP=${h?.coep}) — serve site/ via ./serve.mjs`);
     else if (window.top !== window.self) why.push('embedded in a frame without allow="cross-origin-isolated"');
     else why.push("browser ignored COOP/COEP — in-app browser/WebView? open in Chrome/Firefox/Safari");
   }

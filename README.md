@@ -10,16 +10,22 @@ to tens of minutes at current TCI speed). See
 
 The page has a fullflash file picker (multi-select: LG fullflashes can be
 picked together with their `.cfi-efa` sidecar — the EFA block holding the
-LG EEPROM; a missing EFA makes LG firmware factory-reset), all `load`
-options (device inference, IMEI/ESN→OTP, SIM, operator, startup scenario,
-writable-flash) and an on-screen keypad with every phone key as its own
-`<button>` (plus physical-keyboard mapping).
+LG EEPROM; a missing EFA makes LG firmware factory-reset) plus a dropdown
+of predefined fullflashes (inventory: `site/fullflashes.js`; currently
+S75 v40, EL71 v41 and KE800 v11b + EFA, fetched from `git.siepatch.dev`):
+pressing Start with one selected downloads it on first use (live progress;
+the trash icon next to the dropdown drops the cached copy) and keeps it in
+the browser's Cache API storage — later boots come straight from the cache,
+an alternative to uploading your own file. Then all `load` options (device
+inference, IMEI/ESN→OTP, SIM, operator, startup scenario, writable-flash)
+and an on-screen keypad with every phone key as its own `<button>` (plus
+physical-keyboard mapping).
 
 ## Running it (experimental)
 
 ```bash
 ./build.sh          # ~30-60 min first run: emsdk 4.0.10 + glib/pixman/zlib
-                    # built for wasm64, then qemu → dist/qemu-system-arm.wasm
+                    # built for wasm64, then qemu → site/dist/qemu-system-arm.wasm
 ./serve.mjs         # http://127.0.0.1:8080 (COOP/COEP headers for pthreads)
                     # phone/LAN: auto-redirected to https://<lan-ip>:6808
                     # (self-signed — accept the browser warning once; browsers
@@ -32,7 +38,7 @@ writable-flash) and an on-screen keypad with every phone key as its own
 re-download (`tools/loadbench.mjs` measures the startup path).
 
 Everything runs client-side: the picked fullflash is written into the
-emscripten MEMFS, board configs are unpacked from `dist/boards.tar`, and
+emscripten MEMFS, board configs are unpacked from `site/dist/boards.tar`, and
 qemu boots with a small `-display wasm` backend (see below). The TCG
 interpreter (TCI) is the only TCG backend available on wasm64, so it is
 several times slower than native.
@@ -101,8 +107,10 @@ lands in `/tmp/pmb887x-serial.log`.
 
 ```
 .
-  build.sh              one-shot WASM build (toolchain → deps → qemu → dist)
-  serve.mjs             static server for the WASM page (COOP/COEP)
+  build.sh              one-shot WASM build (toolchain → deps → qemu → site/dist)
+  serve.mjs             static server for the WASM page (COOP/COEP); serves
+                        site/ — static files are edited in place, build
+                        artifacts (qemu wasm/js, boards.tar) live in site/dist/
   versions.env          pinned qemu-pmb887x / bsp / toolchain revisions
   scripts/
     build-deps.sh       emsdk + glib/pixman/zlib built with emcc (wasm64)
@@ -112,8 +120,7 @@ lands in `/tmp/pmb887x-serial.log`.
   patches/
     0001-ui-add-wasm-*.patch   wasm display/input backend (applied to the clone)
     0007-wasm-tci-*.patch      TCI TB chaining + in-interpreter icount2
-                              accounting (~2x guest throughput; conflicts
-                              with the 0005 draft, see its header)
+                              accounting (~2x guest throughput)
     0008-tci-immediate-*.patch immediate-form TCI ops (add/and/or/xor/
                               andc/setcond vs small constants; no tci_movi
                               materialization; +7-9% on top of 0007)
@@ -145,11 +152,13 @@ lands in `/tmp/pmb887x-serial.log`.
                               lookup-tb; killed several profiler ghosts)
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression; superseded by the reworked 0004)
-  site/                 WASM-mode page (index.html / app.js / style.css)
+  site/                 the served web root — editable static page (index.html /
+                        app.js / style.css / keyboards.js; fullflashes.js holds
+                        the preset-fullflash inventory + Cache API handling)
+                        plus dist/ — wasm build artifacts (gitignored)
   tools/                headless-browser test/screenshot helpers (playwright)
                         test fullflash path lives in tools/testflash.local.json
                         (gitignored — copy from tools/testflash.local.json.example)
-  dist/                 WASM build output — serve this (gitignored)
 ```
 
 The WASM build is fully decoupled from the upstream sources: it clones
@@ -195,16 +204,20 @@ Notes for bumping:
 
 ## Performance work (see doc/performance-handoff.md + doc/wasm32-port-status.md)
 
-- `dist/` — TCI build (patches 0001–0004 + 0007–0015; timing model is
+The wasm32 runtime-JIT backend (the old 0005 draft) was fully rebased,
+benchmarked (~1.3–2.3x TCI ceiling, boot hangs) and **discarded** on
+2026-09-09 — the TCI series is the shipping engine; the JIT sources and
+post-mortem live in patches/attic/wasm32-rebase/.
+
+- `site/dist/` — TCI build (patches 0001–0004 + 0007–0015; timing model is
   stock `-icount shift=3,sleep=off`, no fork-specific clock patch — see
   the interim 0006 in patches/attic; 0004 reworked: the
   io-recompile longjmp storm is gone, MMIO accounted at the rewind's
   clock, stock rewind kept for flash-command accesses — boots 2.5–12×
   further per wall second, see doc/early-crash-postmortem.md §9).
-- `dist-jit/` — wasm32 runtime-JIT build (0005 DRAFT + the old
-  0003+0004-era tree), currently stale: needs a fresh baseline against
-  the 0004-less, 0006-carrying dist; port in progress.
-- Serve both: `WEB_DIST_DIR=$PWD/dist node serve.mjs` and
-  `WEB_DIST_DIR=$PWD/dist-jit PORT=8082 HTTPS_PORT=6810 node serve.mjs`.
+- The wasm32 runtime-JIT experiment (the old 0005 draft) is **closed**:
+  fully rebased, benchmarked at ~1.3–2.3x TCI ceiling with an unresolved
+  boot-hang — discarded. See doc/wasm32-port-status.md and
+  patches/attic/wasm32-rebase/.
 - Fast iteration: `scripts/ninja-fast.sh` (incremental, correct env);
   profiling: `tools/wprof2.mjs` (per-worker CDP CPU profiles).

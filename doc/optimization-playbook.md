@@ -28,7 +28,7 @@ document**.  Read together with [performance-handoff.md](performance-handoff.md)
 
 ```bash
 # 0. serve the current dist (keep running)
-WEB_DIST_DIR=$PWD/dist PORT=8080 HTTPS_PORT=6808 node serve.mjs &
+PORT=8080 HTTPS_PORT=6808 node serve.mjs &
 
 # 1. edit sources in build/qemu (patches 0001..000N already applied there)
 
@@ -120,6 +120,9 @@ workers:
 ## What was tried and REJECTED (do not retry without new ideas)
 
 | Experiment | Result | Why |
+|---|---|---|
+| **wasm32 runtime-JIT TCG backend (0005, ktock port fully rebased)** (2026-09-09 session; see [wasm32-port-status.md](wasm32-port-status.md) + `patches/attic/wasm32-rebase/`) | v-window 2→7: JIT 18.7–20.1 s vs TCI 24.8–28.3 quiet / 45–46 loaded — **~1.3–2.3x ceiling**, and the boot deterministically hangs at v≈6 (BROM USART-RIS poll data divergence → watchdog reset → recovery loop forever; LG/no-icount boot fully dead) | per-TB dispatch protocol (instance return → C dispatcher → indirect instance call per chained TB) + per-new-TB JS `WebAssembly.Module` compile eat the codegen gains on this 3–4 insn/TB branchy firmware; ~4200-line surface; discarded — the draft and the full rebase live in `patches/attic/` |
+| **tci.c interpreter stack as a parameter** (during the 0005 rebase: split `tcg_qemu_tb_exec` into a core + wrapper taking `uint64_t *call_stack`) | TCI v-window 25→45 s (**−60%**, 4/4 interleaved runs) | the pointer-select makes the interpreter stack alias every local array in LLVM's analysis; the TCI stack is per-TB scratch anyway — keep a single function with a local array |
 |---|---|---|
 | **MMIO dispatch fast path** (memory.c: direct `ops->read/write` call for exact-size aligned accesses, skipping valid-check + access_with_adjusted_size + accessor layers; reentrancy guard replicated; `__EMSCRIPTEN__`-gated) | window 24.9–25.2 → 25.1–25.3 s (**consistently 0.1–0.7 s WORSE on a quiet host**, 4/4 pairs); finalV ±noise; insns@110 s +0.1–5.8 % inconsistent; a late-window A/B (LO=30 HI=60) was flat too | the pre-dispatch condition chain (accepts/align/size/trace/ioeventfd checks) costs as much as the ~3 non-inlined calls it saves at ~90k dispatches/s; V8 already keeps the dispatch path hot. Reverted; don't retry without cross-TU inlining (LTO) |
 | **TLB table-base caching in the TCI interpreter** (cache `(fast->table, fast->mask)` per mmu_idx across ops, dropped after helper calls and ldst fallbacks — the only paths that can resize/flush the tlb on this single-cpu machine) | window 25.9/25.2/25.2/25.2 → 24.5/25.3/25.1/25.1 (flat, ±0.1); late-window LO=30 HI=60: 19.7/20.3 → 19.6/20.0 (flat); finalInsns won 4/4 (+1…5.7 %) but finalV-at-200 s varies ±45 v run-to-run — no reproducible win | the two saved loads are L1-hot; the memory-op path is at its practical floor for micro-tweaks (0011+0012 already removed the real work). Reverted; only a big lever (64-bit TCI encoding, wasm32 JIT) can move the interpreter now |

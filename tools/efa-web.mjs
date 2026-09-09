@@ -1,7 +1,7 @@
 // E2E browser test: LG KE800 fullflash + .cfi-efa sidecar (LG EEPROM block).
 //   node tools/efa-web.mjs            positive: sidecar picked -> EFA loaded
 //   node tools/efa-web.mjs noefa      negative: flash only     -> warning
-// Requires the wasm dist to be served (./serve.mjs) at 127.0.0.1:8080.
+// Requires the wasm build to be served (./serve.mjs) at 127.0.0.1:8080.
 // Boots with ?trace=flash&tracebuf=1 and greps window.__qemulog for the
 // flash device's "loaded EFA" line — no need to wait for the slow wasm boot.
 import { chromium } from "playwright-core";

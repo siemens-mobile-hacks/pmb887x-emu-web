@@ -19,7 +19,11 @@ import { extname, join, normalize, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 
-const root = resolve(process.env.WEB_DIST_DIR || (dirname(fileURLToPath(import.meta.url)) + "/dist"));
+// The whole page lives under site/ — editable static files at the top,
+// build artifacts (qemu wasm/js, boards.tar) in site/dist/ — so files can
+// be edited in place and served as-is, no build/copy step for them.
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(process.env.WEB_SITE_DIR || here + "/site");
 const port = Number(process.env.PORT || 8080);
 const httpsPort = Number(process.env.HTTPS_PORT || 6808);
 for (const [name, p] of [["PORT", port], ["HTTPS_PORT", httpsPort]]) {

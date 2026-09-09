@@ -1,5 +1,11 @@
 #!/bin/bash
 # Build qemu-system-arm (pmb887x) with the wasm32 runtime-JIT TCG backend.
+#
+# CLOSED PATH (2026-09-09): the backend measured ~1.3-2.3x TCI at best and
+# has an unresolved boot hang -- it is NOT part of the shipping series.
+# The rebased sources live in patches/attic/wasm32-rebase/; this script is
+# kept for anyone retrying (apply patches/attic/0005-*.patch or the
+# wasm32-rebase files onto build/qemu first, then run this).
 # Uses the wasm32 deps (build/deps32). Patches from patches/ must be
 # applied to build/qemu first (scripts/build-qemu.sh does this for the
 # shared tree; we reuse build/qemu as the source tree).
@@ -11,7 +17,7 @@ source "$WEB_DIR/versions.env"
 BUILD="${WEB_BUILD:-$WEB_DIR/build}"
 DEPS_ROOT="$BUILD/deps32"
 TARGET="$DEPS_ROOT/target"
-DIST="$WEB_DIR/dist-jit"
+DIST="$WEB_DIR/site/dist-jit"
 mkdir -p "$DIST"
 
 source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null 2>&1

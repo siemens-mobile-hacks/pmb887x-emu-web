@@ -2,7 +2,7 @@
 # One-command C-iteration loop for the wasm build:
 #   edit build/qemu/**.c  ->  scripts/iterate.sh  ->  verdict
 #
-# Steps: incremental ninja rebuild + deploy to dist/ (scripts/ninja-fast.sh),
+# Steps: incremental ninja rebuild + deploy to site/dist/ (scripts/ninja-fast.sh),
 # then the parallel boot-survival A/B check (tools/ab.mjs) against the fresh
 # build. Total wall time ≈ rebuild (~10 s) + until-splash (~30 s).
 #

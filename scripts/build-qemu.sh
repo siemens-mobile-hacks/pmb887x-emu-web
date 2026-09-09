@@ -4,9 +4,9 @@
 # Clones the pinned qemu-pmb887x revision into build/qemu (pristine
 # upstream + patches/*.patch), configures it for emscripten/wasm64 with
 # the TCG interpreter, and produces:
-#   dist/qemu-system-arm.js / .wasm / .worker.js   (emscripten output)
-#   dist/boards.tar                                 (board configs from bsp)
-#   dist/index.html, app.js, style.css, ...         (copied from site)
+#   site/dist/qemu-system-arm.js / .wasm / .worker.js   (emscripten output)
+#   site/dist/boards.tar                                 (board configs from bsp)
+# site/ is served directly by serve.mjs — nothing is copied for it.
 set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,7 +15,7 @@ source "$WEB_DIR/versions.env"
 BUILD="${WEB_BUILD:-$WEB_DIR/build}"
 DEPS_ROOT="${WASM_DEPS:-$BUILD/deps}"
 TARGET="$DEPS_ROOT/target"
-DIST="$WEB_DIR/dist"
+DIST="$WEB_DIR/site/dist"
 mkdir -p "$BUILD" "$DIST"
 
 source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null 2>&1
@@ -92,8 +92,5 @@ emmake ninja -j"$(nproc)" qemu-system-arm.js
 cp qemu-system-arm.js qemu-system-arm.wasm "$DIST/"
 [ -f qemu-system-arm.worker.js ] && cp qemu-system-arm.worker.js "$DIST/" || true
 [ -f qemu-system-arm.wasm.map ] && cp qemu-system-arm.wasm.map "$DIST/" || true
-
-# --- site ---
-cp "$WEB_DIR"/site/* "$DIST/"
 
 echo "=== web dist ready: $DIST ==="

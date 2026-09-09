@@ -1,6 +1,6 @@
 # build outputs
-/dist/
-/dist-jit/
+/site/dist/
+/site/dist-jit/
 /build/
 
 # toolchains/dependencies

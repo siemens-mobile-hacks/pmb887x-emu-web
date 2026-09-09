@@ -7,7 +7,7 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 page.on("console", (m) => console.log("[page]", m.text().slice(0, 300)));
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 250)));
-await page.goto("http://127.0.0.1:8080/" + (extra ? "?" + extra : ""), { waitUntil: "networkidle" });
+await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/` + (extra ? "?" + extra : ""), { waitUntil: "networkidle" });
 await page.addScriptTag({ content: `
   window.__watch = setInterval(() => {
     const m = window.__qemu;

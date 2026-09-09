@@ -4,22 +4,22 @@
 # use it while iterating on files already patched into build/qemu.
 #
 # With no arguments: builds qemu-system-arm.js and DEPLOYS the emscripten
-# artifacts to $WEB_DIST (default dist/) so the next page load runs the new
-# build — no manual cp, no stale-wasm traps (also drops stale .gz sidecars,
-# which serve.mjs would otherwise prefer over the fresh file).
+# artifacts to $WEB_DIST (default site/dist/) so the next page load runs the
+# new build — no manual cp, no stale-wasm traps (also drops stale .gz
+# sidecars, which serve.mjs would otherwise prefer over the fresh file).
 # With arguments they are passed to ninja verbatim and no deploy happens.
 #
 # Env:
 #   VERBOSE=1   full ninja output (default: warnings + last lines + summary)
 #   NO_DEPLOY=1 skip the dist/ deploy
-#   GZ=1        also refresh dist/qemu-system-arm.wasm.gz (slower deploy;
+#   GZ=1        also refresh site/dist/qemu-system-arm.wasm.gz (slower deploy;
 #               only worth it when serving to a phone over the LAN)
 set -euo pipefail
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${WEB_BUILD:-$WEB_DIR/build}"
 DEPS_ROOT="${WASM_DEPS:-$BUILD/deps}"
 TARGET="$DEPS_ROOT/target"
-DIST="${WEB_DIST:-$WEB_DIR/dist}"
+DIST="${WEB_DIST:-$WEB_DIR/site/dist}"
 
 source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null 2>&1
 export PATH="$HOME/.local/bin:$PATH"

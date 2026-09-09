@@ -10,10 +10,10 @@ import path from "node:path";
 
 // wasm-function[N] -> C symbol map (emcc --emit-symbol-map sidecar; the
 // wasm binary carries no name section). Looked up next to the wasm being
-// served (dist/ or dist-jit/) and in the build dirs.
+// served (site/dist/ or site/dist-jit/) and in the build dirs.
 const symPaths = [
-  "../dist/qemu-system-arm.js.symbols",
-  "../dist-jit/qemu-system-arm.js.symbols",
+  "../site/dist/qemu-system-arm.js.symbols",
+  "../site/dist-jit/qemu-system-arm.js.symbols",
   "../build/qemu-wasm/qemu-system-arm.js.symbols",
   "../build/qemu-wasm32/qemu-system-arm.js.symbols",
 ];
@@ -91,10 +91,14 @@ try {
   const sessions = [];
   // profile the page main thread too (the client-side glue: rAF LCD paint,
   // serial poll, console handlers) — it is the first session in the list
-  await send("Profiler.enable", {}, pageSession);
-  await send("Profiler.setSamplingInterval", { interval: sampleUs }, pageSession);
-  await send("Profiler.start", {}, pageSession);
-  sessions.push(pageSession);
+  const sendT = (cmd, params, sid) => Promise.race([
+    send(cmd, params, sid), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 5000))]);
+  try {
+    await sendT("Profiler.enable", {}, pageSession);
+    await sendT("Profiler.setSamplingInterval", { interval: sampleUs }, pageSession);
+    await sendT("Profiler.start", {}, pageSession);
+    sessions.push(pageSession);
+  } catch (e) { console.log("(page main thread unresponsive: " + e.message.slice(0,60) + ")"); }
   for (const w of workers) {
     const sid = w.sessionId;
     await send("Profiler.enable", {}, sid);

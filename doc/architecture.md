@@ -14,8 +14,8 @@ The Siemens phone emulator runs entirely in the browser. Repo layout:
   patches/0013..0015-*.patch                longjmp elimination (SVC inline exit,
                                             io barriers) + diagnostics counters
   patches/attic/                            dropped patches (0004: boot regression)
-  site/                                     WASM-mode page
-  dist/                                     build output (served)
+  site/                                     WASM-mode page (dist/ inside it:
+                                            wasm build output, gitignored)
   tools/                                    headless-browser test/probe scripts
   doc/                                      this documentation
 ```
@@ -37,10 +37,11 @@ a page.
    `build/`, applies `patches/*.patch` onto the pristine tree and
    configures like qemu's CI wasm64 job:
    `--static --cpu=wasm64 --target-list=arm-softmmu --enable-tcg-interpreter
-   --with-coroutine=wasm`. Output: `dist/qemu-system-arm.{js,wasm}` plus
-   `dist/boards.tar` (bsp board configs, unpacked by the page at boot).
-3. `serve.mjs` serves `dist/` with the COOP/COEP headers pthreads need
-   (SharedArrayBuffer).
+   --with-coroutine=wasm`. Output: `site/dist/qemu-system-arm.{js,wasm}` plus
+   `site/dist/boards.tar` (bsp board configs, unpacked by the page at boot).
+3. `serve.mjs` serves `site/` — the static page files edited in place, with
+   the build artifacts in `site/dist/` — with the COOP/COEP headers pthreads
+   need (SharedArrayBuffer).
 
 The pinned revision predates the fork's "native TCG DSP emulation"
 (`43d084b2`) and the unfinished `PLL→CGU` rename — see versions.env comments.
@@ -112,7 +113,13 @@ host speed. The patch lives in `patches/attic/`.
   `press_key` tool uses (converted to linux keycodes), plus physical-key
   mapping. Serial pane polls `/serial.log`.
 
-### wasm32 runtime JIT (dist-jit/, experimental)
+### wasm32 runtime JIT — CLOSED 2026-09-09
+
+Rebased, benchmarked (~1.3–2.3x TCI ceiling), boot hangs deterministically
+— discarded. See doc/wasm32-port-status.md and patches/attic/wasm32-rebase/.
+(The section below is the historical description.)
+
+### wasm32 runtime JIT (historical, dist-jit/, experimental)
 
 `scripts/build-qemu-jit.sh` builds the same emulator with **ktock/qemu-wasm's
 wasm32 TCG backend** ported onto this tree (patch 0005, DRAFT): each TB is
