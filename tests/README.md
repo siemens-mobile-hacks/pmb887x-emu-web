@@ -66,6 +66,50 @@ instruction-count plugin.
 The suite stops each instance ~10 s after the benchmark window once all
 verdicts are in (fast path); the `--timeout` deadline is the worst case.
 
+## Lockstep (phase 0b — cross-backend value equality)
+
+Whole-boot, value-level comparison of guest state between two TCG
+backends, the containment net for the future wasm64 backend
+([doc/wasm-tcg-backend-plan.md](../doc/wasm-tcg-backend-plan.md) §5).
+
+```bash
+scripts/build-native.sh          # a-side: reference JIT
+scripts/build-native-tci.sh      # b-side: TCI, plugins force-enabled
+bash scripts/sync-bsp.sh
+
+scripts/run-lockstep.sh                  # the gate: 3 full S75 boots
+RUNS=1 INSNS=300e6 scripts/run-lockstep.sh   # quick smoke
+SELF=1 scripts/run-lockstep.sh           # harness self-check (JIT vs JIT)
+node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
+```
+
+- **Plugin** `tests/lockstep.c` (built to `tests/lockstep.so`): folds
+  the r0–pc + CPSR vector (sampled every 2^16 executed guest insns, via
+  an inline per-insn counter + conditional callback) and SRAM/SDRAM
+  digests into a tiny text log — one E-line per 2^20 insns, one M-line
+  per 2^23. Sampling is keyed on *executed guest instructions*, not TB
+  boundaries (TB partitioning is TCG-internal — see the plugin header
+  for the three qemu properties this design owes to).
+- **Driver** `tools/lockstep.mjs`: boots the fullflash on both binaries
+  under `-accel tcg,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,
+  clock=vm` until both sides reach `--insns`, quits via the HMP monitor,
+  byte-diffs the digest streams (+ serial logs). On divergence it
+  re-runs both sides with a dense per-insn dump window over the
+  divergent epoch and reports the exact first differing insn + register
+  vector — hand that to the phase-0a suite (`tests/tcg-isa`) to bisect
+  by op.
+- **Positive control**: `--corrupt N` flips one bit of r0 at insn N on
+  the b-side only; the gate must flag the containing epoch and the
+  dense rerun must pinpoint insn N (verified 2026-09-10).
+
+Gate (2026-09-10, JIT vs TCI, S75, 3 × 2.5G guest insns ≈ full boot
+through idle): **0 divergences** — 2385+ register-digest epochs and 298
+SRAM+SDRAM digests identical per run, serial byte-identical, ~6 min
+wall for all three runs in parallel. el71 smoke + `--self` clean too.
+Note: lockstep requires the icount timing model (boards where
+`run-native.sh` omits `-icount` — LG — run on the host realtime clock
+and are not guest-deterministic enough for digest comparison).
+
 ## Notes
 
 - The three instances run in parallel on a ≥ 4-core host; ~35 cores are

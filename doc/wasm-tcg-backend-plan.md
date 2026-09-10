@@ -4,6 +4,12 @@ Status: **in progress** (2026-09-09: **phase 0a done** — the guest op-suite
 below is implemented in [tests/tcg-isa/](../tests/tcg-isa/), gate
 `scripts/run-tcg-isa.sh` green on all three backends (native JIT, native
 TCI, wasm TCI page: 1156/1156 each, serial byte-identical, ~8 s total);
+2026-09-10: **phase 0b done** — the lockstep harness is implemented
+([tests/lockstep.c](../tests/lockstep.c) plugin + `tools/lockstep.mjs`
+driver + `scripts/run-lockstep.sh` gate), green over 3 full S75 boots:
+JIT vs TCI, 2.5G guest insns each (whole boot through idle), 2385+
+register-digest epochs + 298 SRAM/SDRAM memory digests identical per run,
+serial byte-identical, ~6 min wall for all three runs in parallel;
 supersedes the "port a native wasm TCG backend" idea in
 [performance-handoff.md](performance-handoff.md) §1 with what was learned
 from actually trying it).
@@ -234,6 +240,67 @@ LG (no-icount).
   from the same tree), then on wasm. Divergence → bisect by op with the
   phase-0a suite (per-op shadow evaluation). *Gate: 0 divergences over 3
   full S75 boots.* ~3–5 days. Non-negotiable before any emitter work.
+  - **Status: implemented + gate green 2026-09-10** —
+    [tests/lockstep.c](../tests/lockstep.c) (TCG plugin) +
+    `tools/lockstep.mjs` (driver) + `scripts/run-lockstep.sh` (gate;
+    `scripts/build-native-tci.sh` builds the plugin-enabled TCI side —
+    upstream configures plugins off with TCI by default, CI cost not
+    incompatibility). Zero qemu changes. Gate: 3 × full S75 boot
+    (2.5G guest insns, through the idle screen), JIT vs TCI — every
+    epoch digest and memory digest identical, serial byte-identical;
+    positive control (`--corrupt`: 1-bit r0 flip at a chosen insn)
+    flags the epoch and pinpoints the exact insn + register in the
+    dense rerun. el71 smoke and `--self` (JIT vs JIT) clean.
+  - **Design (the three qemu properties it owes to, measured 2026-09-10):**
+    1. *TB partitioning is TCG-internal, not guest state.* First cut
+       folded (vaddr, n_insns) per TB — diverged at ~124M insns with
+       *identical registers*: the icount refill path
+       (accel/tcg/cpu-exec.c, `cflags_next_tb | insns_left`)
+       retranslates deadline-capped TBs and the exact cap depends on
+       generated-code expiry behavior (JIT 70-insn TB vs TCI 69-insn TB
+       at the same pc, same executed stream). Fix: sample on a counter
+       of **executed guest instructions** — inline add per insn +
+       `QEMU_PLUGIN_COND_GE` conditional callback (C work only at
+       sample points); the digest stream is a pure function of the
+       guest program, so any two backends are comparable.
+    2. *Plugin register reads need `QEMU_PLUGIN_CB_R_REGS`* — TCG syncs
+       dirty globals to env around such calls (that's what makes the
+       values architectural); and `gdb_get_reg32` **appends** to the
+       caller's buffer (truncate between reads — the first run was
+       green but vacuous, every register reading back r0's bytes).
+    3. *Per-insn global sync costs ~100x inside multi-insn TBs*
+       (0.25 MIPS on S75 — the allocator can't keep globals in host
+       regs). Under `-accel tcg,one-insn-per-tb=on` the same
+       instrumentation runs at **~40 MIPS JIT / ~9.5 MIPS TCI** —
+       nothing to keep alive across a 1-insn TB. The driver boots both
+       sides with it (also makes TB boundaries insn-aligned on every
+       backend — the natural execution shape for the wasm64 backend's
+       per-TB functions anyway).
+  - **Determinism findings:** the one real nondeterminism source is the
+    pmb887x RTC seeding from host time (`qemu_get_timedate` in
+    hw/arm/pmb887x/rtc.c) — pin with `-rtc base=2000-01-01T00:00:00,
+    clock=vm` (under `-icount` the vm clock is guest-driven; the gate
+    is therefore S75/el71-class icount boards — LG boards run
+    `run-native.sh`'s no-icount path on the host realtime clock and
+    aren't digest-comparable). Everything else (devices, DSP handshake,
+    flash writes) is value-deterministic across backends for whole
+    boots — that is the phase-0b result the emitter work now stands on.
+  - **Cost:** full-boot gate ≈ 6 min (3 runs parallel, TCI-bound at
+    ~9.5 MIPS instrumented); dense localization rerun over one epoch
+    (2^20 insns) ≈ 30 s. Throughput numbers say per-insn sampling is
+    affordable natively; on wasm the same instrumentation will ride
+    the built-in patch (below).
+  - **wasm leg (follow-up for phase 1):** the wasm build can't dlopen
+    plugins — port the fold logic (~200 lines) into a small built-in
+    qemu patch compiled into the wasm build, emitting the same log
+    format into MEMFS (`/lockstep.log`, like `/serial.log`); the
+    driver is format-driven and already backend-agnostic (it only
+    compares two logs + serial).
+  - Also pinned while building: qemu 11 forces plugins off for TCI in
+    configure (`7866b0f721`) — `meson configure -Dplugins=true` on the
+    TCI build dir re-enables them and TCI executes plugin callbacks
+    correctly (verified byte-identical against the JIT over full
+    boots).
 - **Phase 1 — backend skeleton.** `tcg/wasm64/` target files (reg model =
   abstract locals, constraints modeled on ktock's but i64-addressed),
   conservative emitters for all ops (rare ops may call a C helper — e.g.

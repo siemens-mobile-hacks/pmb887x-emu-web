@@ -24,6 +24,7 @@ tools/.serve.log
 
 # test suite build/run artifacts
 tests/insncount.so
+tests/lockstep.so
 tests/results/
 
 # tcg-isa build artifacts (binaries covered by *.bin; keep the elf/objects out too)
