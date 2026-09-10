@@ -277,12 +277,16 @@ fileInput.addEventListener("change", (e) => {
  * tests/tcg-isa, installed to dist/tcgisa.bin) instead of a phone: the
  * suite prints TAP + value dumps on the PL011 and exits via semihosting
  * SYS_EXIT, so the run ends in the normal onExit hook. */
+/* ?dist=<dir>: alternate build output (default "dist") — e.g. the
+ * wasm64 TCG backend build served as dist-jit/. */
+const DIST = new URLSearchParams(location.search).get("dist") || "dist";
+
 async function bootSuite(url) {
   setStatus("booting", "loading suite…");
   $("btn-start").disabled = true;
   try {
     const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
-    const factory = (await import("./dist/qemu-system-arm.js")).default;
+    const factory = (await import(`./${DIST}/qemu-system-arm.js`)).default;
     let modRef = null; // FS access in onExit (qemuModule not yet assigned)
     qemuModule = await factory({
       arguments: [
@@ -309,6 +313,9 @@ async function bootSuite(url) {
       },
       preRun: (mod) => {
         modRef = mod;
+        if (new URLSearchParams(location.search).get("w64debug") === "1") {
+          mod.ENV.W64_DEBUG = "1";
+        }
         mod.FS.mkdirTree("/data");
         mod.FS.writeFile("/data/tcgisa.bin", bytes);
       },
@@ -418,7 +425,7 @@ async function boot() {
 
     // Compile the factory fresh per boot (the emscripten ES6 factory is
     // single-use once main() has run through exit()).
-    const factory = (await import("./dist/qemu-system-arm.js")).default;
+    const factory = (await import(`./${DIST}/qemu-system-arm.js`)).default;
 
     const flashBytes = new Uint8Array(await file.arrayBuffer());
     for (const sc of sidecars) {
@@ -471,6 +478,7 @@ async function boot() {
       ...extraArgs,
     ];
 
+    let modRef = null; // FS access in onExit (qemuModule not yet assigned)
     qemuModule = await factory({
       arguments: args,
       printErr,
@@ -478,12 +486,24 @@ async function boot() {
       onExit: (code) => {
         setStatus("idle", `exited (${code})`);
         stopPainting();
+        // hand the finished logs out before the runtime tears the page
+        // down (the lockstep driver installs window.__lockstepReport)
+        if (window.__lockstepReport && modRef) {
+          try {
+            const rd = (p) => {
+              try { return new TextDecoder("latin1").decode(modRef.FS.readFile(p)); }
+              catch { return null; }
+            };
+            window.__lockstepReport(rd("/serial.log"), rd("/lockstep.log"), code);
+          } catch (e) { /* page going down anyway */ }
+        }
         $("btn-start").disabled = false;
         $("btn-stop").disabled = true;
         $("btn-save-flash").disabled = true;
         $("btn-save-efa").disabled = true;
       },
       preRun: (mod) => {
+        modRef = mod;
         mod.FS.mkdirTree("/boards");
         untar(boardsBuf, (name, data) => {
           const path = "/boards/" + name;
@@ -506,6 +526,17 @@ async function boot() {
         }
         if (qsp.get("icount2debug") === "1") {
           mod.ENV.QEMU_ICOUNT2_DEBUG = "1";
+        }
+        // ?lockstep=1: built-in guest-state fold (wasm64 backend,
+        // doc/wasm-tcg-backend-plan.md §5) — env-driven twin of the
+        // tests/lockstep.c plugin. Extra ls-* params map to
+        // W64_LOCKSTEP_* (insns, period, epoch, meminsns, mem, from, to).
+        if (qsp.get("lockstep")) {
+          mod.ENV.W64_LOCKSTEP = "1";
+          for (const k of ["insns", "period", "epoch", "meminsns", "mem", "from", "to"]) {
+            const v = qsp.get("ls-" + k);
+            if (v != null) mod.ENV["W64_LOCKSTEP_" + k.toUpperCase()] = v;
+          }
         }
         // ?iorewind=1: force the stock io-recompile everywhere
         // (A/B against the wasm io accounting; see patches/0004)

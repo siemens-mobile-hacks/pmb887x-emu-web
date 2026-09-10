@@ -9,7 +9,7 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)));
 const q = process.env.QARGS ? "?" + process.env.QARGS : "";
-await page.goto("http://127.0.0.1:8080/" + q, { waitUntil: "networkidle", timeout: 120000 });
+await page.goto(`http://127.0.0.1:${process.env.PORT || "8080"}/` + q, { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", startup);
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");

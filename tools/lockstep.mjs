@@ -33,15 +33,15 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const RUN_NATIVE = path.join(ROOT, "scripts", "run-native.sh");
 const PLUGIN = path.join(ROOT, "tests", "lockstep.so");
-const RTC_ARGS = ["-rtc", "base=2000-01-01T00:00:00,clock=vm"];
-const OIPT_ARGS = ["-accel", "tcg,one-insn-per-tb=on"];
+export const RTC_ARGS = ["-rtc", "base=2000-01-01T00:00:00,clock=vm"];
+export const OIPT_ARGS = ["-accel", "tcg,one-insn-per-tb=on"];
 
 const REG_NAMES = [
   "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10",
   "r11", "r12", "sp", "lr", "pc", "cpsr",
 ];
 
-const FLASHES = {
+export const FLASHES = {
   s75: "fullflashes/s75_working20060710172101.bin",
   el71: "fullflashes/rr_ff_el71_stock.bin",
   c81: "fullflashes/rrC81 .bin",
@@ -86,7 +86,7 @@ function parseArgs() {
 }
 
 // --- one emulator side ---------------------------------------------------------
-class Side {
+export class Side {
   constructor(name, bin, dir, args) {
     this.name = name;
     this.bin = bin;
@@ -194,7 +194,7 @@ async function waitDead(side, ms) {
   return side.dead;
 }
 
-async function runPair(args, flash, dir, stopAtInsns, log) {
+export async function runPair(args, flash, dir, stopAtInsns, log) {
   fs.mkdirSync(dir, { recursive: true });
   const common = { period: args.period, epoch: args.epoch,
                    meminsns: args.meminsns, mem: args.mem,
@@ -244,7 +244,7 @@ function readLogLines(file) {
   return fs.readFileSync(file, "utf8").split("\n").filter((l) => l.length);
 }
 
-function compareDigestLogs(aFile, bFile) {
+export function compareDigestLogs(aFile, bFile) {
   const A = readLogLines(aFile), B = readLogLines(bFile);
   const linesOf = (ls, p) => ls.filter((l) => l.startsWith(p));
   const res = { commonEpochs: 0, commonMem: 0, diverged: null, truncated: false };
@@ -353,93 +353,101 @@ function fmt(n) {
 }
 
 // --- main ----------------------------------------------------------------------
-const args = parseArgs();
-const log = (m) => console.log(m);
-const flash = FLASHES[args.flash] ? path.join(ROOT, FLASHES[args.flash])
-  : (fs.existsSync(args.flash) ? path.resolve(args.flash) : null);
-if (!flash) {
-  console.error(`unknown flash: ${args.flash} (known: ${Object.keys(FLASHES).join(", ")})`);
-  process.exit(2);
-}
-for (const [n, b] of [["a", args.aBin], ["b", args.self ? args.aBin : args.bBin]]) {
-  if (!fs.existsSync(b)) {
-    console.error(`${n} binary missing: ${b}`);
+export async function main() {
+  const args = parseArgs();
+  const log = (m) => console.log(m);
+  const flash = FLASHES[args.flash] ? path.join(ROOT, FLASHES[args.flash])
+    : (fs.existsSync(args.flash) ? path.resolve(args.flash) : null);
+  if (!flash) {
+    console.error(`unknown flash: ${args.flash} (known: ${Object.keys(FLASHES).join(", ")})`);
     process.exit(2);
   }
-}
-if (!fs.existsSync(PLUGIN)) {
-  console.error(`plugin missing: ${PLUGIN} (scripts/run-lockstep.sh builds it)`);
-  process.exit(2);
-}
-
-const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-const baseDir = `/tmp/lockstep-${args.label}-${stamp}`;
-const results = [];
-let fail = false;
-
-const worker = async (wi) => {
-  for (let r = wi; r < args.runs; r += args.par) {
-    const dir = path.join(baseDir, `run${r}`);
-    log(`== run ${r + 1}/${args.runs}: ${args.self ? "self-check (a vs a)" : "JIT vs TCI"} flash=${args.flash} budget=${fmt(args.insns)} insns`);
-    const { a, b, reasons, wallS } = await runPair(args, flash, dir, args.insns, log);
-    const runRes = {
-      run: r + 1, dir, wallS,
-      a: { insns: a.progress.insns, epoch: a.progress.epoch, exit: a.exitCode },
-      b: { insns: b.progress.insns, epoch: b.progress.epoch, exit: b.exitCode },
-      earlyExit: reasons, cmp: null, dense: null, serialIdentical: null,
-    };
-    try {
-      runRes.serialIdentical = fs.readFileSync(a.serial).equals(fs.readFileSync(b.serial));
-    } catch { runRes.serialIdentical = null; }
-    const cmp = compareDigestLogs(a.log, b.log);
-    runRes.cmp = { commonEpochs: cmp.commonEpochs, commonMem: cmp.commonMem,
-                   truncated: cmp.truncated,
-                   diverged: cmp.diverged && { ...cmp.diverged, lineA: undefined, lineB: undefined } };
-    log(`   a: ${fmt(a.progress.insns)} insns / epoch ${a.progress.epoch}` +
-        `   b: ${fmt(b.progress.insns)} insns / epoch ${b.progress.epoch}` +
-        `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical" : "DIFFERS"}`);
-    if (cmp.diverged) {
-      fail = true;
-      log(`!! DIVERGENCE run ${r + 1}: ${cmp.diverged.kind}` +
-          (cmp.diverged.kind === "epoch"
-            ? ` @ epoch ${cmp.diverged.epoch} (a insns=${fmt(cmp.diverged.insnsA)}, b insns=${fmt(cmp.diverged.insnsB)}), differing: ${(cmp.diverged.fields || []).join(", ")}`
-            : cmp.diverged.kind === "mem"
-              ? ` @ insns=${fmt(cmp.diverged.insnsA)} (memory digest), differing: ${(cmp.diverged.fields || []).join(", ")}`
-              : ""));
-      log(`   a: ${cmp.diverged.lineA}`);
-      log(`   b: ${cmp.diverged.lineB}`);
-      if (cmp.diverged.kind === "epoch" && args.localize) {
-        runRes.dense = await localize(args, flash, dir, cmp.diverged, log);
-      }
-    } else if (cmp.commonEpochs === 0) {
-      fail = true;
-      log(`!! no comparable epochs (plugin output missing?) — ${dir}`);
-      log(`   a stderr tail: ${(a.errTail || "").split("\n").slice(-5).join("\n")}`);
-      log(`   b stderr tail: ${(b.errTail || "").split("\n").slice(-5).join("\n")}`);
-    } else {
-      log(`   clean: ${cmp.commonEpochs} epochs + ${cmp.commonMem} mem digests identical` +
-          `${cmp.truncated ? " (tail truncated by stop point)" : ""}`);
+  for (const [n, b] of [["a", args.aBin], ["b", args.self ? args.aBin : args.bBin]]) {
+    if (!fs.existsSync(b)) {
+      console.error(`${n} binary missing: ${b}`);
+      process.exit(2);
     }
-    results.push(runRes);
   }
-};
+  if (!fs.existsSync(PLUGIN)) {
+    console.error(`plugin missing: ${PLUGIN} (scripts/run-lockstep.sh builds it)`);
+    process.exit(2);
+  }
 
-const workers = [];
-for (let w = 0; w < Math.min(args.par, args.runs); w++) workers.push(worker(w));
-await Promise.all(workers);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const baseDir = `/tmp/lockstep-${args.label}-${stamp}`;
+  const results = [];
+  let fail = false;
 
-const summary = {
-  label: args.label, stamp, flash: args.flash,
-  aBin: args.aBin, bBin: args.self ? args.aBin : args.bBin,
-  insns: args.insns, period: args.period, epoch: args.epoch,
-  meminsns: args.meminsns, mem: args.mem,
-  runs: results.length, clean: results.filter((r) => !r.cmp.diverged).length,
-  results,
-};
-const resFile = path.join(ROOT, "tests", "results", `lockstep-${args.label}-${stamp}.json`);
-fs.mkdirSync(path.dirname(resFile), { recursive: true });
-fs.writeFileSync(resFile, JSON.stringify(summary, null, 1) + "\n");
-log(`== ${results.filter((r) => !r.cmp.diverged).length}/${results.length} runs clean; results: ${resFile}`);
-log(`== run dirs under ${baseDir} (tmp — remove when done)`);
+  const worker = async (wi) => {
+    for (let r = wi; r < args.runs; r += args.par) {
+      const dir = path.join(baseDir, `run${r}`);
+      log(`== run ${r + 1}/${args.runs}: ${args.self ? "self-check (a vs a)" : "JIT vs TCI"} flash=${args.flash} budget=${fmt(args.insns)} insns`);
+      const { a, b, reasons, wallS } = await runPair(args, flash, dir, args.insns, log);
+      const runRes = {
+        run: r + 1, dir, wallS,
+        a: { insns: a.progress.insns, epoch: a.progress.epoch, exit: a.exitCode },
+        b: { insns: b.progress.insns, epoch: b.progress.epoch, exit: b.exitCode },
+        earlyExit: reasons, cmp: null, dense: null, serialIdentical: null,
+      };
+      try {
+        runRes.serialIdentical = fs.readFileSync(a.serial).equals(fs.readFileSync(b.serial));
+      } catch { runRes.serialIdentical = null; }
+      const cmp = compareDigestLogs(a.log, b.log);
+      runRes.cmp = { commonEpochs: cmp.commonEpochs, commonMem: cmp.commonMem,
+                     truncated: cmp.truncated,
+                     diverged: cmp.diverged && { ...cmp.diverged, lineA: undefined, lineB: undefined } };
+      log(`   a: ${fmt(a.progress.insns)} insns / epoch ${a.progress.epoch}` +
+          `   b: ${fmt(b.progress.insns)} insns / epoch ${b.progress.epoch}` +
+          `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical" : "DIFFERS"}`);
+      if (cmp.diverged) {
+        fail = true;
+        log(`!! DIVERGENCE run ${r + 1}: ${cmp.diverged.kind}` +
+            (cmp.diverged.kind === "epoch"
+              ? ` @ epoch ${cmp.diverged.epoch} (a insns=${fmt(cmp.diverged.insnsA)}, b insns=${fmt(cmp.diverged.insnsB)}), differing: ${(cmp.diverged.fields || []).join(", ")}`
+              : cmp.diverged.kind === "mem"
+                ? ` @ insns=${fmt(cmp.diverged.insnsA)} (memory digest), differing: ${(cmp.diverged.fields || []).join(", ")}`
+                : ""));
+        log(`   a: ${cmp.diverged.lineA}`);
+        log(`   b: ${cmp.diverged.lineB}`);
+        if (cmp.diverged.kind === "epoch" && args.localize) {
+          runRes.dense = await localize(args, flash, dir, cmp.diverged, log);
+        }
+      } else if (cmp.commonEpochs === 0) {
+        fail = true;
+        log(`!! no comparable epochs (plugin output missing?) — ${dir}`);
+        log(`   a stderr tail: ${(a.errTail || "").split("\n").slice(-5).join("\n")}`);
+        log(`   b stderr tail: ${(b.errTail || "").split("\n").slice(-5).join("\n")}`);
+      } else {
+        log(`   clean: ${cmp.commonEpochs} epochs + ${cmp.commonMem} mem digests identical` +
+            `${cmp.truncated ? " (tail truncated by stop point)" : ""}`);
+      }
+      results.push(runRes);
+    }
+  };
 
-process.exit(fail ? 1 : 0);
+  const workers = [];
+  for (let w = 0; w < Math.min(args.par, args.runs); w++) workers.push(worker(w));
+  await Promise.all(workers);
+
+  const summary = {
+    label: args.label, stamp, flash: args.flash,
+    aBin: args.aBin, bBin: args.self ? args.aBin : args.bBin,
+    insns: args.insns, period: args.period, epoch: args.epoch,
+    meminsns: args.meminsns, mem: args.mem,
+    runs: results.length, clean: results.filter((r) => !r.cmp.diverged).length,
+    results,
+  };
+  const resFile = path.join(ROOT, "tests", "results", `lockstep-${args.label}-${stamp}.json`);
+  fs.mkdirSync(path.dirname(resFile), { recursive: true });
+  fs.writeFileSync(resFile, JSON.stringify(summary, null, 1) + "\n");
+  log(`== ${results.filter((r) => !r.cmp.diverged).length}/${results.length} runs clean; results: ${resFile}`);
+  log(`== run dirs under ${baseDir} (tmp — remove when done)`);
+
+  return fail ? 1 : 0;
+
+}
+
+if (process.argv[1] && import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href) {
+  const rc = await main();
+  process.exit(rc ?? 0);
+}
