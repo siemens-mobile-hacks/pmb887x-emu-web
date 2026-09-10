@@ -82,11 +82,23 @@ the plan file itself carries the phase gates.
 
 ### Next (phase 2 continuation — split small, no 45-min waits)
 
-- [ ] **Batching + eviction**: N TBs per module (shared deduped imports),
-      staging arena for bodies (retaddrs stay code-buffer-keyed),
-      finalize on batch-full or first-execution-need; module/instance
-      teardown on tb_flush + LRU cap (live modules < 100) — kills the
-      761M OOM wall and compile overhead.
+- [ ] **Batching + eviction** (design sketch, refined at implementation
+      time): keep the per-TB descriptor in the code buffer (tidx, icount,
+      batch fidx) but STAGE module bytes per TB as today and only
+      instantiate per BATCH (64–256 TBs): one module whose import table
+      is the deduped union (call-site fixups recorded at emission —
+      dedupe renumbers import indices, so each `call <imp>` operand is
+      rewritten at batch finalize; type table merges the same way, TB
+      signature stays type 0; the shared chain table imports once).
+      One `run(tidx)` thunk exported + addFunction'd per batch — the C
+      dispatcher tail-calls through it, so batched TBs need no per-TB
+      main-table entries. Retaddr values stay code-buffer-keyed (GETPC
+      only needs a unique in-range key — bytes may live in the batch
+      module). Eviction v1: on tb_flush drop all batch refs (instances
+      die, descriptors wiped anyway); LRU cap (live modules < 100)
+      after measuring the steady-state working set. Sync compile per
+      batch first (amortized, no per-TB stall), async + TCI cold tier
+      after.
 - [ ] Re-run the full 3×2.5e9 gate on the batched backend (background).
 - [ ] Async batch compile off the vCPU thread + TCI cold tier
       (TCI+wasm64 in one build) — phase-2 gate completion.
