@@ -5,6 +5,44 @@ the plan file itself carries the phase gates.
 
 ## Status: phase 3 (first slice) — inline TLB probe landed; end-to-end boot progress now ≥ TCI
 
+### Session 2026-09-10 (late) — flaky batch-corruption hunt + safety net
+
+- **Field reports from manual Chrome boots**: a flaky batch-module
+  `CompileError: length overflow while decoding body size` that kills
+  the vCPU worker mid-boot (2x on the user's machine, 3x here — always
+  within the first ~60 s, different batches/compositions each time).
+- **Forensics so far** (validator in `w64_batch_close`): members
+  0..55 walk clean, then member 56's staged size LEB reads
+  `FF FF FF FF 3F`-style garbage — i.e. the corruption is in the staged
+  body bytes / code buffer, not in the section arithmetic (count/total
+  checks are now exact).  The overflow-retry double-add theory is dead
+  (dedupe never fires; kept as defense).  Root cause still open — it
+  is flaky (not reproduced in the last ~45 min of boots).
+- **Safety net landed**: every assembled batch is walked exactly as
+  the decoder will (count LEB, per-body size vs recorded body_len,
+  thunk, total, fixup bounds) before `w64_batch_instantiate`; on
+  mismatch: enriched forensics (source-vs-copy hex, prev member tail,
+  fixup ranges) + SKIP the landing — members stay on their temp
+  modules and the boot continues.  A JS-side compile failure still
+  stashes the module to the page FS (`/w64fail-N.wasm`).  Skips are
+  rare enough not to matter for throughput (and temp-only boots are
+  healthy: v=296@190s).
+- Two of my own validator bugs found and fixed on the way (count-LEB
+  off-by-one; walk-vs-total compared against the section header) —
+  each silently disabled batching for a build.  Lesson: the validator
+  needs a positive control — soak logs must show batches LANDING.
+- **bootbench upgraded**: v-milestone wall times, stall detection,
+  chromium-tree RSS, batch-close/tb-flush counters, early exit on
+  failure.  `tools/repro.mjs`: retry-loop boot repro with full
+  W64BATCH* forensic capture.
+- **Speed sanity on this host** (same s75_working flash as the user):
+  deep boot ~2x TCI (v-milestones: 169@130s / 237@160s / 594@260s vs
+  TCI ~150@110s), window 32.1s vs TCI 24.7s.  A user report of
+  "~10x slower than TCI" on a clean boot is NOT explained by anything
+  measured here — needs numbers from their machine (bootbench
+  milestones or WATCH lines).  Candidates: the earlier crash-looping
+  builds, background-tab throttling, or a Chrome-version difference.
+
 ### Session 2026-09-10 (night) — phase 3 slice 1: inline TLB probe
 
 - **Landed**: `qemu_ld/st` emit the TLB probe + size/sign-specialized
