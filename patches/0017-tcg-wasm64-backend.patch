@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
---- a/accel/tcg/tb-maint.c	2026-09-10 21:08:01.779269311 +0000
+--- a/accel/tcg/tb-maint.c	2026-09-10 22:46:09.938276525 +0000
 +++ b/accel/tcg/tb-maint.c	2026-09-10 18:32:01.454742551 +0000
 @@ -34,6 +34,9 @@
  #include "tb-internal.h"
@@ -25,7 +25,7 @@ diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
      /* XXX: flush processor icache at this point if cache flush is expensive */
      qatomic_inc(&tb_ctx.tb_flush_count);
 diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
---- a/configs/meson/emscripten.txt	2026-09-10 21:08:01.733161802 +0000
+--- a/configs/meson/emscripten.txt	2026-09-10 22:46:09.890140982 +0000
 +++ b/configs/meson/emscripten.txt	2026-09-10 04:16:21.439029876 +0000
 @@ -13,9 +13,9 @@
  #                       from the asyncify import (libffi's ffi_call_js) and
@@ -40,7 +40,7 @@ diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
  
  [project options]
 diff --git a/include/accel/tcg/getpc.h b/include/accel/tcg/getpc.h
---- a/include/accel/tcg/getpc.h	2026-09-10 21:08:00.901170930 +0000
+--- a/include/accel/tcg/getpc.h	2026-09-10 22:46:09.165613404 +0000
 +++ b/include/accel/tcg/getpc.h	2026-09-10 02:45:12.222977042 +0000
 @@ -13,9 +13,12 @@
  #endif
@@ -57,7 +57,7 @@ diff --git a/include/accel/tcg/getpc.h b/include/accel/tcg/getpc.h
  # define GETPC() \
      ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))
 diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
---- a/include/tcg/tcg.h	2026-09-10 21:08:01.044567701 +0000
+--- a/include/tcg/tcg.h	2026-09-10 22:46:09.258615819 +0000
 +++ b/include/tcg/tcg.h	2026-09-10 02:45:12.222977042 +0000
 @@ -934,7 +934,7 @@
  #define TB_EXIT_IDXMAX    1
@@ -69,7 +69,7 @@ diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
  #else
  typedef uintptr_t tcg_prologue_fn(CPUArchState *env, const void *tb_ptr);
 diff --git a/meson.build b/meson.build
---- a/meson.build	2026-09-10 21:08:01.727409007 +0000
+--- a/meson.build	2026-09-10 22:46:09.883510474 +0000
 +++ b/meson.build	2026-09-10 02:44:50.615404259 +0000
 @@ -924,9 +924,8 @@
        error('Unsupported CPU @0@, try --enable-tcg-interpreter'.format(cpu))
@@ -92,7 +92,7 @@ diff --git a/meson.build b/meson.build
  config_host_data.set('CONFIG_TPM', have_tpm)
  config_host_data.set('CONFIG_TSAN', get_option('tsan'))
 diff --git a/tcg/meson.build b/tcg/meson.build
---- a/tcg/meson.build	2026-09-10 21:08:01.437577993 +0000
+--- a/tcg/meson.build	2026-09-10 22:46:09.591145543 +0000
 +++ b/tcg/meson.build	2026-09-10 02:44:59.281633941 +0000
 @@ -22,6 +22,10 @@
    tcg_ss.add(files('tci.c'))
@@ -106,7 +106,7 @@ diff --git a/tcg/meson.build b/tcg/meson.build
  if host_os == 'linux'
    tcg_ss.add(files('perf.c'))
 diff --git a/tcg/tcg.c b/tcg/tcg.c
---- a/tcg/tcg.c	2026-09-10 21:08:01.443578150 +0000
+--- a/tcg/tcg.c	2026-09-10 22:46:09.597624623 +0000
 +++ b/tcg/tcg.c	2026-09-10 02:59:59.038321064 +0000
 @@ -118,6 +118,10 @@
  static void tcg_out_tb_start(TCGContext *s);
@@ -3014,7 +3014,7 @@ diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
 new file mode 100644
 --- /dev/null
 +++ b/tcg/wasm64/wasm64.c
-@@ -0,0 +1,1076 @@
+@@ -0,0 +1,1232 @@
 +/*
 + * TCG wasm64 backend — runtime dispatch (tcg_qemu_tb_exec).
 + *
@@ -3743,6 +3743,14 @@ new file mode 100644
 +        inst = new WebAssembly.Instance(new WebAssembly.Module(mod_bytes), imports);
 +    } catch (e) {
 +        console.log('W64BATCHFAIL nimp=' + nimp + ' len=' + modlen + ': ' + e);
++        /* stash the failing module for post-mortem: the page FS survives
++         * the worker crash, unlike queued console messages (the lockstep
++         * driver salvages logs the same way) */
++        try {
++            globalThis.__w64nf = (globalThis.__w64nf || 0) + 1;
++            FS.writeFile('/w64fail-' + globalThis.__w64nf + '.wasm', mod_bytes);
++            console.log('W64FAILSAVED /w64fail-' + globalThis.__w64nf + '.wasm');
++        } catch (e2) { console.log('W64FAILSAVE-ERR ' + e2); }
 +        throw e;
 +    }
 +    return addFunction(inst.exports.run, 'jjjii');
@@ -3764,6 +3772,8 @@ new file mode 100644
 +    uint32_t *ip;
 +    uint32_t thunk;
 +    unsigned m, i;
++    size_t code_sec = 0;
++    uint64_t code_total = 0;
 +
 +    mb_put(&mod, magic, sizeof(magic));
 +
@@ -3857,12 +3867,14 @@ new file mode 100644
 +    /* code section: staged bodies (rewritten to union import indices)
 +     * + the thunk; the total size is a padded 5-byte LEB so it never
 +     * shifts when the body sum crosses a LEB width boundary */
++    code_sec = mod.n;
 +    {
 +        uint64_t total = (B.n_member + 1) < 128 ? 1 : 2;
 +        total += sizeof(thunk_body);
 +        for (m = 0; m < B.n_member; m++) {
 +            total += B.member[m].body_len;
 +        }
++        code_total = total;
 +        mb_u8(&mod, 10);
 +        mb_uleb_p5(&mod, (uint32_t)total);
 +        mb_uleb(&mod, B.n_member + 1);
@@ -3880,6 +3892,132 @@ new file mode 100644
 +        }
 +    }
 +    mb_put(&mod, thunk_body, sizeof(thunk_body));
++
++    /* Validate the assembled code section exactly the way the wasm
++     * decoder will walk it (body-size LEBs, section total) plus the
++     * call-fixup rewrites' bounds.  A failed batch used to kill the
++     * vCPU worker outright (WebAssembly.Module CompileError); instead:
++     * print forensics and skip the landing — every member keeps its
++     * temp module, so execution continues correctly, just unbatched. */
++    {
++        size_t k = code_sec + 1 + 5;    /* skip section id + padded LEB */
++        uint64_t v = 0;
++        unsigned shift = 0, count;
++        bool bad = false;
++
++        for (;;) {                      /* count LEB (minimal) */
++            uint8_t b = mod.b[k++];
++            v |= (uint64_t)(b & 0x7f) << shift;
++            if (!(b & 0x80)) break;
++            shift += 7;
++        }
++        count = (unsigned)v;
++        if (count != B.n_member + 1) {
++            fprintf(stderr, "W64BATCHBAD count LEB=%u members+1=%u\n",
++                    count, B.n_member + 1);
++            bad = true;
++        }
++        for (m = 0; m < B.n_member && !bad; m++) {
++            uint32_t fs = m ? B.member[m - 1].fix_end : 0;
++            const uint8_t *srcp =
++                (const uint8_t *)(uintptr_t)B.member[m].tcptr;
++            v = 0; shift = 0;
++            for (;;) {
++                uint8_t b = mod.b[k++];
++                v |= (uint64_t)(b & 0x7f) << shift;
++                if (!(b & 0x80)) break;
++                shift += 7;
++                if (shift > 35) break;
++            }
++            if (v != B.member[m].body_len - 5) {
++                fprintf(stderr, "W64BATCHBAD member %u: walked size %llu"
++                        " != staged %u (mod+0x%zx)\n",
++                        m, (unsigned long long)v,
++                        B.member[m].body_len - 5, k);
++                fprintf(stderr, "  staged hdr:");
++                for (i = 0; i < 12; i++) {
++                    fprintf(stderr, " %02x", srcp[W64_BODY_OFF + i]);
++                }
++                fprintf(stderr, "\n  body_len=%u fixes=%u\n",
++                        B.member[m].body_len,
++                        B.member[m].fix_end - fs);
++                /* source-vs-copy comparison around the desync, plus the
++                 * previous member's tail: pins whether the bytes were
++                 * already garbage in the code buffer or got mangled in
++                 * the assembled module */
++                {
++                    size_t mo = k - 4;   /* a few bytes back */
++                    fprintf(stderr, "  mod  @0x%zx:", mo);
++                    for (i = 0; i < 16; i++) {
++                        fprintf(stderr, " %02x", mod.b[mo + i]);
++                    }
++                    fprintf(stderr, "\n  src  @bodyoff-%u:",
++                            (unsigned)(4));
++                    for (i = 0; i < 16; i++) {
++                        fprintf(stderr, " %02x", srcp[W64_BODY_OFF - 4 + i]);
++                    }
++                    if (m > 0) {
++                        const uint8_t *pv =
++                            (const uint8_t *)(uintptr_t)B.member[m - 1].tcptr;
++                        uint32_t pl = B.member[m - 1].body_len;
++                        fprintf(stderr, "\n  prev tail (len %u):", pl);
++                        for (i = 0; i < 12; i++) {
++                            fprintf(stderr, " %02x",
++                                    pv[W64_BODY_OFF + pl - 12 + i]);
++                        }
++                    }
++                    fprintf(stderr, "\n");
++                }
++                bad = true;
++                break;
++            }
++            k += v;
++        }
++        if (!bad) {
++            /* thunk body: size LEB 13 */
++            if (mod.b[k] != 13) {
++                fprintf(stderr, "W64BATCHBAD thunk size byte %02x @0x%zx\n",
++                        mod.b[k], k);
++                bad = true;
++            } else {
++                k += 1 + 13;
++            }
++        }
++        if (!bad && k - (code_sec + 1 + 5) != code_total) {
++            fprintf(stderr, "W64BATCHBAD section walk %zu != total %llu\n",
++                    k - (code_sec + 1 + 5), (unsigned long long)code_total);
++            bad = true;
++        }
++        if (!bad) {
++            for (m = 0; m < B.n_member; m++) {
++                uint32_t fs = m ? B.member[m - 1].fix_end : 0;
++                uint32_t bl = B.member[m].body_len;
++                for (i = fs; i < B.member[m].fix_end; i++) {
++                    if (B.fix[i].pos < W64_BODY_OFF + 5 ||
++                        B.fix[i].pos + 2 > W64_BODY_OFF + bl) {
++                        fprintf(stderr, "W64BATCHBAD fixup oob member %u:"
++                                " pos %u body [%u,%u)\n",
++                                m, B.fix[i].pos, W64_BODY_OFF,
++                                W64_BODY_OFF + bl);
++                        bad = true;
++                    }
++                }
++            }
++        }
++        if (bad) {
++            fprintf(stderr, "W64BATCHSKIP id=%u members=%u bytes=%zu "
++                    "(members stay on temp modules)\n",
++                    B.id, B.n_member, mod.n);
++            g_free(mod.b);
++            g_free(sec.b);
++            B.id = 0;
++            B.n_utypes = 0;
++            B.n_uimp = 0;
++            B.n_member = 0;
++            B.n_fix = 0;
++            return;
++        }
++    }
 +
 +    /* union import table for the JS resolver */
 +    ip = g_malloc_n(B.n_uimp ? B.n_uimp : 1, sizeof(uint32_t));
@@ -3943,6 +4081,24 @@ new file mode 100644
 +        return;
 +    }
 +    tcg_debug_assert(B.n_member < W64_BATCH_N_MAX);
++
++    /* TB-overflow retry in the same code buffer: the failed attempt's
++     * finalize already staged a member (with the attempt's longer
++     * body_len and fixup positions); the retry re-translates into the
++     * SAME buffer and re-adds.  The stale entry's recorded body_len no
++     * longer matches the re-patched (shorter) body-size LEB, and its
++     * fixup positions may point beyond the new body — the assembled
++     * batch would be corrupt exactly there.  Retries are synchronous,
++     * so the stale member is always the last one: truncate it. */
++    if (B.n_member > 0 && B.member[B.n_member - 1].tcptr == (uint32_t)tcptr) {
++        uint32_t stale_fix_start =
++            B.n_member > 1 ? B.member[B.n_member - 2].fix_end : 0;
++        fprintf(stderr, "W64BATCHRETRY dup tcptr=%#x old_len=%u new_len=%u"
++                " (stale member dropped)\n",
++                (unsigned)tcptr, B.member[B.n_member - 1].body_len, body_len);
++        B.n_fix = stale_fix_start;
++        B.n_member--;
++    }
 +
 +    /* take this TB's call fixups into the batch arena (per-member
 +     * ranges are closed here, at the success point of translation) */

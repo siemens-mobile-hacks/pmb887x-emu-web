@@ -25,7 +25,34 @@
 //     different lengths — always compare equal-duration runs.
 
 import { chromium } from "playwright-core";
+import { execSync } from "node:child_process";
 import { fullflash } from "./testflash.mjs";
+
+// summed RSS (MB) of the chromium process tree spawned by this run
+function rssMB(browser) {
+  try {
+    const pid = browser.process()?.pid;
+    if (!pid) return null;
+    const out = execSync("ps -eo pid=,ppid=,rss=,comm=", { encoding: "ascii" });
+    const rows = [];
+    for (const l of out.split("\n")) {
+      const m = l.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/);
+      if (m) rows.push({ pid: +m[1], ppid: +m[2], rss: +m[3] });
+    }
+    const kids = new Map();
+    for (const r of rows) {
+      if (!kids.has(r.ppid)) kids.set(r.ppid, []);
+      kids.get(r.ppid).push(r.pid);
+    }
+    let sum = 0;
+    const walk = (p) => {
+      for (const r of rows) if (r.pid === p) sum += r.rss;
+      for (const k of kids.get(p) || []) walk(k);
+    };
+    walk(pid);
+    return Math.round(sum / 1024);
+  } catch { return null; }
+}
 
 const secs = Number(process.argv[2] || 110);
 const LO = Number(process.env.LO || 2.0);
@@ -44,13 +71,30 @@ const extraQ = process.env.EXTRA_Q || "";
 const b = await chromium.launch({ headless: true, args: jsFlags ? [`--js-flags=${jsFlags}`] : [] });
 const p = await b.newPage();
 const samples = [];
-let exitSeen = false;
+const milestones = {};          // first wall-time (s, from Start) at each v
+const MS = [2, 5, 10, 20, 40, 80, 120, 160, 200];
+let exitSeen = false, failMsg = null, stalledAt = null;
+let nClose = 0, nFlush = 0, rssPeak = 0;
+const bootT0 = Date.now();
 p.on("console", (m) => {
   const t = m.text();
   if (t.includes(">>EXIT<<")) exitSeen = true;
+  if (t.startsWith("W64BATCHFAIL")) { failMsg = t.slice(0, 120); return; }
+  if (/W64BATCH close/.test(t)) { nClose++; return; }
+  if (/W64FLUSH/.test(t)) { nFlush++; return; }
   if (t.includes("W64BATCH") || t.includes("W64DBG")) console.log("[page] " + t);
   const match = t.match(/v=([\d.]+).*?insns=(\d+)/);
-  if (match) samples.push([parseFloat(match[1]), Number(match[2])]);
+  if (match) {
+    const v = parseFloat(match[1]);
+    samples.push([v, Number(match[2])]);
+    for (const msv of MS) {
+      if (v >= msv && milestones[msv] === undefined)
+        milestones[msv] = +(((Date.now() - bootT0) / 1000).toFixed(1));
+    }
+    const k = samples.length;
+    if (k >= 4 && samples[k-1][0] === samples[k-4][0] && stalledAt === null)
+      stalledAt = samples[k-1][0];
+  }
 });
 const q = [dist ? `dist=${dist}` : "", extraQ].filter(Boolean).join("&");
 await p.goto(`http://127.0.0.1:${port}/${q ? `?${q}` : ""}`, { waitUntil: "domcontentloaded" });
@@ -67,7 +111,11 @@ await p.addScriptTag({ content: `
 ` });
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
-await new Promise((r) => setTimeout(r, secs * 1000));
+const tEnd = Date.now() + secs * 1000;
+while (Date.now() < tEnd && !failMsg) {
+  await new Promise((r) => setTimeout(r, Math.min(2000, tEnd - Date.now())));
+  rssPeak = Math.max(rssPeak, rssMB(b) || 0);
+}
 await b.close();
 
 function cross(v) {
@@ -88,6 +136,12 @@ const out = {
   finalV: last[0].toFixed(1),
   finalInsns: (last[1] / 1e6).toFixed(0),
   exit: exitSeen,
+  fail: failMsg,
+  stalledAtV: stalledAt,
+  rssPeakMB: rssPeak || null,
+  batchCloses: nClose || null,
+  tbFlushes: nFlush || null,
+  milestones,
 };
 // RATES=1: per-sample guest insns/s (Minsns/s over each 10 s WATCH interval)
 // — shows the V8 tier-up warm-up curve directly.
