@@ -18,6 +18,7 @@
 // serial byte-identical).
 
 import { chromium } from "playwright-core";
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +37,7 @@ function parseArgs() {
     port: process.env.PORT || "8094", dist: "dist-jit",
     aBin: path.join(ROOT, "build/qemu-native-build/qemu-system-arm"),
     label: "wasm",
+    env: [],
   };
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
@@ -54,6 +56,8 @@ function parseArgs() {
       case "--dist": a.dist = argv[++i]; break;
       case "--a-bin": a.aBin = argv[++i]; break;
       case "--label": a.label = argv[++i]; break;
+      case "env":
+      case "--env": a.env.push(argv[++i]); break;
       default: throw new Error(`unknown arg: ${t}`);
     }
   }
@@ -88,6 +92,7 @@ class WasmSide {
       ...(this.args.mem ? [`ls-mem=${encodeURIComponent(this.args.mem)}`] : []),
       "qargs=" + encodeURIComponent(
         "-accel tcg,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,clock=vm"),
+      ...(this.args.env || []).map((e) => "env=" + encodeURIComponent(e)),
     ].join("&");
     this.browser = await chromium.launch({ headless: true });
     this.page = await this.browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -124,6 +129,41 @@ class WasmSide {
       return;
     }
     this.absorb(txt);
+  }
+
+  // total RSS (MB) of this leg's chromium process tree — the renderer
+  // OOM metric (the wasm64 heap lives there).  playwright-core here has
+  // no browser.process(), so find the chromium root among the driver's
+  // own children by comm and walk its subtree.
+  rss() {
+    try {
+      const out = execSync("ps -eo pid=,ppid=,rss=,comm=", { encoding: "ascii" });
+      const kids = new Map();
+      const roots = [];
+      for (const line of out.trim().split("\n")) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
+        if (!m) continue;
+        const r = { pid: +m[1], ppid: +m[2], rss: +m[3], comm: m[4] };
+        if (!kids.has(r.ppid)) kids.set(r.ppid, []);
+        kids.get(r.ppid).push(r);
+        if (r.ppid === process.pid && /chrome|headless/.test(r.comm)) {
+          roots.push(r.pid);
+        }
+      }
+      let sum = 0;
+      const walk = (pid) => {
+        for (const r of kids.get(pid) || []) {
+          sum += r.rss;
+          walk(r.pid);
+        }
+      };
+      for (const root of roots) {
+        walk(root);
+      }
+      return roots.length ? Math.round(sum / 1024) : null;
+    } catch {
+      return null;
+    }
   }
 
   absorb(txt) {
@@ -220,7 +260,7 @@ async function runPairWasm(args, flashPath, dir, log) {
     await b.pollPage();
     if (Date.now() - lastStatus > 30000) {
       lastStatus = Date.now();
-      log(`   [${Math.round((Date.now() - t0) / 1000)}s] a ${fmt(a.progress.insns)} insns / b ${fmt(b.progress.insns)} insns`);
+      log(`   [${Math.round((Date.now() - t0) / 1000)}s] a ${fmt(a.progress.insns)} insns / b ${fmt(b.progress.insns)} insns / b-rss ${b.rss() ?? "?"}MB`);
     }
     // throttle the (faster) native side once it crosses the budget
     if (!stopped && a.progress.insns >= args.insns && a.conn) {

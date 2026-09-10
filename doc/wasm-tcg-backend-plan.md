@@ -363,9 +363,31 @@ LG (no-icount).
     chaining's +19 prelude bytes exposed — worked around by precomputing
     bytes into locals (same class as the phase-1 typecode bug; if a third
     appears, consider -O2 for tcg/tcg.c).
-    **Remaining for phase 2: batching + eviction** (fixes the 761M
-    renderer-OOM wall and compile overhead; live modules < 100), then
-    async compile + TCI cold tier.
+  - **Status: batching landed 2026-09-10 — the 761M wall is gone.**
+    Every TB still executes immediately through a single-member **temp
+    module** (phase-2a path unchanged) and simultaneously joins the open
+    batch; every N=128 members one batch module is assembled (union
+    type/import tables, `call` operands rewritten in place from
+    fixed-width 2-byte LEBs recorded at emission, one active element
+    segment per member registering it into the shared chain table at its
+    tidx, one `run(env,sp,tp,tidx)` thunk) and instantiated synchronously;
+    members flip to the thunk (desc+4 = 0x80000000|batch id), temps are
+    `removeFunction`d and GC'd. tb_flush tears down batches, temps, TAB
+    and recycles the tidx space. goto_tb gained a target-fidx brake for
+    future LRU eviction. **Gates: 20M (incl. W64_BATCH_N=4) / 250M / 700M
+    clean and the full 2.5e9 one-insn-per-tb gate passes 3/3** (298 HARD
+    SRAM digests + serial identical per run, wall ~795s each) with
+    renderer RSS flat ~1.9–2.1GB throughout (was: OOM at exactly
+    761,266,176 insns,
+    ~7.2GB). Boot window 38.0–38.4s batched ≈ nobatch (0.58x TCI —
+    unchanged, as expected: that window is MMIO/helper-bound; phase 3 is
+    that lever). Async compile / TCI cold tier deferred until profiling
+    shows the sync hiccup matters; LRU cap deferred (RSS plateau says
+    ~live_TBs/128 instances ≈ 6k at the 800k-TB working set is fine —
+    revisit on longer soaks). Bring-up found one more trap, this time
+    self-inflicted: distinguishing batch ids from mod_len in desc+4
+    needs a tag bit, else every fresh temp TB trips the "evicted member"
+    abort on first dispatch.
 - **Phase 3 — hot-path tuning.** Inline TLB probe, size-specialized
   loads/stores, direct imports for top helpers (ld/st mmu, `lookup_tb_ref`,
   ARM div/rem). *Gate: ≥3x end-to-end vs the current TCI dist — target

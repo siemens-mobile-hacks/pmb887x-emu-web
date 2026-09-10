@@ -39,6 +39,8 @@ const port = process.env.PORT || "8080";
 // would be worth.
 const jsFlags = process.env.JS_FLAGS || "";
 const dist = process.env.DIST || "";
+// extra query string for A/B knobs (e.g. EXTRA_Q="env=W64_NOBATCH=1")
+const extraQ = process.env.EXTRA_Q || "";
 const b = await chromium.launch({ headless: true, args: jsFlags ? [`--js-flags=${jsFlags}`] : [] });
 const p = await b.newPage();
 const samples = [];
@@ -46,10 +48,12 @@ let exitSeen = false;
 p.on("console", (m) => {
   const t = m.text();
   if (t.includes(">>EXIT<<")) exitSeen = true;
+  if (t.includes("W64BATCH") || t.includes("W64DBG")) console.log("[page] " + t);
   const match = t.match(/v=([\d.]+).*?insns=(\d+)/);
   if (match) samples.push([parseFloat(match[1]), Number(match[2])]);
 });
-await p.goto(`http://127.0.0.1:${port}/${dist ? `?dist=${dist}` : ""}`, { waitUntil: "domcontentloaded" });
+const q = [dist ? `dist=${dist}` : "", extraQ].filter(Boolean).join("&");
+await p.goto(`http://127.0.0.1:${port}/${q ? `?${q}` : ""}`, { waitUntil: "domcontentloaded" });
 await p.addScriptTag({ content: `
   window.__watch = setInterval(() => {
     const m = window.__qemu;

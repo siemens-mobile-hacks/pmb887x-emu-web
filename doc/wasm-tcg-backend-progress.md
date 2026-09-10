@@ -3,7 +3,63 @@
 Working log for `doc/wasm-tcg-backend-plan.md`. Updated periodically;
 the plan file itself carries the phase gates.
 
-## Status: phase 2 (chaining) landed; batching next
+## Status: phase 2 complete — batching landed, 3×2.5e9 gate 3/3 clean
+
+### Session 2026-09-10 (evening) — batching (phase 2 core)
+
+- **Design decision (cold tier)**: fresh TBs execute immediately after
+  translation (tb_gen_code → cpu_tb_exec is 1:1), so demand-closing
+  batches would degenerate to 1–2 members.  Instead every TB still gets
+  its single-member **temp module** (the phase-2a path, unchanged) and
+  *simultaneously* joins the open batch; when the batch lands the temp
+  is dropped (`removeFunction` + the batch's element segments overwrite
+  the TAB entry in place, so chains and the tidx space are unaffected).
+  Double-compile cost is bounded (temps ≤ batch size, and live modules ≈
+  live_TBs/N + N), and no TCI cold tier is needed for v1.
+- **Index stability**: bodies keep **per-TB-local** import/type indices
+  (temp modules = the phase-2a layout byte-for-byte; there is no replay
+  hazard — cpu_restore_state_from_tb walks the pre-encoded search table
+  only, nothing ever re-emits into a TB's buffer).  Every `call` emits a
+  **fixed-width 2-byte funcidx LEB** and records a fixup {pos, union
+  idx}; the batch assembler rewrites the LEBs in its copy.  Union tables
+  (W64_UMAX_TYPES 64 / W64_UMAX_IMPORTS 192) only append; a batch closes
+  early if a union is within one TB's worth of new entries of full.
+- **Batch assembly** (`w64_batch_close` in wasm64.c): type section =
+  union + thunk sig (i64,i64,i64,i32)->i32; imports = memory + chain
+  table + deduped helpers; one function per member (type 0); one active
+  element segment per member (TAB[tidx] = member funcidx); export "run"
+  → thunk; code section = staged bodies (patched) + 14-byte thunk body
+  (`local.get 0..3; return_call_indirect type 0, table 0`).  Sync
+  instantiate via EM_JS `w64_batch_instantiate` (bytes copied for
+  Firefox; TAB grown to max tidx first), then per member:
+  removeFunction(temp), desc+0 = thunk fidx, desc+4 = 0x80000000|batch id
+  (bit 31 distinguishes batch id from the mod_len a not-yet-compiled
+  temp still carries — an abort-guard bug here taught us the hard way).
+- **Dispatcher**: desc+4 tagged → call run(env, sp, tp, tidx), else the
+  temp entry directly; fidx==0 + tagged desc+4 = evicted member (loud
+  abort until LRU re-ensure exists).
+- **goto_tb** gained a third brake term (target desc fidx == 0) —
+  future-proofing for LRU eviction; costs one i32.load per chained goto.
+- **tb_flush** (`w64_batch_flush`, hooked in tb-maint.c): removeFunction
+  for every landed batch thunk + the open batch's temps, clear TAB,
+  reset the tidx counter (bounded by the live TB set again).
+- **Knobs/telemetry**: `W64_BATCH_N` (1..256; N=1 exercises the whole
+  batch path minimally), `W64_NOBATCH=1` (pure phase-2a), `W64_DEBUG=1`
+  (per-close stats + flush stats); page takes arbitrary `?env=NAME=VAL`
+  (repeatable); lockstep-wasm.mjs gained `--env` + per-leg chromium-RSS
+  telemetry; bootbench.mjs gained `EXTRA_Q`.
+- **Gates after batching**: op-suite 1156/1156; lockstep 20M (incl.
+  W64_BATCH_N=4), 250M ×2, 700M clean; **3×2.5e9 one-insn-per-tb gate
+  3/3 clean** (each: 298 HARD SRAM digests + 128/129 SDRAM + serial
+  identical, wall ~795s) — previously renderer OOM at exactly
+  761,266,176 insns.  RSS
+  telemetry: flat ~1.85–1.95GB through 2.5e9 (was ~7.2GB and climbing
+  at death).  Boot window v=2..7: 38.0–38.2s batched vs 38.4s
+  W64_NOBATCH vs 22.0s TCI (0.58x — unchanged, as expected: the window
+  is MMIO/helper-bound; phase-3 TLB inlining is that lever).  A scary
+  first bootbench (finalV 3.2) did not reproduce across 3 clean runs —
+  system-contention artifact, not a code path.
+- Patch 0017 regenerated (15 files, incl. tb-maint.c flush hook).
 
 ### Session 2026-09-10 (afternoon) — review, gate fixes, chaining
 
@@ -58,8 +114,10 @@ the plan file itself carries the phase gates.
 - Bring-up bugs along the way: table import kind byte (0x01 not 0x02),
   memory64 needs i64 address operands (no i32.wrap before loads), and
   the leftover per-instantiate W64DBG console spam removed.
-- **Gates after the fix**: op-suite 1156/1156; lockstep 20M + 250M
-  clean (HARD SRAM digests identical); 700M window gate run recorded.
+- **Gates after the fix**: op-suite 1156/1156; lockstep 20M + 250M +
+  **700M** clean (700M = 83 HARD internal-SRAM digests identical, exact
+  budget stop both legs, 337s wall — the deepest window possible under
+  the OOM wall).
 - **Perf**: v=2..7 window 45.9s (phase-1 dist) → 38.4s (chained);
   TCI reference on this host 24.4s → 0.63x TCI. finalV after 110s:
   66 vs TCI 165 — the later MMIO-heavy boot hurts most (phase-3 TLB
@@ -80,28 +138,22 @@ the plan file itself carries the phase gates.
 - **Phase-1 close-out** — `scripts/build-qemu-wasm64.sh` (one-shot
   build+deploy), `?dist=dist-jit` page switch, debug tooling.
 
-### Next (phase 2 continuation — split small, no 45-min waits)
+### Next (post-phase-2)
 
-- [ ] **Batching + eviction** (design sketch, refined at implementation
-      time): keep the per-TB descriptor in the code buffer (tidx, icount,
-      batch fidx) but STAGE module bytes per TB as today and only
-      instantiate per BATCH (64–256 TBs): one module whose import table
-      is the deduped union (call-site fixups recorded at emission —
-      dedupe renumbers import indices, so each `call <imp>` operand is
-      rewritten at batch finalize; type table merges the same way, TB
-      signature stays type 0; the shared chain table imports once).
-      One `run(tidx)` thunk exported + addFunction'd per batch — the C
-      dispatcher tail-calls through it, so batched TBs need no per-TB
-      main-table entries. Retaddr values stay code-buffer-keyed (GETPC
-      only needs a unique in-range key — bytes may live in the batch
-      module). Eviction v1: on tb_flush drop all batch refs (instances
-      die, descriptors wiped anyway); LRU cap (live modules < 100)
-      after measuring the steady-state working set. Sync compile per
-      batch first (amortized, no per-TB stall), async + TCI cold tier
-      after.
-- [ ] Re-run the full 3×2.5e9 gate on the batched backend (background).
+- [x] **Batching + eviction** — landed (see session log above).
+- [x] Re-run the full 3×2.5e9 gate on the batched backend: **3/3 clean**
+      (298 HARD SRAM digests identical per run, serial identical, RSS
+      flat ~1.9–2.1GB).
+- [ ] LRU cap on landed batches (live modules < 100) — not needed for
+      the 2.5e9 gate (RSS plateau ~1.9GB, ~6k batch instances at the
+      800k-TB working set); add when a longer soak or the full gate
+      shows pressure.  The goto_tb fidx brake + the loud dispatcher
+      abort are already in place; re-ensure = re-assemble the batch
+      module from the still-staged bodies (they persist in the code
+      buffer until tb_flush).
 - [ ] Async batch compile off the vCPU thread + TCI cold tier
-      (TCI+wasm64 in one build) — phase-2 gate completion.
+      (TCI+wasm64 in one build) — only if profiling shows the sync
+      batch-compile hiccup matters (it does not in the boot window).
 - [ ] LCD-frame digest in the fold (replace the vacuous serial check).
 - [ ] Then phase 3: inline TLB probe, size-specialized ld/st, direct
       helper imports (the ≥2x-TCI lever).
@@ -123,7 +175,8 @@ cd tools && node tcgisa64.mjs 8094 dist-jit
 cd tools && node lockstep-wasm.mjs --insns 20e6 --secs 200    # smoke (~15s)
 cd tools && node lockstep-wasm.mjs --insns 250e6 --secs 360   # window (~90s)
 cd tools && node lockstep-wasm.mjs --insns 700e6 --secs 900   # pre-OOM wall
-# (2.5e9 blocked on batching: renderer OOM at ~761M under one-insn-per-tb)
+cd tools && node lockstep-wasm.mjs --insns 2.5e9 --secs 2700  # full gate (~13min)
+# knobs: --env W64_BATCH_N=8 / --env W64_NOBATCH=1 (b-rss in progress lines)
 
 # A/B boot bench (v=2..7 window; add DIST=dist-jit / dist-p1 / default=TCI)
 PORT=8094 DIST=dist-jit node tools/bootbench.mjs 110

@@ -538,6 +538,13 @@ async function boot() {
             if (v != null) mod.ENV["W64_LOCKSTEP_" + k.toUpperCase()] = v;
           }
         }
+        // ?env=NAME=VAL (repeatable): extra environment — e.g.
+        // env=W64_BATCH_N=8 shrinks the TB batch modules for testing
+        // (wasm64 backend, phase 2)
+        for (const kv of qsp.getAll("env")) {
+          const i = kv.indexOf("=");
+          if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
+        }
         // ?iorewind=1: force the stock io-recompile everywhere
         // (A/B against the wasm io accounting; see patches/0004)
         if (qsp.get("iorewind") === "1") {
