@@ -407,7 +407,9 @@ LG (no-icount).
     (A/B).  Gates after: op-suite 1156/1156 (incl. `W64_NOTLB`/
     `W64_NOBATCH` knob runs — which also caught and fixed a page bug:
     `?env=` was only wired into the phone-boot path, not `bootSuite`);
-    lockstep 20M + 250M + 700M clean; bootbench v=2..7 38.1s → **31.8s**
+    lockstep 20M + 250M + 700M clean, and the **full 2.5e9 one-insn-per-tb
+    gate clean** on the phase-3 backend (298 HARD SRAM digests identical,
+    RSS ~2.0GB plateau); bootbench v=2..7 38.1s → **31.8s**
     (0.78x TCI's 24.7s — the window is MMIO-bound, §4.7 is that lever);
     finalV@110s **164 vs phase-2's 69** (TCI 151) — end-to-end boot
     progress now ≥ TCI.  Bring-up found a genuine emitter bug worth

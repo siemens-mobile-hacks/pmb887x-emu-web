@@ -186,7 +186,9 @@ the plan file itself carries the phase gates.
       (298 HARD SRAM digests identical per run, serial identical, RSS
       flat ~1.9–2.1GB).
 - [x] **Phase 3 slice 1: inline TLB probe + size-specialized ld/st** —
-      landed (see the session log at the top); full 2.5e9 re-run pending.
+      landed (see the session log at the top); full 2.5e9 one-insn-per-tb
+      gate clean on the phase-3 backend (298 HARD SRAM digests identical,
+      RSS plateau ~2.0GB).
 - [ ] Phase 3 slice 2: **MMIO fast-path** (§4.7 — per-region callback
       caching in the FlatView, spirit of 0016) — now the dominant cost:
       the v=2..7 window sits at 0.78x TCI while end-to-end progress is
