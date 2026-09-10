@@ -392,6 +392,36 @@ LG (no-icount).
   loads/stores, direct imports for top helpers (ld/st mmu, `lookup_tb_ref`,
   ARM div/rem). *Gate: ≥3x end-to-end vs the current TCI dist — target
   ~45–60M insns/s sustained, S75 idle screen < 90 s.* ~1 week.
+  - **Status: inline TLB probe + size-specialized ld/st landed
+    2026-09-10 (first slice of phase 3)** — `qemu_ld/st` now emit the
+    probe (`cpu->neg.tlb.f[mmuidx]` via `tlb_mask_table_ofs`, entry =
+    `table[(addr >> page_bits) & (mask >> 5)]`, hit ⟺
+    `addr_{read,write} == ((a_mask < s_mask ? addr+s_mask−a_mask : addr)
+    & (TARGET_PAGE_MASK | a_mask))` — the tci_tlb_probe semantics from
+    0011, byte-exact) and a size/sign-specialized wasm access at
+    `addr + addend` (linear memory *is* host memory); miss falls through
+    to the phase-1 `*_mmu` helper arm, emitted as the structured `else`.
+    Eligibility mirrors tci (MO_ATOM_NONE/IFALIGN inline after serial-mode
+    canonicalization — ldrd's SUBALIGN becomes NONE; BSWAP and the
+    stricter atom classes stay on the helper); `W64_NOTLB=1` disables
+    (A/B).  Gates after: op-suite 1156/1156 (incl. `W64_NOTLB`/
+    `W64_NOBATCH` knob runs — which also caught and fixed a page bug:
+    `?env=` was only wired into the phone-boot path, not `bootSuite`);
+    lockstep 20M + 250M + 700M clean; bootbench v=2..7 38.1s → **31.8s**
+    (0.78x TCI's 24.7s — the window is MMIO-bound, §4.7 is that lever);
+    finalV@110s **164 vs phase-2's 69** (TCI 151) — end-to-end boot
+    progress now ≥ TCI.  Bring-up found a genuine emitter bug worth
+    recording: with `data == addr` (ldrd loads its 64-bit result into
+    the same TCG reg that holds the address — legal), the hit arm's
+    `local.set` flips the reg's tracked representation *between* the
+    two arms' emissions, so the arm emitted second read a stale local
+    (symptom: 4 ldrd op-suite failures, and a post-splash boot OOM on
+    manual testing via firmware divergence + TB churn).  Fix: snapshot
+    the zero-extended address into a third scratch local ($scr2) before
+    the arms; probe and both arms read only the snapshot.  Diagnosed by
+    dumping the TB module bytes and disassembling with `wasm-dis`.
+    Remaining phase-3 levers: MMIO fast-path (§4.7 — now the dominant
+    cost), direct helper imports, `lookup_tb_ref`; div/rem N/A (arm926).
 - **Phase 4 — robustness.** SMC invalidation storms (flash unlock/write
   cycles), LG no-icount path, table-index recycling over 10⁶ translations,
   deterministic module lifecycle (no FinalizationRegistry), Chrome + Firefox

@@ -313,6 +313,10 @@ async function bootSuite(url) {
       },
       preRun: (mod) => {
         modRef = mod;
+        for (const kv of new URLSearchParams(location.search).getAll("env")) {
+          const i = kv.indexOf("=");
+          if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
+        }
         if (new URLSearchParams(location.search).get("w64debug") === "1") {
           mod.ENV.W64_DEBUG = "1";
         }

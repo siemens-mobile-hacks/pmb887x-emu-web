@@ -1,63 +1,7 @@
-From: Konstantin Pereiaslov <perk11.info>
-Subject: [PATCH] tcg/wasm64: TCG backend emitting wasm — chaining + per-batch modules
-
-Phases 1, 2a and 2 of doc/wasm-tcg-backend-plan.md.  One wasm module
-per TB, compiled lazily at first execution through the browser
-WebAssembly API; regs as typed wasm locals; qemu_ld/st via the *_mmu
-helpers; single `loop` + region-`if` label scheme; exits by return code
-to the C dispatcher (tcg_qemu_tb_exec), goto_ptr via a handoff slot.
-
-Chaining (2a): goto_tb reads tb->jmp_target_addr[n] (maintained by qemu
-core, TCI-style) at runtime and tail-calls the target TB through a
-shared funcref table (return_call_indirect); unlinked slots fall through
-to the exit code, which lets cpu_exec's tb_add_jump link the pair.  TB
-prologues call an imported w64_tb_account(icount) at every entry
-(dispatcher or chain target) so icount2 + the lockstep fold stay
-per-TB-entry exact while chained; a chain_stop brake unwinds chains at
-the lockstep budget; a target-fidx term keeps future batch eviction
-(LRU) sound.
-
-Batching (2): every translated TB joins an open batch while still
-executing immediately through a single-member temp module.  Call sites
-emit fixed-width 2-byte funcidx LEBs; every N TBs (default 128,
-W64_BATCH_N env, W64_NOBATCH=1 disables) one batch module is assembled —
-union type/import tables deduped across members, call indices rewritten
-in place, one active element segment per member registering its function
-into the shared chain table at its tidx, one addFunction'd
-run(env, sp, tp, tidx) thunk — and instantiated synchronously.  Members'
-descriptors flip to the thunk (desc+4 = 0x80000000|batch id), the temp
-modules are removeFunction'd and become garbage.  tb_flush drops the
-batch thunks, open-batch temps and chain-table entries and recycles the
-tidx space.  Steady state holds ~live_TBs/128 instances instead of one
-per TB.
-
-Two emscripten -O3 optimizer artifacts worked around (documented in
-doc/wasm-tcg-backend-progress.md): the helper-return typecode inlining
-bug (inline literal switch) and a filler miscompile where a reassigned
-`content` landed as 255 when 127 was computed (custom-section LEB) —
-bytes are now precomputed into locals.
-
-Gates: tcg-isa op-suite 1156/1156; lockstep vs native JIT 20M/250M/700M
-insn windows clean (internal-SRAM digest HARD-identical); with batching
-the full 2.5e9 one-insn-per-tb gate passes (298 SRAM digests + serial
-identical, renderer RSS flat ~1.9GB — previously renderer OOM at 761M
-insns under ~800k live per-TB modules).  S75 v=2..7 window 38.1s,
-TCI reference 22.0s.
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
-index 4313864d2c..c39ada25eb 100644
---- a/accel/tcg/tb-maint.c
-+++ b/accel/tcg/tb-maint.c
-@@ -18,6 +18,9 @@
-  */
- 
- #include "qemu/osdep.h"
-+#ifdef __EMSCRIPTEN__
-+#include "qemu/wasm-diag.h"
-+#endif
- #include "qemu/interval-tree.h"
- #include "qemu/qtree.h"
- #include "exec/cputlb.h"
-@@ -31,6 +34,9 @@
+--- a/accel/tcg/tb-maint.c	2026-09-10 21:08:01.779269311 +0000
++++ b/accel/tcg/tb-maint.c	2026-09-10 18:32:01.454742551 +0000
+@@ -34,6 +34,9 @@
  #include "tb-internal.h"
  #include "system/tcg.h"
  #include "tcg/tcg.h"
@@ -67,17 +11,7 @@ index 4313864d2c..c39ada25eb 100644
  #include "tb-hash.h"
  #include "tb-context.h"
  #include "internal-common.h"
-@@ -772,6 +778,9 @@ void tb_flush__exclusive_or_serial(void)
- {
-     CPUState *cpu;
- 
-+#ifdef __EMSCRIPTEN__
-+    wasm_diag_stat[WASM_DIAG_TB_FLUSH]++;
-+#endif
-     trace_tb_flush();
-     assert(tcg_enabled());
-     /* Note that cpu_in_serial_context checks cpu_in_exclusive_context. */
-@@ -785,6 +794,12 @@ void tb_flush__exclusive_or_serial(void)
+@@ -791,6 +794,12 @@
      qht_reset_size(&tb_ctx.htable, CODE_GEN_HTABLE_SIZE);
      tb_remove_all();
  
@@ -90,10 +24,24 @@ index 4313864d2c..c39ada25eb 100644
      tcg_region_reset_all();
      /* XXX: flush processor icache at this point if cache flush is expensive */
      qatomic_inc(&tb_ctx.tb_flush_count);
+diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
+--- a/configs/meson/emscripten.txt	2026-09-10 21:08:01.733161802 +0000
++++ b/configs/meson/emscripten.txt	2026-09-10 04:16:21.439029876 +0000
+@@ -13,9 +13,9 @@
+ #                       from the asyncify import (libffi's ffi_call_js) and
+ #                       would run fully instrumented (2x slower); it never
+ #                       suspends itself, so drop it from instrumentation.
+-c_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
++c_link_args = ['-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
+   '-sASYNCIFY_REMOVE=tcg_qemu_tb_exec','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
+-cpp_link_args = ['-pthread','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
++cpp_link_args = ['-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
+   '-sASYNCIFY_REMOVE=tcg_qemu_tb_exec','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
+ 
+ [project options]
 diff --git a/include/accel/tcg/getpc.h b/include/accel/tcg/getpc.h
-index 8a97ce34e7..bd914e8aa6 100644
---- a/include/accel/tcg/getpc.h
-+++ b/include/accel/tcg/getpc.h
+--- a/include/accel/tcg/getpc.h	2026-09-10 21:08:00.901170930 +0000
++++ b/include/accel/tcg/getpc.h	2026-09-10 02:45:12.222977042 +0000
 @@ -13,9 +13,12 @@
  #endif
  
@@ -109,10 +57,9 @@ index 8a97ce34e7..bd914e8aa6 100644
  # define GETPC() \
      ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))
 diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
-index 7669dc1c2d..74614f39e1 100644
---- a/include/tcg/tcg.h
-+++ b/include/tcg/tcg.h
-@@ -934,7 +934,7 @@ static inline size_t tcg_current_code_size(TCGContext *s)
+--- a/include/tcg/tcg.h	2026-09-10 21:08:01.044567701 +0000
++++ b/include/tcg/tcg.h	2026-09-10 02:45:12.222977042 +0000
+@@ -934,7 +934,7 @@
  #define TB_EXIT_IDXMAX    1
  #define TB_EXIT_REQUESTED 3
  
@@ -122,10 +69,9 @@ index 7669dc1c2d..74614f39e1 100644
  #else
  typedef uintptr_t tcg_prologue_fn(CPUArchState *env, const void *tb_ptr);
 diff --git a/meson.build b/meson.build
-index e859c90129..1699167d57 100644
---- a/meson.build
-+++ b/meson.build
-@@ -924,9 +924,8 @@ if have_tcg
+--- a/meson.build	2026-09-10 21:08:01.727409007 +0000
++++ b/meson.build	2026-09-10 02:44:50.615404259 +0000
+@@ -924,9 +924,8 @@
        error('Unsupported CPU @0@, try --enable-tcg-interpreter'.format(cpu))
      endif
    elif host_arch == 'wasm64'
@@ -137,7 +83,7 @@ index e859c90129..1699167d57 100644
    elif get_option('tcg_interpreter')
      warning('Use of the TCG interpreter is not recommended on this host')
      warning('architecture. There is a native TCG execution backend available')
-@@ -2492,6 +2491,7 @@ config_host_data.set('CONFIG_SOLARIS', host_os == 'sunos')
+@@ -2492,6 +2491,7 @@
  if have_tcg
    config_host_data.set('CONFIG_TCG', 1)
    config_host_data.set('CONFIG_TCG_INTERPRETER', tcg_arch == 'tci')
@@ -145,19 +91,10 @@ index e859c90129..1699167d57 100644
  endif
  config_host_data.set('CONFIG_TPM', have_tpm)
  config_host_data.set('CONFIG_TSAN', get_option('tsan'))
-@@ -2547,6 +2547,7 @@ endif
- config_host_data.set('CONFIG_SPICE', spice.found())
- config_host_data.set('CONFIG_X11', x11.found())
- config_host_data.set('CONFIG_DBUS_DISPLAY', dbus_display)
-+config_host_data.set('CONFIG_WASM_UI', host_os == 'emscripten')
- config_host_data.set('CONFIG_CFI', get_option('cfi'))
- config_host_data.set('CONFIG_SELINUX', selinux.found())
- config_host_data.set('CONFIG_XEN_BACKEND', xen.found())
 diff --git a/tcg/meson.build b/tcg/meson.build
-index 706a6eb260..aabf53c876 100644
---- a/tcg/meson.build
-+++ b/tcg/meson.build
-@@ -22,6 +22,10 @@ if get_option('tcg_interpreter')
+--- a/tcg/meson.build	2026-09-10 21:08:01.437577993 +0000
++++ b/tcg/meson.build	2026-09-10 02:44:59.281633941 +0000
+@@ -22,6 +22,10 @@
    tcg_ss.add(files('tci.c'))
  endif
  
@@ -169,10 +106,9 @@ index 706a6eb260..aabf53c876 100644
  if host_os == 'linux'
    tcg_ss.add(files('perf.c'))
 diff --git a/tcg/tcg.c b/tcg/tcg.c
-index 1e77f2365a..af59c3948f 100644
---- a/tcg/tcg.c
-+++ b/tcg/tcg.c
-@@ -118,6 +118,10 @@ static void tcg_register_jit_int(const void *buf, size_t size,
+--- a/tcg/tcg.c	2026-09-10 21:08:01.443578150 +0000
++++ b/tcg/tcg.c	2026-09-10 02:59:59.038321064 +0000
+@@ -118,6 +118,10 @@
  static void tcg_out_tb_start(TCGContext *s);
  static void tcg_out_ld(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg1,
                         intptr_t arg2);
@@ -183,7 +119,7 @@ index 1e77f2365a..af59c3948f 100644
  static bool tcg_out_mov(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg);
  static void tcg_out_movi(TCGContext *s, TCGType type,
                           TCGReg ret, tcg_target_long arg);
-@@ -246,7 +250,7 @@ TCGv_env tcg_env;
+@@ -246,7 +250,7 @@
  const void *tcg_code_gen_epilogue;
  ptrdiff_t tcg_splitwx_diff;
  
@@ -192,7 +128,7 @@ index 1e77f2365a..af59c3948f 100644
  tcg_prologue_fn *tcg_qemu_tb_exec;
  #endif
  
-@@ -353,6 +357,10 @@ static void tcg_out_label(TCGContext *s, TCGLabel *l)
+@@ -353,6 +357,10 @@
      tcg_debug_assert(!l->has_value);
      l->has_value = 1;
      l->u.value_ptr = tcg_splitwx_to_rx(s->code_ptr);
@@ -203,7 +139,7 @@ index 1e77f2365a..af59c3948f 100644
  }
  
  TCGLabel *gen_new_label(void)
-@@ -1853,7 +1861,7 @@ void tcg_prologue_init(void)
+@@ -1853,7 +1861,7 @@
      s->code_buf = s->code_gen_ptr;
      s->data_gen_ptr = NULL;
  
@@ -212,7 +148,7 @@ index 1e77f2365a..af59c3948f 100644
      tcg_qemu_tb_exec = (tcg_prologue_fn *)tcg_splitwx_to_rx(s->code_ptr);
  #endif
  
-@@ -6752,6 +6760,10 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb, uint64_t pc_start)
+@@ -6752,6 +6760,10 @@
      if (i < 0) {
          return i;
      }
@@ -225,7 +161,6 @@ index 1e77f2365a..af59c3948f 100644
      }
 diff --git a/tcg/wasm64/tcg-target-con-set.h b/tcg/wasm64/tcg-target-con-set.h
 new file mode 100644
-index 0000000000..b4b7a160db
 --- /dev/null
 +++ b/tcg/wasm64/tcg-target-con-set.h
 @@ -0,0 +1,20 @@
@@ -251,7 +186,6 @@ index 0000000000..b4b7a160db
 +C_O2_I4(r, r, r, r, r, r)
 diff --git a/tcg/wasm64/tcg-target-con-str.h b/tcg/wasm64/tcg-target-con-str.h
 new file mode 100644
-index 0000000000..de95d0ca05
 --- /dev/null
 +++ b/tcg/wasm64/tcg-target-con-str.h
 @@ -0,0 +1,13 @@
@@ -270,7 +204,6 @@ index 0000000000..de95d0ca05
 +CONST('C', TCG_CT_CONST)
 diff --git a/tcg/wasm64/tcg-target-has.h b/tcg/wasm64/tcg-target-has.h
 new file mode 100644
-index 0000000000..33b51e6240
 --- /dev/null
 +++ b/tcg/wasm64/tcg-target-has.h
 @@ -0,0 +1,24 @@
@@ -300,7 +233,6 @@ index 0000000000..33b51e6240
 +#endif
 diff --git a/tcg/wasm64/tcg-target-mo.h b/tcg/wasm64/tcg-target-mo.h
 new file mode 100644
-index 0000000000..8db9cfcc66
 --- /dev/null
 +++ b/tcg/wasm64/tcg-target-mo.h
 @@ -0,0 +1,12 @@
@@ -318,7 +250,6 @@ index 0000000000..8db9cfcc66
 +#endif
 diff --git a/tcg/wasm64/tcg-target-opc.h.inc b/tcg/wasm64/tcg-target-opc.h.inc
 new file mode 100644
-index 0000000000..4beb497df9
 --- /dev/null
 +++ b/tcg/wasm64/tcg-target-opc.h.inc
 @@ -0,0 +1,4 @@
@@ -328,10 +259,9 @@ index 0000000000..4beb497df9
 + */
 diff --git a/tcg/wasm64/tcg-target.c.inc b/tcg/wasm64/tcg-target.c.inc
 new file mode 100644
-index 0000000000..764f0a84da
 --- /dev/null
 +++ b/tcg/wasm64/tcg-target.c.inc
-@@ -0,0 +1,2355 @@
+@@ -0,0 +1,2559 @@
 +/*
 + * Tiny Code Generator for QEMU — wasm64 target emitters.
 + *
@@ -340,9 +270,11 @@ index 0000000000..764f0a84da
 + * tcg/wasm64/wasm64.h for the descriptor layout.
 + *
 + * Phase 1 skeleton (doc/wasm-tcg-backend-plan.md §5): single-TB
-+ * modules, no chaining, helper calls through imported funcrefs,
-+ * qemu_ld/st via the *_mmu helpers (the inline TLB probe lands in
-+ * phase 3).
++ * modules, no chaining, helper calls through imported funcrefs.
++ * Phase 2: goto_tb chaining through the shared funcref table + batched
++ * modules.  Phase 3: qemu_ld/st emit the TLB probe + size-specialized
++ * access inline (see the qemu_ld/st section below); W64_NOTLB=1 falls
++ * back to the phase-1 helper-only path.
 + *
 + * SPDX-License-Identifier: MIT
 + */
@@ -492,7 +424,7 @@ index 0000000000..764f0a84da
 + *   3 .. 3+NB-1                 i32 reg locals (+ $bp at 3+NB)
 + *   3+NB+1 .. 3+NB+NB           i64 reg locals
 + *   3+2*NB+1                    i32 scratch ($scr32)
-+ *   3+2*NB+2, +3                two i64 scratch locals               */
++ *   3+2*NB+2..+4                three i64 scratch locals              */
 +#define W64_P_ENV     0
 +#define W64_P_SP      1
 +#define W64_P_TP      2
@@ -502,6 +434,7 @@ index 0000000000..764f0a84da
 +#define W64_L_SCR32   (3 + 2 * TCG_TARGET_NB_REGS + 1)
 +#define W64_L_SCR0    (W64_L_SCR32 + 1)
 +#define W64_L_SCR1    (W64_L_SCR0 + 1)
++#define W64_L_SCR2    (W64_L_SCR1 + 1)   /* ld/st addr snapshot */
 +
 +/* type-matched scratch local */
 +static int w64_scr(TCGType t)
@@ -1363,8 +1296,146 @@ index 0000000000..764f0a84da
 +}
 +
 +/* ------------------------------------------------------------------ */
-+/* qemu_ld/st (phase 1: always through the *_mmu helpers)              */
++/* qemu_ld/st (phase 3: inline TLB probe + size-specialized access;   */
++/* the miss arm is the phase-1 *_mmu helper path)                      */
 +/* ------------------------------------------------------------------ */
++
++/* The probe mirrors tci_tlb_probe (patch 0011, lockstep-proven) with
++ * the TLB layout constants from tcg.c's tlb_mask_table_ofs:
++ *
++ *   entry = fast->table[(addr >> TARGET_PAGE_BITS) &
++ *                        (fast->mask >> CPU_TLB_ENTRY_BITS)]
++ *   hit   = entry->addr_{read,write} ==
++ *           ((a_mask >= s_mask ? addr : addr + (s_mask - a_mask))
++ *            & (TARGET_PAGE_MASK | a_mask))
++ *
++ * TLB flag bits (INVALID/NOTDIRTY/FORCE_SLOW, bits 6..8) sit below the
++ * page bits and above the largest alignment, so any flagged entry
++ * (MMIO, clean, watchpointed, plugin) fails the compare and takes the
++ * helper slow path; a clean hit gives a host pointer into linear
++ * memory (addr + addend) where the size-specialized wasm access runs
++ * directly.  Atomics: only MO_ATOM_NONE/IFALIGN accesses inline (same
++ * policy as tci); bswap falls back to the helper.  armv5 unaligned
++ * accesses (MO_UNALN, atom=IFALIGN) inline fine — a plain wasm load
++ * IS the emulator's natural LE load; the adj term catches page
++ * straddling (slow path splits it). */
++
++QEMU_BUILD_BUG_ON(CPU_TLB_ENTRY_BITS != 5);            /* 64-bit host */
++QEMU_BUILD_BUG_ON(sizeof(CPUTLBDescFast) != 16);
++QEMU_BUILD_BUG_ON(offsetof(CPUTLBEntry, addr_read) != 0);
++QEMU_BUILD_BUG_ON(offsetof(CPUTLBEntry, addr_write) != 8);
++QEMU_BUILD_BUG_ON(offsetof(CPUTLBEntry, addend) != 24);
++
++struct w64_tlb_ctx {
++    int32_t  fast_ofs;    /* env-relative &cpu->neg.tlb.f[mmuidx] */
++    uint64_t tlb_mask;    /* TARGET_PAGE_MASK | a_mask */
++    unsigned shr;         /* TARGET_PAGE_BITS - CPU_TLB_ENTRY_BITS */
++    unsigned adj;         /* s_mask - a_mask when a_mask < s_mask */
++    unsigned cmp_ofs;     /* offsetof addr_read / addr_write */
++};
++
++/* W64_NOTLB=1 disables the inline probe (A/B measurement, debugging) */
++static bool w64_tlb_inline(void)
++{
++    static int mode = -1;
++    if (mode < 0) {
++        mode = getenv("W64_NOTLB") == NULL;
++    }
++    return mode != 0;
++}
++
++static bool w64_tlb_setup(struct w64_tlb_ctx *tc, TCGContext *s,
++                          MemOpIdx oi, bool is_ld)
++{
++    MemOp mop = get_memop(oi);
++    unsigned atom = mop & MO_ATOM_MASK;
++    unsigned a_mask = (1u << memop_alignment_bits(mop)) - 1;
++    unsigned s_mask = (1u << (mop & MO_SIZE)) - 1;
++
++    if (!w64_tlb_inline() || (mop & MO_BSWAP) ||
++        (atom != MO_ATOM_NONE && atom != MO_ATOM_IFALIGN)) {
++        return false;
++    }
++
++    tc->fast_ofs = tlb_mask_table_ofs(s, get_mmuidx(oi));
++    tc->tlb_mask = (uint64_t)(int64_t)(int)TARGET_PAGE_MASK | a_mask;
++    tc->shr = TARGET_PAGE_BITS - CPU_TLB_ENTRY_BITS;
++    tc->adj = a_mask >= s_mask ? 0 : s_mask - a_mask;
++    tc->cmp_ofs = is_ld ? offsetof(CPUTLBEntry, addr_read)
++                        : offsetof(CPUTLBEntry, addr_write);
++    return true;
++}
++
++/* Emit the probe: $scr0 = entry, $scr1 = tlb_addr, then the hit
++ * condition (i32) on the value stack for the caller's `if`.  @al is
++ * the local holding the zero-extended guest address (the $scr2
++ * snapshot — never a TCG register, whose representation the arms may
++ * still mutate when data == addr). */
++static void w64_tlb_probe(TCGContext *s, int al, const struct w64_tlb_ctx *tc)
++{
++    /* $scr0 = env + fast_ofs (negative; memarg offsets are unsigned) */
++    w64_local_get(s, W64_P_ENV);
++    w64_const_i64(s, tc->fast_ofs);
++    w64_u8(s, 0x7c);                        /* i64.add */
++    w64_local_set(s, W64_L_SCR0);
++
++    /* $scr0 = table[(addr >> page_bits) & (mask >> entry_bits)] */
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, 0x29);                        /* i64.load */
++    w64_memarg(s, 3, 0);                    /* mask */
++    w64_local_get(s, al);
++    w64_const_i64(s, tc->shr);
++    w64_u8(s, 0x88);                        /* i64.shr_u */
++    w64_u8(s, 0x83);                        /* i64.and */
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, 0x29);                        /* i64.load */
++    w64_memarg(s, 3, 8);                    /* table */
++    w64_u8(s, 0x7c);                        /* i64.add */
++    w64_local_set(s, W64_L_SCR0);
++
++    /* $scr1 = tlb_addr */
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, 0x29);                        /* i64.load */
++    w64_memarg(s, 3, tc->cmp_ofs);
++    w64_local_set(s, W64_L_SCR1);
++
++    /* hit = ($scr1 == ((addr + adj) & tlb_mask)) */
++    w64_local_get(s, W64_L_SCR1);
++    w64_local_get(s, al);
++    if (tc->adj) {
++        w64_const_i64(s, tc->adj);
++        w64_u8(s, 0x7c);                    /* i64.add */
++    }
++    w64_const_i64(s, (int64_t)tc->tlb_mask);
++    w64_u8(s, 0x83);                        /* i64.and */
++    w64_u8(s, 0x51);                        /* i64.eq */
++}
++
++/* push [addr + entry->addend] (i64) for the fast access; @al as above */
++static void w64_tlb_haddr(TCGContext *s, int al)
++{
++    w64_local_get(s, al);
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, 0x29);                        /* i64.load */
++    w64_memarg(s, 3, 24);                   /* addend */
++    w64_u8(s, 0x7c);                        /* i64.add */
++}
++
++/* size/sign-specialized fast access opcodes, indexed [is64][MO_SSIZE]
++ * (loads) / [is64][MO_SIZE] (stores) */
++static const uint8_t w64_fast_ld[2][16] = {
++    [0][MO_UB] = 0x2d, [0][MO_SB] = 0x2c,   /* i32.load8_{u,s}   */
++    [0][MO_UW] = 0x2f, [0][MO_SW] = 0x2e,   /* i32.load16_{u,s}  */
++    [0][MO_UL] = 0x28, [0][MO_SL] = 0x28,   /* i32.load          */
++    [1][MO_UB] = 0x31, [1][MO_SB] = 0x30,   /* i64.load8_{u,s}   */
++    [1][MO_UW] = 0x33, [1][MO_SW] = 0x32,   /* i64.load16_{u,s}  */
++    [1][MO_UL] = 0x35, [1][MO_SL] = 0x34,   /* i64.load32_{u,s}  */
++    [1][MO_UQ] = 0x29, [1][MO_SQ] = 0x29,   /* i64.load          */
++};
++static const uint8_t w64_fast_st[2][16] = {
++    [0][MO_UB] = 0x3a, [0][MO_UW] = 0x3b, [0][MO_UL] = 0x36,
++    [1][MO_UQ] = 0x37,
++};
 +
 +static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
 +                         TCGReg addr, MemOpIdx oi)
@@ -1372,34 +1443,69 @@ index 0000000000..764f0a84da
 +    MemOp mop = get_memop(oi);
 +    uintptr_t ra = w64_pc(s);
 +    uint8_t p[4] = { 1, 1, 0, 1 };
-+    uint8_t imp, uimp;
++    uint8_t imp, uimp, lt, ut;
++    struct w64_tlb_ctx tc;
++    bool fast;
++    unsigned s_bits = mop & MO_SIZE;
 +
 +    tcg_debug_assert(type == TCG_TYPE_I32 || type == TCG_TYPE_I64);
-+    tcg_debug_assert((mop & MO_SIZE) <= MO_64);
++    tcg_debug_assert(s_bits <= MO_64);
++    if (type == TCG_TYPE_I32) {
++        tcg_debug_assert(s_bits <= MO_32);
++    }
 +
 +    /* helper signature: (env*, uint64_t addr, uint32_t oi, uintptr_t ra)
 +     * -> tcg_target_ulong (i64) */
++    lt = w64_add_type(4, p, 1);
++    ut = w64_union_type(4, p, 1);
++    imp = w64_import_idx(
++        (uint32_t)(uintptr_t)qemu_ld_helpers[mop & MO_SSIZE], lt);
++    uimp = w64_union_import(
++        (uint32_t)(uintptr_t)qemu_ld_helpers[mop & MO_SSIZE], ut);
++
++    fast = w64_tlb_setup(&tc, s, oi, true);
++    if (fast) {
++        /* Snapshot the zero-extended address before the arms: with
++         * data == addr (legal — e.g. ldrd's 64-bit load into the
++         * register that also holds its address) an arm's local.set of
++         * the data register would flip the tracked representation and
++         * make the arm emitted second read a stale local. */
++        w64_get_i64(s, addr);
++        w64_local_set(s, W64_L_SCR2);
++        w64_tlb_probe(s, W64_L_SCR2, &tc);
++        w64_blk_push(s, W64_BLK_IF, -1);
++        /* hit: size-specialized load at addr + addend */
++        w64_tlb_haddr(s, W64_L_SCR2);
++        w64_u8(s, w64_fast_ld[type == TCG_TYPE_I64][mop & MO_SSIZE]);
++        w64_memarg(s, s_bits, 0);
++        if (type == TCG_TYPE_I32) {
++            w64_set_i32(s, data);
++        } else {
++            w64_set_i64(s, data);
++        }
++        w64_u8(s, 0x05);                    /* else */
++    }
++
++    /* miss (or probe disabled): the *_mmu helper (phase-1 path) */
 +    w64_local_get(s, W64_P_ENV);
-+    w64_get_i64(s, addr);                   /* 32-bit guest addr: zext */
++    if (fast) {
++        w64_local_get(s, W64_L_SCR2);       /* addr snapshot */
++    } else {
++        w64_get_i64(s, addr);               /* 32-bit guest addr: zext */
++    }
 +    w64_const_i32(s, oi);
 +    w64_const_i64(s, ra);
-+
-+    {
-+        uint8_t lt = w64_add_type(4, p, 1);
-+        uint8_t ut = w64_union_type(4, p, 1);
-+        imp = w64_import_idx(
-+            (uint32_t)(uintptr_t)qemu_ld_helpers[mop & MO_SSIZE], lt);
-+        uimp = w64_union_import(
-+            (uint32_t)(uintptr_t)qemu_ld_helpers[mop & MO_SSIZE], ut);
-+    }
 +    w64_u8(s, 0x10);
 +    w64_callidx(s, imp, uimp);
-+
 +    if (type == TCG_TYPE_I32) {
 +        w64_u8(s, 0xa7);                    /* i32.wrap_i64 */
 +        w64_set_i32(s, data);
 +    } else {
 +        w64_set_i64(s, data);
++    }
++
++    if (fast) {
++        w64_blk_pop(s);                     /* end (if/else) */
 +    }
 +}
 +
@@ -1415,12 +1521,45 @@ index 0000000000..764f0a84da
 +    uintptr_t ra = w64_pc(s);
 +    bool q = (mop & MO_SIZE) == MO_64;
 +    uint8_t p[5] = { 1, 1, q, 0, 1 };
-+    uint8_t imp, uimp;
++    uint8_t imp, uimp, lt, ut;
++    struct w64_tlb_ctx tc;
++    bool fast;
++    unsigned s_bits = mop & MO_SIZE;
 +
 +    /* helper signature: (env*, uint64_t addr, val, uint32_t oi,
 +     * uintptr_t ra) -> void; val: i32 for b/w/l, i64 for q */
++    lt = w64_add_type(5, p, 0xff);
++    ut = w64_union_type(5, p, 0xff);
++    imp = w64_import_idx(
++        (uint32_t)(uintptr_t)qemu_st_helpers[s_bits], lt);
++    uimp = w64_union_import(
++        (uint32_t)(uintptr_t)qemu_st_helpers[s_bits], ut);
++
++    fast = w64_tlb_setup(&tc, s, oi, false);
++    if (fast) {
++        w64_get_i64(s, addr);               /* snapshot (see ld above) */
++        w64_local_set(s, W64_L_SCR2);
++        w64_tlb_probe(s, W64_L_SCR2, &tc);
++        w64_blk_push(s, W64_BLK_IF, -1);
++        /* hit: size-specialized store at addr + addend */
++        w64_tlb_haddr(s, W64_L_SCR2);
++        if (q) {
++            w64_get_i64(s, data);
++        } else {
++            w64_get_i32(s, data);
++        }
++        w64_u8(s, w64_fast_st[q][s_bits]);
++        w64_memarg(s, s_bits, 0);
++        w64_u8(s, 0x05);                    /* else */
++    }
++
++    /* miss (or probe disabled): the *_mmu helper (phase-1 path) */
 +    w64_local_get(s, W64_P_ENV);
-+    w64_get_i64(s, addr);
++    if (fast) {
++        w64_local_get(s, W64_L_SCR2);       /* addr snapshot */
++    } else {
++        w64_get_i64(s, addr);
++    }
 +    if (q) {
 +        w64_get_i64(s, data);
 +    } else {
@@ -1428,17 +1567,12 @@ index 0000000000..764f0a84da
 +    }
 +    w64_const_i32(s, oi);
 +    w64_const_i64(s, ra);
-+
-+    {
-+        uint8_t lt = w64_add_type(5, p, 0xff);
-+        uint8_t ut = w64_union_type(5, p, 0xff);
-+        imp = w64_import_idx(
-+            (uint32_t)(uintptr_t)qemu_st_helpers[mop & MO_SIZE], lt);
-+        uimp = w64_union_import(
-+            (uint32_t)(uintptr_t)qemu_st_helpers[mop & MO_SIZE], ut);
-+    }
 +    w64_u8(s, 0x10);
 +    w64_callidx(s, imp, uimp);
++
++    if (fast) {
++        w64_blk_pop(s);                     /* end (if/else) */
++    }
 +}
 +
 +static const TCGOutOpQemuLdSt outop_qemu_st = {
@@ -2357,7 +2491,7 @@ index 0000000000..764f0a84da
 +    w64_uleb(s, TCG_TARGET_NB_REGS);        /* i64: regs */
 +    w64_u8(s, 0x7e);
 +    w64_u8(s, 0x01); w64_u8(s, 0x7f);       /* i32: $scr32 */
-+    w64_u8(s, 0x02); w64_u8(s, 0x7e);       /* i64: $scr0, $scr1 */
++    w64_u8(s, 0x03); w64_u8(s, 0x7e);       /* i64: $scr0..$scr2 */
 +
 +    /* prologue: w64_tb_account(tb->icount) */
 +    w64_const_i32(s, s->gen_tb->icount);
@@ -2689,7 +2823,6 @@ index 0000000000..764f0a84da
 +}
 diff --git a/tcg/wasm64/tcg-target.h b/tcg/wasm64/tcg-target.h
 new file mode 100644
-index 0000000000..db372b0abc
 --- /dev/null
 +++ b/tcg/wasm64/tcg-target.h
 @@ -0,0 +1,184 @@
@@ -2879,7 +3012,6 @@ index 0000000000..db372b0abc
 +#endif /* TCG_TARGET_H */
 diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
 new file mode 100644
-index 0000000000..3afc1460b5
 --- /dev/null
 +++ b/tcg/wasm64/wasm64.c
 @@ -0,0 +1,1076 @@
@@ -3961,7 +4093,6 @@ index 0000000000..3afc1460b5
 +}
 diff --git a/tcg/wasm64/wasm64.h b/tcg/wasm64/wasm64.h
 new file mode 100644
-index 0000000000..25b21ac651
 --- /dev/null
 +++ b/tcg/wasm64/wasm64.h
 @@ -0,0 +1,143 @@

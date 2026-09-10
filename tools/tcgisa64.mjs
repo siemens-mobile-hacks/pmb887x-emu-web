@@ -3,15 +3,17 @@ import { chromium } from "playwright-core";
 const port = process.argv[2] || "8094";
 const dist = process.argv[3] || "dist-jit";
 const outFile = process.argv[4] || null;
-const timeoutMs = 10 * 60 * 1000;
+const envs = process.argv.slice(5);   // extra ?env=K=V page knobs
 let bridge = null;
+const timeoutMs = 10 * 60 * 1000;
+const envQ = envs.map((e) => `&env=${encodeURIComponent(e)}`).join("");
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 await page.exposeFunction("__suiteReport", (text, code) => { bridge = { text, code }; });
 const qemuLog = [];
 page.on("console", (m) => { const t = m.text(); if (t.startsWith("[qemu]")) qemuLog.push(t); });
 page.on("pageerror", (e) => console.error("[pageerror]", String(e).slice(0, 800)));
-await page.goto(`http://127.0.0.1:${port}/?suite=dist/tcgisa.bin&dist=${dist}`,
+await page.goto(`http://127.0.0.1:${port}/?suite=dist/tcgisa.bin&dist=${dist}${envQ}`,
                 { waitUntil: "networkidle", timeout: 120000 });
 let serial = "";
 const t0 = Date.now();

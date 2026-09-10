@@ -3,7 +3,48 @@
 Working log for `doc/wasm-tcg-backend-plan.md`. Updated periodically;
 the plan file itself carries the phase gates.
 
-## Status: phase 2 complete — batching landed, 3×2.5e9 gate 3/3 clean
+## Status: phase 3 (first slice) — inline TLB probe landed; end-to-end boot progress now ≥ TCI
+
+### Session 2026-09-10 (night) — phase 3 slice 1: inline TLB probe
+
+- **Landed**: `qemu_ld/st` emit the TLB probe + size/sign-specialized
+  access inline (miss → the phase-1 `*_mmu` helper as the `else` arm).
+  Probe semantics copied byte-exact from `tci_tlb_probe` (patch 0011):
+  `entry = fast->table[(addr >> page_bits) & (fast->mask >> 5)]`, hit ⟺
+  `entry->addr_{read,write} == ((a_mask < s_mask ? addr + s_mask - a_mask
+  : addr) & (TARGET_PAGE_MASK | a_mask))`; flags (bits 6..8) live inside
+  the page-mask window so MMIO/NOTDIRTY/WATCHPOINT/plugin entries always
+  miss.  Layout via `tlb_mask_table_ofs()` + QEMU_BUILD_BUG_ONs (entry
+  5-bit, DescFast 16 bytes, addend @24).  Serial-mode canonicalization
+  turns ldrd's MO_ATOM_SUBALIGN into NONE, so ldrd inlines too;
+  BSWAP/stricter atoms stay on the helper.  `W64_NOTLB=1` disables.
+- **Perf (S75 bootbench, this host)**: v=2..7 window 38.1 → **31.8 s**
+  (TCI 24.7 → 0.78x; window is MMIO-bound — §4.7 is the next lever);
+  finalV@110s **164 vs phase-2's 69 vs TCI 151** — the boot is now
+  *ahead* of TCI end-to-end at 110 s.
+- **Gates**: op-suite 1156/1156 (plain + W64_NOTLB + W64_NOBATCH×NOTLB
+  knob runs); lockstep 20M, 250M, 700M clean (HARD SRAM digests
+  identical, RSS plateau ~1.7GB).
+- **Bring-up bug #1 (page)**: `?env=NAME=VAL` was only wired into the
+  phone-boot `preRun`, not `bootSuite` — knob experiments through the
+  suite silently no-oped (first NOTLB/NOBATCH "runs" were vacuous).
+  Fixed in site/app.js; suite runner (`tools/tcgisa64.mjs`) gained
+  env args.
+- **Bring-up bug #2 (emitter, the interesting one)**: with `data ==
+  addr` (legal — ldrd's 64-bit load targets the same TCG reg that holds
+  its address), the hit arm's `local.set` of the data register flips
+  the tracked *representation* (i32↔i64 local) between the two arms'
+  emissions, so the arm emitted **second** read the address from a
+  stale local → 4 ldrd op-suite failures, and on manual boot a
+  post-splash renderer OOM (diverged firmware churning TB translation;
+  the 20M lockstep window never reaches ldrd, so gates looked clean).
+  Fix: snapshot `zext(addr)` into a third i64 scratch ($scr2 — locals
+  declaration grew by one) before the arms; probe + both arms read
+  only the snapshot.  Root-caused by dumping the first ld64 TB's module
+  bytes from the emitter and disassembling with emsdk `wasm-dis` —
+  the WAT showed the else arm calling the helper with `(local.get
+  $39)` where the probe had `(i64.extend_i32_u (local.get $6))`.
+- Patch 0017 regenerated in place.
 
 ### Session 2026-09-10 (evening) — batching (phase 2 core)
 
@@ -144,6 +185,14 @@ the plan file itself carries the phase gates.
 - [x] Re-run the full 3×2.5e9 gate on the batched backend: **3/3 clean**
       (298 HARD SRAM digests identical per run, serial identical, RSS
       flat ~1.9–2.1GB).
+- [x] **Phase 3 slice 1: inline TLB probe + size-specialized ld/st** —
+      landed (see the session log at the top); full 2.5e9 re-run pending.
+- [ ] Phase 3 slice 2: **MMIO fast-path** (§4.7 — per-region callback
+      caching in the FlatView, spirit of 0016) — now the dominant cost:
+      the v=2..7 window sits at 0.78x TCI while end-to-end progress is
+      already ≥ TCI, and this firmware polls constantly.
+- [ ] Phase 3 slice 3: direct imports for top helpers, `lookup_tb_ref`;
+      div/rem N/A on arm926.
 - [ ] LRU cap on landed batches (live modules < 100) — not needed for
       the 2.5e9 gate (RSS plateau ~1.9GB, ~6k batch instances at the
       800k-TB working set); add when a longer soak or the full gate
@@ -155,8 +204,6 @@ the plan file itself carries the phase gates.
       (TCI+wasm64 in one build) — only if profiling shows the sync
       batch-compile hiccup matters (it does not in the boot window).
 - [ ] LCD-frame digest in the fold (replace the vacuous serial check).
-- [ ] Then phase 3: inline TLB probe, size-specialized ld/st, direct
-      helper imports (the ≥2x-TCI lever).
 
 ## Build/run cheat-sheet
 
