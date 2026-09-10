@@ -38,6 +38,7 @@ const port = process.env.PORT || "8080";
 // plain page cannot set — the numbers quantify what a page-side workaround
 // would be worth.
 const jsFlags = process.env.JS_FLAGS || "";
+const dist = process.env.DIST || "";
 const b = await chromium.launch({ headless: true, args: jsFlags ? [`--js-flags=${jsFlags}`] : [] });
 const p = await b.newPage();
 const samples = [];
@@ -48,7 +49,7 @@ p.on("console", (m) => {
   const match = t.match(/v=([\d.]+).*?insns=(\d+)/);
   if (match) samples.push([parseFloat(match[1]), Number(match[2])]);
 });
-await p.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+await p.goto(`http://127.0.0.1:${port}/${dist ? `?dist=${dist}` : ""}`, { waitUntil: "domcontentloaded" });
 await p.addScriptTag({ content: `
   window.__watch = setInterval(() => {
     const m = window.__qemu;

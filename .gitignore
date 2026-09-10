@@ -3,6 +3,12 @@
 /site/dist-jit/
 /build/
 
+# IDE cruft
+/.idea/
+
+# stray screenshots at repo root
+/*.png
+
 # toolchains/dependencies
 node_modules
 
@@ -30,3 +36,7 @@ tests/results/
 # tcg-isa build artifacts (binaries covered by *.bin; keep the elf/objects out too)
 tests/tcg-isa/*.o
 tests/tcg-isa/*.elf
+# A/B snapshot dists (phase-1 kept for comparison)
+
+# fullflash dumps + sidecars (firmware images, not for git)
+/fullflashes/

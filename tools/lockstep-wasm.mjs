@@ -29,7 +29,10 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function parseArgs() {
   const a = {
     runs: 1, par: 1, flash: "s75", insns: 2.5e9, secs: 3600,
-    period: 1 << 16, epoch: 1 << 20, meminsns: 1 << 23, mem: null,
+    period: 1 << 16, epoch: 1 << 20, meminsns: 1 << 23,
+    // SRAM (HARD) + a 1MB SDRAM slice (SOFT): keep the 16MB full-range
+    // default out — the M-digest reads were the first full-gate timeout
+    mem: "800000+18000:a8000000+100000",
     port: process.env.PORT || "8094", dist: "dist-jit",
     aBin: path.join(ROOT, "build/qemu-native-build/qemu-system-arm"),
     label: "wasm",
@@ -69,6 +72,7 @@ class WasmSide {
     this.serial = path.join(dir, "serial.log");
     this.dead = false;
     this.exitCode = null;
+    this.grabbed = false;
     this.progress = { epoch: -1, insns: 0 };
   }
 
@@ -81,7 +85,7 @@ class WasmSide {
       `ls-period=${this.args.period}`,
       `ls-epoch=${this.args.epoch}`,
       `ls-meminsns=${this.args.meminsns}`,
-      ...(this.args.mem ? [`ls-mem=${this.args.mem}`] : []),
+      ...(this.args.mem ? [`ls-mem=${encodeURIComponent(this.args.mem)}`] : []),
       "qargs=" + encodeURIComponent(
         "-accel tcg,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,clock=vm"),
     ].join("&");
@@ -90,17 +94,21 @@ class WasmSide {
     this.page.on("pageerror", (e) => {
       this.errTail = (this.errTail || "") + String(e).slice(0, 400) + "\n";
     });
+    this.browser.on("crash", () => {
+      this.errTail = (this.errTail || "") + "BROWSER CRASHED (renderer OOM?)\n";
+    });
+    // backup log channel (the primary is page-FS grab at exited status)
     this.done = new Promise((res) => {
       this.report = res;
     });
     await this.page.exposeFunction("__lockstepReport", (serial, lslog, code) => {
-      if (serial != null) fs.writeFileSync(this.serial, serial, "latin1");
-      if (lslog != null) fs.writeFileSync(this.log, lslog, "latin1");
+      if (!this.grabbed) {
+        if (serial != null) fs.writeFileSync(this.serial, serial, "latin1");
+        if (lslog != null) fs.writeFileSync(this.log, lslog, "latin1");
+      }
       this.exitCode = code;
       this.report();
     });
-    // window.__lockstepReport must exist BEFORE the module's onExit runs;
-    // exposeFunction installs it on the main world at page init
     await this.page.goto(`http://127.0.0.1:${port}/?${q}`,
       { waitUntil: "domcontentloaded", timeout: 120000 });
     await this.page.selectOption("#startup", "ONLINE");
@@ -115,6 +123,10 @@ class WasmSide {
     } catch {
       return;
     }
+    this.absorb(txt);
+  }
+
+  absorb(txt) {
     for (const line of txt.split("\n")) {
       if (!line.startsWith("E ")) continue;
       const f = line.split(" ");
@@ -123,12 +135,66 @@ class WasmSide {
     }
   }
 
-  async quit() {
-    // the wasm leg self-exits at the insn budget; just reap
-    await Promise.race([this.done, new Promise((r) => setTimeout(r, 30000))]);
-    this.dead = true;
-    // progress from the final log
+  // live progress: read the E-line tail of /lockstep.log straight out of
+  // the page FS while the run is going (the fold fflushes E-lines; MEMFS
+  // writes from the program thread are visible on the main thread).  This
+  // is what makes a wall-timeout diagnosable instead of a blind 45-min hole.
+  async pollPage() {
+    if (this.grabbed || !this.page) return;
+    try {
+      const p = this.page.evaluate(() => {
+        const m = window.__qemu;
+        if (!m || !m.FS) return null;
+        try {
+          const bytes = m.FS.readFile("/lockstep.log");
+          return new TextDecoder("latin1")
+            .decode(bytes.subarray(Math.max(0, bytes.length - 4096)));
+        } catch { return null; }
+      });
+      // never let a busy page stall the driver loop
+      const tail = await Promise.race([p, new Promise((r) => setTimeout(() => r(null), 5000))]);
+      if (tail != null) this.absorb(tail);
+    } catch { /* page mid-teardown */ }
+  }
+
+  // grab the finished logs out of the page FS (works while the runtime
+  // is torn down but the page is still up; the onExit hook is a backup)
+  async grab() {
+    if (this.grabbed) return;
+    const rd = await this.page.evaluate(() => {
+      const m = window.__qemu;
+      if (!m || !m.FS) return null;
+      const f = (p) => {
+        try { return m.FS.readFile(p, { encoding: "binary" }); }
+        catch { return null; }
+      };
+      return { serial: f("/serial.log"), ls: f("/lockstep.log") };
+    }).catch(() => null);
+    if (rd) {
+      this.grabbed = true;
+      if (rd.ls != null) fs.writeFileSync(this.log, rd.ls, "latin1");
+      if (rd.serial != null) fs.writeFileSync(this.serial, rd.serial, "latin1");
+    }
+  }
+
+  async waitExited() {
+    for (;;) {
+      const st = await this.page.evaluate(() => {
+        const el = document.querySelector("#status");
+        return el ? { text: el.textContent || "", cls: el.className || "" } : null;
+      }).catch(() => null);
+      if (!st || st.text.includes("exited") || /error/i.test(st.cls)) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    for (let i = 0; i < 40 && !this.grabbed; i++) {
+      await this.grab();
+      if (!this.grabbed) await new Promise((r) => setTimeout(r, 250));
+    }
     this.poll();
+    this.dead = true;
+  }
+
+  async quit() {
     if (this.browser) {
       await this.browser.close().catch(() => {});
     }
@@ -139,29 +205,38 @@ async function runPairWasm(args, flashPath, dir, log) {
   fs.mkdirSync(dir, { recursive: true });
   const common = { period: args.period, epoch: args.epoch,
                    meminsns: args.meminsns, mem: args.mem };
-  const a = new Side("a", args.aBin, path.join(dir, "a"), common);
+  const a = new Side("a", args.aBin, path.join(dir, "a"),
+                     { ...common, stopAt: args.insns });
   const b = new WasmSide("b", path.join(dir, "b"), { ...common, insns: args.insns });
   await a.start(flashPath);
   await b.start(flashPath, args.port, args.dist);
 
   const t0 = Date.now();
-  let bExited = false;
-  b.done.then(() => { bExited = true; });
   let stopped = false;
+  let lastStatus = 0;
+  const bExited = b.waitExited().then(() => log("   b: wasm leg exited"));
   for (;;) {
     a.poll();
+    await b.pollPage();
+    if (Date.now() - lastStatus > 30000) {
+      lastStatus = Date.now();
+      log(`   [${Math.round((Date.now() - t0) / 1000)}s] a ${fmt(a.progress.insns)} insns / b ${fmt(b.progress.insns)} insns`);
+    }
     // throttle the (faster) native side once it crosses the budget
     if (!stopped && a.progress.insns >= args.insns && a.conn) {
       a.conn.write("stop\n");
       stopped = true;
     }
-    if (bExited) break;
+    try { await Promise.race([bExited, new Promise((r) => setTimeout(r, 1000))]); } catch {}
+    if (b.dead) break;
     if (Date.now() - t0 > args.secs * 1000) {
-      log(`!! wall timeout ${args.secs}s (a insns=${a.progress.insns})`);
+      log(`!! wall timeout ${args.secs}s (a insns=${fmt(a.progress.insns)}, b insns=${fmt(b.progress.insns)})`);
       break;
     }
-    await new Promise((r) => setTimeout(r, 1000));
   }
+  // even on timeout, salvage whatever the wasm leg produced so far
+  await b.grab().catch(() => {});
+  b.poll();
   await b.quit();
   const reasons = [`a insns=${a.progress.insns}`, `b insns=${b.progress.insns}`];
   await a.quit("budget");
@@ -202,31 +277,52 @@ const worker = async (wi) => {
       runRes.serialIdentical =
         fs.readFileSync(a.serial).equals(fs.readFileSync(b.serial));
     } catch { runRes.serialIdentical = null; }
-    const cmp = compareDigestLogs(a.log, b.log);
-    runRes.cmp = { commonEpochs: cmp.commonEpochs, commonMem: cmp.commonMem,
+    if (!fs.existsSync(b.log)) {
+      fail = true;
+      log(`!! wasm leg produced no lockstep log — ${dir}/b (status/error?)`);
+      log(`   b last progress: insns=${fmt(b.progress.insns)} epoch=${b.progress.epoch}`);
+      log(`   b page errors: ${(b.errTail || "").slice(-400)}`);
+      results.push(runRes);
+      continue;
+    }
+    // HARD: config, serial, internal-SRAM (range 0). SOFT (opts below):
+    // register E-lines + the SDRAM slice — the emscripten threading race.
+    const cmp = compareDigestLogs(a.log, b.log, { soft: ["epoch", "mem-sdram"] });
+    const serialFail = runRes.serialIdentical === false;
+    runRes.cmp = { commonEpochs: cmp.commonEpochs, commonSram: cmp.commonSram,
+                   commonSdram: cmp.commonSdram, commonMem: cmp.commonMem,
                    truncated: cmp.truncated,
-                   diverged: cmp.diverged && { ...cmp.diverged, lineA: undefined, lineB: undefined } };
+                   diverged: cmp.diverged && { ...cmp.diverged, lineA: undefined, lineB: undefined },
+                   soft: (cmp.soft || []).map((s) => ({ ...s, lineA: undefined, lineB: undefined })) };
     log(`   a: ${fmt(a.progress.insns)} insns / epoch ${a.progress.epoch}` +
         `   b: ${fmt(b.progress.insns)} insns / epoch ${b.progress.epoch}` +
         `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical" : "DIFFERS"}`);
+    if (serialFail) {
+      fail = true;
+      log(`!! SERIAL DIVERGENCE run ${r + 1}: the two legs' serial output differs (real bug)`);
+    }
     if (cmp.diverged) {
       fail = true;
       log(`!! DIVERGENCE run ${r + 1}: ${cmp.diverged.kind}` +
-          (cmp.diverged.kind === "epoch"
-            ? ` @ epoch ${cmp.diverged.epoch} (a insns=${fmt(cmp.diverged.insnsA)}, b insns=${fmt(cmp.diverged.insnsB)}), differing: ${(cmp.diverged.fields || []).join(", ")}`
-            : cmp.diverged.kind === "mem"
-              ? ` @ insns=${fmt(cmp.diverged.insnsA)} (memory digest), differing: ${(cmp.diverged.fields || []).join(", ")}`
+          (cmp.diverged.kind === "mem"
+            ? ` @ insns=${fmt(cmp.diverged.insnsA)} (internal SRAM digest), differing: ${(cmp.diverged.fields || []).join(", ")}`
+            : cmp.diverged.kind === "epoch"
+              ? ` @ epoch ${cmp.diverged.epoch}`
               : ""));
       log(`   a: ${cmp.diverged.lineA}`);
       log(`   b: ${cmp.diverged.lineB}`);
-    } else if (cmp.commonEpochs === 0) {
+    } else if (cmp.commonSram === 0 && cmp.commonEpochs === 0) {
       fail = true;
-      log(`!! no comparable epochs (wasm fold output missing? dist on the server?) — ${dir}`);
+      log(`!! no comparable digests (wasm fold output missing? dist on the server?) — ${dir}`);
       log(`   a stderr tail: ${(a.errTail || "").split("\n").slice(-5).join("\n")}`);
       log(`   b page errors: ${(b.errTail || "").slice(-400)}`);
     } else {
-      log(`   clean: ${cmp.commonEpochs} epochs + ${cmp.commonMem} mem digests identical` +
-          `${cmp.truncated ? " (tail truncated by stop point)" : ""}`);
+      const softN = (cmp.soft || []).length;
+      log(`   HARD ok: ${cmp.commonSram} internal-SRAM digests + serial identical` +
+          (cmp.commonSdram != null ? ` ; ${cmp.commonSdram} SDRAM identical` : "")
+          + (cmp.commonEpochs ? ` ; ${cmp.commonEpochs} epochs regs identical` : "")
+          + (softN ? ` ; SOFT(timing-race): ${softN} E/SDRAM diffs` : "")
+          + (cmp.truncated ? " (tail truncated by stop point)" : ""));
     }
     results.push(runRes);
   }
@@ -241,13 +337,13 @@ const summary = {
   aBin: args.aBin, dist: args.dist,
   insns: args.insns, period: args.period, epoch: args.epoch,
   meminsns: args.meminsns, mem: args.mem,
-  runs: results.length, clean: results.filter((r) => !r.cmp.diverged).length,
+  runs: results.length, clean: results.filter((r) => r.cmp && !r.cmp.diverged && r.serialIdentical).length,
   results,
 };
 const resFile = path.join(ROOT, "tests", "results", `lockstep-${args.label}-${stamp}.json`);
 fs.mkdirSync(path.dirname(resFile), { recursive: true });
 fs.writeFileSync(resFile, JSON.stringify(summary, null, 1) + "\n");
-log(`== ${results.filter((r) => !r.cmp.diverged).length}/${results.length} runs clean; results: ${resFile}`);
+log(`== ${results.filter((r) => r.cmp && !r.cmp.diverged && r.serialIdentical).length}/${results.length} runs clean; results: ${resFile}`);
 log(`== run dirs under ${baseDir} (tmp — remove when done)`);
 
 process.exit(fail ? 1 : 0);

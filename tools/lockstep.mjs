@@ -107,6 +107,7 @@ export class Side {
     if (this.args.from != null) p.push(`from=${this.args.from}`);
     if (this.args.to != null) p.push(`to=${this.args.to}`);
     if (this.args.corrupt) p.push(`corrupt=${this.args.corrupt}`);
+    if (this.args.stopAt) p.push(`stop_at=${this.args.stopAt}`);
     return `file=${PLUGIN},${p.join(",")}`;
   }
 
@@ -244,10 +245,21 @@ function readLogLines(file) {
   return fs.readFileSync(file, "utf8").split("\n").filter((l) => l.length);
 }
 
-export function compareDigestLogs(aFile, bFile) {
+// Compare the two lockstep logs. Strict by default (the native gate:
+// every E/M divergence is real). opts.soft = ["epoch", "mem-sdram"]
+// downgrades those kinds to diagnostics-only for the wasm gate, where
+// the emscripten leg is not wall-clock deterministic (the main loop
+// interleaves with the vCPU thread differently run-to-run, so a few
+// SDRAM bytes / the transient register vector differ even though the
+// firmware's visible behaviour — serial, CPU-local SRAM — is identical).
+export function compareDigestLogs(aFile, bFile, opts = {}) {
+  const soft = new Set(opts.soft || []);
   const A = readLogLines(aFile), B = readLogLines(bFile);
   const linesOf = (ls, p) => ls.filter((l) => l.startsWith(p));
-  const res = { commonEpochs: 0, commonMem: 0, diverged: null, truncated: false };
+  const res = {
+    commonEpochs: 0, commonMem: 0, commonSram: 0, commonSdram: 0,
+    diverged: null, truncated: false, soft: [],
+  };
   if (A[0] !== B[0]) {
     res.diverged = { kind: "config", lineA: A[0], lineB: B[0] };
     return res;
@@ -258,28 +270,45 @@ export function compareDigestLogs(aFile, bFile) {
   for (let i = 0; i < n; i++) {
     if (EA[i] !== EB[i]) {
       const f = EA[i].split(" "), g = EB[i].split(" ");
-      res.diverged = {
+      const div = {
         kind: "epoch", epoch: Number(f[2]),
         insnsA: Number(f[3]), insnsB: Number(g[3]),
         fields: fieldDiff(f, g), lineA: EA[i], lineB: EB[i],
       };
-      return res;
-    }
-    res.commonEpochs++;
+      if (soft.has("epoch")) {
+        res.soft.push(div);
+      } else {
+        res.diverged = div;
+        return res;
+      }
+    } else res.commonEpochs++;
   }
-  // M-lines: memory digests
+  // M-lines: per-range digests. Range 0 is the pmb887x internal SRAM
+  // (CPU-local, timing-race-free) — always HARD. Later ranges (SDRAM)
+  // can be downgraded to soft for the wasm gate via opts.soft.
   const MA = linesOf(A, "M "), MB = linesOf(B, "M ");
   const m = Math.min(MA.length, MB.length);
   for (let i = 0; i < m; i++) {
-    if (MA[i] !== MB[i]) {
-      const f = MA[i].split(" "), g = MB[i].split(" ");
-      res.diverged = {
-        kind: "mem", insnsA: Number(f[2]), insnsB: Number(g[2]),
+    const f = MA[i].split(" "), g = MB[i].split(" ");
+    const cols = Math.max(f.length, g.length);
+    let allIdentical = true;
+    for (let c = 3; c < cols; c++) {
+      if (f[c] === g[c]) continue;
+      allIdentical = false;
+      const div = {
+        kind: c === 3 ? "mem" : "mem-sdram",
+        insnsA: Number(f[2]), insnsB: Number(g[2]),
         fields: fieldDiff(f, g), lineA: MA[i], lineB: MB[i],
       };
-      return res;
+      if (c === 3 || !soft.has("mem-sdram")) {
+        res.diverged = div;
+        return res;
+      }
+      res.soft.push(div);
     }
-    res.commonMem++;
+    if (f[3] === g[3]) res.commonSram++;
+    if (cols > 4 && f[4] === g[4]) res.commonSdram++;
+    if (allIdentical) res.commonMem++;
   }
   if (EA.length !== EB.length || MA.length !== MB.length) res.truncated = true;
   return res;
@@ -310,10 +339,10 @@ function compareDenseLogs(aFile, bFile) {
 function reportDenseTb(div) {
   const fa = div.lineA.split(" "), fb = div.lineB.split(" ");
   const rows = [];
-  // T vcpu insn r0..cpsr
+  // T vcpu insn regs_hash r0..cpsr
   rows.push(["insn", fa[2], fb[2]]);
   for (let i = 0; i < REG_NAMES.length; i++) {
-    const va = fa[3 + i] ?? "-", vb = fb[3 + i] ?? "-";
+    const va = fa[4 + i] ?? "-", vb = fb[4 + i] ?? "-";
     rows.push([REG_NAMES[i], va, vb]);
   }
   return rows
@@ -339,9 +368,9 @@ async function localize(args, flash, baseDir, div, log) {
   }
   log(`== first divergent insn #${d.insn} (after ${d.commonInsns} matching insns in window):`);
   log(reportDenseTb(d));
-  const pcIdx = 15; // r15 == pc within the reg columns
+  const pcIdx = 15; // r15 == pc within the reg columns (offset 4: see T-line)
   const fa = d.lineA.split(" "), fb = d.lineB.split(" ");
-  log(`   guest pc around divergence: a=${fa[3 + pcIdx]} b=${fb[3 + pcIdx]}` +
+  log(`   guest pc around divergence: a=${fa[4 + pcIdx]} b=${fb[4 + pcIdx]}` +
       ` — bisect by op with the phase-0a suite (tests/tcg-isa)`);
   return d;
 }

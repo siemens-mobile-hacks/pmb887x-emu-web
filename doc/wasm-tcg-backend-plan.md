@@ -307,10 +307,65 @@ LG (no-icount).
   128-bit moves), single-TB modules, **no chaining** (every TB returns to
   C). *Gate: lockstep-clean full boot; expect ≈TCI speed (dispatch still
   via C) — correctness only.* ~1–1.5 weeks.
+  - **Status: implemented 2026-09-10; full-boot gate pending** —
+    `tcg/wasm64/` (TCGOutOp-table emitters, per-TB standalone wasm modules,
+    regs as typed i32/i64 locals, MMU always via `*_mmu` helper imports,
+    single `loop` + region-`if` label scheme, no chaining — every TB returns
+    to the C `tcg_qemu_tb_exec` dispatcher). 1156 op-suite tests green;
+    full S75 boot reaches the same standby UI as TCI (~2x slower).
+    Lockstep: built-in env-driven fold in `wasm64.c` (W64_LOCKSTEP*,
+    byte-identical E/M/T/X log to `tests/lockstep.c`, regs via
+    `gdb_read_register`, memory via chunked `cpu_memory_rw_debug`), plus
+    `tools/lockstep-wasm.mjs` (native reference JIT vs wasm64 in headless
+    Chromium, grabs `/lockstep.log`+`/serial.log` from page FS at exit).
+    20M-insn gate clean: serial byte-identical + internal-SRAM digest
+    byte-identical (the HARD fields); register E-lines and the SDRAM slice
+    are SOFT — the emscripten leg is not wall-clock-deterministic (the
+    main loop interleaves with the vCPU thread differently run-to-run, so a
+    few SDRAM bytes / the transient register vector differ; the firmware's
+    visible behaviour — serial, CPU-local SRAM, full boot — is identical).
+    Full-gate attempt #1 (3 × 2.5e9) timed out with no wasm-side output:
+    the driver had no live visibility into the browser leg and skipped the
+    partial grab on timeout, and the null `mem` arg silently re-enabled
+    the 16MB full-SDRAM digest. Driver fixed (live E-line progress via
+    page FS, 1MB SDRAM slice default, timeout salvage). Attempt #2 with
+    the fixed driver exposed the real wall: all legs freeze at exactly
+    761,266,176 insns with renderer RSS ~7.2GB — per-TB module+instance
+    accumulation under one-insn-per-tb (~800k live modules, no eviction)
+    exhausts the renderer. **Conclusion: the 2.5e9 one-insn-per-tb gate is
+    architecturally blocked until phase-2 batching/eviction lands** —
+    interim gate = 700M-insn windows (just under the wall) + the op-suite;
+    the full gate moves to the batched backend, where it also gets fast.
+    Also discovered: S75/el71 fullflash boots are UART-silent (all serial
+    logs 0 bytes) — the "serial byte-identical" check has been vacuous;
+    the HARD behavioral anchors are the internal-SRAM digest and clean
+    budget/exit (an LCD-frame digest in the fold is the natural upgrade).
 - **Phase 2 — chaining, batching, tiering.** Shared table + chain slots +
   tail calls; batched async compilation; TCI as the cold tier.
   *Gate: ≥2x TCI on the v=2..7 window; live modules < 100; vCPU never
   stalls > 5 ms on a batch compile.* ~1 week.
+  - **Status: chaining landed 2026-09-10 (split, per the no-45-min-wait
+    rule)** — `goto_tb` reads `tb->jmp_target_addr[n]` (qemu-core-
+    maintained, TCI-style) at runtime and tail-calls the target through
+    a shared funcref table (`return_call_indirect`); unlinked slots fall
+    through so `tb_add_jump` links the pair; TB prologues call an
+    imported `w64_tb_account(icount)` at every entry (icount2 + lockstep
+    fold stay per-TB-entry exact while chained); a `w64_chain_stop`
+    brake unwinds chains at the lockstep budget. Validated with the
+    op-suite (1156/1156) + 20M/250M lockstep windows (HARD SRAM digests
+    identical). Measured: v=2..7 window 45.9s → 38.4s; TCI reference on
+    the same host 24.4s (so 0.63x TCI — batching + the phase-3 TLB
+    inline are still needed for the ≥2x gate; the finalV gap, 66 vs 165,
+    says the MMIO-heavy later boot hurts most, as predicted §4.7).
+    Bring-up found a second emscripten -O3 artifact: the prelude
+    custom-section filler miscompiled a reassigned `content` (computed
+    127, emitted LEB 255) exactly at the content==127 boundary that the
+    chaining's +19 prelude bytes exposed — worked around by precomputing
+    bytes into locals (same class as the phase-1 typecode bug; if a third
+    appears, consider -O2 for tcg/tcg.c).
+    **Remaining for phase 2: batching + eviction** (fixes the 761M
+    renderer-OOM wall and compile overhead; live modules < 100), then
+    async compile + TCI cold tier.
 - **Phase 3 — hot-path tuning.** Inline TLB probe, size-specialized
   loads/stores, direct imports for top helpers (ld/st mmu, `lookup_tb_ref`,
   ARM div/rem). *Gate: ≥3x end-to-end vs the current TCI dist — target

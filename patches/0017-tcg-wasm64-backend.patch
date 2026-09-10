@@ -1,0 +1,3391 @@
+From: Konstantin Pereiaslov <perk11@perk11.info>
+Subject: [PATCH] tcg/wasm64: TCG backend emitting wasm — skeleton + goto_tb tail-call chaining
+
+Phase 1 + 2a of doc/wasm-tcg-backend-plan.md.  One wasm module per TB,
+compiled lazily at first execution through the browser WebAssembly API;
+regs as typed wasm locals; qemu_ld/st via the *_mmu helpers; single
+`loop` + region-`if` label scheme; exits by return code to the C
+dispatcher (tcg_qemu_tb_exec), goto_ptr via a handoff slot.
+
+Chaining (2a): goto_tb reads tb->jmp_target_addr[n] (maintained by qemu
+core, TCI-style) at runtime and tail-calls the target TB through a
+shared funcref table (return_call_indirect); unlinked slots fall through
+to the exit code, which lets cpu_exec's tb_add_jump link the pair.  TB
+prologues call an imported w64_tb_account(icount) at every entry
+(dispatcher or chain target) so icount2 + the lockstep fold stay
+per-TB-entry exact while chained; a chain_stop brake unwinds chains at
+the lockstep budget.
+
+Two emscripten -O3 optimizer artifacts worked around (documented in
+doc/wasm-tcg-backend-progress.md): the helper-return typecode inlining
+bug (inline literal switch) and a filler miscompile where a reassigned
+`content` landed as 255 when 127 was computed (custom-section LEB) —
+bytes are now precomputed into locals.
+
+Gates: tcg-isa op-suite 1156/1156; lockstep vs native JIT 20M/250M/700M
+insn windows clean (internal-SRAM digest HARD-identical).  S75 v=2..7
+window 45.9s -> 38.4s (TCI reference on the same host: 24.4s).
+diff --git a/include/accel/tcg/getpc.h b/include/accel/tcg/getpc.h
+index 8a97ce34e7..bd914e8aa6 100644
+--- a/include/accel/tcg/getpc.h
++++ b/include/accel/tcg/getpc.h
+@@ -13,9 +13,12 @@
+ #endif
+ 
+ /* GETPC is the true target of the return instruction that we'll execute.  */
+-#ifdef CONFIG_TCG_INTERPRETER
++#if defined(CONFIG_TCG_INTERPRETER)
+ extern __thread uintptr_t tci_tb_ptr;
+ # define GETPC() tci_tb_ptr
++#elif defined(CONFIG_TCG_WASM64)
++extern __thread uintptr_t w64_tb_ptr;
++# define GETPC() w64_tb_ptr
+ #else
+ # define GETPC() \
+     ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))
+diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
+index 7669dc1c2d..74614f39e1 100644
+--- a/include/tcg/tcg.h
++++ b/include/tcg/tcg.h
+@@ -934,7 +934,7 @@ static inline size_t tcg_current_code_size(TCGContext *s)
+ #define TB_EXIT_IDXMAX    1
+ #define TB_EXIT_REQUESTED 3
+ 
+-#ifdef CONFIG_TCG_INTERPRETER
++#if defined(CONFIG_TCG_INTERPRETER) || defined(CONFIG_TCG_WASM64)
+ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, const void *tb_ptr);
+ #else
+ typedef uintptr_t tcg_prologue_fn(CPUArchState *env, const void *tb_ptr);
+diff --git a/meson.build b/meson.build
+index e859c90129..1699167d57 100644
+--- a/meson.build
++++ b/meson.build
+@@ -924,9 +924,8 @@ if have_tcg
+       error('Unsupported CPU @0@, try --enable-tcg-interpreter'.format(cpu))
+     endif
+   elif host_arch == 'wasm64'
+-    if not get_option('tcg_interpreter')
+-      error('WebAssembly host requires --enable-tcg-interpreter')
+-    endif
++    # Either the TCG interpreter or the wasm64 backend (tcg/wasm64/) —
++    # with --enable-tcg-interpreter unset, tcg_arch stays 'wasm64'.
+   elif get_option('tcg_interpreter')
+     warning('Use of the TCG interpreter is not recommended on this host')
+     warning('architecture. There is a native TCG execution backend available')
+@@ -2492,6 +2491,7 @@ config_host_data.set('CONFIG_SOLARIS', host_os == 'sunos')
+ if have_tcg
+   config_host_data.set('CONFIG_TCG', 1)
+   config_host_data.set('CONFIG_TCG_INTERPRETER', tcg_arch == 'tci')
++  config_host_data.set('CONFIG_TCG_WASM64', tcg_arch == 'wasm64')
+ endif
+ config_host_data.set('CONFIG_TPM', have_tpm)
+ config_host_data.set('CONFIG_TSAN', get_option('tsan'))
+@@ -2547,6 +2547,7 @@ endif
+ config_host_data.set('CONFIG_SPICE', spice.found())
+ config_host_data.set('CONFIG_X11', x11.found())
+ config_host_data.set('CONFIG_DBUS_DISPLAY', dbus_display)
++config_host_data.set('CONFIG_WASM_UI', host_os == 'emscripten')
+ config_host_data.set('CONFIG_CFI', get_option('cfi'))
+ config_host_data.set('CONFIG_SELINUX', selinux.found())
+ config_host_data.set('CONFIG_XEN_BACKEND', xen.found())
+diff --git a/tcg/meson.build b/tcg/meson.build
+index 706a6eb260..aabf53c876 100644
+--- a/tcg/meson.build
++++ b/tcg/meson.build
+@@ -22,6 +22,10 @@ if get_option('tcg_interpreter')
+   tcg_ss.add(files('tci.c'))
+ endif
+ 
++if host_arch == 'wasm64' and not get_option('tcg_interpreter')
++  tcg_ss.add(files('wasm64/wasm64.c'))
++endif
++
+ tcg_ss.add(when: libdw, if_true: files('debuginfo.c'))
+ if host_os == 'linux'
+   tcg_ss.add(files('perf.c'))
+diff --git a/tcg/tcg.c b/tcg/tcg.c
+index 1e77f2365a..af59c3948f 100644
+--- a/tcg/tcg.c
++++ b/tcg/tcg.c
+@@ -118,6 +118,10 @@ static void tcg_register_jit_int(const void *buf, size_t size,
+ static void tcg_out_tb_start(TCGContext *s);
+ static void tcg_out_ld(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg1,
+                        intptr_t arg2);
++#ifdef CONFIG_TCG_WASM64
++static void tcg_out_set_label(TCGContext *s, TCGLabel *l);
++static void tcg_out_tb_finalize(TCGContext *s);
++#endif
+ static bool tcg_out_mov(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg);
+ static void tcg_out_movi(TCGContext *s, TCGType type,
+                          TCGReg ret, tcg_target_long arg);
+@@ -246,7 +250,7 @@ TCGv_env tcg_env;
+ const void *tcg_code_gen_epilogue;
+ ptrdiff_t tcg_splitwx_diff;
+ 
+-#ifndef CONFIG_TCG_INTERPRETER
++#if !defined(CONFIG_TCG_INTERPRETER) && !defined(CONFIG_TCG_WASM64)
+ tcg_prologue_fn *tcg_qemu_tb_exec;
+ #endif
+ 
+@@ -353,6 +357,10 @@ static void tcg_out_label(TCGContext *s, TCGLabel *l)
+     tcg_debug_assert(!l->has_value);
+     l->has_value = 1;
+     l->u.value_ptr = tcg_splitwx_to_rx(s->code_ptr);
++#ifdef CONFIG_TCG_WASM64
++    /* the wasm64 backend needs to emit its label-region guard here */
++    tcg_out_set_label(s, l);
++#endif
+ }
+ 
+ TCGLabel *gen_new_label(void)
+@@ -1853,7 +1861,7 @@ void tcg_prologue_init(void)
+     s->code_buf = s->code_gen_ptr;
+     s->data_gen_ptr = NULL;
+ 
+-#ifndef CONFIG_TCG_INTERPRETER
++#if !defined(CONFIG_TCG_INTERPRETER) && !defined(CONFIG_TCG_WASM64)
+     tcg_qemu_tb_exec = (tcg_prologue_fn *)tcg_splitwx_to_rx(s->code_ptr);
+ #endif
+ 
+@@ -6752,6 +6760,10 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb, uint64_t pc_start)
+     if (i < 0) {
+         return i;
+     }
++#ifdef CONFIG_TCG_WASM64
++    /* the wasm64 backend assembles the module around the body */
++    tcg_out_tb_finalize(s);
++#endif
+     if (!tcg_resolve_relocs(s)) {
+         return -2;
+     }
+diff --git a/tcg/wasm64/tcg-target-con-set.h b/tcg/wasm64/tcg-target-con-set.h
+new file mode 100644
+index 0000000000..b4b7a160db
+--- /dev/null
++++ b/tcg/wasm64/tcg-target-con-set.h
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * wasm64 target-specific constraint sets.
++ */
++
++C_O0_I1(r)
++C_O0_I2(r, r)
++C_O0_I2(r, rC)
++C_O0_I3(r, r, r)
++C_O0_I4(r, r, r, r)
++C_O1_I1(r, r)
++C_O1_I2(r, r, r)
++C_O1_I2(r, r, rC)
++C_O1_I2(r, rC, r)
++C_O1_I3(r, r, r, r)
++C_O1_I4(r, r, r, r, r)
++C_O1_I4(r, r, rC, rC, rC)
++C_O2_I1(r, r, r)
++C_O2_I2(r, r, r, r)
++C_O2_I4(r, r, r, r, r, r)
+diff --git a/tcg/wasm64/tcg-target-con-str.h b/tcg/wasm64/tcg-target-con-str.h
+new file mode 100644
+index 0000000000..de95d0ca05
+--- /dev/null
++++ b/tcg/wasm64/tcg-target-con-str.h
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * Define wasm64 target-specific operand constraints.
++ */
++
++/*
++ * Define constraint letters for register sets:
++ * REGS(letter, register_mask)
++ */
++REGS('r', MAKE_64BIT_MASK(0, TCG_TARGET_NB_REGS))
++
++/* Every constant is materializable (i32/i64.const take full range). */
++CONST('C', TCG_CT_CONST)
+diff --git a/tcg/wasm64/tcg-target-has.h b/tcg/wasm64/tcg-target-has.h
+new file mode 100644
+index 0000000000..33b51e6240
+--- /dev/null
++++ b/tcg/wasm64/tcg-target-has.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * Define target-specific opcode support: wasm64 backend.
++ */
++
++#ifndef TCG_TARGET_HAS_H
++#define TCG_TARGET_HAS_H
++
++/* extrl/extrh are separate real ops (see tcg-target.h); "extr" as a
++ * plain move needs a canonical i32-in-i64 representation we don't have. */
++#define TCG_TARGET_HAS_extr_i64_i32     0
++
++#define TCG_TARGET_HAS_qemu_ldst_i128   0
++
++#define TCG_TARGET_HAS_tst              0
++
++#define TCG_TARGET_extract_valid(type, ofs, len) \
++    ((ofs) + (len) <= (type) * 8 ? 1 : 0)
++#define TCG_TARGET_sextract_valid(type, ofs, len) \
++    ((ofs) + (len) <= (type) * 8 ? 1 : 0)
++#define TCG_TARGET_deposit_valid(type, ofs, len) \
++    ((ofs) + (len) <= (type) * 8 ? 1 : 0)
++
++#endif
+diff --git a/tcg/wasm64/tcg-target-mo.h b/tcg/wasm64/tcg-target-mo.h
+new file mode 100644
+index 0000000000..8db9cfcc66
+--- /dev/null
++++ b/tcg/wasm64/tcg-target-mo.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * Define target-specific memory model: wasm64 backend.
++ */
++
++#ifndef TCG_TARGET_MO_H
++#define TCG_TARGET_MO_H
++
++/* Single linear memory, single vCPU thread: no ordering required. */
++#define TCG_TARGET_DEFAULT_MO  0
++
++#endif
+diff --git a/tcg/wasm64/tcg-target-opc.h.inc b/tcg/wasm64/tcg-target-opc.h.inc
+new file mode 100644
+index 0000000000..4beb497df9
+--- /dev/null
++++ b/tcg/wasm64/tcg-target-opc.h.inc
+@@ -0,0 +1,4 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * wasm64 backend: no backend-internal opcodes (emits raw wasm bytes).
++ */
+diff --git a/tcg/wasm64/tcg-target.c.inc b/tcg/wasm64/tcg-target.c.inc
+new file mode 100644
+index 0000000000..ec825879ed
+--- /dev/null
++++ b/tcg/wasm64/tcg-target.c.inc
+@@ -0,0 +1,2302 @@
++/*
++ * Tiny Code Generator for QEMU — wasm64 target emitters.
++ *
++ * Emits raw wasm bytecode (one module per TB) into the code generation
++ * buffer; see tcg/wasm64/tcg-target.h for the design overview and
++ * tcg/wasm64/wasm64.h for the descriptor layout.
++ *
++ * Phase 1 skeleton (doc/wasm-tcg-backend-plan.md §5): single-TB
++ * modules, no chaining, helper calls through imported funcrefs,
++ * qemu_ld/st via the *_mmu helpers (the inline TLB probe lands in
++ * phase 3).
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "wasm64.h"
++
++/* ------------------------------------------------------------------ */
++/* per-TB assembly state                                              */
++/* ------------------------------------------------------------------ */
++
++#define W64_MAX_TYPES   12
++#define W64_MAX_IMPORTS 24
++#define W64_MAX_FIXUPS  1024
++#define W64_MAX_BLK     32
++#define W64_MAX_LABELS  1024
++
++struct w64_type {
++    uint8_t np;             /* number of params */
++    uint8_t p[8];           /* 0 = i32, 1 = i64 */
++    uint8_t ret;            /* 0xff = void */
++};
++
++struct w64_import {
++    uint32_t fptr;          /* emscripten table index (C fn pointer) */
++    uint8_t type;           /* type section index */
++};
++
++struct w64_fixup {          /* forward branch to an unplaced label */
++    uint32_t pos;           /* byte offset of the 5-byte padded i32.const */
++    uint32_t label;
++};
++
++static __thread struct {
++    uint16_t label_idx[W64_MAX_LABELS];  /* 0 = unplaced, else 1..n */
++    uint8_t n_labels;
++    struct w64_fixup fixup[W64_MAX_FIXUPS];
++    int n_fixup;
++
++    struct w64_type type[W64_MAX_TYPES];
++    uint8_t n_types;
++    struct w64_import imp[W64_MAX_IMPORTS];
++    uint8_t n_imp;
++
++    /* structured-control-flow block stack (for br depth arithmetic) */
++    struct { uint8_t kind; int label; } blk[W64_MAX_BLK];
++    int n_blk;
++    int loop_idx;           /* blk[] index of the top-level label loop */
++
++    /* register representation: bit r set = value in the i64 local */
++    uint32_t rep;
++} W;
++
++enum {
++    W64_BLK_REGION,         /* if (bp <= k) label region            */
++    W64_BLK_IF,             /* transient emitter if                 */
++    W64_BLK_LOOP,           /* the top-level label dispatch loop    */
++};
++
++/* ------------------------------------------------------------------ */
++/* raw byte emission                                                   */
++/* ------------------------------------------------------------------ */
++
++static void w64_u8(TCGContext *s, uint8_t v)
++{
++    *s->code_ptr++ = v;
++}
++
++static void w64_bytes(TCGContext *s, const void *p, unsigned n)
++{
++    memcpy(s->code_ptr, p, n);
++    s->code_ptr += n;
++}
++
++static void w64_uleb(TCGContext *s, uint64_t v)
++{
++    do {
++        uint8_t b = v & 0x7f;
++        v >>= 7;
++        w64_u8(s, v ? b | 0x80 : b);
++    } while (v);
++}
++
++/* unsigned LEB padded to 5 bytes (patchable; value must fit u32) */
++static void w64_uleb32_p5(TCGContext *s, uint32_t v)
++{
++    int i;
++    for (i = 0; i < 4; i++) {
++        w64_u8(s, (v & 0x7f) | 0x80);
++        v >>= 7;
++    }
++    w64_u8(s, v & 0x7f);
++}
++
++static void w64_sleb32(TCGContext *s, int32_t v)
++{
++    bool more = true;
++    while (more) {
++        uint8_t b = v & 0x7f;
++        v >>= 7;
++        if ((v == 0 && !(b & 0x40)) || (v == -1 && (b & 0x40))) {
++            more = false;
++        } else {
++            b |= 0x80;
++        }
++        w64_u8(s, b);
++    }
++}
++
++static void w64_sleb64(TCGContext *s, int64_t v)
++{
++    bool more = true;
++    while (more) {
++        uint8_t b = v & 0x7f;
++        v >>= 7;
++        if ((v == 0 && !(b & 0x40)) || (v == -1 && (b & 0x40))) {
++            more = false;
++        } else {
++            b |= 0x80;
++        }
++        w64_u8(s, b);
++    }
++}
++
++/* ------------------------------------------------------------------ */
++/* locals and register access                                          */
++/* ------------------------------------------------------------------ */
++
++/* params: 0 = $env, 1 = $sp, 2 = $tp; then locals:
++ *   3 .. 3+NB-1                 i32 reg locals (+ $bp at 3+NB)
++ *   3+NB+1 .. 3+NB+NB           i64 reg locals
++ *   3+2*NB+1                    i32 scratch ($scr32)
++ *   3+2*NB+2, +3                two i64 scratch locals               */
++#define W64_P_ENV     0
++#define W64_P_SP      1
++#define W64_P_TP      2
++#define W64_L32(r)    (3 + (r))
++#define W64_L64(r)    (3 + TCG_TARGET_NB_REGS + 1 + (r))
++#define W64_L_BP      (3 + TCG_TARGET_NB_REGS)
++#define W64_L_SCR32   (3 + 2 * TCG_TARGET_NB_REGS + 1)
++#define W64_L_SCR0    (W64_L_SCR32 + 1)
++#define W64_L_SCR1    (W64_L_SCR0 + 1)
++
++/* type-matched scratch local */
++static int w64_scr(TCGType t)
++{
++    return t == TCG_TYPE_I32 ? W64_L_SCR32 : W64_L_SCR0;
++}
++
++static int w64_local32(TCGReg r)
++{
++    if (r == TCG_AREG0 || r == TCG_REG_CALL_STACK) {
++        /* env/frame are only ever accessed as i64 */
++        g_assert_not_reached();
++    }
++    return W64_L32(r);
++}
++
++static int w64_local64(TCGReg r)
++{
++    if (r == TCG_AREG0) {
++        return W64_P_ENV;
++    }
++    if (r == TCG_REG_CALL_STACK) {
++        return W64_P_SP;
++    }
++    return W64_L64(r);
++}
++
++static bool w64_rep_is64(TCGReg r)
++{
++    return r == TCG_AREG0 || r == TCG_REG_CALL_STACK || (W.rep >> r) & 1;
++}
++
++static void w64_local_get(TCGContext *s, int l)
++{
++    w64_u8(s, 0x20);
++    w64_uleb(s, l);
++}
++
++static void w64_local_set(TCGContext *s, int l)
++{
++    w64_u8(s, 0x21);
++    w64_uleb(s, l);
++}
++
++/* Push TCG reg r as an i32 value (wrapping if held in the i64 local). */
++static void w64_get_i32(TCGContext *s, TCGReg r)
++{
++    if (w64_rep_is64(r)) {
++        w64_local_get(s, w64_local64(r));
++        w64_u8(s, 0xa7);                    /* i32.wrap_i64 */
++    } else {
++        w64_local_get(s, w64_local32(r));
++    }
++}
++
++/* Push TCG reg r as an i64 value (zero-extending an i32 rep). */
++static void w64_get_i64(TCGContext *s, TCGReg r)
++{
++    if (w64_rep_is64(r)) {
++        w64_local_get(s, w64_local64(r));
++    } else {
++        w64_local_get(s, w64_local32(r));
++        w64_u8(s, 0xad);                    /* i64.extend_i32_u */
++    }
++}
++
++static void w64_get(TCGContext *s, TCGReg r, TCGType t)
++{
++    if (t == TCG_TYPE_I32) {
++        w64_get_i32(s, r);
++    } else {
++        w64_get_i64(s, r);
++    }
++}
++
++/* Pop a value into reg r, marking its representation. */
++static void w64_set_i32(TCGContext *s, TCGReg r)
++{
++    w64_local_set(s, w64_local32(r));
++    W.rep &= ~(1u << r);
++}
++
++static void w64_set_i64(TCGContext *s, TCGReg r)
++{
++    w64_local_set(s, w64_local64(r));
++    W.rep |= 1u << r;
++}
++
++static void w64_const_i32(TCGContext *s, int32_t v)
++{
++    w64_u8(s, 0x41);
++    w64_sleb32(s, v);
++}
++
++static void w64_const_i64(TCGContext *s, int64_t v)
++{
++    w64_u8(s, 0x42);
++    w64_sleb64(s, v);
++}
++
++static void w64_const(TCGContext *s, TCGType t, tcg_target_long v)
++{
++    if (t == TCG_TYPE_I32) {
++        w64_const_i32(s, (int32_t)v);
++    } else {
++        w64_const_i64(s, v);
++    }
++}
++
++/* ------------------------------------------------------------------ */
++/* structured control flow                                             */
++/* ------------------------------------------------------------------ */
++
++static void w64_blk_push(TCGContext *s, uint8_t kind, int label)
++{
++    tcg_debug_assert(W.n_blk < W64_MAX_BLK);
++    w64_u8(s, kind == W64_BLK_LOOP ? 0x03 : 0x04);
++    w64_u8(s, 0x40);                        /* void */
++    W.blk[W.n_blk].kind = kind;
++    W.blk[W.n_blk].label = label;
++    W.n_blk++;
++}
++
++static void w64_blk_pop(TCGContext *s)
++{
++    tcg_debug_assert(W.n_blk > 0);
++    W.n_blk--;
++    w64_u8(s, 0x0b);                        /* end */
++}
++
++/* branch to the top-level label loop (from anywhere) */
++static void w64_br_loop(TCGContext *s)
++{
++    w64_u8(s, 0x0c);                        /* br */
++    w64_uleb(s, W.n_blk - 1 - W.loop_idx);
++}
++
++/* ------------------------------------------------------------------ */
++/* types and imports                                                   */
++/* ------------------------------------------------------------------ */
++
++static uint8_t w64_add_type(unsigned np, const uint8_t *p, uint8_t ret)
++{
++    int i, j;
++    for (i = 0; i < W.n_types; i++) {
++        if (W.type[i].np != np || W.type[i].ret != ret) {
++            continue;
++        }
++        for (j = 0; j < (int)np; j++) {
++            if (W.type[i].p[j] != p[j]) {
++                break;
++            }
++        }
++        if (j == (int)np) {
++            return i;
++        }
++    }
++    tcg_debug_assert(W.n_types < W64_MAX_TYPES);
++    W.type[W.n_types].np = np;
++    memcpy(W.type[W.n_types].p, p, np);
++    W.type[W.n_types].ret = ret;
++    return W.n_types++;
++}
++
++static uint8_t w64_import_idx(uint32_t fptr, uint8_t type)
++{
++    int i;
++    for (i = 0; i < W.n_imp; i++) {
++        if (W.imp[i].fptr == fptr && W.imp[i].type == type) {
++            return i;
++        }
++    }
++    tcg_debug_assert(W.n_imp < W64_MAX_IMPORTS);
++    W.imp[W.n_imp].fptr = fptr;
++    W.imp[W.n_imp].type = type;
++    return W.n_imp++;
++}
++
++/* ------------------------------------------------------------------ */
++/* module frame (emitted around the body at fixed offsets)             */
++/* ------------------------------------------------------------------ */
++
++static void w64_out_desc_u32(TCGContext *s, unsigned off, uint32_t v)
++{
++    tcg_insn_unit *p = s->code_buf + off;
++    stl_p(p, v);
++}
++
++static void w64_emit_loop_head(TCGContext *s)
++{
++    /* loop { if (u32.le_u (local.get $bp) (i32.const 0)) { <region 0> */
++    w64_u8(s, 0x03);                        /* loop void */
++    w64_u8(s, 0x40);
++    tcg_debug_assert(W.n_blk == 0);
++    W.blk[W.n_blk].kind = W64_BLK_LOOP;
++    W.blk[W.n_blk].label = -1;
++    W.n_blk++;
++    W.loop_idx = 0;
++
++    w64_local_get(s, W64_L_BP);
++    w64_const_i32(s, 0);
++    w64_u8(s, 0x4d);                        /* i32.le_u */
++    w64_blk_push(s, W64_BLK_REGION, 0);
++}
++
++static void tcg_out_set_label(TCGContext *s, TCGLabel *l)
++{
++    int i;
++
++    tcg_debug_assert(l->id < W64_MAX_LABELS);
++    tcg_debug_assert(W.n_labels < 0xffff);
++    W.label_idx[l->id] = ++W.n_labels;
++
++    /* patch forward branches to this label */
++    for (i = 0; i < W.n_fixup; i++) {
++        if (W.fixup[i].label == l->id) {
++            tcg_insn_unit *p = s->code_buf + W.fixup[i].pos;
++            uint32_t v = W.n_labels;
++            int b;
++            for (b = 0; b < 4; b++) {
++                p[b] = (v & 0x7f) | 0x80;
++                v >>= 7;
++            }
++            p[4] = v & 0x7f;
++            W.fixup[i] = W.fixup[--W.n_fixup];
++            i--;
++        }
++    }
++
++    /* close region k-1, open region k: if (bp <= k) { <code> } */
++    w64_blk_pop(s);
++    w64_local_get(s, W64_L_BP);
++    w64_const_i32(s, W.n_labels);
++    w64_u8(s, 0x4d);                        /* i32.le_u */
++    w64_blk_push(s, W64_BLK_REGION, W.n_labels);
++}
++
++/* ------------------------------------------------------------------ */
++/* basic operations                                                    */
++/* ------------------------------------------------------------------ */
++
++static const struct {
++    uint8_t i32, i64;
++} w64_cmp[16] = {
++    [TCG_COND_EQ]  = { 0x46, 0x51 },
++    [TCG_COND_NE]  = { 0x47, 0x52 },
++    [TCG_COND_LT]  = { 0x48, 0x53 },
++    [TCG_COND_LTU] = { 0x49, 0x54 },
++    [TCG_COND_GT]  = { 0x4a, 0x55 },
++    [TCG_COND_GTU] = { 0x4b, 0x56 },
++    [TCG_COND_LE]  = { 0x4c, 0x57 },
++    [TCG_COND_LEU] = { 0x4d, 0x58 },
++    [TCG_COND_GE]  = { 0x4e, 0x59 },
++    [TCG_COND_GEU] = { 0x4f, 0x5a },
++};
++
++static void w64_cmp_op(TCGContext *s, TCGType t, TCGCond c)
++{
++    w64_u8(s, t == TCG_TYPE_I32 ? w64_cmp[c].i32 : w64_cmp[c].i64);
++}
++
++/* generic reg-reg-reg binary integer op */
++static void w64_binop_rrr(TCGContext *s, TCGType t, uint8_t op32, uint8_t op64,
++                          TCGReg r0, TCGReg r1, TCGReg r2)
++{
++    w64_get(s, r1, t);
++    w64_get(s, r2, t);
++    w64_u8(s, t == TCG_TYPE_I32 ? op32 : op64);
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++
++static void w64_binop_rri(TCGContext *s, TCGType t, uint8_t op32, uint8_t op64,
++                          TCGReg r0, TCGReg r1, tcg_target_long i2)
++{
++    w64_get(s, r1, t);
++    w64_const(s, t, i2);
++    w64_u8(s, t == TCG_TYPE_I32 ? op32 : op64);
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++
++/* ------------------------------------------------------------------ */
++/* loads/stores (TCG-internal, via the wasm linear memory)             */
++/* ------------------------------------------------------------------ */
++
++/* push the effective address of base+ofs as an i64 */
++static void w64_addr(TCGContext *s, TCGReg base, intptr_t ofs)
++{
++    if (ofs == 0) {
++        w64_get_i64(s, base);
++        return;
++    }
++    w64_get_i64(s, base);
++    w64_const_i64(s, ofs);
++    w64_u8(s, 0x7c);                        /* i64.add */
++}
++
++/* memarg (align, offset) with offset folded into the memarg when it
++ * fits u32; otherwise the address was pre-computed and offset is 0 */
++static void w64_memarg(TCGContext *s, unsigned align, uint64_t offset)
++{
++    w64_uleb(s, align);
++    w64_uleb(s, offset);
++}
++
++static void w64_load(TCGContext *s, uint8_t opc, TCGType t, TCGReg r0,
++                     TCGReg base, intptr_t ofs, unsigned align)
++{
++    if (ofs >= 0 && ofs <= 0xffffffffu) {
++        w64_get_i64(s, base);
++        w64_u8(s, opc);
++        w64_memarg(s, align, ofs);
++    } else {
++        w64_addr(s, base, ofs);
++        w64_u8(s, opc);
++        w64_memarg(s, align, 0);
++    }
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++
++static void w64_store(TCGContext *s, uint8_t opc, TCGType t, TCGReg val,
++                      TCGReg base, intptr_t ofs, unsigned align)
++{
++    if (ofs >= 0 && ofs <= 0xffffffffu) {
++        w64_get_i64(s, base);
++        w64_get(s, val, t);
++        w64_u8(s, opc);
++        w64_memarg(s, align, ofs);
++    } else {
++        w64_addr(s, base, ofs);
++        w64_get(s, val, t);
++        w64_u8(s, opc);
++        w64_memarg(s, align, 0);
++    }
++}
++
++/* frame bounds check, mirroring TCI (defensive: offsets are small) */
++static void w64_frame_check(TCGReg base, intptr_t ofs)
++{
++    if (base == TCG_REG_CALL_STACK) {
++        tcg_debug_assert(ofs >= 0);
++        tcg_debug_assert(ofs < (TCG_STATIC_CALL_ARGS_SIZE +
++                                TCG_STATIC_FRAME_SIZE));
++    }
++}
++
++static void tcg_out_ld(TCGContext *s, TCGType type, TCGReg val, TCGReg base,
++                       intptr_t ofs)
++{
++    w64_frame_check(base, ofs);
++    switch (type) {
++    case TCG_TYPE_I32:
++        w64_load(s, 0x28, type, val, base, ofs, 2);
++        break;
++    case TCG_TYPE_I64:
++        w64_load(s, 0x29, type, val, base, ofs, 3);
++        break;
++    default:
++        g_assert_not_reached();
++    }
++}
++
++static void tcg_out_st(TCGContext *s, TCGType type, TCGReg val, TCGReg base,
++                       intptr_t ofs)
++{
++    w64_frame_check(base, ofs);
++    switch (type) {
++    case TCG_TYPE_I32:
++        w64_store(s, 0x36, type, val, base, ofs, 2);
++        break;
++    case TCG_TYPE_I64:
++        w64_store(s, 0x37, type, val, base, ofs, 3);
++        break;
++    default:
++        g_assert_not_reached();
++    }
++}
++
++static void tcg_out_ld8u(TCGContext *s, TCGType t, TCGReg v, TCGReg b, intptr_t o)
++{
++    w64_load(s, t == TCG_TYPE_I32 ? 0x2d : 0x31, t, v, b, o, 0);
++}
++
++static void tcg_out_ld8s(TCGContext *s, TCGType t, TCGReg v, TCGReg b, intptr_t o)
++{
++    w64_load(s, t == TCG_TYPE_I32 ? 0x2c : 0x30, t, v, b, o, 0);
++}
++
++static void tcg_out_ld16u(TCGContext *s, TCGType t, TCGReg v, TCGReg b, intptr_t o)
++{
++    w64_load(s, t == TCG_TYPE_I32 ? 0x2f : 0x33, t, v, b, o, 1);
++}
++
++static void tcg_out_ld16s(TCGContext *s, TCGType t, TCGReg v, TCGReg b, intptr_t o)
++{
++    w64_load(s, t == TCG_TYPE_I32 ? 0x2e : 0x32, t, v, b, o, 1);
++}
++
++static void tcg_out_ld32u(TCGContext *s, TCGType t, TCGReg v, TCGReg b, intptr_t o)
++{
++    w64_load(s, t == TCG_TYPE_I32 ? 0x28 : 0x35, t, v, b, o, 2);
++}
++
++static void tcg_out_ld32s(TCGContext *s, TCGType t, TCGReg v, TCGReg b, intptr_t o)
++{
++    w64_load(s, 0x34, TCG_TYPE_I64, v, b, o, 2);
++}
++
++static void tcg_out_st8(TCGContext *s, TCGType t, TCGReg v, TCGReg b, intptr_t o)
++{
++    w64_store(s, t == TCG_TYPE_I32 ? 0x3a : 0x3c, t, v, b, o, 0);
++}
++
++static void tcg_out_st16(TCGContext *s, TCGType t, TCGReg v, TCGReg b, intptr_t o)
++{
++    w64_store(s, t == TCG_TYPE_I32 ? 0x3b : 0x3d, t, v, b, o, 1);
++}
++
++static void tcg_out_st32(TCGContext *s, TCGType t, TCGReg v, TCGReg b, intptr_t o)
++{
++    w64_store(s, t == TCG_TYPE_I32 ? 0x36 : 0x3e, t, v, b, o, 2);
++}
++
++static bool tcg_out_sti(TCGContext *s, TCGType t, TCGArg v, TCGReg b, intptr_t o)
++{
++    uint8_t opc = t == TCG_TYPE_I32 ? 0x36 : 0x37;
++    unsigned align = t == TCG_TYPE_I32 ? 2 : 3;
++
++    w64_frame_check(b, o);
++    if (o >= 0 && o <= 0xffffffffu) {
++        w64_get_i64(s, b);
++        w64_const(s, t, v);
++        w64_u8(s, opc);
++        w64_memarg(s, align, o);
++    } else {
++        w64_addr(s, b, o);
++        w64_const(s, t, v);
++        w64_u8(s, opc);
++        w64_memarg(s, align, 0);
++    }
++    return true;
++}
++
++/* ------------------------------------------------------------------ */
++/* moves and extensions                                                */
++/* ------------------------------------------------------------------ */
++
++static bool tcg_out_mov(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg)
++{
++    tcg_debug_assert(ret != arg);
++    if (type == TCG_TYPE_I32) {
++        if (w64_rep_is64(arg)) {
++            w64_get_i32(s, arg);
++            w64_set_i32(s, ret);
++        } else {
++            w64_local_get(s, w64_local32(arg));
++            w64_set_i32(s, ret);
++        }
++    } else {
++        if (w64_rep_is64(arg)) {
++            w64_local_get(s, w64_local64(arg));
++            w64_set_i64(s, ret);
++        } else {
++            w64_get_i64(s, arg);
++            w64_set_i64(s, ret);
++        }
++    }
++    return true;
++}
++
++static void tcg_out_movi(TCGContext *s, TCGType type,
++                         TCGReg ret, tcg_target_long arg)
++{
++    switch (type) {
++    case TCG_TYPE_I32:
++        w64_const_i32(s, (int32_t)arg);
++        w64_set_i32(s, ret);
++        break;
++    case TCG_TYPE_I64:
++        w64_const_i64(s, arg);
++        w64_set_i64(s, ret);
++        break;
++    default:
++        g_assert_not_reached();
++    }
++}
++
++static void tcg_out_ext8s(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1)
++{
++    if (t == TCG_TYPE_I32) {
++        w64_get_i32(s, r1);
++        w64_u8(s, 0xc0);                    /* i32.extend8_s */
++        w64_set_i32(s, r0);
++    } else {
++        w64_get_i64(s, r1);
++        w64_u8(s, 0xc2);                    /* i64.extend8_s */
++        w64_set_i64(s, r0);
++    }
++}
++
++static void tcg_out_ext16s(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1)
++{
++    if (t == TCG_TYPE_I32) {
++        w64_get_i32(s, r1);
++        w64_u8(s, 0xc1);                    /* i32.extend16_s */
++        w64_set_i32(s, r0);
++    } else {
++        w64_get_i64(s, r1);
++        w64_u8(s, 0xc3);                    /* i64.extend16_s */
++        w64_set_i64(s, r0);
++    }
++}
++
++static void tcg_out_ext8u(TCGContext *s, TCGReg r0, TCGReg r1)
++{
++    w64_get_i32(s, r1);
++    w64_const_i32(s, 0xff);
++    w64_u8(s, 0x71);                        /* i32.and */
++    w64_set_i32(s, r0);
++}
++
++static void tcg_out_ext16u(TCGContext *s, TCGReg r0, TCGReg r1)
++{
++    w64_get_i32(s, r1);
++    w64_const_i32(s, 0xffff);
++    w64_u8(s, 0x71);                        /* i32.and */
++    w64_set_i32(s, r0);
++}
++
++static void tcg_out_ext32s(TCGContext *s, TCGReg r0, TCGReg r1)
++{
++    w64_get_i64(s, r1);
++    w64_u8(s, 0xc4);                        /* i64.extend32_s */
++    w64_set_i64(s, r0);
++}
++
++static void tcg_out_ext32u(TCGContext *s, TCGReg r0, TCGReg r1)
++{
++    w64_get_i32(s, r1);
++    w64_u8(s, 0xad);                        /* i64.extend_i32_u */
++    w64_set_i64(s, r0);
++}
++
++static void tcg_out_exts_i32_i64(TCGContext *s, TCGReg r0, TCGReg r1)
++{
++    w64_get_i32(s, r1);
++    w64_u8(s, 0xac);                        /* i64.extend_i32_s */
++    w64_set_i64(s, r0);
++}
++
++static void tcg_out_extu_i32_i64(TCGContext *s, TCGReg r0, TCGReg r1)
++{
++    w64_get_i32(s, r1);
++    w64_u8(s, 0xad);                        /* i64.extend_i32_u */
++    w64_set_i64(s, r0);
++}
++
++static void tcg_out_extrl_i64_i32(TCGContext *s, TCGReg r0, TCGReg r1)
++{
++    w64_get_i32(s, r1);                     /* includes the wrap */
++    w64_set_i32(s, r0);
++}
++
++static void tcg_out_extrh_i64_i32(TCGContext *s, TCGReg r0, TCGReg r1)
++{
++    w64_get_i64(s, r1);
++    w64_const_i64(s, 32);
++    w64_u8(s, 0x88);                        /* i64.shr_u */
++    w64_u8(s, 0xa7);                        /* i32.wrap_i64 */
++    w64_set_i32(s, r0);
++}
++
++static void tcg_out_addi_ptr(TCGContext *s, TCGReg r0, TCGReg r1,
++                             tcg_target_long v)
++{
++    if (v == 0) {
++        tcg_out_mov(s, TCG_TYPE_PTR, r0, r1);
++    } else {
++        w64_get_i64(s, r1);
++        w64_const_i64(s, v);
++        w64_u8(s, 0x7c);                    /* i64.add */
++        w64_set_i64(s, r0);
++    }
++}
++
++static bool tcg_out_xchg(TCGContext *s, TCGType t, TCGReg r1, TCGReg r2)
++{
++    return false;
++}
++
++/* ------------------------------------------------------------------ */
++/* branches, exits                                                     */
++/* ------------------------------------------------------------------ */
++
++/* Set $bp to label's region index and break to the loop head.  The
++ * compare producing the branch condition (for brcond) must already be
++ * on the stack when cond is true. */
++static void w64_br_to_label(TCGContext *s, TCGLabel *l, bool cond)
++{
++    uint16_t idx = W.label_idx[l->id];
++
++    if (cond) {
++        w64_blk_push(s, W64_BLK_IF, -1);
++    }
++    if (idx == 0) {
++        /* forward branch: patch later */
++        w64_u8(s, 0x41);                    /* i32.const */
++        tcg_debug_assert(W.n_fixup < W64_MAX_FIXUPS);
++        W.fixup[W.n_fixup].pos = s->code_ptr - s->code_buf;
++        W.fixup[W.n_fixup].label = l->id;
++        W.n_fixup++;
++        w64_uleb32_p5(s, 0);
++    } else {
++        w64_const_i32(s, idx);
++    }
++    w64_local_set(s, W64_L_BP);
++    w64_br_loop(s);
++    if (cond) {
++        w64_blk_pop(s);
++    }
++}
++
++static void tcg_out_br(TCGContext *s, TCGLabel *l)
++{
++    w64_br_to_label(s, l, false);
++}
++
++static void tcg_out_exit_tb(TCGContext *s, uintptr_t arg)
++{
++    w64_const_i32(s, (int32_t)arg);
++    w64_u8(s, 0x0f);                        /* return */
++}
++
++static void tcg_out_goto_tb(TCGContext *s, int which)
++{
++    /* Chaining through the shared funcref table (phase 2).  The chain
++     * slot is tb->jmp_target_addr[which] — qemu core links it to the
++     * target TB's tc.ptr (tb_add_jump) and resets it to this TB's own
++     * reset address (tb_reset_jump), exactly as with TCI's indirect
++     * jumps; we read the slot at runtime:
++     *
++     *   block
++     *     $scr0 = i64.load &tb->jmp_target_addr[which]
++     *     br_if 0 ($scr0 == reset_addr || w64_chain_stop != 0)
++     *     $scr32 = i32.load [tidx @ $scr0]   // target's shared-table index
++     *     return_call_indirect $tbsig, table 0 ($env, $sp, $tp, $scr32)
++     *   end
++     *
++     * The fall-through runs the exit_tb the frontend emits right after
++     * goto_tb, returning (tb|which) to cpu_exec — which then performs
++     * the very tb_add_jump that links the pair.  w64_chain_stop is the
++     * lockstep-budget brake (see wasm64.c): it forces the chain to
++     * unwind to the dispatcher at the next goto_tb so the leg stops at
++     * the exact insn budget.  A chain target has always been
++     * instantiated (it executed at least once via the dispatcher), so
++     * its table entry is live; invalidation unlinks sources via
++     * tb_jmp_unlink before the TB may be freed, and the wasm loads of
++     * the still-live slot keep native-TCG unlink memory-ordering
++     * semantics. */
++    uintptr_t slot = get_jmp_target_addr(s, which);
++    uintptr_t reset_addr = (uintptr_t)s->code_buf + tcg_current_code_size(s);
++
++    set_jmp_reset_offset(s, which);
++
++    tcg_debug_assert(W.n_blk < W64_MAX_BLK);
++    w64_u8(s, 0x02);                        /* block void */
++    w64_u8(s, 0x40);
++    W.blk[W.n_blk].kind = W64_BLK_IF;
++    W.blk[W.n_blk].label = -1;
++    W.n_blk++;
++
++    w64_const_i64(s, (int64_t)slot);
++    w64_u8(s, 0x29);                        /* i64.load */
++    w64_memarg(s, 3, 0);
++    w64_local_set(s, W64_L_SCR0);
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, (int64_t)reset_addr);
++    w64_u8(s, 0x51);                        /* i64.eq */
++    w64_const_i64(s, (int64_t)(uintptr_t)&w64_chain_stop);
++    w64_u8(s, 0x28);                        /* i32.load (i64 addr: memory64) */
++    w64_memarg(s, 2, 0);
++    w64_u8(s, 0x72);                        /* i32.or */
++    w64_u8(s, 0x0d);                        /* br_if */
++    w64_uleb(s, 0);
++
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, 0x28);                        /* i32.load tidx (i64 addr) */
++    w64_memarg(s, 2, W64_DESC_TIDX);
++    w64_local_set(s, W64_L_SCR32);
++
++    w64_local_get(s, W64_P_ENV);
++    w64_local_get(s, W64_P_SP);
++    w64_local_get(s, W64_P_TP);
++    w64_local_get(s, W64_L_SCR32);
++    w64_u8(s, 0x13);                        /* return_call_indirect */
++    w64_uleb(s, 0);                         /* type 0: the TB signature */
++    w64_uleb(s, 0);                         /* table 0: the shared table */
++
++    w64_blk_pop(s);                         /* end */
++}
++
++static void tcg_out_goto_ptr(TCGContext *s, TCGReg a0)
++{
++    /* store the next TB's code pointer at [sp-8] and return the
++     * handoff code; the C dispatcher continues the chain. */
++    w64_local_get(s, W64_P_SP);
++    w64_const_i64(s, -8);
++    w64_u8(s, 0x7c);                        /* i64.add */
++    w64_get_i64(s, a0);
++    w64_u8(s, 0x37);                        /* i64.store */
++    w64_memarg(s, 3, 0);
++    w64_const_i32(s, (int32_t)W64_EXIT_GOTOPTR);
++    w64_u8(s, 0x0f);                        /* return */
++}
++
++static void tcg_out_mb(TCGContext *s, unsigned a0)
++{
++    /* single-threaded guest, single linear memory: nothing to do */
++}
++
++void tb_target_set_jmp_target(const TranslationBlock *tb, int n,
++                              uintptr_t jmp_rx, uintptr_t jmp_rw)
++{
++    /* Nothing to patch: the chain slot is tb->jmp_target_addr[n]
++     * itself (writable TB memory); tb_set_jmp_target has just updated
++     * it, and the emitted goto_tb code re-reads it at runtime (TCI's
++     * "always indirect" scheme, see tcg_out_goto_tb). */
++}
++
++/* ------------------------------------------------------------------ */
++/* calls                                                               */
++/* ------------------------------------------------------------------ */
++
++/* current code offset, for retaddr values */
++static inline uintptr_t w64_pc(TCGContext *s)
++{
++    return (uintptr_t)s->code_buf + (s->code_ptr - s->code_buf);
++}
++
++/* typemask typecode -> wasm type (0 = i32, 1 = i64); 0xff invalid */
++static uint8_t w64_typecode_to_wasm(int tc)
++{
++    switch (tc) {
++    case dh_typecode_i32:
++    case dh_typecode_s32:
++        return 0;
++    case dh_typecode_i64:
++    case dh_typecode_s64:
++    case dh_typecode_ptr:
++        return 1;
++    default:
++        return 0xff;
++    }
++}
++
++static void tcg_out_call(TCGContext *s, const tcg_insn_unit *target,
++                         const TCGHelperInfo *info)
++{
++    uint32_t mask = info->typemask;
++    uint8_t p[8], ret;
++    unsigned np = info->nr_in, i;
++    uintptr_t ra = w64_pc(s);
++    uint8_t imp;
++
++    tcg_debug_assert(info->out_kind == TCG_CALL_RET_NORMAL);
++    tcg_debug_assert(np <= ARRAY_SIZE(p));
++
++    /* retaddr for GETPC()-using helpers */
++    w64_local_get(s, W64_P_TP);
++    w64_const_i64(s, ra);
++    w64_u8(s, 0x37);
++    w64_memarg(s, 3, 0);
++
++    /* reload arguments from the call frame (slot i at $sp + 8*i) */
++    for (i = 0; i < np; i++) {
++        int tc = (mask >> ((i + 1) * 3)) & 7;
++        p[i] = w64_typecode_to_wasm(tc);
++        tcg_debug_assert(p[i] != 0xff);
++        w64_local_get(s, W64_P_SP);
++        w64_u8(s, p[i] ? 0x29 /* i64.load */ : 0x28 /* i32.load */);
++        w64_memarg(s, p[i] ? 3 : 2, 8 * i);
++    }
++
++    /* ret type: inline switch — a literal decoding, no helper (bring-up
++     * paranoia after observing an -O3 inlining artifact) */
++    switch (mask & 7) {
++    case 0:
++        ret = 0xff;                    /* void */
++        break;
++    case 2:
++    case 3:
++        ret = 0;                       /* i32 */
++        break;
++    case 4:
++    case 5:
++    case 6:
++        ret = 1;                       /* i64 / ptr */
++        break;
++    default:
++        g_assert_not_reached();
++    }
++
++    imp = w64_import_idx((uint32_t)(uintptr_t)target,
++                         w64_add_type(np, p, ret));
++    w64_u8(s, 0x10);                        /* call */
++    w64_uleb(s, imp);
++
++    {   /* translation-time helper-import diagnostics (W64_DEBUG=1) */
++        static int env_checked, debug;
++        if (!env_checked) {
++            env_checked = 1;
++            debug = getenv("W64_DEBUG") != NULL;
++        }
++        if (debug) {
++            fprintf(stderr, "W64CALL %s fptr=%u np=%u ret=%u mask=%08x rtc=%u "
++                    "rtcv=%u tcv0=%u tcv4=%u tcv6=%u\n",
++                    info->name ? info->name : "?",
++                    (unsigned)(uintptr_t)target, np, ret, mask,
++                    (unsigned)(mask & 7),
++                    (unsigned)w64_typecode_to_wasm(mask & 7),
++                    (unsigned)w64_typecode_to_wasm(0),
++                    (unsigned)w64_typecode_to_wasm(4),
++                    (unsigned)w64_typecode_to_wasm(6));
++        }
++    }
++
++    /* result -> oarg register (ret: 0 = i32, 1 = i64, 0xff = void) */
++    if (ret == 1) {
++        w64_local_set(s, W64_L64(TCG_REG_R0));
++        W.rep |= 1u << TCG_REG_R0;
++    } else if (ret == 0) {
++        w64_local_set(s, W64_L32(TCG_REG_R0));
++        W.rep &= ~(1u << TCG_REG_R0);
++    }
++}
++
++/* ------------------------------------------------------------------ */
++/* qemu_ld/st (phase 1: always through the *_mmu helpers)              */
++/* ------------------------------------------------------------------ */
++
++static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
++                         TCGReg addr, MemOpIdx oi)
++{
++    MemOp mop = get_memop(oi);
++    uintptr_t ra = w64_pc(s);
++    uint8_t p[4] = { 1, 1, 0, 1 };
++    uint8_t imp;
++
++    tcg_debug_assert(type == TCG_TYPE_I32 || type == TCG_TYPE_I64);
++    tcg_debug_assert((mop & MO_SIZE) <= MO_64);
++
++    /* helper signature: (env*, uint64_t addr, uint32_t oi, uintptr_t ra)
++     * -> tcg_target_ulong (i64) */
++    w64_local_get(s, W64_P_ENV);
++    w64_get_i64(s, addr);                   /* 32-bit guest addr: zext */
++    w64_const_i32(s, oi);
++    w64_const_i64(s, ra);
++
++    imp = w64_import_idx((uint32_t)(uintptr_t)qemu_ld_helpers[mop & MO_SSIZE],
++                         w64_add_type(4, p, 1));
++    w64_u8(s, 0x10);
++    w64_uleb(s, imp);
++
++    if (type == TCG_TYPE_I32) {
++        w64_u8(s, 0xa7);                    /* i32.wrap_i64 */
++        w64_set_i32(s, data);
++    } else {
++        w64_set_i64(s, data);
++    }
++}
++
++static const TCGOutOpQemuLdSt outop_qemu_ld = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out = tgen_qemu_ld,
++};
++
++static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
++                         TCGReg addr, MemOpIdx oi)
++{
++    MemOp mop = get_memop(oi);
++    uintptr_t ra = w64_pc(s);
++    bool q = (mop & MO_SIZE) == MO_64;
++    uint8_t p[5] = { 1, 1, q, 0, 1 };
++    uint8_t imp;
++
++    /* helper signature: (env*, uint64_t addr, val, uint32_t oi,
++     * uintptr_t ra) -> void; val: i32 for b/w/l, i64 for q */
++    w64_local_get(s, W64_P_ENV);
++    w64_get_i64(s, addr);
++    if (q) {
++        w64_get_i64(s, data);
++    } else {
++        w64_get_i32(s, data);
++    }
++    w64_const_i32(s, oi);
++    w64_const_i64(s, ra);
++
++    imp = w64_import_idx((uint32_t)(uintptr_t)qemu_st_helpers[mop & MO_SIZE],
++                         w64_add_type(5, p, 0xff));
++    w64_u8(s, 0x10);
++    w64_uleb(s, imp);
++}
++
++static const TCGOutOpQemuLdSt outop_qemu_st = {
++    .base.static_constraint = C_O0_I2(r, r),
++    .out = tgen_qemu_st,
++};
++
++static const TCGOutOpQemuLdSt2 outop_qemu_ld2 = {
++    .base.static_constraint = C_NotImplemented,
++};
++
++static const TCGOutOpQemuLdSt2 outop_qemu_st2 = {
++    .base.static_constraint = C_NotImplemented,
++};
++
++/* ------------------------------------------------------------------ */
++/* arithmetic / logic outops                                           */
++/* ------------------------------------------------------------------ */
++
++#define W64_BINOP(NM, OP32, OP64)                                         \
++static void tgen_##NM(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1, TCGReg r2) \
++{                                                                          \
++    w64_binop_rrr(s, t, OP32, OP64, r0, r1, r2);                           \
++}                                                                          \
++static void tgen_##NM##i(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1,  \
++                         tcg_target_long i2)                              \
++{                                                                          \
++    w64_binop_rri(s, t, OP32, OP64, r0, r1, i2);                           \
++}                                                                          \
++static const TCGOutOpBinary outop_##NM = {                                 \
++    .base.static_constraint = C_O1_I2(r, r, rC),                           \
++    .out_rrr = tgen_##NM,                                                  \
++    .out_rri = tgen_##NM##i,                                               \
++};
++
++W64_BINOP(add, 0x6a, 0x7c)
++W64_BINOP(mul, 0x6c, 0x7e)
++W64_BINOP(and, 0x71, 0x83)
++W64_BINOP(or,  0x72, 0x84)
++W64_BINOP(xor, 0x73, 0x85)
++W64_BINOP(shl, 0x74, 0x86)
++W64_BINOP(shr, 0x76, 0x88)
++W64_BINOP(sar, 0x75, 0x87)
++W64_BINOP(rotl, 0x77, 0x89)
++W64_BINOP(rotr, 0x78, 0x8a)
++W64_BINOP(divs, 0x6d, 0x7f)
++W64_BINOP(divu, 0x6e, 0x80)
++W64_BINOP(rems, 0x6f, 0x81)
++W64_BINOP(remu, 0x70, 0x82)
++
++static void tgen_sub(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1, TCGReg r2)
++{
++    w64_binop_rrr(s, t, 0x6b, 0x7d, r0, r1, r2);
++}
++static void tgen_subi(TCGContext *s, TCGType t, TCGReg r0, tcg_target_long i1,
++                      TCGReg r2)
++{
++    /* constant first operand */
++    w64_const(s, t, i1);
++    w64_get(s, r2, t);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x6b : 0x7d);   /* sub */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++static const TCGOutOpSubtract outop_sub = {
++    .base.static_constraint = C_O1_I2(r, rC, r),
++    .out_rrr = tgen_sub,
++    .out_rir = tgen_subi,
++};
++
++/* a & ~b, a | ~b, ~(a^b), ~(a&b), ~(a|b) */
++static void tgen_andc(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1, TCGReg r2)
++{
++    w64_get(s, r1, t);
++    w64_get(s, r2, t);
++    w64_const(s, t, -1);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x73 : 0x85);   /* xor */
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x71 : 0x83);   /* and */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++static void tgen_andci(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1,
++                       tcg_target_long i2)
++{
++    w64_get(s, r1, t);
++    w64_const(s, t, ~i2);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x71 : 0x83);   /* and */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++static const TCGOutOpBinary outop_andc = {
++    .base.static_constraint = C_O1_I2(r, r, rC),
++    .out_rrr = tgen_andc,
++    .out_rri = tgen_andci,
++};
++
++static void tgen_orc(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1, TCGReg r2)
++{
++    w64_get(s, r1, t);
++    w64_get(s, r2, t);
++    w64_const(s, t, -1);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x73 : 0x85);   /* xor */
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x72 : 0x84);   /* or */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++static void tgen_orci(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1,
++                      tcg_target_long i2)
++{
++    w64_get(s, r1, t);
++    w64_const(s, t, ~i2);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x72 : 0x84);   /* or */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++static const TCGOutOpBinary outop_orc = {
++    .base.static_constraint = C_O1_I2(r, r, rC),
++    .out_rrr = tgen_orc,
++    .out_rri = tgen_orci,
++};
++
++#define W64_NOTOP(NM, OP32, OP64, INV32, INV64)                            \
++static void tgen_##NM(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1, TCGReg r2) \
++{                                                                          \
++    w64_get(s, r1, t);                                                     \
++    w64_get(s, r2, t);                                                     \
++    w64_u8(s, t == TCG_TYPE_I32 ? OP32 : OP64);                            \
++    w64_const(s, t, -1);                                                   \
++    w64_u8(s, t == TCG_TYPE_I32 ? INV32 : INV64);                          \
++    if (t == TCG_TYPE_I32) {                                               \
++        w64_set_i32(s, r0);                                                \
++    } else {                                                               \
++        w64_set_i64(s, r0);                                                \
++    }                                                                      \
++}                                                                          \
++static void tgen_##NM##i(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1,  \
++                         tcg_target_long i2)                              \
++{                                                                          \
++    w64_get(s, r1, t);                                                     \
++    w64_const(s, t, i2);                                                   \
++    w64_u8(s, t == TCG_TYPE_I32 ? OP32 : OP64);                            \
++    w64_const(s, t, -1);                                                   \
++    w64_u8(s, t == TCG_TYPE_I32 ? INV32 : INV64);                          \
++    if (t == TCG_TYPE_I32) {                                               \
++        w64_set_i32(s, r0);                                                \
++    } else {                                                               \
++        w64_set_i64(s, r0);                                                \
++    }                                                                      \
++}                                                                          \
++static const TCGOutOpBinary outop_##NM = {                                 \
++    .base.static_constraint = C_O1_I2(r, r, rC),                           \
++    .out_rrr = tgen_##NM,                                                  \
++    .out_rri = tgen_##NM##i,                                               \
++};
++
++W64_NOTOP(eqv,  0x73, 0x85, 0x73, 0x85)   /* ~(a^b)  */
++W64_NOTOP(nand, 0x71, 0x83, 0x73, 0x85)   /* ~(a&b)  */
++W64_NOTOP(nor,  0x72, 0x84, 0x73, 0x85)   /* ~(a|b)  */
++
++static void tgen_neg(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1)
++{
++    w64_const(s, t, 0);
++    w64_get(s, r1, t);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x6b : 0x7d);   /* sub */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++static const TCGOutOpUnary outop_neg = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rr = tgen_neg,
++};
++
++static void tgen_not(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1)
++{
++    w64_get(s, r1, t);
++    w64_const(s, t, -1);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x73 : 0x85);   /* xor */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++static const TCGOutOpUnary outop_not = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rr = tgen_not,
++};
++
++static void tgen_ctpop(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1)
++{
++    w64_get(s, r1, t);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x69 : 0x7b);   /* popcnt */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++static const TCGOutOpUnary outop_ctpop = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rr = tgen_ctpop,
++};
++
++/* clz/ctz: wasm returns width for zero; TCG wants arg2 in that case */
++#define W64_CNTOP(NM, OP32, OP64)                                          \
++static void tgen_##NM(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1, TCGReg r2) \
++{                                                                          \
++    int scr_ = w64_scr(t);                                                \
++    w64_get(s, r1, t);                                                     \
++    w64_u8(s, t == TCG_TYPE_I32 ? OP32 : OP64);                            \
++    w64_local_set(s, scr_);                                                \
++    w64_get(s, r1, t);                                                     \
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x45 : 0x50);   /* eqz */                \
++    w64_u8(s, 0x04);                       /* if (result t) */            \
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x7f : 0x7e);                            \
++    w64_get(s, r2, t);                                                     \
++    w64_u8(s, 0x05);                       /* else */                     \
++    w64_local_get(s, scr_);                                                \
++    w64_u8(s, 0x0b);                       /* end */                      \
++    if (t == TCG_TYPE_I32) {                                               \
++        w64_set_i32(s, r0);                                                \
++    } else {                                                               \
++        w64_set_i64(s, r0);                                                \
++    }                                                                      \
++}                                                                          \
++static void tgen_##NM##i(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1,  \
++                         tcg_target_long i2)                              \
++{                                                                          \
++    int scr_ = w64_scr(t);                                                \
++    w64_get(s, r1, t);                                                     \
++    w64_u8(s, t == TCG_TYPE_I32 ? OP32 : OP64);                            \
++    w64_local_set(s, scr_);                                                \
++    w64_get(s, r1, t);                                                     \
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x45 : 0x50);   /* eqz */                \
++    w64_u8(s, 0x04);                       /* if (result t) */            \
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x7f : 0x7e);                            \
++    w64_const(s, t, i2);                                                   \
++    w64_u8(s, 0x05);                       /* else */                     \
++    w64_local_get(s, scr_);                                                \
++    w64_u8(s, 0x0b);                       /* end */                      \
++    if (t == TCG_TYPE_I32) {                                               \
++        w64_set_i32(s, r0);                                                \
++    } else {                                                               \
++        w64_set_i64(s, r0);                                                \
++    }                                                                      \
++}                                                                          \
++static const TCGOutOpBinary outop_##NM = {                                 \
++    .base.static_constraint = C_O1_I2(r, r, rC),                           \
++    .out_rrr = tgen_##NM,                                                  \
++    .out_rri = tgen_##NM##i,                                               \
++};
++
++W64_CNTOP(clz, 0x67, 0x79)
++W64_CNTOP(ctz, 0x68, 0x7a)
++
++/* ------------------------------------------------------------------ */
++/* setcond / movcond / brcond                                          */
++/* ------------------------------------------------------------------ */
++
++static void tgen_setcond(TCGContext *s, TCGType t, TCGCond c,
++                         TCGReg r0, TCGReg r1, TCGReg r2)
++{
++    w64_get(s, r1, t);
++    w64_get(s, r2, t);
++    w64_cmp_op(s, t, c);
++    w64_set_i32(s, r0);      /* setcond result is always i32 */
++}
++
++static void tgen_setcondi(TCGContext *s, TCGType t, TCGCond c,
++                          TCGReg r0, TCGReg r1, tcg_target_long i2)
++{
++    w64_get(s, r1, t);
++    w64_const(s, t, i2);
++    w64_cmp_op(s, t, c);
++    w64_set_i32(s, r0);
++}
++
++static const TCGOutOpSetcond outop_setcond = {
++    .base.static_constraint = C_O1_I2(r, r, rC),
++    .out_rrr = tgen_setcond,
++    .out_rri = tgen_setcondi,
++};
++
++static const TCGOutOpSetcond outop_negsetcond = {
++    .base.static_constraint = C_NotImplemented,
++};
++
++static void tgen_movcond(TCGContext *s, TCGType t, TCGCond c, TCGReg ret,
++                         TCGReg c1, TCGArg c2, bool const_c2,
++                         TCGArg vt, bool const_vt, TCGArg vf, bool const_vf)
++{
++    w64_get(s, c1, t);
++    if (const_c2) {
++        w64_const(s, t, c2);
++    } else {
++        w64_get(s, c2, t);
++    }
++    w64_cmp_op(s, t, c);
++    w64_u8(s, 0x04);                       /* if (result t) */
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x7f : 0x7e);
++    if (const_vt) {
++        w64_const(s, t, vt);
++    } else {
++        w64_get(s, vt, t);
++    }
++    w64_u8(s, 0x05);                       /* else */
++    if (const_vf) {
++        w64_const(s, t, vf);
++    } else {
++        w64_get(s, vf, t);
++    }
++    w64_u8(s, 0x0b);                       /* end */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, ret);
++    } else {
++        w64_set_i64(s, ret);
++    }
++}
++
++static const TCGOutOpMovcond outop_movcond = {
++    .base.static_constraint = C_O1_I4(r, r, rC, rC, rC),
++    .out = tgen_movcond,
++};
++
++static void tgen_brcond(TCGContext *s, TCGType t, TCGCond c,
++                        TCGReg r1, TCGReg r2, TCGLabel *l)
++{
++    w64_get(s, r1, t);
++    w64_get(s, r2, t);
++    w64_cmp_op(s, t, c);
++    w64_br_to_label(s, l, true);
++}
++
++static void tgen_brcondi(TCGContext *s, TCGType t, TCGCond c,
++                         TCGReg r1, tcg_target_long i2, TCGLabel *l)
++{
++    w64_get(s, r1, t);
++    w64_const(s, t, i2);
++    w64_cmp_op(s, t, c);
++    w64_br_to_label(s, l, true);
++}
++
++static const TCGOutOpBrcond outop_brcond = {
++    .base.static_constraint = C_O0_I2(r, rC),
++    .out_rr = tgen_brcond,
++    .out_ri = tgen_brcondi,
++};
++
++/* ------------------------------------------------------------------ */
++/* mul2 / mul-high                                                     */
++/* ------------------------------------------------------------------ */
++
++static void tgen_mulu2(TCGContext *s, TCGType t, TCGReg a0, TCGReg a1,
++                       TCGReg a2, TCGReg a3)
++{
++    tcg_debug_assert(t == TCG_TYPE_I32);
++    w64_get_i64(s, a2);
++    w64_get_i64(s, a3);
++    w64_u8(s, 0x7e);                        /* i64.mul */
++    w64_local_set(s, W64_L_SCR0);
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, 0xa7);                        /* i32.wrap_i64 */
++    w64_set_i32(s, a0);
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, 32);
++    w64_u8(s, 0x88);                        /* i64.shr_u */
++    w64_u8(s, 0xa7);                        /* i32.wrap_i64 */
++    w64_set_i32(s, a1);
++}
++static const TCGOutOpMul2 outop_mulu2 = {
++    .base.static_constraint = C_O2_I2(r, r, r, r),
++    .out_rrrr = tgen_mulu2,
++};
++
++static void tgen_muls2(TCGContext *s, TCGType t, TCGReg a0, TCGReg a1,
++                       TCGReg a2, TCGReg a3)
++{
++    tcg_debug_assert(t == TCG_TYPE_I32);
++    w64_get_i32(s, a2);
++    w64_u8(s, 0xac);                        /* i64.extend_i32_s */
++    w64_get_i32(s, a3);
++    w64_u8(s, 0xac);                        /* i64.extend_i32_s */
++    w64_u8(s, 0x7e);                        /* i64.mul */
++    w64_local_set(s, W64_L_SCR0);
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, 0xa7);                        /* i32.wrap_i64 */
++    w64_set_i32(s, a0);
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, 32);
++    w64_u8(s, 0x88);                        /* i64.shr_u */
++    w64_u8(s, 0xa7);                        /* i32.wrap_i64 */
++    w64_set_i32(s, a1);
++}
++static const TCGOutOpMul2 outop_muls2 = {
++    .base.static_constraint = C_O2_I2(r, r, r, r),
++    .out_rrrr = tgen_muls2,
++};
++
++static void tgen_muluh(TCGContext *s, TCGType t, TCGReg a0, TCGReg a1, TCGReg a2)
++{
++    tcg_debug_assert(t == TCG_TYPE_I32);
++    w64_get_i64(s, a1);
++    w64_get_i64(s, a2);
++    w64_u8(s, 0x7e);                        /* i64.mul */
++    w64_const_i64(s, 32);
++    w64_u8(s, 0x88);                        /* i64.shr_u */
++    w64_u8(s, 0xa7);                        /* i32.wrap_i64 */
++    w64_set_i32(s, a0);
++}
++static const TCGOutOpBinary outop_muluh = {
++    .base.static_constraint = C_O1_I2(r, r, r),
++    .out_rrr = tgen_muluh,
++};
++
++static void tgen_mulsh(TCGContext *s, TCGType t, TCGReg a0, TCGReg a1, TCGReg a2)
++{
++    tcg_debug_assert(t == TCG_TYPE_I32);
++    w64_get_i32(s, a1);
++    w64_u8(s, 0xac);                        /* i64.extend_i32_s */
++    w64_get_i32(s, a2);
++    w64_u8(s, 0xac);                        /* i64.extend_i32_s */
++    w64_u8(s, 0x7e);                        /* i64.mul */
++    w64_const_i64(s, 32);
++    w64_u8(s, 0x87);                        /* i64.shr_s */
++    w64_u8(s, 0xa7);                        /* i32.wrap_i64 */
++    w64_set_i32(s, a0);
++}
++static const TCGOutOpBinary outop_mulsh = {
++    .base.static_constraint = C_O1_I2(r, r, r),
++    .out_rrr = tgen_mulsh,
++};
++
++static const TCGOutOpBinary outop_muluh_i64 = {
++    .base.static_constraint = C_NotImplemented,
++};
++
++/* ------------------------------------------------------------------ */
++/* deposit / extract                                                   */
++/* ------------------------------------------------------------------ */
++
++static void w64_deposit_field(TCGContext *s, TCGType t,
++                              TCGReg arg2, tcg_target_long c2, bool is_c,
++                              unsigned ofs, unsigned len)
++{
++    uint64_t mask = (len >= 64 ? ~(uint64_t)0 : (UINT64_C(1) << len) - 1)
++                   << ofs;
++    tcg_target_long smask = (tcg_target_long)mask;
++
++    if (is_c) {
++        w64_const(s, t, (c2 << ofs) & smask);
++        return;
++    }
++    w64_get(s, arg2, t);
++    w64_const(s, t, ofs);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x74 : 0x86);           /* shl */
++    if (ofs + len < (unsigned)(t == TCG_TYPE_I32 ? 32 : 64)) {
++        w64_const(s, t, smask);
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x71 : 0x83);       /* and */
++    }
++    /* ofs+len == width: the shift already placed the field, no mask */
++}
++
++static void tgen_deposit(TCGContext *s, TCGType t, TCGReg a0, TCGReg a1,
++                         TCGReg a2, unsigned ofs, unsigned len)
++{
++    uint64_t mask = (len >= 64 ? ~(uint64_t)0 : (UINT64_C(1) << len) - 1)
++                   << ofs;
++
++    w64_deposit_field(s, t, a2, 0, false, ofs, len);
++    w64_local_set(s, w64_scr(t));
++    w64_get(s, a1, t);
++    w64_const(s, t, ~(tcg_target_long)mask);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x71 : 0x83);           /* and */
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x72 : 0x84);           /* or */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, a0);
++    } else {
++        w64_set_i64(s, a0);
++    }
++}
++static const TCGOutOpDeposit outop_deposit = {
++    .base.static_constraint = C_O1_I2(r, r, r),
++    .out_rrr = tgen_deposit,
++};
++
++static void tgen_depositi(TCGContext *s, TCGType t, TCGReg a0, TCGReg a1,
++                          tcg_target_long a2, unsigned ofs, unsigned len)
++{
++    uint64_t mask = (len >= 64 ? ~(uint64_t)0 : (UINT64_C(1) << len) - 1)
++                   << ofs;
++
++    w64_deposit_field(s, t, 0, a2, true, ofs, len);
++    w64_local_set(s, w64_scr(t));
++    w64_get(s, a1, t);
++    w64_const(s, t, ~(tcg_target_long)mask);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x71 : 0x83);           /* and */
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x72 : 0x84);           /* or */
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, a0);
++    } else {
++        w64_set_i64(s, a0);
++    }
++}
++static const TCGOutOpDeposit outop_depositi = {
++    .base.static_constraint = C_O1_I2(r, r, rC),
++    .out_rri = tgen_depositi,
++};
++
++static void tgen_deposit_zr(TCGContext *s, TCGType t, TCGReg a0,
++                            TCGReg a2, unsigned ofs, unsigned len)
++{
++    w64_deposit_field(s, t, a2, 0, false, ofs, len);
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, a0);
++    } else {
++        w64_set_i64(s, a0);
++    }
++}
++static const TCGOutOpDeposit outop_deposit_zr = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rzr = tgen_deposit_zr,
++};
++
++static void tgen_extract(TCGContext *s, TCGType t, TCGReg a0, TCGReg a1,
++                         unsigned ofs, unsigned len)
++{
++    unsigned width = t == TCG_TYPE_I32 ? 32 : 64;
++
++    if (ofs == 0 && len == width) {
++        tcg_out_mov(s, t, a0, a1);
++        return;
++    }
++    w64_get(s, a1, t);
++    if (ofs) {
++        w64_const(s, t, ofs);
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x76 : 0x88);       /* shr_u */
++    }
++    if (ofs + len < width) {
++        uint64_t mask = (UINT64_C(1) << len) - 1;
++        w64_const(s, t, mask);
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x71 : 0x83);       /* and */
++    }
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, a0);
++    } else {
++        w64_set_i64(s, a0);
++    }
++}
++static const TCGOutOpExtract outop_extract = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rr = tgen_extract,
++};
++
++static void tgen_sextract(TCGContext *s, TCGType t, TCGReg a0, TCGReg a1,
++                          unsigned ofs, unsigned len)
++{
++    unsigned width = t == TCG_TYPE_I32 ? 32 : 64;
++
++    if (ofs + len == width) {
++        /* arithmetic shift alone sign-extends the field */
++        w64_get(s, a1, t);
++        w64_const(s, t, ofs);
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x75 : 0x87);       /* shr_s */
++    } else {
++        int scr_ = w64_scr(t);
++        tgen_extract(s, t, a0, a1, ofs, len);
++        w64_local_set(s, scr_);
++        w64_local_get(s, scr_);
++        w64_const(s, t, width - len);
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x74 : 0x86);       /* shl */
++        w64_const(s, t, width - len);
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x75 : 0x87);       /* shr_s */
++    }
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, a0);
++    } else {
++        w64_set_i64(s, a0);
++    }
++}
++static const TCGOutOpExtract outop_sextract = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rr = tgen_sextract,
++};
++
++static const TCGOutOpExtract2 outop_extract2 = {
++    .base.static_constraint = C_NotImplemented,
++};
++
++/* ------------------------------------------------------------------ */
++/* byte swaps                                                          */
++/* ------------------------------------------------------------------ */
++
++/* i32/i64 bswap16: swap the low 16 bits; flags govern the upper bits
++ * (TCG_BSWAP_IZ is an input promise, not an output property). */
++static void tgen_bswap16(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1,
++                         unsigned flags)
++{
++    unsigned top = t == TCG_TYPE_I32 ? 32 : 64;
++    uint64_t lowmask = t == TCG_TYPE_I32 ? 0xffff : 0xffff;
++
++    /* swapped low half */
++    w64_get(s, r1, t);
++    w64_const(s, t, 8);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x76 : 0x88);           /* shr_u */
++    w64_const(s, t, 0xff);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x71 : 0x83);           /* and */
++    w64_get(s, r1, t);
++    w64_const(s, t, 0xff);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x71 : 0x83);           /* and */
++    w64_const(s, t, 8);
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x74 : 0x86);           /* shl */
++    w64_u8(s, t == TCG_TYPE_I32 ? 0x72 : 0x84);           /* or */
++    { int scr_ = w64_scr(t);
++    w64_local_set(s, scr_);
++
++    if (flags & TCG_BSWAP_OZ) {
++        w64_local_get(s, scr_);
++    } else if (flags & TCG_BSWAP_OS) {
++        w64_local_get(s, scr_);
++        w64_const(s, t, top - 16);
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x74 : 0x86);       /* shl */
++        w64_const(s, t, top - 16);
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x75 : 0x87);       /* shr_s */
++    } else {
++        /* preserve input upper bits (default) */
++        w64_local_get(s, scr_);
++        w64_get(s, r1, t);
++        w64_const(s, t, (tcg_target_long)~lowmask);
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x71 : 0x83);       /* and */
++        w64_u8(s, t == TCG_TYPE_I32 ? 0x72 : 0x84);       /* or */
++    }
++    }
++    if (t == TCG_TYPE_I32) {
++        w64_set_i32(s, r0);
++    } else {
++        w64_set_i64(s, r0);
++    }
++}
++static const TCGOutOpBswap outop_bswap16 = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rr = tgen_bswap16,
++};
++
++static void tgen_bswap32(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1,
++                         unsigned flags)
++{
++    unsigned top = t == TCG_TYPE_I32 ? 32 : 64;
++
++    if (t == TCG_TYPE_I32) {
++        /* t = rotr(x, 16); ret = (t & 0xff00ff00) >> 8 | (t & 0x00ff00ff) << 8 */
++        w64_get_i32(s, r1);
++        w64_const_i32(s, 16);
++        w64_u8(s, 0x78);                    /* i32.rotr */
++        w64_local_set(s, W64_L_SCR32);
++        w64_local_get(s, W64_L_SCR32);
++        w64_const_i32(s, (int32_t)0xff00ff00u);
++        w64_u8(s, 0x71);                    /* and */
++        w64_const_i32(s, 8);
++        w64_u8(s, 0x76);                    /* shr_u */
++        w64_local_get(s, W64_L_SCR32);
++        w64_const_i32(s, 0x00ff00ff);
++        w64_u8(s, 0x71);                    /* and */
++        w64_const_i32(s, 8);
++        w64_u8(s, 0x74);                    /* shl */
++        w64_u8(s, 0x72);                    /* or */
++        w64_set_i32(s, r0);
++        return;
++    }
++
++    /* i64: swap low 32 bits, upper 32 governed by flags */
++    w64_get_i64(s, r1);
++    w64_const_i64(s, 32);
++    w64_u8(s, 0x78);                        /* i64.rotr */
++    w64_local_set(s, W64_L_SCR0);
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, 0x00000000ffffffffull);
++    w64_u8(s, 0x83);                        /* and */
++    w64_local_set(s, W64_L_SCR0);
++    /* re-swap the low 32 (rotr moved the halves) */
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, 16);
++    w64_u8(s, 0x78);                        /* i64.rotr */
++    w64_local_set(s, W64_L_SCR0);
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, (int64_t)0xff00ff00u);
++    w64_u8(s, 0x83);                        /* and */
++    w64_const_i64(s, 8);
++    w64_u8(s, 0x88);                        /* shr_u */
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, 0x00ff00ff);
++    w64_u8(s, 0x83);                        /* and */
++    w64_const_i64(s, 8);
++    w64_u8(s, 0x86);                        /* shl */
++    w64_u8(s, 0x84);                        /* or */
++    w64_local_set(s, W64_L_SCR0);
++
++    if (flags & TCG_BSWAP_OZ) {
++        w64_local_get(s, W64_L_SCR0);
++    } else if (flags & TCG_BSWAP_OS) {
++        w64_local_get(s, W64_L_SCR0);
++        w64_const_i64(s, top - 32);
++        w64_u8(s, 0x86);                    /* shl */
++        w64_const_i64(s, top - 32);
++        w64_u8(s, 0x87);                    /* shr_s */
++    } else {
++        w64_local_get(s, W64_L_SCR0);
++        w64_get_i64(s, r1);
++        w64_const_i64(s, ~(int64_t)0xffffffffu);
++        w64_u8(s, 0x83);                    /* and */
++        w64_u8(s, 0x84);                    /* or */
++    }
++    w64_set_i64(s, r0);
++}
++static const TCGOutOpBswap outop_bswap32 = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rr = tgen_bswap32,
++};
++
++static void tgen_bswap64(TCGContext *s, TCGType t, TCGReg r0, TCGReg r1)
++{
++    /* stage 1: bytes */
++    w64_get_i64(s, r1);
++    w64_const_i64(s, 0x00ff00ff00ff00ffull);
++    w64_u8(s, 0x83);                        /* and */
++    w64_const_i64(s, 8);
++    w64_u8(s, 0x86);                        /* shl */
++    w64_get_i64(s, r1);
++    w64_const_i64(s, 8);
++    w64_u8(s, 0x88);                        /* shr_u */
++    w64_const_i64(s, 0x00ff00ff00ff00ffull);
++    w64_u8(s, 0x83);                        /* and */
++    w64_u8(s, 0x84);                        /* or */
++    w64_local_set(s, W64_L_SCR0);
++
++    /* stage 2: 16-bit halves */
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, 0x0000ffff0000ffffull);
++    w64_u8(s, 0x83);                        /* and */
++    w64_const_i64(s, 16);
++    w64_u8(s, 0x86);                        /* shl */
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, 16);
++    w64_u8(s, 0x88);                        /* shr_u */
++    w64_const_i64(s, 0x0000ffff0000ffffull);
++    w64_u8(s, 0x83);                        /* and */
++    w64_u8(s, 0x84);                        /* or */
++    w64_local_set(s, W64_L_SCR0);
++
++    /* stage 3: 32-bit halves */
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, 32);
++    w64_u8(s, 0x86);                        /* shl */
++    w64_local_get(s, W64_L_SCR0);
++    w64_const_i64(s, 32);
++    w64_u8(s, 0x88);                        /* shr_u */
++    w64_u8(s, 0x84);                        /* or */
++    w64_set_i64(s, r0);
++}
++static const TCGOutOpUnary outop_bswap64 = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rr = tgen_bswap64,
++};
++
++/* ------------------------------------------------------------------ */
++/* remaining outop tables                                              */
++/* ------------------------------------------------------------------ */
++
++static const TCGOutOpLoad outop_ld8u = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out = tcg_out_ld8u,
++};
++static const TCGOutOpLoad outop_ld8s = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out = tcg_out_ld8s,
++};
++static const TCGOutOpLoad outop_ld16u = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out = tcg_out_ld16u,
++};
++static const TCGOutOpLoad outop_ld16s = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out = tcg_out_ld16s,
++};
++static const TCGOutOpLoad outop_ld32u = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out = tcg_out_ld32u,
++};
++static const TCGOutOpLoad outop_ld32s = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out = tcg_out_ld32s,
++};
++static const TCGOutOpStore outop_st8 = {
++    .base.static_constraint = C_O0_I2(r, r),
++    .out_r = tcg_out_st8,
++};
++static const TCGOutOpStore outop_st16 = {
++    .base.static_constraint = C_O0_I2(r, r),
++    .out_r = tcg_out_st16,
++};
++static void tgen_sti(TCGContext *s, TCGType t, tcg_target_long v,
++                     TCGReg b, intptr_t o)
++{
++    tcg_out_sti(s, t, v, b, o);
++}
++
++static const TCGOutOpStore outop_st = {
++    .base.static_constraint = C_O0_I2(r, r),
++    .out_r = tcg_out_st,
++    .out_i = tgen_sti,
++};
++
++static void tgen_extrh_i64_i32(TCGContext *s, TCGType t, TCGReg a0, TCGReg a1)
++{
++    tcg_out_extrh_i64_i32(s, a0, a1);
++}
++static const TCGOutOpUnary outop_extrh_i64_i32 = {
++    .base.static_constraint = C_O1_I1(r, r),
++    .out_rr = tgen_extrh_i64_i32,
++};
++
++static const TCGOutOpBinary outop_addco = {
++    .base.static_constraint = C_NotImplemented,
++};
++static const TCGOutOpBinary outop_addcio = {
++    .base.static_constraint = C_NotImplemented,
++};
++static const TCGOutOpAddSubCarry outop_addci = {
++    .base.static_constraint = C_NotImplemented,
++};
++static const TCGOutOpAddSubCarry outop_subbi = {
++    .base.static_constraint = C_NotImplemented,
++};
++static const TCGOutOpAddSubCarry outop_subbio = {
++    .base.static_constraint = C_NotImplemented,
++};
++static const TCGOutOpAddSubCarry outop_subbo = {
++    .base.static_constraint = C_NotImplemented,
++};
++static const TCGOutOpDivRem outop_divs2 = {
++    .base.static_constraint = C_NotImplemented,
++};
++static const TCGOutOpDivRem outop_divu2 = {
++    .base.static_constraint = C_NotImplemented,
++};
++
++/* ------------------------------------------------------------------ */
++/* module assembly                                                     */
++/* ------------------------------------------------------------------ */
++
++static void tcg_out_tb_start(TCGContext *s)
++{
++    static const uint8_t magic[8] = { 0, 'a', 's', 'm', 1, 0, 0, 0 };
++    uint8_t acc_type, acc_imp;
++
++    memset(&W, 0, sizeof(W));
++
++    /* descriptor */
++    stl_p(s->code_buf + W64_DESC_FIDX, 0);
++    stl_p(s->code_buf + W64_DESC_MODLEN, 0);
++    stl_p(s->code_buf + W64_DESC_ICOUNT, s->gen_tb->icount);
++    stl_p(s->code_buf + W64_DESC_NIMP, 0);
++    stl_p(s->code_buf + W64_DESC_TIDX, w64_alloc_tidx());
++
++    /* module prelude reservation */
++    memcpy(s->code_buf + W64_MOD_OFF, magic, sizeof(magic));
++
++    /* type 0: the TB entry signature (i64, i64, i64) -> i32 — also the
++     * call_indirect signature used by goto_tb chaining */
++    {
++        uint8_t p[3] = { 1, 1, 1 };
++        w64_add_type(3, p, 0);
++    }
++
++    /* import 0: w64_tb_account(icount) — called at every TB entry
++     * (dispatcher call or chain target), mirroring TCI's tci_tbhdr:
++     * icount2 + diagnostics + the lockstep fold stay per-TB-entry
++     * exact while TBs are chained.  Registered first so its function
++     * index is deterministic (the prologue call below is the body's
++     * first instruction). */
++    {
++        uint8_t p[1] = { 0 };              /* (i32) -> void */
++        acc_type = w64_add_type(1, p, 0xff);
++    }
++    acc_imp = w64_import_idx((uint32_t)(uintptr_t)w64_tb_account, acc_type);
++
++    /* body: [body-size LEB (patched)] [locals] [expr...] */
++    s->code_ptr = s->code_buf + W64_BODY_OFF;
++    w64_uleb32_p5(s, 0);
++    w64_u8(s, 0x04);                        /* 4 local runs */
++    w64_uleb(s, TCG_TARGET_NB_REGS + 1);    /* i32: regs + $bp */
++    w64_u8(s, 0x7f);
++    w64_uleb(s, TCG_TARGET_NB_REGS);        /* i64: regs */
++    w64_u8(s, 0x7e);
++    w64_u8(s, 0x01); w64_u8(s, 0x7f);       /* i32: $scr32 */
++    w64_u8(s, 0x02); w64_u8(s, 0x7e);       /* i64: $scr0, $scr1 */
++
++    /* prologue: w64_tb_account(tb->icount) */
++    w64_const_i32(s, s->gen_tb->icount);
++    w64_u8(s, 0x10);                        /* call */
++    w64_uleb(s, acc_imp);
++
++    w64_emit_loop_head(s);
++}
++
++/* small growable buffer for the prelude sections */
++struct w64_buf {
++    uint8_t b[W64_PRELUDE + 16];
++    unsigned n;
++};
++
++static void wb_u8(struct w64_buf *w, uint8_t v)
++{
++    w->b[w->n++] = v;
++}
++
++static void wb_bytes(struct w64_buf *w, const void *p, unsigned n)
++{
++    memcpy(w->b + w->n, p, n);
++    w->n += n;
++}
++
++static void wb_uleb(struct w64_buf *w, uint64_t v)
++{
++    do {
++        uint8_t b = v & 0x7f;
++        v >>= 7;
++        wb_u8(w, v ? b | 0x80 : b);
++    } while (v);
++}
++
++static void tcg_out_tb_finalize(TCGContext *s)
++{
++    struct w64_buf w;
++    size_t body_total, body_size;
++    unsigned i;
++
++    /* close the open label region, the dispatch loop, and the function:
++     * the loop is void — falling off its end never happens (every region
++     * ends in a branch or return), but the validator wants the function's
++     * i32 result on the stack after it. */
++    tcg_debug_assert(W.n_blk == 2);
++    w64_blk_pop(s);                        /* end: last region's if */
++    w64_blk_pop(s);                        /* end: the loop */
++    w64_const_i32(s, 0);
++    w64_u8(s, 0x0b);                       /* end: function expr */
++
++    body_total = s->code_ptr - (s->code_buf + W64_BODY_OFF);
++    body_size = body_total - 5;
++
++    /* every forward branch must have been resolved by now */
++    tcg_debug_assert(W.n_fixup == 0);
++
++    /* patch the body-size LEB */
++    {
++        tcg_insn_unit *p = s->code_buf + W64_BODY_OFF;
++        uint32_t v = body_size;
++        int b;
++        for (b = 0; b < 4; b++) {
++            p[b] = (v & 0x7f) | 0x80;
++            v >>= 7;
++        }
++        p[4] = v & 0x7f;
++    }
++
++    /* sections */
++    w.n = 0;
++    wb_bytes(&w, s->code_buf + W64_MOD_OFF, 8);         /* magic */
++
++    /* type section */
++    {
++        unsigned start;
++        wb_u8(&w, 0x01);                       /* section id */
++        start = ++w.n;                         /* size slot */
++        wb_uleb(&w, W.n_types);
++        for (i = 0; i < W.n_types; i++) {
++            unsigned j;
++            wb_u8(&w, 0x60);
++            wb_uleb(&w, W.type[i].np);
++            for (j = 0; j < W.type[i].np; j++) {
++                wb_u8(&w, W.type[i].p[j] ? 0x7e : 0x7f);
++            }
++            if (W.type[i].ret == 0xff) {
++                wb_uleb(&w, 0);
++            } else {
++                wb_uleb(&w, 1);
++                wb_u8(&w, W.type[i].ret ? 0x7e : 0x7f);
++            }
++        }
++        w.b[start - 1] = w.n - start;
++        tcg_debug_assert(w.n - start < 128);
++    }
++
++    /* import section: memory + shared chain table + helpers */
++    {
++        unsigned start;
++        wb_u8(&w, 0x02);                       /* section id */
++        start = ++w.n;                         /* size slot */
++        wb_uleb(&w, W.n_imp + 2);
++        wb_u8(&w, 1); wb_u8(&w, 'e');       /* module "e" */
++        wb_u8(&w, 1); wb_u8(&w, 'm');       /* field  "m" */
++        wb_u8(&w, 0x02);                    /* memory */
++        wb_u8(&w, 0x07);                    /* 64-bit | shared | max */
++        wb_uleb(&w, W64_MEM_PAGES);
++        wb_uleb(&w, W64_MEM_PAGES);
++        /* the shared chain table (goto_tb targets); min must not exceed
++         * the actual table size at instantiation time */
++        wb_u8(&w, 1); wb_u8(&w, 'e');       /* module "e" */
++        wb_u8(&w, 1); wb_u8(&w, 't');       /* field  "t" */
++        wb_u8(&w, 0x01);                    /* table (import kind) */
++        wb_u8(&w, 0x70);                    /* funcref */
++        wb_u8(&w, 0x00);                    /* limits: min only */
++        wb_uleb(&w, 1);
++        for (i = 0; i < W.n_imp; i++) {
++            char name[8];
++            int len = snprintf(name, sizeof(name), "f%u", i);
++            wb_u8(&w, 1); wb_u8(&w, 'e');
++            wb_u8(&w, len);
++            wb_bytes(&w, name, len);
++            wb_u8(&w, 0x00);                /* function */
++            wb_uleb(&w, W.imp[i].type);
++        }
++        w.b[start - 1] = w.n - start;
++        tcg_debug_assert(w.n - start < 128);
++    }
++
++    /* function section: one defined function, type 0 */
++    wb_u8(&w, 0x03); wb_u8(&w, 0x02); wb_u8(&w, 0x01); wb_u8(&w, 0x00);
++
++    /* export section: "tb" -> function index n_imp */
++    {
++        unsigned start;
++        wb_u8(&w, 0x07);                       /* section id */
++        start = ++w.n;                         /* size slot */
++        wb_uleb(&w, 1);
++        wb_u8(&w, 2); wb_u8(&w, 't'); wb_u8(&w, 'b');
++        wb_u8(&w, 0x00);
++        wb_uleb(&w, W.n_imp);
++        w.b[start - 1] = w.n - start;
++        tcg_debug_assert(w.n - start < 128);
++    }
++
++    /* custom-section filler + code section header, ending at BODY_OFF */
++    {
++        unsigned payload = 1 + body_total;  /* count + body */
++        unsigned trailer = 1 + 5 + 1;       /* id + size LEB + count */
++        unsigned target = W64_PRELUDE - trailer;
++        unsigned room = target - w.n;
++
++        tcg_debug_assert(w.n <= target);
++        if (room > 0) {
++            /* one custom section: id 0, size LEB, content = name + payload.
++             * The size counts the content only (name length + payload).
++             * NOTE: bytes are computed into locals BEFORE writing — an
++             * emscripten -O3 inlining artifact was observed mangling the
++             * reassigned `content` when the else-branch lands exactly on
++             * content==127 (the emitted LEB said 255), so keep the value
++             * flow trivially simple for the optimizer. */
++            unsigned content, nleb;
++            uint8_t b0, b1 = 0;
++            if (room - 2 <= 127) {
++                content = room - 2;
++                b0 = (uint8_t)content;
++                nleb = 1;
++            } else {
++                content = room - 3;
++                tcg_debug_assert(content >= 127 && content < 16384);
++                b0 = (uint8_t)((content & 0x7f) | 0x80);
++                b1 = (uint8_t)(content >> 7);
++                nleb = 2;
++            }
++            wb_u8(&w, 0x00);               /* section id */
++            wb_u8(&w, b0);
++            if (nleb == 2) {
++                wb_u8(&w, b1);
++            }
++            wb_u8(&w, 0);                  /* name length 0 */
++            room -= 2 + nleb;
++            while (room--) {
++                wb_u8(&w, 0);
++            }
++        }
++        tcg_debug_assert(w.n == target);
++
++        wb_u8(&w, 0x0a);                    /* code section */
++        w.n += 5;                           /* patched below */
++        wb_u8(&w, 0x01);                    /* one body */
++
++        memcpy(s->code_buf + W64_MOD_OFF, w.b, W64_PRELUDE);
++
++        /* code section size (5-byte padded LEB) */
++        {
++            uint8_t *p = s->code_buf + W64_MOD_OFF + target + 1;
++            uint32_t v = payload;
++            int b;
++            for (b = 0; b < 4; b++) {
++                p[b] = (v & 0x7f) | 0x80;
++                v >>= 7;
++            }
++            p[4] = v & 0x7f;
++        }
++    }
++
++    /* import table follows the module */
++    for (i = 0; i < W.n_imp; i++) {
++        stl_p(s->code_ptr, W.imp[i].fptr);
++        s->code_ptr += 4;
++    }
++
++    /* descriptor */
++    stl_p(s->code_buf + W64_DESC_MODLEN, W64_PRELUDE + body_total);
++    stl_p(s->code_buf + W64_DESC_NIMP, W.n_imp);
++}
++
++/* ------------------------------------------------------------------ */
++/* target boilerplate                                                  */
++/* ------------------------------------------------------------------ */
++
++static const int tcg_target_reg_alloc_order[TCG_TARGET_NB_REGS] = {
++    TCG_REG_R2, TCG_REG_R3, TCG_REG_R4, TCG_REG_R5,
++    TCG_REG_R6, TCG_REG_R7, TCG_REG_R8, TCG_REG_R9,
++    TCG_REG_R10, TCG_REG_R11, TCG_REG_R12, TCG_REG_R13,
++    TCG_REG_R14, TCG_REG_R15, TCG_REG_R16, TCG_REG_R17,
++    TCG_REG_R18, TCG_REG_R19, TCG_REG_R20, TCG_REG_R21,
++    TCG_REG_R22, TCG_REG_R23, TCG_REG_R24, TCG_REG_R25,
++    TCG_REG_R26, TCG_REG_R27, TCG_REG_R30,
++    /* call-clobbered (helper results land here) — use last */
++    TCG_REG_R0, TCG_REG_R1,
++};
++
++static const int tcg_target_call_iarg_regs[] = { };
++
++static TCGReg tcg_target_call_oarg_reg(TCGCallReturnKind kind, int slot)
++{
++    tcg_debug_assert(kind == TCG_CALL_RET_NORMAL);
++    tcg_debug_assert(slot >= 0 && slot < 128 / TCG_TARGET_REG_BITS);
++    return TCG_REG_R0 + slot;
++}
++
++#ifdef CONFIG_DEBUG_TCG
++static const char *const tcg_target_reg_names[TCG_TARGET_NB_REGS] = {
++    "r00", "r01", "r02", "r03", "r04", "r05", "r06", "r07",
++    "r08", "r09", "r10", "r11", "r12", "r13", "r14", "r15",
++    "r16", "r17", "r18", "r19", "r20", "r21", "r22", "r23",
++    "r24", "r25", "r26", "r27", "tmp", "env", "r30", "sp",
++};
++#endif
++
++static bool tcg_target_const_match(int64_t val, int ct, TCGType type,
++                                   TCGCond cond, int vece)
++{
++    return ct & TCG_CT_CONST;
++}
++
++static bool patch_reloc(tcg_insn_unit *code_ptr, int type,
++                        intptr_t value, intptr_t addend)
++{
++    /* the backend never creates relocations */
++    g_assert_not_reached();
++}
++
++static void tcg_out_nop_fill(tcg_insn_unit *p, int count)
++{
++    memset(p, 0x01, count);
++}
++
++static TCGConstraintSetIndex tcg_target_op_def(TCGOpcode op, TCGType type,
++                                               unsigned flags)
++{
++    return C_NotImplemented;
++}
++
++bool tcg_target_has_memory_bswap(MemOp memop)
++{
++    return false;
++}
++
++static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l)
++{
++    g_assert_not_reached();
++}
++
++static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l)
++{
++    g_assert_not_reached();
++}
++
++static void tcg_out_set_carry(TCGContext *s)
++{
++    g_assert_not_reached();
++}
++
++static void tcg_out_set_borrow(TCGContext *s)
++{
++    g_assert_not_reached();
++}
++
++static void tcg_target_init(TCGContext *s)
++{
++    tcg_target_available_regs[TCG_TYPE_I32] = MAKE_64BIT_MASK(0, 28);
++    tcg_target_available_regs[TCG_TYPE_I64] = MAKE_64BIT_MASK(0, 28);
++
++    /* wasm calls preserve locals; only the result registers change */
++    tcg_target_call_clobber_regs = MAKE_64BIT_MASK(TCG_REG_R0, 2);
++
++    s->reserved_regs = 0;
++    tcg_regset_set_reg(s->reserved_regs, TCG_REG_TMP);
++    tcg_regset_set_reg(s->reserved_regs, TCG_AREG0);
++    tcg_regset_set_reg(s->reserved_regs, TCG_REG_CALL_STACK);
++
++    /* call arguments come first, temp storage after */
++    tcg_set_frame(s, TCG_REG_CALL_STACK, TCG_STATIC_CALL_ARGS_SIZE,
++                  TCG_STATIC_FRAME_SIZE);
++}
++
++/* No emitted prologue: tcg_qemu_tb_exec is a C function (wasm64.c). */
++static inline void tcg_target_qemu_prologue(TCGContext *s)
++{
++}
+diff --git a/tcg/wasm64/tcg-target.h b/tcg/wasm64/tcg-target.h
+new file mode 100644
+index 0000000000..db372b0abc
+--- /dev/null
++++ b/tcg/wasm64/tcg-target.h
+@@ -0,0 +1,184 @@
++/*
++ * Tiny Code Generator for QEMU — wasm64 target.
++ *
++ * The "machine code" is WebAssembly: each TB becomes one standalone
++ * module with a single exported function
++ *
++ *   (func $tb (param $env i64) (param $sp i64) (param $tp i64)
++ *             (result i32) ...)
++ *
++ * compiled through the browser WebAssembly API at first execution (see
++ * tcg/wasm64/wasm64.c).  TCG registers are wasm locals: every TCG reg
++ * has both an i32-typed and an i64-typed local; which one holds the
++ * value is tracked per-reg at translation time ("rep").  Values in the
++ * i32 local are the plain 32-bit pattern; converting to i64 is always
++ * zero-extension, converting back is a wrap — the same invariants TCI
++ * maintains in its 64-bit register file.
++ *
++ * $env is the CPUArchState pointer (TCG_AREG0), $sp the per-vCPU call
++ * frame (helpers receive their arguments through it, TCI-style — the
++ * backend declares no argument registers), $tp the address of the
++ * thread-local w64_tb_ptr, which generated code updates before every
++ * helper call so that GETPC()-using helpers unwind correctly.
++ *
++ * Intra-TB branches use a label-region scheme compatible with wasm's
++ * structured control flow: the whole body is wrapped in one `loop`; a
++ * branch to TCG label L writes L's region index into the $bp local and
++ * breaks to the loop head, where a chain of `if (bp <= k)` guards —
++ * one per label, opened at set_label time — admits control flow at the
++ * right region.  Fall-through between regions is free, not-taken
++ * conditional branches cost nothing, and taken branches walk the
++ * region chain (a phase-2 br_table will remove even that).
++ *
++ * Phase 1 scope (doc/wasm-tcg-backend-plan.md §5): single-TB modules,
++ * no chaining — every goto_tb exits to the C dispatcher, goto_ptr
++ * hands the next TB back to the dispatcher through a frame slot.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#ifndef TCG_TARGET_H
++#define TCG_TARGET_H
++
++#define TCG_TARGET_INSN_UNIT_SIZE 1
++#define MAX_CODE_GEN_BUFFER_SIZE  ((size_t)-1)
++#define MIN_TLB_MASK_TABLE_OFS    INT_MIN
++
++/* Number of abstract registers (= wasm locals). */
++#define TCG_TARGET_NB_REGS 32
++
++typedef enum {
++    TCG_REG_R0 = 0,
++    TCG_REG_R1,
++    TCG_REG_R2,
++    TCG_REG_R3,
++    TCG_REG_R4,
++    TCG_REG_R5,
++    TCG_REG_R6,
++    TCG_REG_R7,
++    TCG_REG_R8,
++    TCG_REG_R9,
++    TCG_REG_R10,
++    TCG_REG_R11,
++    TCG_REG_R12,
++    TCG_REG_R13,
++    TCG_REG_R14,
++    TCG_REG_R15,
++    TCG_REG_R16,
++    TCG_REG_R17,
++    TCG_REG_R18,
++    TCG_REG_R19,
++    TCG_REG_R20,
++    TCG_REG_R21,
++    TCG_REG_R22,
++    TCG_REG_R23,
++    TCG_REG_R24,
++    TCG_REG_R25,
++    TCG_REG_R26,
++    TCG_REG_R27,
++    TCG_REG_R28,
++    TCG_REG_R29,
++    TCG_REG_R30,
++    TCG_REG_R31,
++} TCGReg;
++
++#define TCG_REG_TMP        TCG_REG_R28   /* generic scratch (reserved) */
++#define TCG_AREG0          TCG_REG_R29   /* env — wasm local $env       */
++#define TCG_REG_CALL_STACK TCG_REG_R31   /* frame — wasm local $sp      */
++
++/* Function call generation: no argument registers; all arguments are
++ * stored into the call frame at $sp (TCG_STATIC_CALL_ARGS_SIZE layout),
++ * exactly like TCI.  The call emission reloads them as wasm parameters
++ * of the imported helper. */
++#define TCG_TARGET_CALL_STACK_OFFSET    0
++#define TCG_TARGET_STACK_ALIGN          8
++#define TCG_TARGET_CALL_ARG_I32         TCG_CALL_ARG_NORMAL
++#define TCG_TARGET_CALL_ARG_I64         TCG_CALL_ARG_NORMAL
++#define TCG_TARGET_CALL_ARG_I128        TCG_CALL_ARG_NORMAL
++#define TCG_TARGET_CALL_RET_I128        TCG_CALL_RET_NORMAL
++
++#define HAVE_TCG_QEMU_TB_EXEC
++
++/* Optional instructions.  Conservative phase-1 set: ops without a
++ * direct wasm lowering are left to the middle-end expansions. */
++
++#define TCG_TARGET_HAS_addco_i32        0
++#define TCG_TARGET_HAS_addc1o_i32       0
++#define TCG_TARGET_HAS_addci_i32        0
++#define TCG_TARGET_HAS_addcio_i32       0
++#define TCG_TARGET_HAS_subbo_i32        0
++#define TCG_TARGET_HAS_subb1o_i32       0
++#define TCG_TARGET_HAS_subbi_i32        0
++#define TCG_TARGET_HAS_subbio_i32       0
++
++#define TCG_TARGET_HAS_bswap16_i32      1
++#define TCG_TARGET_HAS_bswap32_i32      1
++#define TCG_TARGET_HAS_div_i32          1
++#define TCG_TARGET_HAS_rem_i32          1
++#define TCG_TARGET_HAS_ext8s_i32        1
++#define TCG_TARGET_HAS_ext16s_i32       1
++#define TCG_TARGET_HAS_ext8u_i32        1
++#define TCG_TARGET_HAS_ext16u_i32       1
++#define TCG_TARGET_HAS_andc_i32         1
++#define TCG_TARGET_HAS_deposit_i32      1
++#define TCG_TARGET_HAS_extract_i32      1
++#define TCG_TARGET_HAS_sextract_i32     1
++#define TCG_TARGET_HAS_extract2_i32     0
++#define TCG_TARGET_HAS_eqv_i32          1
++#define TCG_TARGET_HAS_nand_i32         1
++#define TCG_TARGET_HAS_nor_i32          1
++#define TCG_TARGET_HAS_clz_i32          1
++#define TCG_TARGET_HAS_ctz_i32          1
++#define TCG_TARGET_HAS_ctpop_i32        1
++#define TCG_TARGET_HAS_neg_i32          1
++#define TCG_TARGET_HAS_not_i32          1
++#define TCG_TARGET_HAS_orc_i32          1
++#define TCG_TARGET_HAS_rot_i32          1
++#define TCG_TARGET_HAS_movcond_i32      1
++#define TCG_TARGET_HAS_negsetcond_i32   0
++#define TCG_TARGET_HAS_muls2_i32        1
++#define TCG_TARGET_HAS_mulu2_i32        1
++#define TCG_TARGET_HAS_mulsh_i32        1
++#define TCG_TARGET_HAS_muluh_i32        1
++#define TCG_TARGET_HAS_qemu_st8_i32     0
++
++#define TCG_TARGET_HAS_extr_i64_i32     0
++#define TCG_TARGET_HAS_extrl_i64_i32    1
++#define TCG_TARGET_HAS_extrh_i64_i32    1
++
++#define TCG_TARGET_HAS_bswap16_i64      1
++#define TCG_TARGET_HAS_bswap32_i64      1
++#define TCG_TARGET_HAS_bswap64_i64      1
++#define TCG_TARGET_HAS_deposit_i64      1
++#define TCG_TARGET_HAS_extract_i64      1
++#define TCG_TARGET_HAS_sextract_i64     1
++#define TCG_TARGET_HAS_extract2_i64     0
++#define TCG_TARGET_HAS_div_i64          1
++#define TCG_TARGET_HAS_rem_i64          1
++#define TCG_TARGET_HAS_ext8s_i64        1
++#define TCG_TARGET_HAS_ext16s_i64       1
++#define TCG_TARGET_HAS_ext32s_i64       1
++#define TCG_TARGET_HAS_ext8u_i64        1
++#define TCG_TARGET_HAS_ext16u_i64       1
++#define TCG_TARGET_HAS_ext32u_i64       1
++#define TCG_TARGET_HAS_andc_i64         1
++#define TCG_TARGET_HAS_eqv_i64          1
++#define TCG_TARGET_HAS_nand_i64         1
++#define TCG_TARGET_HAS_nor_i64          1
++#define TCG_TARGET_HAS_clz_i64          1
++#define TCG_TARGET_HAS_ctz_i64          1
++#define TCG_TARGET_HAS_ctpop_i64        1
++#define TCG_TARGET_HAS_neg_i64          1
++#define TCG_TARGET_HAS_not_i64          1
++#define TCG_TARGET_HAS_orc_i64          1
++#define TCG_TARGET_HAS_rot_i64          1
++#define TCG_TARGET_HAS_movcond_i64      1
++#define TCG_TARGET_HAS_negsetcond_i64   0
++#define TCG_TARGET_HAS_muls2_i64        0
++#define TCG_TARGET_HAS_mulu2_i64        0
++#define TCG_TARGET_HAS_mulsh_i64        0
++#define TCG_TARGET_HAS_muluh_i64        0
++
++#define TCG_TARGET_HAS_qemu_ldst_i128 0
++
++#endif /* TCG_TARGET_H */
+diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
+new file mode 100644
+index 0000000000..49669fedd4
+--- /dev/null
++++ b/tcg/wasm64/wasm64.c
+@@ -0,0 +1,551 @@
++/*
++ * TCG wasm64 backend — runtime dispatch (tcg_qemu_tb_exec).
++ *
++ * Owns the per-vCPU call frame and the lazy compilation of TB modules
++ * through the browser WebAssembly API.  Each TB's module bytes and its
++ * helper-import table live in the code generation buffer right behind
++ * the descriptor at tb->tc.ptr (see wasm64.h); compilation happens at
++ * first execution and the resulting emscripten table index is cached
++ * in the descriptor.
++ *
++ * Phase 1 (doc/wasm-tcg-backend-plan.md §5): no chaining — every TB
++ * returns to this loop (exit codes, or the goto_ptr handoff slot).
++ * TB accounting (wasm_tb_account / icount2_advance) mirrors the TCI
++ * build's INDEX_op_tci_tbhdr so the two engines stay observable in
++ * the same units.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "qemu/osdep.h"
++#include "tcg/tcg.h"
++#include "system/cpu-timers.h"
++#include "exec/cpu-common.h"
++#include "exec/gdbstub.h"
++#include "hw/core/cpu.h"
++#include <emscripten.h>
++#include "wasm64.h"
++
++__thread uintptr_t w64_tb_ptr;
++
++/*
++ * Compile + instantiate the TB module at tb_ptr and insert its entry
++ * function into the emscripten table.  Returns the table index.
++ *
++ * The JS side reads the descriptor, copies the module bytes (a full
++ * copy, not a view — Firefox compatibility,
++ * https://bugzilla.mozilla.org/show_bug.cgi?id=1965217), resolves the
++ * helper imports through wasmTable.get() on the main module's table
++ * (C function pointers == table indices), and registers the instance
++ * entry with addFunction().
++ */
++EM_JS(int, w64_instantiate, (uintptr_t tb_ptr), {
++    const p = Number(tb_ptr);
++    const dv = new DataView(HEAPU8.buffer);
++    const mod_len = dv.getUint32(p + 4, true);
++    const n_imp = dv.getUint32(p + 12, true);
++
++    const mod_bytes = new Uint8Array(HEAPU8.slice(p + 20, p + 20 + mod_len));
++    const tidx = dv.getUint32(p + 16, true);
++    /* the shared chain table: every TB module imports it as "e"/"t";
++    * entries are registered here, at instantiation (a TB can only be
++    * linked after it has executed once, so the entry always precedes
++    * any goto_tb that references the index).  Grown in chunks; index 0
++    * is never assigned. */
++    if (!globalThis.__w64tab) {
++      globalThis.__w64tab = new WebAssembly.Table({ element: 'anyfunc', initial: 1 << 14 });
++    }
++    const TAB = globalThis.__w64tab;
++    if (tidx >= TAB.length) {
++      TAB.grow(Math.max(4096, tidx + 1 - TAB.length));
++    }
++    const imports = { e: { m: wasmMemory, t: TAB } };
++    const tbl = p + 20 + mod_len;
++    for (let i = 0; i < n_imp; i++) {
++      /* memory64: the emscripten table is i64-indexed */
++      imports.e['f' + i] = wasmTable.get(BigInt(dv.getUint32(tbl + i * 4, true)));
++    }
++
++    let mod;
++    try {
++        mod = new WebAssembly.Module(mod_bytes);
++    } catch (e) {
++        /* dump for offline analysis (W64DUMP<i>:<base64> lines) */
++        let bin = '';
++        const CH = 0x8000;
++        for (let i = 0; i < mod_bytes.length; i += CH) {
++            bin += String.fromCharCode.apply(null, mod_bytes.subarray(i, i + CH));
++        }
++        const b64 = btoa(bin);
++        for (let i = 0; i < b64.length; i += 3000) {
++            console.log('W64DUMPC' + (i / 3000) + ':' + b64.substr(i, 3000));
++        }
++        console.log('W64DUMPE:nimp=' + n_imp + ' len=' + mod_len);
++        throw e;
++    }
++    let inst;
++    try {
++        inst = new WebAssembly.Instance(mod, imports);
++    } catch (e) {
++        if (String(e).includes('does not match')) {
++            const idxs = [];
++            for (let i = 0; i < n_imp; i++) {
++                idxs.push(dv.getUint32(tbl + i * 4, true));
++            }
++            console.log('W64DBG link fail: ' + e + ' imps=' + n_imp +
++                        ' idx=[' + idxs.join(',') + ']');
++            /* decode our own type + import sections to show declared sigs */
++            try {
++                let q = 8;
++                const rd = () => mod_bytes[q++];
++                const ul = () => { let v = 0, s = 0, b; do { b = rd(); v |= (b & 0x7f) << s; s += 7; } while (b & 0x80); return v >>> 0; };
++                let types = null, imptype = [];
++                while (q < mod_bytes.length) {
++                    const id = rd(); const sz = ul(); const end = q + sz;
++                    if (id === 1) {
++                        const nt = ul(); types = [];
++                        for (let t = 0; t < nt; t++) {
++                            if (rd() !== 0x60) throw new Error('bad type');
++                            const np = ul(); const ps = [];
++                            for (let x = 0; x < np; x++) ps.push(rd());
++                            const nr = ul(); let r = null;
++                            if (nr) r = rd();
++                            types.push([ps, r]);
++                        }
++                    } else if (id === 2) {
++                        const ni = ul();
++                        for (let x = 0; x < ni; x++) {
++                            const ml = ul(); q += ml;
++                            const fl = ul(); q += fl;
++                            const kind = rd();
++                            if (kind === 0) imptype.push(ul());
++                            else if (kind === 2) { const flags = rd(); ul(); if (flags & 1) ul(); }
++                            else throw new Error('bad import kind ' + kind);
++                        }
++                    }
++                    q = end;
++                }
++                const hex0 = (x) => 'x' + x.toString(16);
++            const ts = (t) => '(' + t[0].map(x => x === 0x7e ? 'j' : x === 0x7f ? 'i' : hex0(x)).join(',') +
++                            ')->' + (t[1] === null ? 'void' : t[1] === 0x7e ? 'j' : t[1] === 0x7f ? 'i' : hex0(t[1]));
++                console.log('W64DEC types=' + types.map(ts).join(' ') +
++                            ' imports=[' + imptype.join(',') + ']');
++            } catch (e2) {
++                console.log('W64DEC parse failed: ' + e2);
++            }
++            /* probe the actual wasm type of each helper funcref */
++            const leb = (v) => {
++                const out = [];
++                do { let b = v & 0x7f; v >>>= 7; if (v) b |= 0x80; out.push(b); } while (v);
++                return out;
++            };
++            const sig = (params, ret) => {
++                const ft = [0x60].concat(leb(params.length), params,
++                                        ret ? [1, ret] : [0]);
++                const type = leb(1).concat(ft);   /* one type */
++                const entry = [1, 't'.charCodeAt(0), 1, 'f'.charCodeAt(0), 0]
++                    .concat(leb(0));
++                const content = leb(1).concat(entry);   /* count + entry */
++                const impsec = [2].concat(leb(content.length), content);
++                const bytes = [0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]
++                    .concat([1], leb(type.length), type, impsec);
++                return bytes;
++            };
++            for (let k = 0; k < n_imp; k++) {
++                const fr = wasmTable.get(BigInt(idxs[k]));
++                const cands = [];
++                const J = 0x7e, I = 0x7f;
++                const F = 0x7d, D = 0x7c;
++                for (const ps of [[J,J,I,J], [J,J,I,I,J], [J,J,J,I,J],
++                                  [J,I,I,J], [J,J,I], [J,I], [J], [J,J],
++                                  [J,J,J,J], [I,I,I,I], [J,J,J], [I], [],
++                                  [J,F], [J,D], [J,J,D], [J,I,J], [J,J,F],
++                                  [J,I,I], [J,J,I,I], [I,I], [J,I,I,J,J]]) {
++                    for (const r of [J, I, D, F, null]) {
++                        try {
++                            new WebAssembly.Instance(
++                                new WebAssembly.Module(new Uint8Array(sig(ps, r))),
++                                { t: { f: fr } });
++                            cands.push('(' + ps.map(x => x === J ? 'j' : 'i').join(',') +
++                                       ')->' + (r === J ? 'j' : r === I ? 'i' : 'void'));
++                        } catch (_) { /* keep trying */ }
++                    }
++                }
++                console.log('W64SIG f' + k + ' idx=' + idxs[k] + ': ' +
++                            (cands.join(' | ') || 'none of the candidates'));
++                if (cands.length) {
++                    /* also dump the names the sig-printer can't: none */
++                }
++            }
++        }
++        throw e;
++    }
++    /* register the entry for chaining before addFunction: a concurrent
++     * (single-threaded here) tb_add_jump can only follow this TB's first
++     * execution, which returns through the dispatcher below */
++    TAB.set(tidx, inst.exports.tb);
++    return addFunction(inst.exports.tb, 'jjji');
++});
++
++/* per-vCPU state: frame + slot layout
++ *   frame + 0 .. 8    goto_ptr handoff slot ([sp-8])
++ *   frame + 16 ...    call frame ($sp = frame + 16) */
++static bool w64_inited;
++static uint8_t *w64_frame;
++
++typedef uint32_t w64_tb_fn(uintptr_t env, uintptr_t sp, uintptr_t tp);
++
++static void w64_init(void)
++{
++    if (!w64_inited) {
++        size_t sz = 16 + TCG_STATIC_CALL_ARGS_SIZE + TCG_STATIC_FRAME_SIZE;
++        w64_frame = g_malloc0(sz);
++        w64_inited = true;
++    }
++}
++
++/* ------------------------------------------------------------------ */
++/* lockstep fold (phase-1 gate, doc/wasm-tcg-backend-plan.md §5)
++ *
++ * The wasm build cannot dlopen plugins, so the phase-0b fold
++ * (tests/lockstep.c) is compiled in and driven by env vars instead of
++ * plugin args.  With -accel tcg,one-insn-per-tb (how the gate boots both
++ * legs) TB boundaries are insn boundaries, so counting in the dispatcher
++ * before each TB executes produces exactly the plugin's executed-insn
++ * grid — and samples see the same architectural state the plugin's
++ * pre-insn callbacks see (globals synced back into env at TB end).
++ * Log format is byte-identical to tests/lockstep.c so tools/lockstep.mjs
++ * comparisons work unmodified. */
++
++#define LS_FNV0     0xcbf29ce484222325ull
++#define LS_MAX_MEM  8
++#define LS_MAX_REGS 17
++
++struct w64_ls_state {
++    int on, inited;
++    int stop;                   /* budget crossed: run this insn, then halt */
++    uint64_t period, epoch, meminsns, limit;
++    uint64_t from, to;          /* dense T-line window */
++    uint64_t count;             /* executed insns, residual-kept */
++    uint64_t samples;
++    uint64_t regs, regs_all;
++    struct { uint64_t addr, len; } mem[LS_MAX_MEM];
++    int n_mem;
++    FILE *f;
++};
++static struct w64_ls_state LS;
++
++static uint64_t w64_ls_fnv(uint64_t h, const void *p, size_t n)
++{
++    const uint8_t *b = p;
++    while (n--) {
++        h ^= *b++;
++        h *= 0x100000001b3ull;
++    }
++    return h;
++}
++
++static void w64_ls_parse_mem(const char *spec)
++{
++    char *dup = g_strdup(spec), *p = dup;
++    while (p && *p && LS.n_mem < LS_MAX_MEM) {
++        char *colon = strchr(p, ':');
++        char *plus;
++        if (colon) {
++            *colon = 0;
++        }
++        plus = strchr(p, '+');
++        if (!plus) {
++            break;
++        }
++        *plus = 0;
++        LS.mem[LS.n_mem].addr = strtoull(p, NULL, 16);
++        LS.mem[LS.n_mem].len = strtoull(plus + 1, NULL, 16);
++        if (LS.mem[LS.n_mem].len) {
++            LS.n_mem++;
++        }
++        p = colon ? colon + 1 : NULL;
++    }
++    g_free(dup);
++}
++
++/* gdb core-feature indices for the plugin's register list
++ * (r0..r12, sp, lr, pc, cpsr) */
++static const int w64_ls_regidx[LS_MAX_REGS] = {
++    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 25,
++};
++
++static uint64_t w64_ls_mem_digest(int r)
++{
++    CPUState *cpu = current_cpu;
++    static uint8_t *buf;
++    static size_t bufcap;
++    uint64_t h = w64_ls_fnv(LS_FNV0, &LS.mem[r].addr,
++                            sizeof LS.mem[r].addr);
++    uint64_t remaining = LS.mem[r].len;
++    uint64_t addr = LS.mem[r].addr;
++    bool ok = true;
++    if (bufcap == 0) {
++        bufcap = 1 << 20;
++        buf = g_malloc(bufcap);
++    }
++    /* Read in 1 MB chunks: FNV-1a is streaming, so chunk boundaries do not
++     * change the digest, and the read never exceeds the buffer. */
++    while (remaining > 0) {
++        size_t chunk = (remaining < bufcap) ? (size_t)remaining : bufcap;
++        if (cpu_memory_rw_debug(cpu, addr, buf, chunk, 0) != 0) {
++            ok = false;
++            break;
++        }
++        h = w64_ls_fnv(h, buf, chunk);
++        addr += chunk;
++        remaining -= chunk;
++    }
++    if (!ok) {
++        h = w64_ls_fnv(h, "UNMAPPED", 8);
++    }
++    return h;
++}
++
++static void w64_ls_sample(void)
++{
++    CPUState *cpu = current_cpu;
++    uint64_t vals[LS_MAX_REGS];
++    uint64_t idx = ++LS.samples;
++    uint64_t insn_total = idx * LS.period;
++    int i;
++
++    for (i = 0; i < LS_MAX_REGS; i++) {
++        /* gdb_get_reg32 appends — truncate between reads (see
++         * tests/lockstep.c read_regs) */
++        GByteArray *buf = g_byte_array_sized_new(8);
++        uint64_t v = 0;
++        if (!gdb_read_register(cpu, buf, w64_ls_regidx[i])) {
++            v = 0xdeadbeefdeadbeefull;
++        } else {
++            memcpy(&v, buf->data, buf->len < 8 ? buf->len : 8);
++        }
++        g_byte_array_free(buf, TRUE);
++        vals[i] = v;
++    }
++
++    {
++        uint64_t h = w64_ls_fnv(LS.regs, &idx, sizeof idx);
++        LS.regs = w64_ls_fnv(h, vals, sizeof vals);
++    }
++
++    if (LS.to > LS.from && idx >= LS.from && idx < LS.to) {
++        fprintf(LS.f, "T %u %llu %016llx", cpu ? cpu->cpu_index : 0,
++                (unsigned long long)insn_total,
++                (unsigned long long)LS.regs);
++        for (i = 0; i < LS_MAX_REGS; i++) {
++            fprintf(LS.f, " %016llx", (unsigned long long)vals[i]);
++        }
++        fputc('\n', LS.f);
++    }
++
++    if (LS.epoch && insn_total % LS.epoch == 0) {
++        /* Point-in-time hash of the register vector (matches tests/lockstep.c
++         * E-line): robust to cross-backend transient hash fragility. */
++        uint64_t ehash = w64_ls_fnv(LS_FNV0, &idx, sizeof idx);
++        ehash = w64_ls_fnv(ehash, vals, sizeof vals);
++        LS.regs_all = w64_ls_fnv(LS.regs_all, &ehash, sizeof ehash);
++        fprintf(LS.f, "E %u %llu %llu %016llx\n",
++                cpu ? cpu->cpu_index : 0,
++                (unsigned long long)(insn_total / LS.epoch),
++                (unsigned long long)insn_total,
++                (unsigned long long)ehash);
++        fflush(LS.f);
++        LS.regs = LS_FNV0;
++    }
++    if (LS.meminsns && insn_total % LS.meminsns == 0) {
++        fprintf(LS.f, "M %u %llu", cpu ? cpu->cpu_index : 0,
++                (unsigned long long)insn_total);
++        for (i = 0; i < LS.n_mem; i++) {
++            fprintf(LS.f, " %016llx",
++                    (unsigned long long)w64_ls_mem_digest(i));
++        }
++        fputc('\n', LS.f);
++        fflush(LS.f);
++    }
++
++    if (LS.limit && insn_total >= LS.limit) {
++        /* mirror the plugin's stop_at=: the in-flight insn still runs,
++         * then the main loop exits cleanly (no emscripten exit() from
++         * deep vCPU context — that trips the asyncify teardown). */
++        fprintf(LS.f, "X %u %llu %llu %016llx\n",
++                cpu ? cpu->cpu_index : 0,
++                (unsigned long long)(LS.samples * LS.period),
++                (unsigned long long)LS.samples,
++                (unsigned long long)LS.regs_all);
++        fflush(LS.f);
++        LS.stop = 1;
++    }
++}
++
++static void w64_ls_init(void)
++{
++    const char *e;
++
++    LS.inited = 1;
++    if (!getenv("W64_LOCKSTEP")) {
++        return;
++    }
++    LS.on = 1;
++    LS.period = 1ull << 16;
++    LS.epoch = 1ull << 20;
++    LS.meminsns = 1ull << 23;
++    if ((e = getenv("W64_LOCKSTEP_PERIOD"))) {
++        LS.period = strtoull(e, NULL, 0);
++    }
++    if ((e = getenv("W64_LOCKSTEP_EPOCH"))) {
++        LS.epoch = strtoull(e, NULL, 0);
++    }
++    if ((e = getenv("W64_LOCKSTEP_MEMINSNS"))) {
++        LS.meminsns = strtoull(e, NULL, 0);
++    }
++    if ((e = getenv("W64_LOCKSTEP_INSNS"))) {
++        LS.limit = strtoull(e, NULL, 0);
++    }
++    if ((e = getenv("W64_LOCKSTEP_FROM"))) {
++        LS.from = strtoull(e, NULL, 0);
++    }
++    if ((e = getenv("W64_LOCKSTEP_TO"))) {
++        LS.to = strtoull(e, NULL, 0);
++    }
++    if (LS.to > LS.from) {
++        LS.period = 1;         /* dense mode: sample every insn */
++    }
++    if ((e = getenv("W64_LOCKSTEP_MEM"))) {
++        w64_ls_parse_mem(e);
++    }
++    if (!LS.n_mem) {
++        LS.mem[0].addr = 0x800000;    /* pmb887x internal SRAM, 96k */
++        LS.mem[0].len = 0x18000;
++        LS.mem[1].addr = 0xa8000000;  /* SDRAM via EBU CS1, 16M */
++        LS.mem[1].len = 0x1000000;
++        LS.n_mem = 2;
++    }
++    LS.regs = LS_FNV0;
++    LS.regs_all = LS_FNV0;
++    LS.f = fopen("/lockstep.log", "w");
++    if (!LS.f) {
++        fprintf(stderr, "w64 lockstep: cannot open /lockstep.log\n");
++        LS.on = 0;
++        return;
++    }
++    fprintf(LS.f, "C period=%llu epoch=%llu meminsns=%llu from=%llu to=%llu mem=",
++            (unsigned long long)LS.period, (unsigned long long)LS.epoch,
++            (unsigned long long)LS.meminsns,
++            (unsigned long long)LS.from, (unsigned long long)LS.to);
++    for (int i = 0; i < LS.n_mem; i++) {
++        fprintf(LS.f, "%s%llx+%llx", i ? ":" : "",
++                (unsigned long long)LS.mem[i].addr,
++                (unsigned long long)LS.mem[i].len);
++    }
++    fputc('\n', LS.f);
++    fflush(LS.f);
++}
++
++/* called from the dispatcher before each TB executes */
++static void w64_lockstep_account(unsigned insns)
++{
++    if (!LS.inited) {
++        w64_ls_init();
++    }
++    if (!LS.on) {
++        return;
++    }
++    LS.count += insns;
++    while (LS.count >= LS.period) {
++        LS.count -= LS.period;
++        w64_ls_sample();
++        if (LS.stop) {
++            break;
++        }
++    }
++    if (LS.stop) {
++        /* budget crossed: suppress further chaining so the chain tail
++         * unwinds to the dispatcher (which performs the clean exit)
++         * instead of running guest insns past the budget — under
++         * one-insn-per-tb this stops the leg exactly like the native
++         * plugin's stop_at */
++        w64_chain_stop = 1;
++    }
++}
++
++/* Shared-chain-table index allocator: one index per translated TB,
++ * never recycled (phase-4 robustness).  Index 0 stays unused so a
++ * zero/garbage read can never select a live entry. */
++static uint32_t w64_next_tidx = 1;
++
++uint32_t w64_alloc_tidx(void)
++{
++    return w64_next_tidx++;
++}
++
++/* TB-prologue accounting import (see tcg_out_tb_start): runs at EVERY
++ * TB entry — dispatcher call or goto_tb chain target — mirroring TCI's
++ * INDEX_op_tci_tbhdr so icount2, the diagnostics clock and the lockstep
++ * fold stay per-TB-entry exact while TBs are chained. */
++void w64_tb_account(unsigned insns)
++{
++    extern void wasm_tb_account(unsigned insns);
++    extern void icount2_advance(uint32_t cycles);
++
++    wasm_tb_account(insns);
++    icount2_advance(insns);
++    w64_lockstep_account(insns);
++}
++
++/* Set when the lockstep budget is crossed: emitted goto_tb code re-reads
++ * this at runtime and refuses to chain, unwinding to the dispatcher. */
++uint32_t w64_chain_stop;
++
++uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
++                                            const void *v_tb_ptr)
++{
++    uintptr_t tb = (uintptr_t)v_tb_ptr;
++
++    w64_init();
++
++    for (;;) {
++        uint32_t *desc = (uint32_t *)tb;
++        uint32_t fidx, res;
++
++        /* per-TB accounting (wasm_tb_account / icount2_advance /
++         * lockstep fold) now runs in the TB prologue (imported
++         * w64_tb_account) so chained entries are counted identically */
++
++        fidx = desc[W64_DESC_FIDX / 4];
++        if (fidx == 0) {
++            fidx = w64_instantiate(tb);
++            tcg_debug_assert(fidx != 0);
++            desc[W64_DESC_FIDX / 4] = fidx;
++        }
++
++        res = ((w64_tb_fn *)(uintptr_t)fidx)((uintptr_t)env,
++                                             (uintptr_t)(w64_frame + 16),
++                                             (uintptr_t)&w64_tb_ptr);
++
++        if (LS.stop) {
++            /* budget crossed: this insn ran; halt before the next TB.
++             * qemu_system_shutdown_request trips an uninitialized
++             * main-loop mutex on the wasm build and exit() from the
++             * main loop never happens — emscripten exit() from the vCPU
++             * is the stop path (flushes stdio, fires onExit). */
++            fflush(LS.f);
++            exit(0);
++        }
++
++        if (res & W64_EXIT_GOTOPTR) {
++            uintptr_t next = *(uintptr_t *)w64_frame;
++            if (next == 0) {
++                return 0;
++            }
++            tb = next;
++            continue;
++        }
++        return res;
++    }
++}
+diff --git a/tcg/wasm64/wasm64.h b/tcg/wasm64/wasm64.h
+new file mode 100644
+index 0000000000..1bcefab188
+--- /dev/null
++++ b/tcg/wasm64/wasm64.h
+@@ -0,0 +1,67 @@
++/*
++ * TCG wasm64 backend — shared definitions (tcg-target.c.inc + wasm64.c).
++ *
++ * One wasm module per TB, compiled lazily at first execution through the
++ * browser WebAssembly API (the only in-browser compiler).  The module
++ * bytes live in the code generation buffer, prefixed by a small
++ * descriptor:
++ *
++ *   tb_ptr +  0  u32  fidx    addFunction() index of the compiled module
++ *                              entry ("tb" export), 0 = not yet compiled
++ *   tb_ptr +  4  u32  mod_len module byte count starting at tb_ptr+W64_MOD_OFF
++ *   tb_ptr +  8  u32  icount  guest insns (w64_tb_account / icount2)
++ *   tb_ptr + 12  u32  n_imp   import table entries following the module
++ *   tb_ptr + 16  u32  tidx    index of this TB in the shared chain table
++ *                              (assigned at translation; the entry is set
++ *                              when the module is instantiated)
++ *   tb_ptr + 20       module: [prelude (fixed W64_PRELUDE bytes)][body]
++ *
++ * goto_tb chaining (phase 2): the chain slot is tb->jmp_target_addr[n]
++ * itself — qemu core keeps it linked (target tb->tc.ptr) or reset
++ * (tb->tc.ptr + jmp_reset_offset[n]), TCI-style; the emitted code reads
++ * it at runtime and tail-calls the target through the shared funcref
++ * table ("e"/"t") when linked, else falls through to the exit_tb that
++ * follows.  TBs entered via a chain still run their prologue's imported
++ * w64_tb_account(icount) call, so accounting and the lockstep fold stay
++ * per-TB-entry exact.
++ *
++ * The prelude holds the wasm sections (type/import/function/export plus
++ * a custom-section filler) and ends in the code-section header + body
++ * size, all at fixed offsets so that gen_insn_end_off[] values (raw code
++ * offsets) line up with the emitted stream.  The body starts at the
++ * fixed offset W64_BODY_OFF so that qemu_ld/st retaddr values are final
++ * at emission time.
++ *
++ * The import table after the module holds one u32 per import: the
++ * emscripten function-table index (= C function pointer) of the helper.
++ * Module/field names for all imports are "e"/"m" (memory) and "e"/"fN".
++ *
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef TCG_WASM64_H
++#define TCG_WASM64_H
++
++#define W64_DESC_FIDX     0
++#define W64_DESC_MODLEN   4
++#define W64_DESC_ICOUNT   8
++#define W64_DESC_NIMP    12
++#define W64_DESC_TIDX    16
++
++#define W64_MOD_OFF      20
++#define W64_PRELUDE     256
++#define W64_BODY_OFF    (W64_MOD_OFF + W64_PRELUDE)
++
++/* Exit-code flag: goto_ptr handoff.  The next TB's code pointer was
++ * stored at [sp-8]; bit 31 is clear in every exit_tb value because the
++ * wasm64 heap is 2GB. */
++#define W64_EXIT_GOTOPTR 0x80000000u
++
++/* main linear memory: shared, memory64, 2GB (32768 pages), fixed */
++#define W64_MEM_PAGES   32768
++
++/* runtime (wasm64.c), used by the emitters */
++uint32_t w64_alloc_tidx(void);   /* next shared-chain-table index (>=1) */
++void w64_tb_account(unsigned insns); /* per-TB-entry accounting import */
++extern uint32_t w64_chain_stop;  /* lockstep budget reached: stop chaining */
++
++#endif /* TCG_WASM64_H */

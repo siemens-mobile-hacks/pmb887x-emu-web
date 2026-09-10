@@ -65,6 +65,11 @@
  *              in the window gets a T-line (~150 bytes each)
  *   corrupt    positive control: flip one bit of r0 at the first sample
  *              at/after this insn (the harness must flag + localize it)
+ *   stop_at    with stop_at=<insn>, exit the emulator after the first
+ *              sample at/after that insn has run (X-line at the sample,
+ *              exactly that many insns executed) — used to stop a side
+ *              at an exact insn budget (the plugin can't reach qemu's
+ *              shutdown request: static builds hide the symbol)
  *   probe      dump register list + first samples to stderr
  *
  * Log format (hashes are FNV-1a 64, host-endian fold — comparable only
@@ -72,7 +77,7 @@
  *   C <args echoed>                                  config (line 1)
  *   E <vcpu> <epoch> <insn_total> <regs_hash>
  *   M <vcpu> <insn_total> <memdig> [<memdig>...]
- *   T <vcpu> <insn> <r0> ... <r12> <sp> <lr> <pc> <cpsr>   (dense window)
+ *   T <vcpu> <insn> <regs_hash> <r0> ... <r12> <sp> <lr> <pc> <cpsr> (dense)
  *   X <vcpu> <insn_total> <samples> <regs_all>             (at exit)
  *
  * Epoch hashes reset per epoch (localization granularity = 1 epoch);
@@ -112,6 +117,17 @@ static struct memrange memr[MAX_MEM];
 static int n_memr;
 static uint64_t tr_from = 0, tr_to = 0; /* dense window, empty by default */
 static uint64_t corrupt_at = 0;        /* positive-control hook (tests) */
+static uint64_t stop_at = 0;           /* exit after first sample at/after */
+static int x_written = 0;
+
+/* armed (set nonzero) at the budget sample; the per-insn inline check
+ * is cheap, and the C call fires once — right after the sampled insn
+ * has run, so exactly that many insns executed */
+static void on_stopcheck(unsigned int vcpu, void *ud)
+{
+    (void)vcpu; (void)ud;
+    exit(0);
+}
 static int probe_mode;
 static int probe_reg_reported;
 static int probe_mem_reported;
@@ -124,6 +140,7 @@ static struct vstate vs[MAX_VC];
 
 static struct qemu_plugin_scoreboard *score;
 static qemu_plugin_u64 nexec; /* executed-insn counter, inline-inc'd */
+static qemu_plugin_u64 stopflag; /* armed at the budget sample (stop_at) */
 
 static inline uint64_t fnv1a(uint64_t h, const void *p, size_t n)
 {
@@ -207,9 +224,10 @@ static void on_sample(unsigned int vcpu, void *ud)
     s->regs = fnv1a(h, vals, n_regh * sizeof(uint64_t));
 
     if (tr_to > tr_from && idx >= tr_from && idx < tr_to) {
-        fprintf(logf, "T %u %llu", vcpu, (unsigned long long)insn_total);
+        fprintf(logf, "T %u %llu %016llx", vcpu, (unsigned long long)insn_total,
+                (unsigned long long)s->regs);
         for (int i = 0; i < n_regh; i++) {
-            fprintf(logf, " %08llx", (unsigned long long)vals[i]);
+            fprintf(logf, " %016llx", (unsigned long long)vals[i]);
         }
         fputc('\n', logf);
     }
@@ -224,10 +242,18 @@ static void on_sample(unsigned int vcpu, void *ud)
 
     if (insn_total % epoch_insns == 0) {
         uint64_t epoch = insn_total / epoch_insns;
-        s->regs_all = fnv1a(s->regs_all, &s->regs, sizeof s->regs);
+        /* Point-in-time hash of the register vector at this sample (folds
+         * in idx so an off-by-one sample still diverges). The per-epoch
+         * running digest `s->regs` is kept for regs_all but is not what the
+         * E-line reports: comparing a rolling hash across backends is
+         * fragile (it amplifies any transient), whereas the register vector
+         * is the ground truth the gate checks. */
+        uint64_t ehash = fnv1a(FNV0, &idx, sizeof idx);
+        ehash = fnv1a(ehash, vals, n_regh * sizeof(uint64_t));
+        s->regs_all = fnv1a(s->regs_all, &ehash, sizeof ehash);
         fprintf(logf, "E %u %llu %llu %016llx\n", vcpu,
                 (unsigned long long)epoch, (unsigned long long)insn_total,
-                (unsigned long long)s->regs);
+                (unsigned long long)ehash);
         fflush(logf);
         s->regs = FNV0;
     }
@@ -240,6 +266,16 @@ static void on_sample(unsigned int vcpu, void *ud)
         }
         fputc('\n', logf);
         fflush(logf);
+    }
+    if (stop_at && insn_total >= stop_at && !x_written) {
+        fprintf(logf, "X %u %llu %llu %016llx\n", vcpu,
+                (unsigned long long)insn_total,
+                (unsigned long long)s->samples,
+                (unsigned long long)s->regs_all);
+        fflush(logf);
+        x_written = 1;
+        /* stopflag arms the per-insn exit on the next insn */
+        qemu_plugin_u64_set(stopflag, vcpu, 1);
     }
 }
 
@@ -255,6 +291,13 @@ static void on_translate(struct qemu_plugin_tb *tb, void *ud)
         qemu_plugin_register_vcpu_insn_exec_cond_cb(
             insn, on_sample, QEMU_PLUGIN_CB_R_REGS,
             QEMU_PLUGIN_COND_GE, nexec, period, NULL);
+        if (stop_at) {
+            /* per-insn inline check (no C call until armed) so the
+             * stop lands one insn after the budget sample */
+            qemu_plugin_register_vcpu_insn_exec_cond_cb(
+                insn, on_stopcheck, QEMU_PLUGIN_CB_NO_REGS,
+                QEMU_PLUGIN_COND_NE, stopflag, 0, NULL);
+        }
     }
 }
 
@@ -294,6 +337,9 @@ static void on_vcpu_init(unsigned int vcpu, void *ud)
 static void plugin_atexit(void *ud)
 {
     for (unsigned v = 0; v < MAX_VC; v++) {
+        if (x_written) {
+            break;
+        }
         if (vs[v].samples == 0) {
             continue;
         }
@@ -363,6 +409,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
             tr_to = strtoull(opt + strlen("to="), NULL, 0);
         } else if (g_str_has_prefix(opt, "corrupt=")) {
             corrupt_at = strtoull(opt + strlen("corrupt="), NULL, 0);
+        } else if (g_str_has_prefix(opt, "stop_at=")) {
+            stop_at = strtoull(opt + strlen("stop_at="), NULL, 0);
         } else if (strcmp(opt, "probe") == 0 ||
                    g_str_has_prefix(opt, "probe=")) {
             probe_mode = strcmp(opt, "probe=off") != 0;
@@ -415,8 +463,10 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         vs[v].regs = FNV0;
         vs[v].regs_all = FNV0;
     }
-    score = qemu_plugin_scoreboard_new(sizeof(uint64_t));
-    nexec = qemu_plugin_scoreboard_u64(score);
+    struct stop_score { uint64_t nexec; uint64_t stopflag; };
+    score = qemu_plugin_scoreboard_new(sizeof(struct stop_score));
+    nexec = qemu_plugin_scoreboard_u64_in_struct(score, struct stop_score, nexec);
+    stopflag = qemu_plugin_scoreboard_u64_in_struct(score, struct stop_score, stopflag);
 
     qemu_plugin_register_vcpu_init_cb(id, on_vcpu_init, NULL);
     qemu_plugin_register_vcpu_tb_trans_cb(id, on_translate, NULL);
