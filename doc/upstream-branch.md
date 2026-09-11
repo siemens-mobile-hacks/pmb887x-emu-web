@@ -150,3 +150,22 @@ the opt-in `?icount=precise-clocks=on` mode alive on slow devices
 (phones).  The default timing model (stock `-icount shift=3,sleep=off`)
 has no frequency controller and is unaffected either way.  The code
 comment and the 0002 commit message now carry these numbers.
+
+## The RTC fix branch: `rtc-cnt-format` (standalone, submit first)
+
+Patch 0033 is independent of the wasm series and fixes native too, so it
+has its own branch for a separate upstream PR:
+
+```
+worktree:  build/qemu-rtc            (git worktree of build/qemu)
+branch:    rtc-cnt-format            one commit on b31b98fe (also applies
+                                     cleanly to Azq2 master, 8b9d485bc2)
+companion: build/bsp-rtc             pmb887x-dev worktree, branch
+           rtc-calendar-format       (lg-ke800/lg-ke970 [rtc] format = "calendar")
+build:     build/qemu-rtc-build      native, for testing the branch as-is
+```
+
+The qemu commit defaults `[rtc] format` to `unix` (Siemens), so the
+pmb887x-dev change is what keeps the LG boards on the packed calendar —
+submit both, qemu first.  When the wasm series is rebased after this
+lands, drop 0033 from `patches/` and `patches/bsp/0002`.
