@@ -55,8 +55,10 @@ try {
         " insns=" + (m._wasm_insns?Number(m._wasm_insns()):0));
     }, 10000);
   `});
-  await page.setInputFiles("#fullflash", fullflash);
-  await page.click("#btn-start");
+  if (!query.includes("suite=")) {
+    await page.setInputFiles("#fullflash", fullflash);
+    await page.click("#btn-start");
+  }
 
   // raw CDP on the devtools endpoint
   const devtools = await (await fetch("http://127.0.0.1:9555/json/version")).json();
@@ -156,7 +158,7 @@ try {
   for (const w of perWorker) {
     const label = w.idx === 0 ? "page main thread" : "worker #" + (w.idx - 1);
     console.log("\n=== " + label + " self-time (total " + (w.sum / 1000).toFixed(0) + "ms) ===");
-    for (const [k, v] of [...w.totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+    for (const [k, v] of [...w.totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40)) {
       console.log((v / 1000).toFixed(0).padStart(8) + "ms", (100 * v / w.sum).toFixed(1).padStart(5) + "%", k);
     }
   }

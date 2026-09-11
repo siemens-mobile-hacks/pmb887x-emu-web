@@ -1,5 +1,18 @@
 # Performance hand-off: the qemu-core device-path workstream
 
+Status (2026-09-11, end of device-path session): **slice 1+ landed as
+0018** — the MMIO dispatch tax is at native parity (tcgbench mmiopoll
+202 ns/access on `/dist-jit`, 252 on `/dist`, vs 223 native; was
+534/606).  Two mechanisms: fill-time dispatch resolution in the iotlb
+entry, and a flag-masked victim-TLB compare that fixes a real qemu-core
+bug (the victim TLB never hit MMIO entries — index-aliased MMIO pages
+under ARMv5 1K target pages re-walked the page tables on every
+access).  All gates green (op-suite ×3 byte-identical, native suite
+×4 on the branch binary, lockstep 20e6+250e6, full 2.5e9 + idlebench
+at close).  Remaining plan: slice 3 (timer storms/main-loop wakeups,
+~8 %) and the optional `/dist-jit` tail items.  History below kept
+for context; the session log lives in the playbook (2026-09-11).
+
 Status (2026-09-11): **the wasm64 TCG backend is performance-complete and
 the interpreter-era targets are all met.**  Boot-to-idle at TCI parity
 (idlebench median 76.4 s on `/dist` and `/dist-jit` alike, 9+9

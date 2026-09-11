@@ -168,6 +168,7 @@ workers:
 | 0016 memory: romd FlatView variants + range-scoped tlb flush | romd toggle per flash command = full FlatView re-render of every root (~200 µs, 16k radix page inserts over the flash) + full tlb_flush + ~33-entry refill storm, ~18k flips per boot — (a) FlatViews tagged (topo_gen, romd_sig), romd-only commits adopt the recycled variant from a 16-slot stash (roots whose tag already matches are skipped); (b) tcg listener records region_add/del phys ranges, flush drops only entries translating into them (evicted-variant latch falls back to full flush; entries never dereference a dead view) | topo-commit time 3857→421 ms (−89 %), 30894 variant reuses; v-window 25.1–28.3 → 22.5–25.1 s (8/8 interleaved pairs, every candidate run beats every baseline); insns@110 s +4–9 %; idle screen ~160 s; run-to-run variance collapsed; native suite PASS ×4 (see § Session log: 2026-09-10 for the measurement traps this one surfaced) |
 | 0015 wasm: diagnostics counters | txnF/tbGen/tbFlush/ioRewind/lookupTB cold-path counters (killed two wprof2 ghost theories — see session log) | zero hot-path cost; measurement infra — **dropped 2026-09-09**: isolation testing measured it neutral, no tool consumed its counters (see attic/README.md and § Patch-isolation testing) |
 | 0017 wasm64 TCG backend | full backend: per-TB wasm modules → chaining → batching (128/B module) → inline TLB probe → inline TB accounting; `tcg/wasm64/` + small hooks | boot-to-idle at TCI parity (idlebench median 76.4 s both dists; was +8–10 %); compute 7.4× TCI on tcgbench (562 vs 53 MIPS; per-phase 7–18×); all gates green incl. full 2.5e9 lockstep — numbers and history in [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) |
+| 0018 cputlb: fill-time MMIO dispatch + victim-TLB masked compare | (a) `tlb_set_page_full` resolves `(callback, opaque, size-mask, swap, align, re-entrancy guard)` per iotlb entry — the MMIO access path becomes one mask test + indirect call instead of dispatch_read→access_valid→adjusted_size→accessor; (b) `victim_tlb_hit` compared `cmp == page` unmasked, but every MMIO entry carries TLB_FORCE_SLOW in addr_idx → the victim TLB *never hit for MMIO*, so two MMIO pages aliasing on one TLB index (sysctl 0x10000000 + VIC 0x10140000, both index 0 under ARMv5 1K target pages) re-walked the guest page tables on **every access** | tcgbench mirrors: mmiopoll **534→202 ns** (dist-jit), 606→252 (dist), mmiow 305→227; native parity (223).  bootbench finalV/insns@110 s up on every pair (windows noisy under host load); op-suite 1156/1156 byte-identical ×3, native suite 4/4 on the branch binary, lockstep 20e6+250e6 clean (see session log 2026-09-11 device-path) |
 
 (The 0017 row is a pointer, not a summary — that patch's own docs are
 authoritative for its numbers.)
@@ -240,14 +241,15 @@ no controller).  Numbers in [upstream-branch.md](upstream-branch.md).
 
 ## Remaining opportunities (ranked, 2026-09-11 rewrite — the plan lives in performance-handoff.md)
 
-1. **MMIO dispatch path — OPEN, the headline.**  590 ns/access on
-   wasm64, 632 on TCI, 224 on native (tcgbench mirrors); ~90k
-   dispatches/s in poll phases; identical across wasm backends → fixing
-   it helps `/dist` as much as `/dist-jit`.  Plan: attribute (slice 0),
-   iotlb fill-time `(fn, opaque, attrs)` precompute riding the FlatView
-   generation (slice 1, the 0016 machinery is the template — NOT the
-   rejected memory.c runtime cache), wasm-multiplier work (slice 2).
-   Target: mmiopoll ≤ 300 ns → idlebench ≤ 55–60 s on both dists.
+1. **MMIO dispatch path — LARGELY LANDED (0018, 2026-09-11).**  The
+   590 ns/access was actually two stacked qemu-core costs: (a) the
+   generic dispatch resolution chain per access, and (b) a victim-TLB
+   miss bug — `victim_tlb_hit`'s unmasked compare never matched MMIO
+   entries (TLB_FORCE_SLOW in addr_idx), so index-aliased MMIO pages
+   (ARMv5 1K target pages alias easily) re-walked the page tables on
+   every access.  0018 fixes both: mmiopoll 534→202 ns on `/dist-jit`
+   (606→252 on `/dist`), mmiow −25 %, at native parity (223).  Remaining
+   headroom in this path is small; re-measure before opening anything.
 2. **Timer storms / main-loop wakeups — OPEN.**  ~8 % of the late
    window in mailbox/futex-wake/`_emscripten_get_now` + device timer
    callbacks nobody observes.  Coalesce icount deadlines, skip
@@ -713,3 +715,77 @@ measured "flat" twice before a methodology bug was found and it won 8/8.
 - **fv pointer cached in CPUTLBEntryFull for a deref-free identity
   flush**: also discarded with the above (kept entries would need the
   protected-set argument; ranges subsume it).
+
+## Session log: 2026-09-11 device-path (patch 0018 — MMIO dispatch + victim TLB)
+
+Slice 0 (attribute the ~590 ns) done first, and it rewrote the plan's
+assumptions — two findings the profile+counters loop took to find:
+
+- **wprof2 needed a suite-mode guard** (`query` containing `suite=`
+  must skip the fullflash upload + `#btn-start` click — the suite
+  auto-boots) and a one-purpose MMIO-only bench image
+  (`/tmp`-built `mmiobench.bin` from the tcgbench sources: only the
+  mmiopoll loop ×8) so a whole-run profile is pure dispatch path.
+- **The vCPU is not always worker #0** — its index moves between runs;
+  find it by its self-time shape (mttcg_cpu_thread_fn/interpreter
+  frames), not by number.
+- **Stale `.symbols` sidecars poison whole profiles**: wprof2 prefers
+  `site/<dist>/qemu-system-arm.js.symbols` over the build dir's, and
+  `build-qemu-wasm64.sh` deploys the wasm without refreshing the
+  sidecar — one whole profile round was garbage (io_failed ghost at
+  6.9 %).  Always `cp build/qemu-wasm64/qemu-system-arm.js.symbols
+  site/dist-jit/` after a deploy.  (Fixed the deploy script.)
+
+Slice-0 attribution (mmiobench, dist-jit): TLB-fill path (mmu_lookup →
+arm_cpu_tlb_fill_align → get_phys_addr* → tlb_set_page_full) ≈ 40 % of
+vCPU; generic dispatch chain (do_ld_mmio_beN → access_valid →
+adjusted_size → accessor) ≈ 25 %.  Cold counters (per-page fill
+counts, temporarily in `wasm_diag_pages`) then showed **2 of the 4
+mirror pages refill on every single access** — the walk was not
+incidental.
+
+Root cause chain (three wrong theories died on the way):
+1. "tiny-page TLB_INVALID refills" — wrong: ARMv5 has
+   `TARGET_PAGE_BITS 10` (page-vary), so the 1K pages are *normal*
+   TLB pages.  (A sub-page fill cache built on the lg<12 theory
+   measured flat/none — removed.)
+2. The real mechanism: sysctl 0x10000000 and VIC 0x10140000 **hash to
+   the same TLB index** under 1K pages (both index 0) and evict each
+   other every loop iteration; the victim TLB should absorb that, but
+3. `victim_tlb_hit` compares `cmp == page` **unmasked** — every MMIO
+   entry's addr_idx carries TLB_FORCE_SLOW above the page bits, so the
+   victim TLB can *never* hit an MMIO entry → full page-table walk +
+   tlb_set_page_full per access, on every backend, forever.  One-line
+   fix: compare with `tlb_hit_page()` masking like the main probe.
+   (Phone boot relevance: confirmed fills ≈ 50 % of ioLd on the
+   versatilepb mirror; on the phone the same mechanism bites wherever
+   firmware MMIO pages alias — finalV/insns improved on every pair.)
+
+Landed as **0018** together with the plan's slice-1 headline (fill-time
+`(callback, opaque, mask, swap, align, guard)` resolution in
+`CPUTLBEntryFull`; zero per-access added checks — the mask bit is the
+fast/slow discriminator; re-entrancy guard + endianness + accepts/
+ioeventfd/with-attrs/impl-range cases all fall back to the stock path).
+NOT the rejected memory.c runtime cache.
+
+Measured (interleaved legs, RUNS=2-3, checksums identical everywhere):
+
+  mmiopoll ns/access: dist 606→252, dist-jit 534→202 (native 223; the
+                      ≤300 intermediate gate is passed at ~parity)
+  mmiow ns/access:    dist 454→378, dist-jit 305→227
+  bootbench:          finalV/insns@110 s up on every pair both dists
+                      (v-window pairs 32.2→28.9 / flat-flat under host
+                      load — windows too noisy on this shared host to
+                      satisfy the strict pairwise rule, mirrors decide)
+  gates: op-suite 1156/1156 byte-identical ×3; native suite 4/4 on the
+         branch binary (qemu-upstream + 0018); lockstep 20e6 + 250e6 +
+         the FULL 2.5e9 gate clean; idlebench medians (n=3, both dists
+         improved): dist 76.5→74.4 s, dist-jit 72.4→70.4 s — the
+         remaining gap to the ≤55–60 s goal is slice 3 (timer storms /
+         main-loop wakeups), not the dispatch path.
+
+Measurement notes: keep A/B legs to `dist,dist-jit` pairs when the host
+is loaded (the 4-leg RUNS=2 sweep took 15 min and was bimodal); save
+baseline dists as `site/dist-base`/`site/dist-jit-base` legs before the
+first candidate deploy — reconstructing a baseline later costs two
+rebuilds.

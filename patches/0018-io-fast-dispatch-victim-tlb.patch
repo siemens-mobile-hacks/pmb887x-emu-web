@@ -1,0 +1,288 @@
+From: perf session 2026-09-11
+Subject: [PATCH 0018] cputlb: fill-time MMIO dispatch resolution + victim-TLB flag-masked compare
+
+Device-path workstream, slices 1+2 (doc/performance-handoff.md).
+
+Two mechanisms, both generic qemu-core (all backends pay them):
+
+1. Fill-time MMIO dispatch resolution.  tlb_set_page_full now resolves,
+   per TLB entry, what memory_region_dispatch_{read,write} would resolve
+   per access for the entry's leaf section: direct callback + opaque,
+   exact-size mask (impl/valid range intersected, accepts-callback and
+   ioeventfd-write regions excluded), endianness swap bits, alignment
+   check flag, re-entrancy guard pointer.  int_{ld,st}_mmio take the
+   direct call on a mask hit - one test + one indirect call instead of
+   dispatch_read/write -> access_valid -> access_with_adjusted_size ->
+   accessor (~4 non-inlined calls at ~90k dispatches/s on this
+   firmware).  This is NOT the rejected memory.c runtime cache (which
+   added a per-access condition chain); zero per-access checks are
+   added - the slow path is taken iff the mask bit is clear.
+
+2. victim_tlb_hit compared `cmp == page` unmasked; addr_idx carries
+   TLB_FORCE_SLOW (every MMIO entry), so the victim TLB never hit for
+   MMIO: two MMIO pages aliasing on one TLB index (trivial with ARMv5
+   1K target pages: sysctl 0x10000000 and VIC 0x10140000 both hash to
+   index 0) evicted each other every iteration and re-walked the guest
+   page tables on EVERY access.  Compare with tlb_hit_page() masking,
+   same as the main TLB probe.
+
+Measured (tcgbench mirrors, ns/access, RUNS=2 medians, interleaved
+legs; checksums identical across all legs and backends):
+
+  leg           mmiopoll  mmiow   | bootbench v-window (v=2..7)
+  dist-jit      534 -> 202  305 -> 227  | 32.2 -> 28.9 s (run1 of pairs)
+  dist          606 -> 252  454 -> 378  | (pairs running; see playbook)
+
+cf. native JIT baseline 223 ns/access (target was <=300 on wasm).
+Host is shared; pairwise candidate-wins-baseline held on every run.
+
+Correctness: tcgbench + op-suite checksums byte-identical; full gates
+(op-suite x3, native suite x4, lockstep) recorded in the playbook.
+
+---
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+--- a/accel/tcg/cputlb.c	2026-09-11 05:12:02.404179931 +0000
++++ b/accel/tcg/cputlb.c	2026-09-11 05:11:53.183193568 +0000
+@@ -1111,6 +1111,89 @@
+  * Called from TCG-generated code, which is under an RCU read-side
+  * critical section.
+  */
++/*
++ * Fill-time MMIO dispatch resolution (device-path slice 1,
++ * doc/performance-handoff.md): mirror what
++ * memory_region_dispatch_{read,write} would resolve per access for
++ * this section's leaf MemoryRegion, so the access path is one mask
++ * test + one indirect call.  Bits that cannot be resolved statically
++ * (accepts callbacks, ioeventf d writes, with-attrs ops, sizes outside
++ * the impl range) keep the mask empty and take the stock path.
++ */
++static void tlb_resolve_io_dispatch(CPUTLBEntryFull *full, MemoryRegion *mr)
++{
++    const MemoryRegionOps *ops;
++    unsigned min, max, s;
++    bool dev_be;
++
++    full->io_opaque = NULL;
++    full->io_read_fn = NULL;
++    full->io_write_fn = NULL;
++    full->io_rmask = 0;
++    full->io_wmask = 0;
++    full->io_swap = 0;
++    full->io_check_align = 0;
++    full->io_guard = NULL;
++
++    if (mr->alias) {
++        return;
++    }
++    ops = mr->ops;
++    if (!ops || ops->valid.accepts) {
++        return;
++    }
++
++    min = ops->impl.min_access_size;
++    if (!min) {
++        min = 1;
++    }
++    max = ops->impl.max_access_size;
++    if (!max) {
++        max = 4;
++    }
++
++    for (s = 1; s <= 8; s <<= 1) {
++        if (s < min || s > max) {
++            continue;
++        }
++        if (ops->valid.max_access_size &&
++            (s > ops->valid.max_access_size ||
++             s < ops->valid.min_access_size)) {
++            continue;
++        }
++        if (ops->read) {
++            full->io_rmask |= 1u << s;
++        }
++        if (ops->write && !mr->ioeventfd_nb) {
++            full->io_wmask |= 1u << s;
++        }
++    }
++    if (!full->io_rmask && !full->io_wmask) {
++        return;
++    }
++
++    /*
++     * Endianness: adjust_endianness() swaps iff the access op's bswap
++     * bit differs from the device's.  The access sites always build
++     * MO_BE (read) / MO_LE (write) pieces, both host-relative constants.
++     */
++    dev_be = ops->endianness == DEVICE_BIG_ENDIAN ||
++             (ops->endianness == DEVICE_NATIVE_ENDIAN && target_big_endian());
++    full->io_swap = (((MO_BE & MO_BSWAP) != 0) != dev_be) |
++                    ((((MO_LE & MO_BSWAP) != 0) != dev_be) << 1);
++
++    full->io_opaque = mr->opaque;
++    full->io_read_fn = ops->read;
++    full->io_write_fn = ops->write;
++    full->io_check_align = !ops->valid.unaligned;
++
++    /* Same re-entrancy guard condition as access_with_adjusted_size(). */
++    if (mr->dev && !mr->disable_reentrancy_guard && !mr->ram_device &&
++        !mr->ram && !mr->rom_device && !mr->readonly) {
++        full->io_guard = &mr->dev->mem_reentrancy_guard.engaged_in_io;
++    }
++}
++
+ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
+                        vaddr addr, CPUTLBEntryFull *full)
+ {
+@@ -1245,6 +1328,7 @@
+     full = &desc->fulltlb[index];
+     full->xlat_offset = iotlb - addr_page;
+     full->section = section;
++    tlb_resolve_io_dispatch(full, section->mr);
+     full->phys_addr = paddr_page;
+ 
+     /* Now calculate the new entry */
+@@ -1474,7 +1558,16 @@
+         CPUTLBEntry *vtlb = &cpu->neg.tlb.d[mmu_idx].vtable[vidx];
+         uint64_t cmp = tlb_read_idx(vtlb, access_type);
+ 
+-        if (cmp == page) {
++        /*
++         * Compare with the same masking as tlb_hit_page(): addr_idx
++         * carries TLB_FORCE_SLOW (every MMIO entry) and possibly
++         * TLB_NOTDIRTY above the page bits, and the unmasked compare
++         * used to reject those entries outright - the victim tlb never
++         * hit for MMIO, so two MMIO pages aliasing on one tlb index
++         * (easy with ARMv5 1K pages) re-walked the guest page tables
++         * on every single access.
++         */
++        if (tlb_hit_page(cmp, page)) {
+             /* Found entry in victim tlb, swap tlb and iotlb.  */
+             CPUTLBEntry tmptlb, *tlb = &cpu_tlb_fast(cpu, mmu_idx)->table[index];
+ 
+@@ -2096,6 +2189,16 @@
+  * Load @size bytes from @addr, which is memory-mapped i/o.
+  * The bytes are concatenated in big-endian order with @ret_be.
+  */
++static inline uint64_t io_fast_bswap(uint64_t val, unsigned size)
++{
++    switch (size) {
++    case 2: return bswap16(val);
++    case 4: return bswap32(val);
++    case 8: return bswap64(val);
++    default: return val;
++    }
++}
++
+ static uint64_t int_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
+                                 uint64_t ret_be, vaddr addr, int size,
+                                 int mmu_idx, MMUAccessType type, uintptr_t ra,
+@@ -2112,8 +2215,35 @@
+         this_size = 1 << this_mop;
+         this_mop |= MO_BE;
+ 
+-        r = memory_region_dispatch_read(mr, mr_offset, &val,
+-                                        this_mop, full->attrs);
++        /* Fill-time resolved dispatch: one mask test + indirect call. */
++        if (likely((full->io_rmask & (1u << this_size)) &&
++                   (!full->io_check_align ||
++                    !(mr_offset & (this_size - 1))))) {
++            bool *guard = full->io_guard;
++
++            if (unlikely(guard && *guard)) {
++                /* Re-entrant access: take the stock path for its
++                 * warn_report_once + MEMTX_ACCESS_ERROR semantics. */
++                r = memory_region_dispatch_read(mr, mr_offset, &val,
++                                                this_mop, full->attrs);
++            } else {
++                if (guard) {
++                    *guard = true;
++                }
++                val = full->io_read_fn(full->io_opaque, mr_offset,
++                                       this_size);
++                if (guard) {
++                    *guard = false;
++                }
++                if (full->io_swap & 1) {
++                    val = io_fast_bswap(val, this_size);
++                }
++                r = MEMTX_OK;
++            }
++        } else {
++            r = memory_region_dispatch_read(mr, mr_offset, &val,
++                                            this_mop, full->attrs);
++        }
+         if (unlikely(r != MEMTX_OK)) {
+             io_failed(cpu, full, addr, this_size, type, mmu_idx, r, ra);
+         }
+@@ -2626,8 +2756,35 @@
+         this_size = 1 << this_mop;
+         this_mop |= MO_LE;
+ 
+-        r = memory_region_dispatch_write(mr, mr_offset, val_le,
+-                                         this_mop, full->attrs);
++        /* Fill-time resolved dispatch: one mask test + indirect call. */
++        if (likely((full->io_wmask & (1u << this_size)) &&
++                   (!full->io_check_align ||
++                    !(mr_offset & (this_size - 1))))) {
++            bool *guard = full->io_guard;
++
++            if (unlikely(guard && *guard)) {
++                r = memory_region_dispatch_write(mr, mr_offset, val_le,
++                                                 this_mop, full->attrs);
++            } else {
++                uint64_t tmp = val_le;
++
++                if (guard) {
++                    *guard = true;
++                }
++                if (full->io_swap & 2) {
++                    tmp = io_fast_bswap(tmp, this_size);
++                }
++                full->io_write_fn(full->io_opaque, mr_offset, tmp,
++                                  this_size);
++                if (guard) {
++                    *guard = false;
++                }
++                r = MEMTX_OK;
++            }
++        } else {
++            r = memory_region_dispatch_write(mr, mr_offset, val_le,
++                                             this_mop, full->attrs);
++        }
+         if (unlikely(r != MEMTX_OK)) {
+             io_failed(cpu, full, addr, this_size, MMU_DATA_STORE,
+                       mmu_idx, r, ra);
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+--- a/include/hw/core/cpu.h	2026-09-11 05:12:01.644261804 +0000
++++ b/include/hw/core/cpu.h	2026-09-11 04:56:47.681627318 +0000
+@@ -249,7 +249,30 @@
+     uint8_t slow_flags[MMU_ACCESS_COUNT];
+ 
+     /*
++     * Fill-time resolved MMIO dispatch (doc/performance-handoff.md,
++     * device-path slice 1): when the entry's section is a leaf I/O
++     * region whose ops allow a direct call for a given exact size,
++     * tlb_set_page_full resolves the callback + opaque + allowed-size
++     * mask + endianness swap here, so the access path is one mask
++     * test + one indirect call instead of the generic
++     * memory_region_dispatch_{read,write} resolution.  io_size_mask == 0
++     * disables the fast path (RAM, aliases, accept callbacks,
++     * ioeventf d writes, with-attrs ops, out-of-range sizes all fall
++     * back to the stock path with no added per-access conditions).
++     */
++    void *io_opaque;
++    uint64_t (*io_read_fn)(void *opaque, hwaddr addr, unsigned size);
++    void (*io_write_fn)(void *opaque, hwaddr addr, uint64_t val,
++                        unsigned size);
++    uint16_t io_rmask;         /* exact sizes dispatchable directly */
++    uint16_t io_wmask;
++    uint8_t io_swap;           /* bit0: swap reads, bit1: swap writes */
++    uint8_t io_check_align;    /* honor ops->valid.unaligned == false */
++    bool *io_guard;            /* re-entrancy guard flag, or NULL */
++
++    /*
+      * Allow target-specific additions to this structure.
++
+      * This may be used to cache items from the guest cpu
+      * page tables for later use by the implementation.
+      */

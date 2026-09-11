@@ -53,6 +53,11 @@ for f in qemu-system-arm.js qemu-system-arm.wasm; do
   cp "$BUILD/$f" "site/dist-jit/.$f.tmp"
   mv -f "site/dist-jit/.$f.tmp" "site/dist-jit/$f"
 done
+# Refresh the symbol-map sidecar too (stale maps poison wprof2 profiles —
+# the 2026-09-11 session burned a whole profile round on this).
+for f in "$BUILD"/qemu-system-arm.js.symbols; do
+  [ -f "$f" ] && cp "$f" "site/dist-jit/" && break
+done
 # The lockstep fold reads the insn budget + grid from the URL (ls-* params).
 ls -la site/dist-jit/qemu-system-arm.{js,wasm}
 echo "== done. Serve: node scripts/serve.mjs 8094   Run: cd tools && node lockstep-wasm.mjs --runs 3"

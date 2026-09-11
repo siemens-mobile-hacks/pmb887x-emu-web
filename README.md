@@ -152,6 +152,15 @@ lands in `/tmp/pmb887x-serial.log`.
                               re-rendering every FlatView and stop flushing
                               the whole TLB per toggle (commit time -89%,
                               v-window -10%, variance collapsed)
+    0018-io-fast-dispatch-victim-tlb.patch fill-time MMIO dispatch
+                              resolution in the iotlb entry + flag-masked
+                              victim-TLB compare (MMIO entries carry
+                              TLB_FORCE_SLOW and never hit the victim TLB;
+                              index-aliased MMIO pages re-walked the page
+                              tables on every access — ARMv5 1K pages):
+                              tcgbench mmiopoll 534->202 ns/access on
+                              dist-jit (606->252 on dist), mmiow -25%;
+                              native-jit parity reached
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression, superseded by the reworked
                               0004; 0015 diag counters: measured neutral, no
