@@ -28,8 +28,11 @@ Useful options:
 
 Env overrides `QEMU_BIN` / `BOARDS_DIR` select the emulator binary and
 board-config directory (forwarded to `scripts/run-native.sh`). Results are
-written to `tests/results/<label>-<timestamp>.json`; exit code is non-zero
-if any test fails.
+written to `tests/results/<label>-<timestamp>.json` together with a PNG
+screenshot per flash — `<label>-<stamp>-<flash>-boot.png` (first shot with
+LCD content, the boot-progress proof) and `<label>-<stamp>-<flash>.png`
+(final state); the JSON records the paths under `screenshots`. Exit code
+is non-zero if any test fails.
 
 ## What is tested
 
@@ -93,7 +96,11 @@ node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
 - **Driver** `tools/lockstep.mjs`: boots the fullflash on both binaries
   under `-accel tcg,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,
   clock=vm` until both sides reach `--insns`, quits via the HMP monitor,
-  byte-diffs the digest streams (+ serial logs). On divergence it
+  byte-diffs the digest streams (+ serial logs), and saves both sides'
+  final screendump next to the results JSON
+  (`lockstep-<label>-<stamp>-run<N>-{a,b}.png`; the wasm gate
+  `tools/lockstep-wasm.mjs` adds the browser page + LCD crops as
+  `-b.png`/`-b-lcd.png`). On divergence it
   re-runs both sides with a dense per-insn dump window over the
   divergent epoch and reports the exact first differing insn + register
   vector — hand that to the phase-0a suite (`tests/tcg-isa`) to bisect

@@ -12,7 +12,18 @@ register-digest epochs + 298 SRAM/SDRAM memory digests identical per run,
 serial byte-identical, ~6 min wall for all three runs in parallel;
 supersedes the "port a native wasm TCG backend" idea in
 [performance-handoff.md](performance-handoff.md) §1 with what was learned
-from actually trying it).
+from actually trying it.
+2026-09-11: **phase-3 next-slice selection now measurement-gated** — a
+first end-to-end "boot to idle screen" benchmark landed
+(`tools/idlebench.mjs`, committed reference `tools/test_targets/
+S75v40lg1_idle.png`, bottom-139-rows compare — see §5 phase-3 status), and
+an early-window wprof2 profile of the phase-3 backend shows the window is
+*not* MMIO-bound (top: dispatcher 15 %, per-TB-entry accounting import
+8.3 %, lookup_tb_ptr 3.7 %, temp-module instantiate ~3 %) — the §4.7
+MMIO-fast-path premise must be re-verified against a late-window profile
+before any emitter work.  Note: the "JIT ~1.3–2.3x" numbers in
+[optimization-playbook.md](optimization-playbook.md) belong to the
+discarded wasm32/ktock port, not this backend.)
 
 Question on the table: *stop micro-optimizing TCI ("qemu for JS through
 hacks") and instead add a proper TCG backend that emits WASM — wasm bytecode
@@ -392,38 +403,58 @@ LG (no-icount).
   loads/stores, direct imports for top helpers (ld/st mmu, `lookup_tb_ref`,
   ARM div/rem). *Gate: ≥3x end-to-end vs the current TCI dist — target
   ~45–60M insns/s sustained, S75 idle screen < 90 s.* ~1 week.
-  - **Status: inline TLB probe + size-specialized ld/st landed
-    2026-09-10 (first slice of phase 3)** — `qemu_ld/st` now emit the
-    probe (`cpu->neg.tlb.f[mmuidx]` via `tlb_mask_table_ofs`, entry =
-    `table[(addr >> page_bits) & (mask >> 5)]`, hit ⟺
-    `addr_{read,write} == ((a_mask < s_mask ? addr+s_mask−a_mask : addr)
-    & (TARGET_PAGE_MASK | a_mask))` — the tci_tlb_probe semantics from
-    0011, byte-exact) and a size/sign-specialized wasm access at
-    `addr + addend` (linear memory *is* host memory); miss falls through
-    to the phase-1 `*_mmu` helper arm, emitted as the structured `else`.
-    Eligibility mirrors tci (MO_ATOM_NONE/IFALIGN inline after serial-mode
-    canonicalization — ldrd's SUBALIGN becomes NONE; BSWAP and the
-    stricter atom classes stay on the helper); `W64_NOTLB=1` disables
-    (A/B).  Gates after: op-suite 1156/1156 (incl. `W64_NOTLB`/
-    `W64_NOBATCH` knob runs — which also caught and fixed a page bug:
-    `?env=` was only wired into the phone-boot path, not `bootSuite`);
-    lockstep 20M + 250M + 700M clean, and the **full 2.5e9 one-insn-per-tb
-    gate clean** on the phase-3 backend (298 HARD SRAM digests identical,
-    RSS ~2.0GB plateau); bootbench v=2..7 38.1s → **31.8s**
-    (0.78x TCI's 24.7s — the window is MMIO-bound, §4.7 is that lever);
-    finalV@110s **164 vs phase-2's 69** (TCI 151) — end-to-end boot
-    progress now ≥ TCI.  Bring-up found a genuine emitter bug worth
-    recording: with `data == addr` (ldrd loads its 64-bit result into
-    the same TCG reg that holds the address — legal), the hit arm's
-    `local.set` flips the reg's tracked representation *between* the
-    two arms' emissions, so the arm emitted second read a stale local
-    (symptom: 4 ldrd op-suite failures, and a post-splash boot OOM on
-    manual testing via firmware divergence + TB churn).  Fix: snapshot
-    the zero-extended address into a third scratch local ($scr2) before
-    the arms; probe and both arms read only the snapshot.  Diagnosed by
-    dumping the TB module bytes and disassembling with `wasm-dis`.
-    Remaining phase-3 levers: MMIO fast-path (§4.7 — now the dominant
-    cost), direct helper imports, `lookup_tb_ref`; div/rem N/A (arm926).
+  - **Status: slice 1 (inline TLB probe + size-specialized ld/st) landed
+    2026-09-10** — `qemu_ld/st` emit the tci_tlb_probe semantics inline
+    (`tlb_mask_table_ofs`, page|alignment compare, flags-in-window
+    misses) + a size/sign-specialized wasm access at `addr+addend`; miss
+    falls to the phase-1 `*_mmu` helper arm (`W64_NOTLB=1` disables).
+    Gates: op-suite 1156/1156 (incl. `W64_NOTLB`/`W64_NOBATCH` knob runs
+    — which also caught a page bug: `?env=` was only wired into the
+    phone-boot path, not `bootSuite`); lockstep 20M/250M/700M + the full
+    2.5e9 one-insn-per-tb gate clean on this backend. Perf: v=2..7
+    window 38.1→31.8 s (0.78x TCI's 24.7), finalV@110 s 164 vs phase-2's
+    69 (TCI 151) — end-to-end boot progress ≥ TCI.  Bring-up found a
+    genuine emitter bug (ldrd with `data == addr`: the hit arm's
+    `local.set` flipped the tracked representation between the two
+    arms' emissions — fix: snapshot zext(addr) into $scr2; diagnosed by
+    dumping the TB module bytes + `wasm-dis`).
+  - **Status 2026-09-11: slice selection is now measurement-gated.**
+    Two inputs changed the plan:
+    1. **A user-side regression report forced a real end-to-end
+       benchmark into existence**: on the user's machine, boot-to-idle on
+       /dist measured 73 s at 2:26 PM and 80 s later that day, and /dist-jit
+       was reported "an order of magnitude slower". The new
+       `tools/idlebench.mjs` (below) pins the protocol: S75v40lg1.bin
+       fullflash, `tools/test_targets/S75v40lg1_idle.png` reference, only
+       the bottom 139 LCD rows compared (everything above animates at
+       idle), startup=ONLINE, fresh headless browser per run, run config
+       + artifact hashes in `tests/results/idlebench-latest.json`.
+       **First results (this host, 2 runs each): /dist 70.4/74.4 s,
+       /dist-jit 78.4/78.4 s to idle (v≈51.5, pct-diff ≤0.08 % at match,
+       zero W64 diagnostics)** — i.e. the wasm64 backend is ~8–10 %
+       behind TCI on the human metric, and the reported 10x is NOT in the
+       served artifacts. The 73→80 s /dist delta is within the playbook's
+       ±5–8 % single-run noise band. Next: the user re-runs the same
+       protocol on their machine (same flash + reference + fresh reload);
+       if their /dist-jit still shows 10x it is environment-specific
+       (Chrome version / machine state) and the new /w64bad-* forensics
+       will capture whatever fires.
+    2. **Early-window profile of this backend says the v=2..7 window is
+       not MMIO-bound**: vCPU self-time — `tcg_qemu_tb_exec` 15 %,
+       `w64_tb_account` (per-TB-entry accounting import) **8.3 %**,
+       `cpu_exec_loop` 6 %, `helper_lookup_tb_ptr` 3.7 %, instantiate ~3 %;
+       MMIO dispatch absent from the top. The §4.7 premise ("MMIO now the
+       dominant cost") still plausibly holds for the *late* poll-heavy
+       window (finalV gap), but that needs its own profile
+       (`PROF_DELAY=115` in wprof2) before building anything. Slice-2
+       candidates by current evidence: (a) inline the w64_tb_account
+       icount/deadline work into emitted code (import call per TB entry
+       → a few i32 ops + rare import call), (b) late-window profile →
+       MMIO fast-path only if it confirms, (c) direct imports /
+       lookup_tb_ref. Remember the playbook's rejected table: a
+       memory.c-level MMIO dispatch fast path already measured WORSE on
+       TCI — any MMIO work must sit at a different level (FlatView/TLB-
+       cached callbacks) or not happen.
 - **Phase 4 — robustness.** SMC invalidation storms (flash unlock/write
   cycles), LG no-icount path, table-index recycling over 10⁶ translations,
   deterministic module lifecycle (no FinalizationRegistry), Chrome + Firefox

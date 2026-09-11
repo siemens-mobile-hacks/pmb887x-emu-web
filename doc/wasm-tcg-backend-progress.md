@@ -3,7 +3,76 @@
 Working log for `doc/wasm-tcg-backend-plan.md`. Updated periodically;
 the plan file itself carries the phase gates.
 
-## Status: phase 3 (first slice) — inline TLB probe landed; end-to-end boot progress now ≥ TCI
+## Status: phase 3 (slice 1 landed) — slice selection now measurement-gated; end-to-end idle benchmark in place
+
+### Session 2026-09-11 (early) — user regression report → real benchmark; corruption forensics hardened
+
+- **User report (Central time, ~evening)**: boot-to-idle on /dist
+  73 s at 2:26 PM → 80 s later; /dist-jit "an order of magnitude
+  slower".  Decision: benchmark correctness first, before any more
+  phase-3 work.  (Prior sessions' numbers were all v-window/finalV —
+  never the human metric.)
+- **`tools/idlebench.mjs` landed** — deterministic boot-to-idle
+  benchmark: `fullflashes/S75v40lg1.bin`, reference
+  `tools/test_targets/S75v40lg1_idle.png` (committed; the flash dir is
+  gitignored), idle = 3 consecutive LCD matches ≥4 s apart, compare
+  ONLY the bottom 139 rows (above them the idle screen animates:
+  network-search spinner + clock), per-pixel rule from compare-lcd
+  (channel delta > 48), startup=ONLINE, fresh headless browser per run,
+  config + flash/ref/wasm/js sha256 + chrome version + loadavg pinned
+  into `tests/results/idlebench-<ts>.json` (+ `idlebench-latest.json`
+  stable alias for cross-session diffs).  Classification per run:
+  IDLE / NOIDLE / STALL / CRASH with automatic salvage (screenshot,
+  serial.log, `/w64bad-*`, `/w64fail-*`) for anything not IDLE.
+  Usage: `PORT=8094 node tools/idlebench.mjs dist,dist-jit --runs 2`.
+- **First idlebench results (this host, Chrome 153, 2 runs each):
+  /dist 70.4 / 74.4 s, /dist-jit 78.4 / 78.4 s to idle** (v≈51.5 at
+  idle on this flash, pct-diff ≤0.08 %, zero W64 diagnostics, no
+  crashes).  Conclusions: (a) the served artifacts contain NO 10x
+  regression — wasm64 is ~8–10 % behind TCI on the human metric;
+  (b) /dist 73→80 s is within the playbook's ±5–8 % single-run noise
+  band; (c) the 10x report is environment-specific (their Chrome /
+  machine state / possibly a torn binary from one of tonight's
+  non-atomic `cp` deploys — see below) — next step is the user re-running
+  the same protocol on their machine.
+- **Non-atomic deploy hazard identified (self-inflicted)**: deploying
+  with plain `cp` over the live-served `qemu-system-arm.wasm` can serve
+  a torn 45 MB file; serve.mjs carefully tmp+renames the .gz sidecar
+  but nothing protects the wasm itself.  Deploy via `mv` (rename) or
+  stop the server; fix the deploy scripts (todo).
+- **Batch-corruption forensics hardened** (root cause still open):
+  every staged member now carries an FNV-1a checksum of its body bytes
+  (`w64_sum` at `w64_batch_member` time); `w64_batch_close`
+  re-validates every member's source LEB + checksum BEFORE assembly —
+  the next hit now distinguishes *code-buffer overwrite between staging
+  and close* (foreign writer — the leading theory class) from
+  record/assembly bugs — and all evidence lands in the page FS as
+  `/w64bad-<id>.bin` (member records, fixups, full source regions with
+  slack, assembled module bytes on walk failure) because the page
+  console drops multi-line output.  `tools/repro.mjs` now salvages
+  `/w64bad-*` + `/w64fail-*` from the page FS on EVERY attempt.
+  Verified: op-suite 1156/1156 plain + `W64_BATCH_N=4`; lockstep 20M
+  clean.  Soak with the new build: 2 clean attempts before it was
+  killed for benchmarking (host quiet rule).
+- **Symbol map for the wasm64 build**: `meson configure
+  -Dc_link_args=…,'--emit-symbol-map'` (+cpp_link_args) on
+  build/qemu-wasm64 — `wprof2.mjs` now resolves symbols on dist-jit
+  (the TCI build always had one).  `wprof2.mjs` gained `PROF_DELAY=<s>`
+  (wait before Profiler.start — boot-phase selection for late-window
+  profiles).
+- **Early-window profile of this backend (60 s, v≈0.6–5.2)** — vCPU
+  self-time: `tcg_qemu_tb_exec` 15 %, **`w64_tb_account` 8.3 %** (the
+  per-TB-entry accounting import — a new, concrete slice-2 candidate:
+  inline the icount/deadline math into emitted code), `cpu_exec_loop`
+  6 %, `helper_lookup_tb_ptr` 3.7 %, temp-module `w64_instantiate`+
+  `Instance` ~3 %, `tcg_gen_code` 1.2 %.  **MMIO dispatch absent from
+  the top** — the §4.7 "MMIO now dominant" premise holds at best for
+  the late poll window; a `PROF_DELAY` late-window profile is the gate
+  before any MMIO fast-path work (and the playbook's rejected table
+  already killed a memory.c-level version on TCI).
+- Doc note per user: the "JIT 1.3–2.3x" numbers in the optimization
+  playbook are the DISCARDED wasm32/ktock port — never cite them as this
+  backend's numbers.
 
 ### Session 2026-09-10 (late) — flaky batch-corruption hunt + safety net
 
@@ -227,12 +296,26 @@ the plan file itself carries the phase gates.
       landed (see the session log at the top); full 2.5e9 one-insn-per-tb
       gate clean on the phase-3 backend (298 HARD SRAM digests identical,
       RSS plateau ~2.0GB).
-- [ ] Phase 3 slice 2: **MMIO fast-path** (§4.7 — per-region callback
-      caching in the FlatView, spirit of 0016) — now the dominant cost:
-      the v=2..7 window sits at 0.78x TCI while end-to-end progress is
-      already ≥ TCI, and this firmware polls constantly.
-- [ ] Phase 3 slice 3: direct imports for top helpers, `lookup_tb_ref`;
-      div/rem N/A on arm926.
+- [ ] **User-side repro of the /dist-jit 10x report** — same idlebench
+      protocol on their machine (fresh reload of the S75v40lg1 boot);
+      this host shows /dist-jit ≈ /dist + 8–10 % to idle.  If it
+      reproduces, the hardened forensics capture the cause; if not, it
+      was environment (Chrome update/machine state/torn deploy).
+- [ ] **Deploy hygiene**: make wasm deploys atomic (deploy to a temp
+      name + `mv`, like serve.mjs's .gz sidecar) in the deploy scripts.
+- [ ] **Phase 3 slice 2 — pick by measurement, not by §4.7 assumption**:
+      1. late-window profile (`PROF_DELAY=115 node tools/wprof2.mjs …`)
+         — is the poll phase actually MMIO-bound?
+      2. if yes: MMIO fast-path at FlatView/TLB level (NOT memory.c —
+         rejected there on TCI);
+      3. regardless: `w64_tb_account` inline accounting (8.3 % of vCPU
+         in the early window — emit the deadline decrement in wasm,
+         import-call only on underflow) and direct imports for top
+         helpers, `lookup_tb_ref` (3.7 %).  div/rem N/A on arm926.
+- [ ] Interleaved idlebench A/B (playbook discipline: alternate runs,
+      2× each, pair-wise dominance) becomes the phase-3 acceptance
+      metric ("S75 idle screen < 90 s" gate — measure on S75v40lg1
+      with idlebench, not just v-window).
 - [ ] LRU cap on landed batches (live modules < 100) — not needed for
       the 2.5e9 gate (RSS plateau ~1.9GB, ~6k batch instances at the
       800k-TB working set); add when a longer soak or the full gate
@@ -243,7 +326,8 @@ the plan file itself carries the phase gates.
 - [ ] Async batch compile off the vCPU thread + TCI cold tier
       (TCI+wasm64 in one build) — only if profiling shows the sync
       batch-compile hiccup matters (it does not in the boot window).
-- [ ] LCD-frame digest in the fold (replace the vacuous serial check).
+- [ ] LCD-frame digest in the fold (replace the vacuous serial check) —
+      the idlebench bottom-139-rows idea is the template.
 
 ## Build/run cheat-sheet
 
@@ -267,6 +351,11 @@ cd tools && node lockstep-wasm.mjs --insns 2.5e9 --secs 2700  # full gate (~13mi
 
 # A/B boot bench (v=2..7 window; add DIST=dist-jit / dist-p1 / default=TCI)
 PORT=8094 DIST=dist-jit node tools/bootbench.mjs 110
+
+# end-to-end boot-to-idle benchmark (the human metric; deterministic protocol)
+PORT=8094 node tools/idlebench.mjs dist,dist-jit --runs 2   # ~2×80s + 2×80s
+# late-window profile for phase-3 slice selection:
+PORT=8094 PROF_DELAY=115 node tools/wprof2.mjs 75 "dist=dist-jit" 200
 
 # rebuild the lockstep plugin (auto-done by scripts/run-lockstep.sh)
 gcc -O2 -Wall -fPIC -shared -I build/qemu-native/include \

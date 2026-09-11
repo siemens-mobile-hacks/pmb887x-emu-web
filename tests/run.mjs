@@ -19,14 +19,20 @@
 //
 // Env: QEMU_BIN + BOARDS_DIR are forwarded to run-native.sh (defaults:
 // build/qemu-native-build + build/bsp of this workspace).
+//
+// Screenshots: the first LCD-content screendump (boot-progress proof) and
+// the final screendump are saved per flash to
+// tests/results/<label>-<stamp>-<flash>[-boot].png.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ppmFileToPng } from "../tools/ppm2png.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url)) + "/..";
+const resultsDir = path.join(ROOT, "tests", "results");
 
 // --- CLI -------------------------------------------------------------------
 const argv = process.argv.slice(2);
@@ -259,7 +265,13 @@ async function runInstance(flash, runDir, log) {
     const shot = path.join(runDir, `shot-${pollN}.ppm`);
     const s = await inst.poll(shot);
     pollN++;
-    try { fs.unlinkSync(shot); } catch {}
+    // keep the first LCD-content shot (boot-progress proof); rotate the rest
+    // so the newest one survives as the final-state screenshot
+    if (s.stats && s.stats.colorful >= 300 && !inst.contentShot) inst.contentShot = shot;
+    else {
+      if (inst.finalShot) { try { fs.unlinkSync(inst.finalShot); } catch {} }
+      inst.finalShot = shot;
+    }
 
     // failure detection (highest priority)
     if (/>>EXIT<</.test(s.serialTail)) {
@@ -359,10 +371,24 @@ async function runInstance(flash, runDir, log) {
 
   await inst.quit();
 
+  // boot-progress proof + final state, as PNGs next to the results JSON
+  const saveShot = (file, suffix) => {
+    const png = file && ppmFileToPng(file);
+    if (!png) return null;
+    const out = path.join(resultsDir, `${LABEL}-${stamp}-${flash.id}${suffix}.png`);
+    fs.writeFileSync(out, png);
+    return out;
+  };
+  const screenshots = {
+    boot: saveShot(inst.contentShot, "-boot"),
+    final: saveShot(inst.finalShot, ""),
+  };
+
   return {
     flash: flash.id,
     board: flash.board,
     verdicts: inst.verdicts,
+    screenshots,
     milestones: Object.fromEntries(
       ["serialFirst", "lcdLit", "lcdContent", "lcdActivity", "guestExit", "hwError", "processExit"]
         .filter((e) => inst.since(e) !== null)
@@ -381,7 +407,6 @@ if (!fs.existsSync(QEMU_BIN)) {
   process.exit(2);
 }
 
-const resultsDir = path.join(ROOT, "tests", "results");
 fs.mkdirSync(resultsDir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 const runsRoot = fs.mkdtempSync(path.join(os.tmpdir(), `pmb887x-tests-${LABEL}-`));

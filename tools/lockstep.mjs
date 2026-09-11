@@ -29,6 +29,7 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const RUN_NATIVE = path.join(ROOT, "scripts", "run-native.sh");
@@ -175,6 +176,10 @@ export class Side {
   async quit(reason) {
     this.quitReason = reason;
     if (this.conn && !this.dead) {
+      // final screenshot (also works while HMP-stopped; saved into the run
+      // dir, the driver copies it to tests/results next to the JSON)
+      this.conn.write(`screendump ${path.join(this.dir, "final.ppm")}\n`);
+      await sleep(800);
       this.conn.write("quit\n");
       await waitDead(this, 20000);
     }
@@ -412,8 +417,21 @@ export async function main() {
       const dir = path.join(baseDir, `run${r}`);
       log(`== run ${r + 1}/${args.runs}: ${args.self ? "self-check (a vs a)" : "JIT vs TCI"} flash=${args.flash} budget=${fmt(args.insns)} insns`);
       const { a, b, reasons, wallS } = await runPair(args, flash, dir, args.insns, log);
+      // final screendumps of both sides -> tests/results (they should show
+      // the same guest state; a visual diff is a free sanity check)
+      const screenshots = {};
+      for (const s of [a, b]) {
+        const png = ppmFileToPng(path.join(s.dir, "final.ppm"));
+        if (png) {
+          const out = path.join(ROOT, "tests", "results",
+            `lockstep-${args.label}-${stamp}-run${r + 1}-${s.name}.png`);
+          fs.mkdirSync(path.dirname(out), { recursive: true });
+          fs.writeFileSync(out, png);
+          screenshots[s.name] = out;
+        }
+      }
       const runRes = {
-        run: r + 1, dir, wallS,
+        run: r + 1, dir, wallS, screenshots,
         a: { insns: a.progress.insns, epoch: a.progress.epoch, exit: a.exitCode },
         b: { insns: b.progress.insns, epoch: b.progress.epoch, exit: b.exitCode },
         earlyExit: reasons, cmp: null, dense: null, serialIdentical: null,

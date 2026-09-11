@@ -24,7 +24,7 @@ for (let a = 1; a <= attempts && captured < 1; a++) {
       return;
     }
     if (/^WATCH/.test(t)) console.log(`[a${a} +${((Date.now()-t0)/1000)|0}s] ` + t);
-    if (/W64BATCHBAD|W64BATCHSKIP|W64BATCHRETRY|staged hdr|body_len=|mod  @|src  @|prev tail/.test(t))
+    if (/W64BATCHBAD|W64BATCHSKIP|W64BATCHRETRY|W64BADSRC|W64BADFILE|SOURCE-CORRUPT|staged hdr|body_len=|mod  @|src  @|prev tail/.test(t))
       console.log(`[a${a}] ` + t.replace(/^\[qemu\] /, ""));
   });
   p.on("pageerror", (e) => {
@@ -47,20 +47,25 @@ for (let a = 1; a <= attempts && captured < 1; a++) {
     await p.click("#btn-start");
     await new Promise((r) => setTimeout(r, secs * 1000));
   } catch (e) { console.log(`[a${a}] nav error: ${String(e).slice(0, 120)}`); }
+  /* always probe the page FS: the new close-time forensics write
+   * /w64bad-*.bin (and old builds /w64fail-*.wasm) even when every
+   * console line is lost */
+  try {
+    const names = await p.evaluate(() => {
+      const m = window.__qemu;
+      return m ? m.FS.readdir("/").filter((f) =>
+        f.startsWith("w64bad-") || f.startsWith("w64fail-")) : [];
+    });
+    for (const n of names) {
+      const bytes = await p.evaluate((f) => window.__qemu.FS.readFile("/" + f), n);
+      const out = `/tmp/${n}`;
+      writeFileSync(out, Buffer.from(bytes));
+      console.log(`[a${a}] SAVED ${out} (${bytes.length} bytes)`);
+      if (!failed) { failed = true; failMeta = "page-FS artifact " + n; }
+    }
+  } catch (e) { console.log(`[a${a}] FS salvage failed: ${String(e).slice(0, 120)}`); }
   if (failed) {
     captured++;
-    try {
-      const names = await p.evaluate(() => {
-        const m = window.__qemu;
-        return m ? m.FS.readdir("/").filter((f) => f.startsWith("w64fail-")) : [];
-      });
-      for (const n of names) {
-        const bytes = await p.evaluate((f) => window.__qemu.FS.readFile("/" + f), n);
-        const out = `/tmp/${n}`;
-        writeFileSync(out, Buffer.from(bytes));
-        console.log(`[a${a}] SAVED ${out} (${bytes.length} bytes)`);
-      }
-    } catch (e) { console.log(`[a${a}] FS salvage failed: ${String(e).slice(0, 120)}`); }
     console.log(`[a${a}] ${failMeta}`);
   } else {
     console.log(`[a${a}] attempt done, no batch failure`);

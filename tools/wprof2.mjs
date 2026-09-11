@@ -36,6 +36,7 @@ const symOf = (name) => {
 const secs = Number(process.argv[2] || 40);
 const query = process.argv[3] || "";
 const sampleUs = Number(process.argv[4] || 100);
+const delayS = Number(process.env.PROF_DELAY || 0);   // wait before Profiler.start (boot phase selection)
 
 const server = await chromium.launch({ headless: true, args: ["--remote-debugging-port=9555"] });
 try {
@@ -89,6 +90,10 @@ try {
   console.log("attached workers:", workers.map((w) => w.targetInfo.url.slice(-46)).join(" | "));
 
   const sessions = [];
+  if (delayS) {
+    console.log("waiting " + delayS + "s before profiling...");
+    await new Promise((r) => setTimeout(r, delayS * 1000));
+  }
   // profile the page main thread too (the client-side glue: rAF LCD paint,
   // serial poll, console handlers) — it is the first session in the list
   const sendT = (cmd, params, sid) => Promise.race([

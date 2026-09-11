@@ -24,6 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Side, compareDigestLogs, FLASHES } from "./lockstep.mjs";
 import { fullflash } from "./testflash.mjs";
+import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -235,6 +236,21 @@ class WasmSide {
   }
 
   async quit() {
+    if (this.page) {
+      // final screenshot of the wasm leg (page may be wedged — race it so a
+      // frozen renderer can never stall the driver; saved into the run dir,
+      // the driver copies it to tests/results next to the JSON)
+      try {
+        await Promise.race([
+          (async () => {
+            await this.page.screenshot({ path: path.join(this.dir, "final.png") });
+            const lcd = await this.page.$("#lcd");
+            if (lcd) await lcd.screenshot({ path: path.join(this.dir, "final-lcd.png") });
+          })(),
+          new Promise((r) => setTimeout(r, 10000)),
+        ]);
+      } catch {}
+    }
     if (this.browser) {
       await this.browser.close().catch(() => {});
     }
@@ -307,8 +323,27 @@ const worker = async (wi) => {
     const dir = path.join(baseDir, `run${r}`);
     log(`== run ${r + 1}/${args.runs}: JIT(native) vs wasm64(browser) flash=${args.flash} budget=${fmt(args.insns)} insns`);
     const { a, b, wallS } = await runPairWasm(args, flash, dir, log);
+    // end-state screenshots -> tests/results (native screendump + browser
+    // page/LCD crop; especially useful when the wasm leg dies mid-run)
+    const screenshots = {};
+    const aPng = ppmFileToPng(path.join(a.dir, "final.ppm"));
+    if (aPng) {
+      const out = path.join(ROOT, "tests", "results",
+        `lockstep-${args.label}-${stamp}-run${r + 1}-a.png`);
+      fs.writeFileSync(out, aPng);
+      screenshots.a = out;
+    }
+    for (const suffix of ["", "-lcd"]) {
+      const f = path.join(b.dir, `final${suffix}.png`);
+      if (fs.existsSync(f)) {
+        const out = path.join(ROOT, "tests", "results",
+          `lockstep-${args.label}-${stamp}-run${r + 1}-b${suffix}.png`);
+        fs.copyFileSync(f, out);
+        screenshots[suffix ? "bLcd" : "b"] = out;
+      }
+    }
     const runRes = {
-      run: r + 1, dir, wallS,
+      run: r + 1, dir, wallS, screenshots,
       a: { insns: a.progress.insns, epoch: a.progress.epoch, exit: a.exitCode },
       b: { insns: b.progress.insns, epoch: b.progress.epoch, exit: b.exitCode },
       cmp: null, serialIdentical: null,
