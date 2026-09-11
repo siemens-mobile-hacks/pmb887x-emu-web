@@ -19,13 +19,16 @@ the whole workload runs with/without `-icount shift=3,sleep=off`
 
 | tool | what it answers | cost |
 |---|---|---|
-| `tcgbench` (this) | which backend path got faster/slower, per op class | ~10 s |
+| `tcgbench` (this) | which backend path got faster/slower, per op class | ~10 s (`SUITE=quick`: ~3 s wasm64 leg, TCI leg ~25 s instead of 100 s) |
 | `run-tcg-isa.sh` | is every op still *correct* (byte-exact, 3 backends) | ~30 s |
-| `bootbench` / `wprof2` | where does the *phone boot* spend time | ~2–4 min |
-| `lockstep-wasm` / `idlebench` | final: value-equality over full boots / human metric | 6–15 min |
+| `idlebench --quick` | did the *phone boot's* early phase move (window, t0.1G/t0.25G/t0.5G, A/B ratios, regression verdict) — the boot regressions tcgbench cannot see | ~1 min per dist |
+| `wprof2` | where does the phone boot spend time | ~1 min |
+| `lockstep-wasm` / `idlebench` (full) | final: value-equality over full boots / tIdle + t1.3G | 5–15 min |
 
-Iteration loop for backend work: **tcgbench A/B → op-suite → (if emitter
-changed) lockstep 20M/250M → idlebench + full 2.5e9 gate at slice close.**
+Iteration loop for backend work: **tcgbench A/B → idlebench --quick →
+op-suite → (if emitter changed) lockstep 20M/250M → full idlebench +
+2.5e9 gate at slice close.**  (`bootbench.mjs` is deprecated; idlebench
+reports its window.)
 
 ## Phases
 
@@ -65,6 +68,9 @@ BENCH DONE
 ```bash
 make -C tests/tcgbench            # tcgbench.bin (SYS_EXIT) + tcgbench-wasm.bin (parks)
 make -C tests/tcgbench install    # -> site/dist/tcgbench.bin (page: ?suite=dist/tcgbench.bin)
+make -C tests/tcgbench quick install   # + tcgbench-quick*.bin (ITERS_DIV=4) -> site/dist/tcgbench-quick.bin
+
+SUITE=quick node tools/tcgbench.mjs                      # ÷4 smoke image: ~3 s wasm64 leg, TCI ~25 s, 40 ms poll
 
 node tools/tcgbench.mjs                                  # native-jit + dist-jit (wasm64)
 LEGS=native-jit,native-tci,dist-jit,dist node tools/tcgbench.mjs

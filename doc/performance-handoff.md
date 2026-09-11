@@ -13,10 +13,14 @@ at close).  Remaining plan: slice 3 (timer storms/main-loop wakeups,
 ~8 %) and the optional `/dist-jit` tail items.  History below kept
 for context; the session log lives in the playbook (2026-09-11).
 
-Status (2026-09-11): **the wasm64 TCG backend is performance-complete and
-the interpreter-era targets are all met.**  Boot-to-idle at TCI parity
-(idlebench median 76.4 s on `/dist` and `/dist-jit` alike, 9+9
-interleaved runs — was +8–10 % behind), compute 7.4× TCI on tcgbench
+Status (2026-09-11): **the wasm64 TCG backend is compute-complete; the
+boot's early phase is NOT at TCI parity.**  The earlier "boot-to-idle
+at TCI parity (idlebench median 76.4 s both)" reading was phase
+cancellation (see the playbook's 2026-09-11 benchmark-audit log): on
+the guest-work milestones
+`/dist-jit` is +27 % at t0.5G and +31 % on the v=2..7 window vs
+`/dist` (user-side manual boots: 86 s vs 78 s), then 2.7× faster on
+the last 0.55 G insns.  Compute 7.4× TCI on tcgbench
 (562 MIPS sustained on compute phases vs the TCI page's 53; per-phase
 7–18×), every correctness gate green (op-suite 1156/1156 byte-identical
 ×3 backends, full 2.5e9 lockstep gate, native suite ×4).  That

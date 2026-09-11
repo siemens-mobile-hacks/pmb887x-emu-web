@@ -5,7 +5,10 @@
 #                        -> tcgbench-wasm.bin (parks; wasm page leg)
 #   make install         -> tcgbench-wasm.bin -> site/dist/tcgbench.bin
 #                           (page: ?suite=dist/tcgbench.bin)
-#   make ITERS_DIV=8     -> 8x fewer iterations per phase (smoke runs)
+#   make quick           -> tcgbench-quick.bin / tcgbench-quick-wasm.bin
+#                           (ITERS_DIV=4: 4x fewer iterations per phase; the
+#                           smoke/iteration image — tools/tcgbench.mjs SUITE=quick)
+#   make install         -> also installs tcgbench-quick.bin into site/dist
 
 CROSS   ?= arm-none-eabi-
 CC      := $(CROSS)gcc
@@ -17,7 +20,22 @@ CFLAGS_COMMON = -mcpu=arm926ej-s -mfloat-abi=soft -ffreestanding -fno-builtin \
 
 OBJS = bench.o
 
+ITERS_DIV ?= 1
+CFLAGS_COMMON += -DITERS_DIV=$(ITERS_DIV)
+
 all: tcgbench.bin tcgbench-wasm.bin
+
+quick: tcgbench-quick.bin tcgbench-quick-wasm.bin
+
+# the quick images are separate objects so both variants coexist
+bench-quick.o: bench.c Makefile
+	$(CC) $(CFLAGS_COMMON) -UITERS_DIV -DITERS_DIV=4 -c -o $@ $<
+
+tcgbench-quick.elf: startup-exit.o bench-quick.o linker.ld
+	$(CC) $(CFLAGS_COMMON) startup-exit.o bench-quick.o -o $@
+
+tcgbench-quick-wasm.elf: startup-park.o bench-quick.o linker.ld
+	$(CC) $(CFLAGS_COMMON) startup-park.o bench-quick.o -o $@
 
 %.o: %.c
 	$(CC) $(CFLAGS_COMMON) -c -o $@ $<
@@ -38,11 +56,12 @@ tcgbench-wasm.elf: startup-park.o $(OBJS) linker.ld
 	$(OBJCOPY) -O binary $< $@
 	@ls -l $@
 
-install: tcgbench-wasm.bin
+install: tcgbench-wasm.bin tcgbench-quick-wasm.bin
 	cp tcgbench-wasm.bin ../../site/dist/tcgbench.bin
-	@echo "installed -> site/dist/tcgbench.bin (page: ?suite=dist/tcgbench.bin)"
+	cp tcgbench-quick-wasm.bin ../../site/dist/tcgbench-quick.bin
+	@echo "installed -> site/dist/tcgbench.bin + tcgbench-quick.bin (page: ?suite=dist/tcgbench[-quick].bin)"
 
 clean:
-	rm -f *.o tcgbench.elf tcgbench.bin tcgbench-wasm.elf tcgbench-wasm.bin
+	rm -f *.o *.elf *.bin
 
-.PHONY: all install clean
+.PHONY: all quick install clean

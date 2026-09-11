@@ -45,8 +45,11 @@ emscripten MEMFS, board configs are unpacked from `site/dist/boards.tar`, and
 qemu boots with a small `-display wasm` backend (see below). Two TCG
 engines are built from the same patched tree: the interpreter (TCI,
 `site/dist/`, the page default) and the wasm64 TCG backend (patch 0017,
-`site/dist-jit/`, page switch `?dist=dist-jit`) — boot-to-idle at TCI
-parity, ~7.4× TCI on compute. Both stay well behind native on
+`site/dist-jit/`, page switch `?dist=dist-jit`) — ~7.4× TCI on compute,
+but still ~27 % slower than TCI over the boot's translation-heavy
+first 0.5 G insns (user-visible: ~86 vs 78 s to the idle screen; see
+doc/optimization-playbook.md, 2026-09-11 benchmark audit). Both stay
+well behind native on
 device-heavy phases (a shared qemu-core dispatch cost — see
 [doc/performance-handoff.md](doc/performance-handoff.md)).
 
@@ -188,7 +191,8 @@ lands in `/tmp/pmb887x-serial.log`.
                               per-TB wasm functions → tail-call chaining →
                               128-TB batched modules → inline TLB probe →
                               inline TB accounting; served as site/dist-jit;
-                              boot at TCI parity, 7.4× TCI compute — see
+                              7.4× TCI compute, early boot phase still
+                              ~27 % behind TCI — see
                               doc/wasm-tcg-backend-plan.md + -progress.md)
     0018-io-fast-dispatch-victim-tlb.patch fill-time MMIO dispatch
                               resolution in the iotlb entry + flag-masked
@@ -288,8 +292,9 @@ fully rebased, benchmarked (~1.3–2.3x TCI ceiling, boot hangs) and
 **discarded** on 2026-09-09 — see doc/wasm32-port-status.md and
 patches/attic/wasm32-rebase/. Its redesigned successor **landed**: patch
 0017, the wasm64 TCG backend (tail-call chaining, regs-as-locals, batched
-modules) — performance-complete 2026-09-11 (boot at TCI parity, compute
-7.4× TCI, all gates green; doc/wasm-tcg-backend-plan.md +
+modules) — compute-complete 2026-09-11 (compute 7.4× TCI, all gates
+green; the boot's early phase is still ~27 % behind TCI — the
+"TCI parity" reading was a saturated tIdle; doc/wasm-tcg-backend-plan.md +
 -progress.md). The current workstream is the qemu-core device path
 (MMIO dispatch, timer storms) that every backend pays identically
 (doc/performance-handoff.md; its first slice landed as 0018).
@@ -305,5 +310,8 @@ modules) — performance-complete 2026-09-11 (boot at TCI parity, compute
   `?dist=dist-jit`).
 - Fast iteration: `scripts/ninja-fast.sh` / `scripts/ninja-wasm64.sh`
   (incremental, correct env) + `node tools/tcgbench.mjs` (seconds-per-leg
-  A/B); end-to-end meters: `tools/bootbench.mjs` / `tools/idlebench.mjs`;
+  A/B) + `node tools/idlebench.mjs --quick` (~1 min per dist: boot
+  window + guest-work milestones, A/B ratios, regression verdict);
+  full `tools/idlebench.mjs` runs are the end-to-end gate (bootbench.mjs
+  is deprecated);
   profiling: `tools/wprof2.mjs` (per-worker CDP CPU profiles).

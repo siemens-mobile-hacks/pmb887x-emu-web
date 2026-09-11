@@ -6,6 +6,11 @@
 //   node tools/tcgbench.mjs                       # native-jit + dist-jit
 //   LEGS=native-jit,native-tci,dist-jit,dist node tools/tcgbench.mjs
 //   EXTRA_Q="env=W64_NOACCTINLINE=1" node tools/tcgbench.mjs   # wasm knob
+//   SUITE=quick node tools/tcgbench.mjs           # ÷4-iteration smoke image
+//     (tcgbench-quick.bin, `make -C tests/tcgbench quick install`): ~3 s per
+//     wasm64 leg, TCI leg ~25 s; serial poll 40 ms (POLL_MS) so the 0.3–1.2 s
+//     phases still resolve to ~5–10 %.  ns/access and MIPS are directly
+//     comparable with the full image; per-phase checksums are not.
 //
 // Legs: native-jit / native-tci (spawned with -serial stdio, lines
 // timestamped as they stream) and <dist-name> (wasm page legs via
@@ -25,6 +30,10 @@ const legs = (process.env.LEGS || "native-jit,dist-jit").split(",");
 const icounts = (process.env.ICOUNTS || "0").split(","); // e.g. "0,1": tax matrix
 const extraQ = process.env.EXTRA_Q || "";
 const runs = Number(process.env.RUNS || 1);
+const suite = process.env.SUITE === "quick" ? "tcgbench-quick" : "tcgbench";
+// serial-poll period bounds the per-phase timestamp error on the wasm legs;
+// the quick image has ~0.3–1.2 s phases on wasm64, so poll faster there
+const pollMs = Number(process.env.POLL_MS || (suite === "tcgbench" ? 150 : 40));
 const bins = {
   "native-jit": process.env.QEMU_JIT || `${ROOT}/build/qemu-native-build/qemu-system-arm`,
   "native-tci": process.env.QEMU_TCI || `${ROOT}/build/qemu-native-tci-build/qemu-system-arm`,
@@ -36,7 +45,7 @@ const stamp = () => Number(process.hrtime.bigint() / 1000000n) / 1000; // s, µs
 function runNative(bin, icount) {
   return new Promise((resolve, reject) => {
     const args = ["-M", "versatilepb",
-      "-kernel", `${ROOT}/tests/tcgbench/tcgbench.bin`, "-semihosting",
+      "-kernel", `${ROOT}/tests/tcgbench/${suite}.bin`, "-semihosting",
       ...(icount ? ["-icount", "shift=3,sleep=off"] : []),
       "-display", "none", "-monitor", "none", "-serial", "stdio"];
     const p = spawn(bin, args, { stdio: ["ignore", "pipe", "inherit"] });
@@ -66,7 +75,7 @@ function runNative(bin, icount) {
 // run one wasm page leg: poll /serial.log, timestamp new lines
 async function runWasm(dist, browser, icount) {
   const page = await browser.newPage();
-  const q = new URLSearchParams({ suite: "dist/tcgbench.bin", dist });
+  const q = new URLSearchParams({ suite: `dist/${suite}.bin`, dist });
   if (icount) q.set("icount", "1");
   for (const kv of extraQ.split("&").filter(Boolean)) {
     const i = kv.indexOf("=");
@@ -80,7 +89,7 @@ async function runWasm(dist, browser, icount) {
     await page.goto(`http://127.0.0.1:${port}/?${q}`, { waitUntil: "domcontentloaded", timeout: 120000 });
     let seen = 0;
     for (;;) {
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, pollMs));
       const s = await page.evaluate(() => {
         const m = window.__qemu;
         try {
@@ -228,10 +237,11 @@ console.log(cksums.size === 1 && !cksums.has(null)
 
 const out = {
   ts: new Date().toISOString(),
-  legs, icounts, extraQ, runs,
+  suite, legs, icounts, extraQ, runs,
   results, medians: med,
 };
 const file = `${ROOT}/tests/results/tcgbench-${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16)}.json`;
 fs.writeFileSync(file, JSON.stringify(out, null, 1));
-fs.writeFileSync(`${ROOT}/tests/results/tcgbench-latest.json`, JSON.stringify(out, null, 1));
-console.log(`results: ${file} (+ tcgbench-latest.json)`);
+const latest = `tcgbench-${suite === "tcgbench" ? "" : "quick-"}latest.json`;
+fs.writeFileSync(`${ROOT}/tests/results/${latest}`, JSON.stringify(out, null, 1));
+console.log(`results: ${file} (+ ${latest})`);

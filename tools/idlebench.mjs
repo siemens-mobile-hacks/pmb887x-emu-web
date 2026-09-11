@@ -7,22 +7,46 @@
 //     override --ref=). Compare ONLY the bottom --rows (default 139)
 //     rows: everything above that is animated at idle (network-search
 //     spinner, clock), the bottom 139 are pixel-stable across boots.
-//   - startup=ONLINE, fresh browser per run; runs of the same dist are
-//     sequential (deterministic protocol), but ALL DISTS RUN IN PARALLEL
-//     (one browser each). Note: parallel dists share host load, so
-//     wall-clock metrics across dists in the same invocation are still
-//     comparable only if the dists behave similarly — cross-session
-//     diffing of idlebench-latest.json remains the reliable comparison.
+//   - startup=ONLINE, fresh browser per run, SEQUENTIAL: one browser at
+//     a time, dists interleaved (d1 r1, d2 r1, d1 r2, ...) so host-load
+//     drift hits both sides equally.  --parallel runs all dists at once
+//     (one browser each) — faster, but the dists then pace each other
+//     (2026-09-11: parallel dist/dist-jit pairs finished their 1.3G
+//     insns within 0.1 s of each other in 3/3 invocations while their
+//     per-phase curves differed by 30 %); use it for smoke only.
 //   - idle = FIRST LCD match at/after --floor (30) s after Start;
 //     tIdle is that sample. Pixel comparison doesn't even start until
 //     floorSecs (reaching idle earlier is unlikely) to keep the sampler
-//     cheap. Per-pixel rule follows compare-lcd.mjs: a pixel differs when
-//     any channel differs by > 48; match when <= --pct (0.5%) differ.
+//     cheap; sampling is 1 s before the floor and 0.5 s after it, so
+//     tIdle resolves to 0.5 s (it used to sit on a 2 s grid, which is
+//     how a 30 % early-phase gap between /dist and /dist-jit read as
+//     "median 76.4 s both"). Per-pixel rule follows compare-lcd.mjs: a
+//     pixel differs when any channel differs by > 48; match when <=
+//     --pct (0.5%) differ.
+//   - GUEST-WORK MILESTONES (the sensitive A/B numbers): the boot to
+//     idle executes a fixed ~1.345e9 guest insns on this flash (±0.3 %
+//     across builds, hosts and load), so "wall s until N insns" is a
+//     deterministic per-phase speed metric with no LCD, no grid and no
+//     real-time gating: tInsns[0.1|0.25|0.5|0.75|1.0|1.2|1.3]G
+//     (interpolated).  t0.5G is the early, translation/flash-heavy
+//     phase (where the wasm64 JIT is slower than TCI); t1.3G is
+//     "boot work done" (tIdle follows it by ~2-3 s).  Read these before
+//     tIdle — tIdle alone hid the JIT's early-phase regression.
 //   - --window LO:HI (default 2:7): wall seconds of guest work between
 //     v=LO and v=HI, interpolated from the sample series — the A/B
 //     metric that used to come from bootbench.mjs (now deprecated).
 //   - --noref: skip the LCD comparison entirely (pct=100, match=false)
 //     — pure window/metrics mode, equivalent to old bootbench.
+//   - --quick: = --runs 1 --max 60 --noref — ~1 min per dist, reports
+//     window + t0.1G/t0.25G/t0.5G (the phase where backend regressions
+//     show first).  Use it as the iteration loop; full runs are gates.
+//   - Every invocation compares itself against the previous
+//     idlebench-latest.json (quick runs: idlebench-quick-latest.json; or
+//     --baseline <json>; runs with JS_FLAGS/EXTRA_Q never become the
+//     baseline) per dist and prints
+//     the deltas of tIdle / window / t0.5G / t1.3G medians; |delta| >
+//     --regress (5) % is flagged REGRESSION / IMPROVEMENT on stdout, so
+//     a slower build cannot pass silently.
 //   - JS_FLAGS env: extra V8 flags for the browser (e.g. "--no-wasm-lazy-compilation").
 //   - EXTRA_Q env: extra query string appended to the page URL.
 //   - RATES=1 env: per-sample guest insns/s added to the JSON.
@@ -45,8 +69,10 @@
 // Usage:
 //   PORT=8094 node tools/idlebench.mjs [dists] [--runs N] [--max S]
 //     dists: comma list, default "dist,dist-jit"
+//   PORT=8094 node tools/idlebench.mjs --quick             # ~2 min A/B
 //   PORT=8094 node tools/idlebench.mjs dist --runs 3
 //   PORT=8094 node tools/idlebench.mjs dist-jit --runs 3 --max 1800
+//   PORT=8094 node tools/idlebench.mjs --baseline tests/results/idlebench-<ts>.json
 import { chromium } from "playwright-core";
 import { createHash } from "node:crypto";
 import { execSync } from "node:child_process";
@@ -63,18 +89,23 @@ const opt = (name, dflt) => {
   return dflt;
 };
 const dists = (argv.find((a) => !a.startsWith("--")) || "dist,dist-jit").split(",");
-const runs = Number(opt("runs", 3));
-const maxSecs = Number(opt("max", 1500));
+const quick = argv.includes("--quick");
+const runs = Number(opt("runs", quick ? 1 : 3));
+const maxSecs = Number(opt("max", quick ? 60 : 1500));
+const parallel = argv.includes("--parallel");
+const regressPct = Number(opt("regress", 5));
 const stallSecs = Number(opt("stall", 300));
 const floorSecs = Number(opt("floor", 30));
 const [winLo, winHi] = String(opt("window", "2:7")).split(":").map(Number);
 const rows = Number(opt("rows", 139));
 const pctMax = Number(opt("pct", 0.5));
 const port = process.env.PORT || "8080";
-const noref = argv.includes("--noref");
+const noref = argv.includes("--noref") || quick;
 const jsFlags = process.env.JS_FLAGS || "";
 const extraQ = process.env.EXTRA_Q || "";
-const SAMPLE_MS = 2000;
+const SAMPLE_MS = 1000;        // before the floor (v/insns curve)
+const SAMPLE_MS_IDLE = 500;    // at/after the floor (tIdle resolution)
+const INSN_MILESTONES = [0.1e9, 0.25e9, 0.5e9, 0.75e9, 1.0e9, 1.2e9, 1.3e9];
 const V_MILESTONES = [2, 5, 10, 20, 40, 80, 120, 160, 200, 245];
 const T_MILESTONES = [30, 60, 90, 110, 150, 240, 360, 600, 900];
 
@@ -126,7 +157,7 @@ function rssMB(marker) {
 
 // in-page sampler: returns {v, pct, u, insns, tbs, match} in one shot.
 // The reference image is decoded once and cached on the window.
-const SAMPLER = (cfg) => {
+const SAMPLER = async (cfg) => {
   const { refB64, rowsCmp, pctMax, cmp } = cfg;
   const m = window.__qemu;
   if (!m || !m._wasm_vclock) return null;
@@ -141,6 +172,7 @@ const SAMPLER = (cfg) => {
       window.__ref = { img, dec: img.decode(), rc: new OffscreenCanvas(0, 0) };
     }
     const r = window.__ref;
+    await r.dec; // drawImage of an undecoded image paints nothing -> false "no match"
     r.rc.width = r.img.width; r.rc.height = r.img.height;
     r.rc.getContext("2d").drawImage(r.img, 0, 0);
     const ref = r.rc.getContext("2d").getImageData(0, 0, r.img.width, r.img.height);
@@ -174,15 +206,18 @@ const SAMPLER = (cfg) => {
 
 const results = [];
 
-// wall-time (s from Start) at which the sample series crosses v
-// (linear interpolation between samples) — null if never reached
-function crossAt(samples, v) {
+// wall-time (s from Start) at which the sample series crosses value x
+// in column col (1 = v, 2 = insns), linear interpolation — null if never
+function crossAt(samples, x, col = 1) {
   for (let k = 1; k < samples.length; k++) {
-    const [t0, v0] = samples[k - 1], [t1, v1] = samples[k];
-    if (v0 < v && v <= v1) return t0 + ((v - v0) / (v1 - v0)) * (t1 - t0);
+    const [t0, a] = [samples[k - 1][0], samples[k - 1][col]];
+    const [t1, b] = [samples[k][0], samples[k][col]];
+    if (a < x && x <= b) return t0 + ((x - a) / (b - a)) * (t1 - t0);
   }
   return null;
 }
+const insnKey = (i) => `${i / 1e9}G`;
+const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
 
 // same stamp as the JSON below, so screenshots sort next to their run
 const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
@@ -295,7 +330,7 @@ async function runOne(dist, hashes, r) {
         }
       }
       rssPeak = Math.max(rssPeak, rssMB(procTag) || 0);
-      await new Promise((r2) => setTimeout(r2, SAMPLE_MS));
+      await new Promise((r2) => setTimeout(r2, (!noref && t >= floorSecs) ? SAMPLE_MS_IDLE : SAMPLE_MS));
     }
     rec.wall = +((Date.now() - t0) / 1000).toFixed(1);
     rec.rssPeakMB = rssPeak;
@@ -309,6 +344,13 @@ async function runOne(dist, hashes, r) {
     // v=winLo and v=winHi, interpolated over the sample series
     const wLo = crossAt(rec.samples, winLo), wHi = crossAt(rec.samples, winHi);
     if (wLo !== null && wHi !== null) rec.window = +(wHi - wLo).toFixed(1);
+    // guest-work milestones: wall s until N insns executed (deterministic
+    // work -> pure speed; no LCD, no grid, immune to idle real-time gating)
+    rec.tInsns = {};
+    for (const i of INSN_MILESTONES) {
+      const t = crossAt(rec.samples, i, 2);
+      if (t !== null) rec.tInsns[insnKey(i)] = +t.toFixed(1);
+    }
     if (process.env.RATES)
       rec.rates = rec.samples.map(([t, v, i], k) =>
         k === 0 || t === rec.samples[k - 1][0] ? null
@@ -334,8 +376,9 @@ async function runOne(dist, hashes, r) {
       } catch {}
       rec.salvageDir = dir;
     }
+    const ms = Object.entries(rec.tInsns).map(([k, t]) => `${k}:${t}`).join(" ");
     console.log(`  [${tag}] -> ${rec.cls}  tModule=${rec.tModule}s  tIdle=${rec.tIdle ?? "-"}s` +
-      `  window=${rec.window ?? "-"}s  v@110s=${rec.vAt[110] ?? "-"}  vHit245=${rec.vHitAt[245] ?? "-"}s  rss=${rssPeak}MB`);
+      `  window=${rec.window ?? "-"}s  tInsns[${ms}]  insns@end=${rec.last ? (rec.last.insns / 1e6).toFixed(0) + "M" : "-"}  rss=${rssPeak}MB`);
     await b.close();
     return rec;
 }
@@ -348,8 +391,19 @@ async function runDist(dist) {
   for (let r = 1; r <= runs; r++) results.push(await runOne(dist, hashes, r));
 }
 
-// all dists in parallel (runs within a dist sequential)
-await Promise.all(dists.map(runDist));
+const hashesOf = (dist) => ({
+  wasm: sha256(here + `../site/${dist}/qemu-system-arm.wasm`),
+  js: sha256(here + `../site/${dist}/qemu-system-arm.js`),
+});
+if (parallel) {
+  // all dists at once (runs within a dist sequential) — smoke only, the
+  // dists pace each other (see header)
+  await Promise.all(dists.map(runDist));
+} else {
+  // one browser at a time, dists interleaved per run index
+  for (let r = 1; r <= runs; r++)
+    for (const dist of dists) results.push(await runOne(dist, hashesOf(dist), r));
+}
 // restore deterministic ordering in the JSON
 results.sort((a, b) => dists.indexOf(a.dist) - dists.indexOf(b.dist) || a.run - b.run);
 
@@ -357,9 +411,17 @@ const summary = {};
 for (const dist of dists) {
   const rs = results.filter((r) => r.dist === dist && r.cls === "IDLE").map((r) => r.tIdle).sort((a, b) => a - b);
   const ws = results.filter((r) => r.dist === dist && r.window !== undefined).map((r) => r.window).sort((a, b) => a - b);
+  const tInsns = {};
+  for (const i of INSN_MILESTONES) {
+    const k = insnKey(i);
+    const ts = results.filter((r) => r.dist === dist && r.tInsns && r.tInsns[k] !== undefined).map((r) => r.tInsns[k]);
+    if (ts.length) tInsns[k] = { n: ts.length, min: Math.min(...ts), median: median(ts), max: Math.max(...ts) };
+  }
   summary[dist] = {
     idle: rs.length ? { n: rs.length, min: rs[0], median: rs[Math.floor(rs.length / 2)], max: rs[rs.length - 1] } : null,
     window: ws.length ? { n: ws.length, min: ws[0], median: ws[Math.floor(ws.length / 2)], max: ws[ws.length - 1] } : null,
+    tInsns,
+    hashes: hashesOf(dist),
     nonIdle: results.filter((r) => r.dist === dist && r.cls !== "IDLE").map((r) => `${r.run}:${r.cls}`),
   };
 }
@@ -367,17 +429,62 @@ const out = {
   ts: new Date().toISOString(), chromeVer,
   flash: FLASH.split("/").pop(), flashSha: sha256(FLASH),
   ref: REF.split("/").pop(), refSha: sha256(REF),
-  config: { maxSecs, stallSecs, floorSecs, rows, pctMax, sampleMs: SAMPLE_MS, startup: "ONLINE", noref, window: `${winLo}:${winHi}`, jsFlags, extraQ },
+  config: { maxSecs, stallSecs, floorSecs, rows, pctMax, sampleMs: SAMPLE_MS, sampleMsIdle: SAMPLE_MS_IDLE, startup: "ONLINE", noref, parallel, window: `${winLo}:${winHi}`, jsFlags, extraQ },
   summary, results,
 };
+// "latest" aliases: full runs -> idlebench-latest.json, --quick runs ->
+// idlebench-quick-latest.json (different caps, keep the baselines apart).
+// Knob runs (JS_FLAGS / EXTRA_Q set) never become a baseline.
+const latestPath = here + `../tests/results/idlebench-${quick ? "quick-" : ""}latest.json`;
+const knobRun = !!(jsFlags || extraQ);
+const baselinePath = opt("baseline", latestPath);
+let baseline = null;
+try { baseline = JSON.parse(readFileSync(baselinePath, "utf8")); } catch {}
 const outPath = here + `../tests/results/idlebench-${stamp}.json`;
 writeFileSync(outPath, JSON.stringify(out, null, 2));
-copyFileSync(outPath, here + "../tests/results/idlebench-latest.json");
+if (!knobRun) copyFileSync(outPath, latestPath);
 console.log("\n=== summary ===");
 for (const [dist, s] of Object.entries(summary)) {
-  console.log(`${dist}: ` + (s.idle
+  const ms = Object.entries(s.tInsns).map(([k, m]) => `${k}:${m.median}`).join(" ");
+  console.log(`${dist} [wasm ${s.hashes.wasm}]: ` + (s.idle
     ? `IDLE min ${s.idle.min}s / median ${s.idle.median}s / max ${s.idle.max}s (n=${s.idle.n})`
     : `NO IDLE RUNS (${(s.nonIdle || []).join(", ")})`) +
-    (s.window ? ` | window ${s.window.median}s (min ${s.window.min}s, max ${s.window.max}s, n=${s.window.n})` : ""));
+    (s.window ? ` | window ${s.window.median}s (min ${s.window.min}s, max ${s.window.max}s, n=${s.window.n})` : "") +
+    (ms ? ` | tInsns median [${ms}]` : ""));
 }
-console.log(`results: ${outPath} (+ idlebench-latest.json)`);
+// A/B across dists of this invocation: per-metric ratios vs the first dist
+if (dists.length > 1) {
+  const ref = summary[dists[0]];
+  const pick = (s) => ({ tIdle: s.idle?.median, window: s.window?.median, ...Object.fromEntries(Object.entries(s.tInsns).map(([k, m]) => ["t" + k, m.median])) });
+  const a = pick(ref);
+  for (const dist of dists.slice(1)) {
+    const b = pick(summary[dist]);
+    const parts = Object.keys(a).filter((k) => a[k] != null && b[k] != null)
+      .map((k) => `${k} ${b[k]}/${a[k]} = ${(100 * (b[k] / a[k] - 1)).toFixed(0).replace(/^(\d)/, "+$1")} %`);
+    if (parts.length) console.log(`A/B ${dist} vs ${dists[0]}: ` + parts.join(" | ") + "   (positive = slower)");
+  }
+}
+// regression check vs the previous latest (or --baseline): same flash + protocol only
+if (baseline && baseline.flashSha === out.flashSha && baseline.config?.startup === "ONLINE") {
+  console.log(`\n=== vs baseline ${path.basename(baselinePath)} (${baseline.ts}) ===`);
+  for (const dist of dists) {
+    const b = baseline.summary?.[dist];
+    if (!b) { console.log(`${dist}: no baseline runs`); continue; }
+    const rows = [
+      ["tIdle", summary[dist].idle?.median, b.idle?.median],
+      ["window", summary[dist].window?.median, b.window?.median],
+      ...INSN_MILESTONES.map((i) => ["t" + insnKey(i), summary[dist].tInsns[insnKey(i)]?.median, b.tInsns?.[insnKey(i)]?.median]),
+    ].filter(([, x, y]) => x != null && y != null);
+    if (!rows.length) { console.log(`${dist}: no comparable metrics (baseline predates tInsns? run once more)`); continue; }
+    const parts = rows.map(([k, x, y]) => {
+      const d = 100 * (x / y - 1);
+      const tag = d > regressPct ? " REGRESSION" : d < -regressPct ? " IMPROVEMENT" : "";
+      return `${k} ${y}->${x} (${d >= 0 ? "+" : ""}${d.toFixed(0)} %${tag})`;
+    });
+    const hashNote = b.hashes && b.hashes.wasm !== summary[dist].hashes.wasm ? ` [wasm ${b.hashes.wasm} -> ${summary[dist].hashes.wasm}]` : " [same wasm]";
+    console.log(`${dist}${hashNote}: ` + parts.join(" | "));
+  }
+} else if (baseline) {
+  console.log(`\n(no baseline comparison: ${path.basename(baselinePath)} uses a different flash/protocol)`);
+}
+console.log(`results: ${outPath}` + (knobRun ? " (knob run: latest alias NOT updated)" : ` (+ ${path.basename(latestPath)})`));
