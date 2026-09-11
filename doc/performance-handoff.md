@@ -11,8 +11,8 @@ linear Unix-seconds counter: the packed value decodes to "Wed 02 May
 shown clock jumped +16 min at every minute boundary (the "~22×").
 Reproduced identically on the pristine native build (~300× there, the
 idle virtual clock also warping without 0032).  0033 adds a per-board
-`cnt-format` (board config `board.rtc.format`, vendor default LG →
-calendar, else unix).  Verified on native S75/C81/KE800 and on both
+`cnt-format` read from the board config's `[rtc] format` key (default
+`unix`; the LG configs set `calendar` via `patches/bsp/0002`).  Verified on native S75/C81/KE800 and on both
 wasm dists (S75 "Пт 11 Сен", advancing 1 min per wall minute).  The
 RTC-CNT-vs-vclock method that found it: `?trace=rtc&tracebuf=1` reads
 decoded both ways next to LCD screenshots (`tools/` has no permanent

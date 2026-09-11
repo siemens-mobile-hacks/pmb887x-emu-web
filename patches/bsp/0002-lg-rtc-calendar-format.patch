@@ -1,0 +1,39 @@
+From: sie-mcp web <web@sie-mcp.local>
+Subject: [PATCH] bsp: LG boards read the RTC counter as packed calendar fields ([rtc] format)
+
+The emulator seeds RTC CNT as a linear Unix-seconds counter by default
+(what Siemens firmware expects, qemu patch 0033); LG firmware decodes the
+fields as a sec/min/hour/yday calendar, so its boards select that layout.
+
+diff --git a/lib/data/board/lg-ke800.toml b/lib/data/board/lg-ke800.toml
+index 1156d4c..542edef 100644
+--- a/lib/data/board/lg-ke800.toml
++++ b/lib/data/board/lg-ke800.toml
+@@ -5,6 +5,11 @@ model = "KE800"
+ cpu.type = "pmb8876"
+ cpu.rev = 0x10
+ 
++# The firmware reads RTC CNT as packed calendar fields (sec/min/hour/yday);
++# Siemens firmware wants a linear Unix-seconds counter (the default "unix").
++[rtc]
++format = "calendar"
++
+ [peripheral.LCD0]
+ type = "r63400"
+ bus = "DIF"
+diff --git a/lib/data/board/lg-ke970.toml b/lib/data/board/lg-ke970.toml
+index e653565..b6e6005 100644
+--- a/lib/data/board/lg-ke970.toml
++++ b/lib/data/board/lg-ke970.toml
+@@ -8,6 +8,11 @@ cpu.uid0 = 0x03157463
+ cpu.uid1 = 0x18000283
+ cpu.uid2 = 0x00090D0C
+ 
++# The firmware reads RTC CNT as packed calendar fields (sec/min/hour/yday);
++# Siemens firmware wants a linear Unix-seconds counter (the default "unix").
++[rtc]
++format = "calendar"
++
+ [peripheral.LCD0]
+ type = "r61505"
+ bus = "DIF"

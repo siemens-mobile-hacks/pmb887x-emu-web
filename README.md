@@ -271,11 +271,12 @@ lands in `/tmp/pmb887x-serial.log`.
                               clock/animations run at real-time; the boot
                               (virtual behind wall) is never throttled
     0033-rtc-cnt-format-per-board.patch  RTC CNT seeded in the layout the
-                              firmware expects (pmb887x-rtc "cnt-format",
-                              board.rtc.format / vendor default: LG =
-                              packed calendar, Siemens = linear Unix
-                              seconds): fixes the year-2091 date and the
-                              +16 min-per-minute displayed clock
+                              firmware expects (pmb887x-rtc "cnt-format"
+                              from the board config's [rtc] format key:
+                              default "unix" = linear Unix seconds for
+                              Siemens, "calendar" = packed fields for LG,
+                              set by patches/bsp/0002): fixes the year-2091
+                              date and the +16 min-per-minute displayed clock
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression, superseded by the reworked
                               0004; 0015 diag counters: measured neutral, no

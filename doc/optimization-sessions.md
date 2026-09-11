@@ -985,8 +985,10 @@ pinned rev's "fix RTC date/time encoding", 3e497d7ae7, which replaced
 with the packed layout and "00:00 1/1" with linear seconds — the LG
 firmware reads the fields, which is what the upstream fix targeted.  So
 0033 makes it per board: `pmb887x-rtc` property `cnt-format`
-(`calendar`|`unix`), set from the optional board config key
-`board.rtc.format`, vendor default LG → calendar, else unix.  The seed
+(`calendar`|`unix`), set from the board config's `[rtc] format` key
+(default `unix`; the LG board configs set `calendar` through
+`patches/bsp/0002`, applied by `sync-bsp.sh` and shipped in
+`boards.tar`).  No vendor heuristic in C.  The seed
 still goes through `qemu_get_timedate()` (lockstep's fixed `-rtc base=`
 stays deterministic).  EL71 shows its "set time and date?" wizard with
 either layout — pre-existing, unrelated.

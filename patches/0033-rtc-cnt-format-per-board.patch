@@ -1,5 +1,5 @@
 From: perf session 2026-09-11
-Subject: [PATCH 0033] pmb887x: seed the RTC counter in the layout the firmware expects (per board)
+Subject: [PATCH 0033] pmb887x: seed the RTC counter in the layout the firmware expects ([rtc] format)
 
 The pinned rev's "fix RTC date/time encoding" (3e497d7ae7) seeds RTC CNT
 as a packed calendar (sec/min/hour/yday in the 10/6/6/10-bit fields, REL
@@ -17,9 +17,9 @@ was never a wasm or warp-patch regression.
 
 Add a "cnt-format" property to pmb887x-rtc: "calendar" (the packed
 layout) or "unix" (linear seconds since the epoch, REL = 0 so the fields
-carry into each other).  The board picks it from the optional board
-config key board.rtc.format, defaulting by vendor: LG -> calendar,
-everything else -> unix.  Both honour -rtc base=/clock= through
+carry into each other).  The board reads it from the board config's
+[rtc] table, key "format", default "unix"; the LG board configs select
+"calendar" (patches/bsp/0002).  Both honour -rtc base=/clock= through
 qemu_get_timedate() (lockstep's fixed base stays deterministic).
 
 Verified (screendumps 20-50 s apart, host 17:2x UTC): native S75 "Пт 11
@@ -28,22 +28,21 @@ dist-jit 21:23 -> 21:24 over 60 s, dist 21:26 -> 21:27 over 40 s.  EL71
 shows its set-time wizard with either layout (pre-existing, unrelated).
 
 diff --git a/hw/arm/pmb887x/board.c b/hw/arm/pmb887x/board.c
---- a/hw/arm/pmb887x/board.c	2026-09-11 17:22:33.741544866 +0000
-+++ b/hw/arm/pmb887x/board.c	2026-09-11 17:19:52.364665389 +0000
-@@ -300,6 +300,11 @@
+--- a/hw/arm/pmb887x/board.c	2026-09-11 17:42:45.403836169 +0000
++++ b/hw/arm/pmb887x/board.c	2026-09-11 17:42:32.511395198 +0000
+@@ -300,6 +300,10 @@
  	// RTC
  	DeviceState *rtc = pmb887x_new_cpu_module("RTC");
  	object_property_set_link(OBJECT(rtc), "cgu", OBJECT(cgu), &error_fatal);
-+	// How the firmware reads RTC CNT at power-on: LG decodes packed
-+	// calendar fields, Siemens a linear Unix-seconds counter (see rtc.c).
-+	const char *rtc_default_format = strcmp(pmb887x_board()->vendor, "LG") == 0 ? "calendar" : "unix";
++	// [rtc] format = "unix" | "calendar": how the firmware reads CNT at
++	// power-on (see rtc.c); LG boards set calendar in their config.
 +	qdev_prop_set_string(rtc, "cnt-format",
-+		toml_table_get_string(pmb887x_board()->config, "board.rtc.format", rtc_default_format, false));
++		toml_table_get_string(pmb887x_board()->config, "rtc.format", "unix", false));
  	sysbus_realize_and_unref(SYS_BUS_DEVICE(rtc), &error_fatal);
  
  	// GPTU0
 diff --git a/hw/arm/pmb887x/rtc.c b/hw/arm/pmb887x/rtc.c
---- a/hw/arm/pmb887x/rtc.c	2026-09-11 17:22:33.805546781 +0000
+--- a/hw/arm/pmb887x/rtc.c	2026-09-11 17:42:45.426810048 +0000
 +++ b/hw/arm/pmb887x/rtc.c	2026-09-11 17:20:03.688011516 +0000
 @@ -13,6 +13,7 @@
  #include "qapi/error.h"
