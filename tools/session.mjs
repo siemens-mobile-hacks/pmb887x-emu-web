@@ -56,6 +56,7 @@ let browser = null;
 let page = null;
 let bootAt = 0;
 let lastSample = null; // {t, insns} for rate-since-last-status
+let consoleLines = [];
 
 async function ensureServer() {
   const up = async () => {
@@ -88,9 +89,18 @@ async function boot(params = []) {
   if (page) await page.close().catch(() => {});
   page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.on("pageerror", (e) => log("pageerror:", String(e).slice(0, 300)));
+  consoleLines = [];
+  page.on("console", (m) => {
+    consoleLines.push(((Date.now() - bootAt) / 1000).toFixed(1) + "s " + m.text());
+    if (consoleLines.length > 50000) consoleLines.splice(0, 10000);
+  });
+  // rw=1 is a page checkbox (writable flash), not a query param
+  const rw = params.includes("rw=1");
+  params = params.filter((p) => p !== "rw=1");
   const q = params.length ? "?" + params.join("&") : "";
   await page.goto(URL_() + q, { waitUntil: "networkidle", timeout: 120000 });
   await page.selectOption("#startup", "ONLINE");
+  if (rw) await page.check("#rw");
   await page.setInputFiles("#fullflash", fullflashFiles); // + .cfi-efa sidecar if present (LG)
   await page.click("#btn-start");
   bootAt = Date.now();
@@ -196,6 +206,16 @@ const commands = {
   eval: async (args) => {
     if (!page) throw new Error("no page");
     return page.evaluate(args.join(" "));
+  },
+  // console [substr]: captured page console lines (worker stderr included)
+  console: async (args) => {
+    const f = args.join(" ");
+    return consoleLines.filter((l) => !f || l.includes(f)).join("\n");
+  },
+  stop: async () => {
+    if (!page) throw new Error("no page");
+    await page.click("#btn-stop");
+    return "stop clicked";
   },
   quit: async () => { setTimeout(() => shutdown(), 100); return "bye"; },
 };

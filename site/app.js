@@ -536,6 +536,12 @@ async function boot() {
         if (qsp.get("icount2debug") === "1") {
           mod.ENV.QEMU_ICOUNT2_DEBUG = "1";
         }
+        // ?rt=off|banked|strict: real-time cap on the icount clock (the
+        // vCPU sleeps instead of running its clocks ahead of wall time;
+        // default banked — a slow boot is never slowed further; the
+        // benchmarks pass rt=off to measure engine speed)
+        const rt = qsp.get("rt");
+        if (rt) mod.ENV.QEMU_ICOUNT_RTCAP = rt;
         // ?lockstep=1: built-in guest-state fold (wasm64 backend,
         // doc/wasm-tcg-backend-plan.md §5) — env-driven twin of the
         // tests/lockstep.c plugin. Extra ls-* params map to

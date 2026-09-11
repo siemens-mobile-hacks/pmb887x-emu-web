@@ -104,7 +104,7 @@ p.on("console", (m) => {
       stalledAt = samples[k-1][0];
   }
 });
-const q = [dist ? `dist=${dist}` : "", extraQ].filter(Boolean).join("&");
+const q = [dist ? `dist=${dist}` : "", "rt=off", extraQ].filter(Boolean).join("&");
 await p.goto(`http://127.0.0.1:${port}/${q ? `?${q}` : ""}`, { waitUntil: "domcontentloaded" });
 await p.addScriptTag({ content: `
   window.__watch = setInterval(() => {

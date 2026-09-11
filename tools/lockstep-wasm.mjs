@@ -85,6 +85,7 @@ class WasmSide {
     fs.mkdirSync(this.dir, { recursive: true });
     const q = [
       `dist=${dist}`,
+      "rt=off",
       "lockstep=1",
       `ls-insns=${this.args.insns}`,
       `ls-period=${this.args.period}`,

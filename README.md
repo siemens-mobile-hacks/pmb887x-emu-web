@@ -258,6 +258,18 @@ lands in `/tmp/pmb887x-serial.log`.
     0030-wasm64-spec-explored-flag.patch  speculation stops re-walking
                               neighbourhoods whose successors all exist
                               (walk overhead 0.87 -> 0.29 s per boot)
+    0031-wasm64-asyncify-onlylist.patch  instrument only the functions on
+                              a real coroutine-switch stack (ASYNCIFY_ONLY),
+                              not everything the invoke_* wrappers reach:
+                              dist-jit wasm 45.1 -> 27.8 MB, tIdle -18 %.
+                              wasm64-only (regresses TCI +26 %); flash
+                              blk_pwrite deferred to a main-loop BH
+    0032-icount-realtime-cap.patch  optional real-time cap on sleep=off
+                              (QEMU_ICOUNT_RTCAP / ?rt=, wasm default
+                              banked): the vCPU sleeps instead of warping
+                              the virtual clock past wall time, so the idle
+                              clock/animations run at real-time; the boot
+                              (virtual behind wall) is never throttled
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression, superseded by the reworked
                               0004; 0015 diag counters: measured neutral, no

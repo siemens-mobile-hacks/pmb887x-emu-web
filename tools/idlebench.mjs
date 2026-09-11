@@ -265,7 +265,8 @@ async function runOne(dist, hashes, r) {
     });
 
     try {
-      await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+      // rt=off: the real-time cap would pace a faster-than-realtime boot
+      await p.goto(`http://127.0.0.1:${port}/?dist=${dist}&rt=off${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
       await p.selectOption("#startup", "ONLINE");
       await p.setInputFiles("#fullflash", FLASH);
     } catch (e) {

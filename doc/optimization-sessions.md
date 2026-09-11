@@ -865,3 +865,96 @@ every patch hunk from them, and `capture-patch.sh verify-tmp` cannot
 see it (files equal to the pinned rev are invisible to it).  Always pass
 absolute patch paths, and check the worktree has `tcg/wasm64/` before
 using it as a baseline.
+
+## Session log: 2026-09-11 (patches 0031, 0032 — Asyncify onlylist; real-time cap; the clock-too-fast report)
+
+Two user reports beyond raw boot speed: (1) the idle-screen clock and
+some animations run *faster* than real time, while the boot is *slower*
+than real time and a J2ME stopwatch runs ~0.1×; (2) the fast-clock issue
+is absent in native's main branch (i.e. a regression from our patches).
+
+**0031 — the Asyncify instrumentation allowlist (the boot-speed win).**
+`-sASYNCIFY_ADVISE=1` on the link showed ~21k of ~21k functions "can
+change the state": the emscripten fiber backend unwinds the whole C stack
+at a coroutine switch, and the `invoke_*` setjmp/longjmp wrappers +
+indirect calls make almost everything reachable, so `ASYNCIFY_REMOVE=
+tcg_qemu_tb_exec` (instrument all-but-the-interpreter) instrumented ~17 MB
+of the 45 MB wasm.  On the wasm64 backend that is dead weight — guest code
+runs as JIT'd modules, not `tcg_qemu_tb_exec`.  Switched to
+`-sASYNCIFY_ONLY=@configs/meson/asyncify-only.txt`.  Building the list:
+`QEMU_COSTACK=1` (a new EM_JS in `util/coroutine-wasm.c`) logs each
+distinct JS/wasm stack at a switch; captured over boot, keypad, a writable
+(`?rw=1`) flash write and shutdown, resolved through the `.symbols`
+sidecar, plus name-pattern families (block layer, aio, coroutine, main
+loop, emscripten runtime).  Two closers: (a) a rw-flash store ran
+`blk_pwrite` (a block coroutine) from the vCPU thread's MMIO handler,
+whose JIT'd TB frame + `invoke_*` wrapper can never be instrumented — it
+derailed with `RuntimeError: unreachable` at the first write; deferred to
+a main-loop bottom half (`hw/arm/pmb887x/flash-blk.c`, coalescing
+adjacent ranges, vm-state-change flush).  (b) The vCPU thread is marked
+`qemu_coroutine_forbid_current_thread` so any missed switch aborts loudly
+instead of derailing.
+
+Traps on the way: `ASYNCIFY_ONLY` rejects import names (`invoke_v` — those
+belong to the import list, not the onlylist) and needs the full emscripten
+pthread/runtime set added by name (from the advise log).  The `@file` path
+must be **absolute**: meson runs its compile probes from temp dirs, so a
+relative `@../qemu/...` "file not found"s on every reconfigure (kills the
+`rt` library probe).  And `meson configure -Dc_link_args=` needs the
+`['a','b']` bracket form — a comma string is passed to clang as one arg.
+
+**wasm64-only.**  The onlylist is captured on the *product* (pmb887x); the
+op-suite runs *versatilepb*, which pulls in SCSI/LSI disk init whose
+coroutine unwind the list doesn't cover, so the suite's wasm leg traps.
+More important: on the TCI `/dist`, whose hot path *is* `tcg_qemu_tb_exec`,
+the onlylist **regressed +26 %** (interleaved `--runs 2`, both orders:
+dist 56.4 → 71 s).  So `/dist` keeps `ASYNCIFY_REMOVE`; the wasm64 build
+overrides the shared `configs/meson/emscripten.txt` in
+`scripts/build-qemu-wasm64.sh` (`meson configure` with the ONLY link
+args).  Result on `/dist-jit`: wasm **45.1 → 27.8 MB**, idlebench
+`--runs 2` interleaved vs the session base **tIdle 40.3 → 33.2 s (−18 %)**,
+t0.5G 29.6 → 24.0 (−19 %), t0.1G 5.4 → 3.3 (−39 %).  op-suite native
+JIT+TCI 1156/1156 byte-identical; wasm64 lockstep 250e6 serial + regs
+identical; boots to the idle screen.
+
+**0032 — the real-time cap.**  With `-icount shift=3,sleep=off` the virtual
+clock is instruction-proportional and, at idle, warped straight to the
+next timer deadline (0023, on the vCPU).  So a halted guest advances
+virtual time as fast as the host runs deadlines: `conlog` at t=45 s wall
+read v=166 s uncapped (~3.7×), and every pmb887x device timer is
+`QEMU_CLOCK_VIRTUAL`-paced, so the idle clock and animations ran ahead of
+wall.  The cap (`QEMU_ICOUNT_RTCAP=off|banked|strict`, `?rt=`, wasm
+default banked) makes the vCPU sleep — kick-interruptibly, via a new
+sub-ms `qemu_cond_timedwait_ns`/`_bql_ns` on the emscripten futex — before
+a warp (`rr_idle_advance`) or after a budget round (`rr_rtcap_throttle`)
+until wall reaches the virtual target.  "banked" measures allowed time
+from VM start: during the boot the guest is compute-bound and virtual runs
+*behind* wall (v=3.7 s at 15 s), so nothing is throttled and boot-to-idle
+is unchanged (insns@30 s 1.13 G banked vs 1.19 G off); once idle, virtual
+would overrun and is paced (v pinned to wall: 44.8 s at t=45 s, and
+verified over a 60 s window: virtual advanced 60.5 s).  "strict"
+re-anchors on lag and therefore paces the boot too (insns@30 s 0.80 G) —
+not the default.  Virtual time stays deterministic (lockstep unaffected).
+
+**What the cap does not fix (open).**  Even with the virtual clock pinned
+to wall, screenshots 45–90 s apart showed the phone's *displayed* clock
+advancing ~22× (e.g. 21:27 → 22:01 over 90 s wall while virtual advanced
+91 s).  All the counter models (RTC/STM/GPTU/TPU) are virtual-paced, so at
+virtual=wall they should read real-time — the ~22× is a *decode*/epoch
+issue in how the firmware turns the RTC counter into wall time, not a
+virtual-rate problem, and the user reports it absent in native main (a
+regression from an earlier session's warp patches, 0023/0024).  An RTC
+`CNT`-vs-`vclock` idle trace was inconclusive (irregular polled jumps);
+left for a focused follow-up.  The stopwatch at ~0.1× is the opposite
+(compute-bound guest) and out of the cap's scope.
+
+**Method notes.**  `tools/session.mjs` gained `console`/`stop`/`rw=1` (a
+page checkbox, not a query param).  The onlylist was split from the cap
+into two patches with the staged-capture method (baseline worktree +
+per-group file revert + a hand-made `tcg-accel-ops-rr.c` intermediate for
+the shared file); the trap to remember: two patches must not both touch
+the same line — 0032's rr was first diffed with the guard removed, so it
+*undid* 0031's guard; capture 0032 from the full combined tree (its
+baseline already carries 0031) so the delta is only the cap.  `idlebench`,
+`bootbench` and `lockstep-wasm` now pass `rt=off` so a faster-than-real-time
+boot is timed at full speed (a `?rt=` knob run is never a baseline).

@@ -42,6 +42,18 @@ if [ ! -f "$BUILD/build.ninja" ] || [ ! -f "$BUILD/meson-private/coredata.dat" ]
       --extra-cflags="-O3 -pthread -DWASM_BIGINT -sMEMORY64=1" )
 fi
 
+# wasm64 backend: the hot path is JIT'd per-TB modules, not the TCI
+# interpreter, so instrument ONLY the functions that can be on the stack at
+# a coroutine switch (configs/meson/asyncify-only.txt) instead of "everything
+# but tcg_qemu_tb_exec".  ~45 MB -> ~27 MB wasm, boot-to-idle -18 %.  The TCI
+# dist keeps ASYNCIFY_REMOVE (its hot path IS the interpreter; the onlylist
+# regresses it +26 %), so this override is wasm64-only and is applied here
+# rather than in the shared configs/meson/emscripten.txt.  Absolute path so
+# meson's compile probes (run from temp dirs on a reconfigure) find the list.
+ONLY="$ROOT/build/qemu/configs/meson/asyncify-only.txt"
+LA="['-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']"
+( cd "$BUILD" && meson configure -Dc_link_args="$LA" -Dcpp_link_args="$LA" >/dev/null )
+
 echo "== ninja qemu-system-arm.js"
 ninja -C "$BUILD" qemu-system-arm.js
 

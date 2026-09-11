@@ -1,5 +1,42 @@
 # Performance hand-off: the qemu-core device-path workstream
 
+Status (2026-09-11, Asyncify + real-time-cap session — patches 0031,
+0032): `/dist-jit` boots to idle in **33.2 s** (idlebench `--runs 2`
+interleaved vs the session-start dist at 40.3 s: **−18 %**; −24 % vs the
+morning's 43.8 s), early phase t0.1G **−39 %**, t0.5G −19 %.  Two
+mechanisms.  **0031 — Asyncify instrumentation allowlist**: the emscripten
+fiber coroutine backend unwinds the whole C stack at a switch, and the old
+`-sASYNCIFY_REMOVE=tcg_qemu_tb_exec` (instrument all-but-the-interpreter)
+pulled ~21k functions / 17 MB into instrumentation via the `invoke_*`
+longjmp wrappers — ~25 % of the early-boot vCPU on the wasm64 backend,
+which runs guest code as JIT'd modules and needs almost none of it.
+Replaced with `-sASYNCIFY_ONLY=@configs/meson/asyncify-only.txt`
+(functions captured on a real switch stack with `QEMU_COSTACK=1`), which
+also cut the wasm **45.1 → 27.8 MB**.  Prereqs: flash `blk_pwrite` moved
+to a main-loop BH (a vCPU-thread block coroutine cannot unwind a JIT
+frame — it derailed on the first rw-flash write), and the vCPU thread is
+marked so a stray switch aborts loudly.  **wasm64-only**: the same
+onlylist regressed the TCI `/dist` +26 % (its hot path is the
+interpreter), so `/dist` keeps `ASYNCIFY_REMOVE`; the override lives in
+`scripts/build-qemu-wasm64.sh`.  **0032 — real-time icount cap**
+(`QEMU_ICOUNT_RTCAP`, `?rt=`, wasm default banked): sleep=off warps the
+virtual clock to the next deadline as fast as the host runs it, so a
+halted guest's clock/animations ran ~3.7× wall (a regression vs native,
+where the warp is RT-paced).  The vCPU now sleeps (kick-interruptible)
+until wall reaches the virtual target; "banked" never throttles the
+compute-bound boot (virtual runs *behind* wall there), only idle overrun,
+so boot-to-idle is unchanged and the idle virtual clock tracks wall (v
+166 → 44.8 s at t=45 s).  **Still open — the displayed digital clock:**
+even with the virtual clock at real-time the phone's shown time advances
+too fast per virtual second, which points at an RTC/timer *decode* issue
+(the counter models are all virtual-paced); the user reports it absent in
+native main, i.e. a regression from an earlier session's warp patches
+worth a focused RTC trace.  The J2ME stopwatch running ~0.1× is the
+opposite problem (compute-bound guest, not a pacing bug) and the cap does
+not address it.  Gates: op-suite native JIT+TCI 1156/1156 byte-identical,
+wasm64 lockstep 250e6 serial+regs identical, both dists boot to the idle
+screen.
+
 Status (2026-09-11, halt-path session — patches 0023–0030, closing
 run): `/dist-jit` boots to idle in **43.8 s median** (runs 43.8 / 41.9;
 idlebench --runs 2 interleaved against the saved session-start dist:

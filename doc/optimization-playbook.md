@@ -18,9 +18,14 @@ batching + compaction: tIdle −15 %, Firefox OOM fixed) → halt path
 completions, goto_ptr for indirect jumps and CPSR writes, budget-aware
 timer kicks, no icount2 accounting under stock icount: dist-jit
 tIdle 50.1→43.9 s, dist 63.4→57.0 s in one interleaved `--runs 2`) →
-**open now**: the module compile share (~11 % of the early vCPU:
-36k modules / 231 MB per boot), the TB lookup path (~8 %), the
-display stretch's guest work (§ Remaining).
+Asyncify onlylist + real-time cap 0031/0032 (instrument only the
+coroutine-switch stack, not everything the invoke_* wrappers reach:
+dist-jit 45→28 MB, tIdle 40.3→33.2 s / −18 %, wasm64-only; and a
+sleep=off real-time cap so the idle clock/animations stop running ahead
+of wall) → **open now**: the displayed digital clock still ticks too
+fast per virtual second (RTC/timer decode, not virtual-rate — see
+§ Remaining), the module compile share (~11 % of the early vCPU), the TB
+lookup path (~8 %), the display stretch's guest work.
 
 ## The iteration ladder (cheapest reject first)
 
@@ -187,6 +192,8 @@ mmiopoll only) makes a whole-run profile pure — see the sessions doc,
 | 0029 wasm64: no icount2 accounting in TB prologues under stock icount | the prologue mirrored `icount2_advance` per TB entry: atomic i64 load+store of `icount2_ticks` + atomic load/compare of the deadline — ~5M TB entries/s for a clock that is opt-in (`?icount=precise-clocks`, decided at command-line parse); emitted only when `icount2_enabled()` | `--quick` one pair on top of 0023–0028: t0.25G −7 %, t0.5G 32.1→30.4 (−5 %), t1.3G 42.8→40.5 (−5 %); session base 48.4→40.5 (−16 %) |
 | 0030 wasm64: speculation explored flag | the BFS through already-translated TBs re-probed and re-looked-up every edge of a fully translated neighbourhood on each miss inside it; `tb->w64_explored` marks a node whose expansion found every successor present | host-time counters: speculation walk overhead 0.87 → 0.29 s per boot (translations unchanged); stack 0023–0030 `--quick`: t1.3G 48.4→40.3 (−17 %) |
 | 0018 cputlb: fill-time MMIO dispatch + victim-TLB masked compare | (a) `tlb_set_page_full` resolves `(callback, opaque, size-mask, swap, align, re-entrancy guard)` per iotlb entry — the MMIO access path becomes one mask test + indirect call instead of dispatch_read→access_valid→adjusted_size→accessor; (b) `victim_tlb_hit` compared `cmp == page` unmasked, but every MMIO entry carries TLB_FORCE_SLOW in addr_idx → the victim TLB *never hit for MMIO*, so two MMIO pages aliasing on one TLB index (sysctl 0x10000000 + VIC 0x10140000, both index 0 under ARMv5 1K target pages) re-walked the guest page tables on **every access** | tcgbench mirrors: mmiopoll **534→202 ns** (dist-jit), 606→252 (dist), mmiow 305→227; native parity (223).  bootbench finalV/insns@110 s up on every pair (windows noisy under host load); op-suite 1156/1156 byte-identical ×3, native suite 4/4 on the branch binary, lockstep 20e6+250e6 clean (sessions doc, 2026-09-11 device-path) |
+| 0031 wasm64: Asyncify instrumentation allowlist (`-sASYNCIFY_ONLY`) | the emscripten fiber backend unwinds the whole C stack at a switch, so the old `-sASYNCIFY_REMOVE=tcg_qemu_tb_exec` instrumented ~everything the `invoke_*` longjmp wrappers reach (~21k fns / 17 MB / ~25 % of early-boot vCPU).  The wasm64 backend runs guest code as JIT'd modules, not `tcg_qemu_tb_exec`, so instrument ONLY the functions seen on a real switch stack (`configs/meson/asyncify-only.txt`, captured with `QEMU_COSTACK=1` over boot/rw-flash/shutdown + name families).  Prereqs: flash `blk_pwrite` deferred to a main-loop BH (a vCPU-thread block coroutine can't unwind a JIT frame); vCPU thread marked `qemu_coroutine_forbid_current_thread` (abort, not derail).  **wasm64-only** (`build-qemu-wasm64.sh` overrides the shared cross file): the TCI dist's hot path IS the interpreter, onlylist **regressed dist +26 %** | dist-jit wasm **45.1→27.8 MB**; idlebench `--runs 2`: **tIdle 40.3→33.2 s (−18 %)**, t0.5G 29.6→24.0 (−19 %), t0.1G 5.4→3.3 (−39 %); op-suite native JIT+TCI 1156/1156 identical, lockstep 250e6 serial+regs identical, Chromium idle |
+| 0032 icount: real-time cap for sleep=off (`QEMU_ICOUNT_RTCAP`, wasm default banked) | sleep=off warps the virtual clock straight to the next deadline (0023, on the vCPU), so a halted guest advances virtual time as fast as the host runs deadlines → the idle clock/animations run ahead of wall (~3.7× at t≈45 s; a regression vs native's RT-paced warp).  The vCPU sleeps (kick-interruptible, sub-ms `qemu_cond_timedwait_ns`) before a warp / after a budget round until wall reaches the virtual target.  "banked" measures allowed time from VM start, so the compute-bound boot (virtual *behind* wall) is never throttled and only idle overrun is paced; "strict" re-anchors on lag (paces the boot too — not the default).  Virtual time stays instruction-deterministic (lockstep/op-suite unaffected) | at t=45 s: virtual v=166 s (off) → **44.8 s (banked) ≈ wall**; boot-to-idle unchanged (insns@30 s 1.13 G banked vs 1.19 G off); default off on non-emscripten.  **Residual:** the phone's displayed digital clock still advances too fast per virtual second — an RTC/timer decode issue separate from the virtual-time rate, still open |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
@@ -220,6 +227,20 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
 | `-sSUPPORT_LONGJMP=wasm` (native unwinding for the SVC-exception longjmps) | binaryen's Asyncify pass crashes on it (verified with a standalone emcc test) | wasm-EH longjmp and `-sASYNCIFY` are incompatible in emsdk 4.0.10; ASYNCIFY is required (coroutine backend/condvar sleeps) |
 
 ## Remaining opportunities (ranked; the plan lives in performance-handoff.md)
+
+0. **The displayed digital clock ticks too fast — OPEN (user-reported,
+   correctness not speed).**  With the 0032 real-time cap the virtual
+   clock is pinned to wall (measured 1.0×), yet the phone's shown time
+   still advances ~22× per virtual second (screenshots 90 s apart:
+   21:27 → 22:01).  Every counter model (RTC/STM/GPTU/TPU) is
+   `QEMU_CLOCK_VIRTUAL`-paced, so this is a *decode*/epoch bug in how the
+   firmware derives wall time from the RTC `CNT`, not a virtual-rate
+   problem — and the user reports it absent in native main, i.e. a
+   regression from an earlier session's warp patches (0023/0024).  Next:
+   a timestamped RTC `CNT`-vs-`vclock` idle trace (an idle `CNT` trace
+   this session was inconclusive — irregular polled jumps), and bisect
+   0023/0024 against native main.  The J2ME stopwatch at ~0.1× is the
+   opposite (compute-bound guest) and not a pacing bug.
 
 1. **wasm64 early-boot deficit — REDUCED by 0019, still open.**  Was
    ~27 % behind TCI on the first 0.75 G insns (per-TB module compile =
