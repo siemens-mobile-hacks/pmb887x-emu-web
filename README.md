@@ -212,6 +212,9 @@ lands in `/tmp/pmb887x-serial.log`.
                               idlebench tIdle 76->65 s (-15 %), every
                               milestone -13..-15 %; Firefox no longer runs
                               out of executable memory (16k-module budget)
+    0020-wasm64-successor-hints.patch  call-return + ldr-pc trampoline
+                              successors, W64_SPEC_N 32: batches 3 -> 13
+                              members, misses -60 %, t0.5G -5..-8 %
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression, superseded by the reworked
                               0004; 0015 diag counters: measured neutral, no

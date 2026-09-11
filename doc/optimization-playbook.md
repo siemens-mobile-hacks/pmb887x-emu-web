@@ -168,6 +168,7 @@ mmiopoll only) makes a whole-run profile pure — see the sessions doc,
 | 0015 wasm: diagnostics counters | txnF/tbGen/tbFlush/ioRewind/lookupTB cold-path counters (killed two wprof2 ghost theories — sessions doc) | zero hot-path cost; measurement infra — **dropped 2026-09-09**: isolation testing measured it neutral, no tool consumed its counters (see patches/attic/README.md and § Patch-isolation study) |
 | 0017 wasm64 TCG backend | full backend: per-TB wasm modules → chaining → batching (128/B module) → inline TLB probe → inline TB accounting; `tcg/wasm64/` + small hooks | compute 7.4× TCI on tcgbench; boot: early phase (first 0.75 G insns) ~27 % SLOWER than TCI, last 0.55 G 2.7× faster — tIdle equal by cancellation only (2026-09-11 benchmark audit in [optimization-sessions.md](optimization-sessions.md)) (562 vs 53 MIPS; per-phase 7–18×); all gates green incl. full 2.5e9 lockstep — numbers and history in [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) |
 | 0019 wasm64: speculative successor translation + compile-once batching + compaction | goto_tb destinations recorded per TB; on a lookup miss the successors are translated breadth-first into the open batch (non-faulting probes before any lookup — the faulting `get_page_addr_code` delivered a spurious prefetch abort for a blx Thumb target); the batch is compiled when its first member runs (no per-TB temp module); landed batches keep re-assemblable records, live FIFO cap + on-demand re-ensure, and every 256 small batches are compacted into one module; a 32 MB throwaway allocation per 256 instantiations keeps Firefox's worker GC collecting dropped modules (Firefox: ~16.3k live modules max, code memory is not GC pressure) | idlebench `--runs 2` interleaved: tIdle 76.2/71.5 → 65.0/64.9 s (−15 %), window 30.4/28.7 → 26.0/25.7, t0.25G −13 %, t0.5G −14 %, t1.3G −15 %, RSS −4..−12 %; vCPU `Module` self-time 21 % → ~3 % early boot; Firefox boots to idle (was OOM at 10 s); op-suite 1156/1156 ×4, lockstep 20e6+250e6 clean, native suite 4/4 |
+| 0020 wasm64: call-return + `ldr pc,[pc,#-4]` trampoline successors, W64_SPEC_N 32 | ARM `bl`/`blx` record the return address via `translator_note_succ`; a TB ending in the firmware's `ldr pc,[pc,#-4]` thunk contributes its literal | batches 29.5k → 11.3k per 25 s, 3.1 → 12.7 members, misses −60 %; idlebench `--quick` vs 0019, both orders: t0.5G −8 %/−5 %, window −5 %/−5 %; gates green (op-suite, lockstep 250e6, Firefox idle, native 4/4) |
 | 0018 cputlb: fill-time MMIO dispatch + victim-TLB masked compare | (a) `tlb_set_page_full` resolves `(callback, opaque, size-mask, swap, align, re-entrancy guard)` per iotlb entry — the MMIO access path becomes one mask test + indirect call instead of dispatch_read→access_valid→adjusted_size→accessor; (b) `victim_tlb_hit` compared `cmp == page` unmasked, but every MMIO entry carries TLB_FORCE_SLOW in addr_idx → the victim TLB *never hit for MMIO*, so two MMIO pages aliasing on one TLB index (sysctl 0x10000000 + VIC 0x10140000, both index 0 under ARMv5 1K target pages) re-walked the guest page tables on **every access** | tcgbench mirrors: mmiopoll **534→202 ns** (dist-jit), 606→252 (dist), mmiow 305→227; native parity (223).  bootbench finalV/insns@110 s up on every pair (windows noisy under host load); op-suite 1156/1156 byte-identical ×3, native suite 4/4 on the branch binary, lockstep 20e6+250e6 clean (sessions doc, 2026-09-11 device-path) |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
@@ -205,10 +206,11 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
    left: batches still average ~3 members (60 % of misses find every
    goto_tb successor already translated; indirect targets are not
    followed), so ~1.2k small modules/s are still compiled (~120 µs each
-   in Firefox, ~25 µs in V8) before compaction.  Candidates: follow
-   call-return (pc after `bl`) and `ldr pc,[pc,#-4]` trampoline targets
-   as successors, raise `W64_SPEC_N`, cheaper first execution, AOT cache
-   (#4).  Meter: `idlebench --quick` t0.25G/t0.5G + `W64_DEBUG=1` batch
+   in Firefox, ~25 µs in V8) before compaction.  0020 added
+   call-return and `ldr pc` trampoline successors (batches 3 → 13
+   members, misses −60 %, t0.5G −5..−8 %); still ~450 small modules/s,
+   65 % of them single-member (indirect `bx lr`/`ldr pc,[rN]` targets,
+   mode switches).  Candidates: cheaper first execution, AOT cache (#4).  Meter: `idlebench --quick` t0.25G/t0.5G + `W64_DEBUG=1` batch
    histogram (`tools/iotrace.mjs`).
 2. **The ~9 s real-time-paced stretch (v 4.7→23.5, both engines at
    ~3 MIPS) — OPEN, qemu-core, helps every backend.**  Device transfer

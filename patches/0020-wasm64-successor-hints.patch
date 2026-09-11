@@ -1,0 +1,197 @@
+From: perf session 2026-09-11
+Subject: [PATCH 0020] wasm64: more speculation successors (call return, ldr-pc trampolines), W64_SPEC_N 32
+
+Follow-up to 0019.  60 % of lookup misses found every goto_tb successor
+already translated (batches averaged 2.6-3 members).  Two more successor
+sources, both speculation hints only:
+
+1. translator_note_succ(): the return address of a direct call — ARM
+   trans_BL / trans_BLX_i record pc_next (no-op outside CONFIG_TCG_WASM64;
+   tb->w64_succ grows to 3 slots).
+2. The firmware's `ldr pc, [pc, #-4]` call thunks: if a TB's last word
+   is e51ff004, the literal after it is the target (read through the
+   non-faulting probe's host pointer; an odd/Thumb literal is skipped).
+3. Default speculation budget 16 -> 32 (a 16/32/64 sweep was inside
+   noise; 32 nominally best).
+
+Measured (W64_DEBUG=1, 25 s boot): batches 29.5k -> 11.3k, members per
+batch 3.1 -> 12.7, lookup misses 20k -> 8k (translated TBs 91k -> 144k:
+more speculative waste, paid back by fewer modules/misses).
+idlebench --quick vs the 0019 dist, both orders:
+  t0.5G  44.2 -> 40.8 (-8 %) / 42.9 -> 40.8 (-5 %)
+  window 26.7 -> 25.3 (-5 %) / 26.7 -> 25.3 (-5 %)
+  t0.25G -8 % / -6 %; rss flat.
+Gates: op-suite wasm64 1156/1156, lockstep 250e6 clean, Firefox boots to
+idle (no console errors), native suite 4/4.
+
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+--- a/accel/tcg/cpu-exec.c	2026-09-11 09:05:40.433216094 +0000
++++ b/accel/tcg/cpu-exec.c	2026-09-11 08:53:24.289112115 +0000
+@@ -632,12 +632,18 @@
+ #define W64_SPEC_MAX 64
+ int w64_spec_active;
+ 
++static bool w64_spec_code_host(CPUArchState *env, vaddr pc, int mmu_idx,
++                               void **host)
++{
++    int flags = probe_access_full_mmu(env, pc, 0, MMU_INST_FETCH, mmu_idx,
++                                      host, NULL);
++    return *host != NULL && !(flags & (TLB_INVALID_MASK | TLB_MMIO));
++}
++
+ static bool w64_spec_code_ram(CPUArchState *env, vaddr pc, int mmu_idx)
+ {
+     void *host;
+-    int flags = probe_access_full_mmu(env, pc, 0, MMU_INST_FETCH, mmu_idx,
+-                                      &host, NULL);
+-    return host != NULL && !(flags & (TLB_INVALID_MASK | TLB_MMIO));
++    return w64_spec_code_host(env, pc, mmu_idx, &host);
+ }
+ 
+ static bool w64_speculate(CPUState *cpu, TranslationBlock *root,
+@@ -653,7 +659,7 @@
+ 
+     if (budget < 0) {
+         const char *e = getenv("W64_SPEC_N");
+-        budget = e ? atoi(e) : 16;
++        budget = e ? atoi(e) : 32;
+         budget = MIN(MAX(budget, 0), W64_SPEC_MAX);
+     }
+     static unsigned st[6];   /* misses, nosucc, exists, notram, made, oneshot */
+@@ -679,16 +685,37 @@
+     queue[qt++] = root;
+     while (qh < qt && made < (unsigned)budget) {
+         TranslationBlock *tb = queue[qh++];
++        vaddr succ[ARRAY_SIZE(tb->w64_succ) + 1];
++        unsigned nsucc = tb->w64_nsucc;
+         unsigned i;
+ 
+-        for (i = 0; i < tb->w64_nsucc && made < (unsigned)budget &&
+-             qt < qmax; i++) {
++        memcpy(succ, tb->w64_succ, nsucc * sizeof(succ[0]));
++        /*
++         * ARM `ldr pc, [pc, #-4]` trampolines (the firmware's call
++         * thunks): the target is the literal right after the insn.
++         * Read through the non-faulting probe's host pointer; a wrong
++         * guess is just a probe-validated, never-executed TB.
++         */
++        if (!(tb->cflags & CF_PCREL) && tb->size >= 4) {
++            vaddr last = tb->pc + tb->size - 4;
++            void *h1, *h2;
++            if (w64_spec_code_host(env, last, mmu_idx, &h1) &&
++                ldl_le_p(h1) == 0xe51ff004 &&
++                w64_spec_code_host(env, last + 4, mmu_idx, &h2)) {
++                vaddr target = ldl_le_p(h2);
++                if (!(target & 3)) {
++                    succ[nsucc++] = target;
++                }
++            }
++        }
++
++        for (i = 0; i < nsucc && made < (unsigned)budget && qt < qmax; i++) {
+             TCGTBCPUState t = s;
+             TranslationBlock *ex;
+             vaddr next_page;
+             unsigned k;
+ 
+-            t.pc = tb->w64_succ[i];
++            t.pc = succ[i];
+             /*
+              * Non-faulting probes first — before tb_htable_lookup, whose
+              * get_page_addr_code() would deliver a prefetch abort to the
+diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
+--- a/accel/tcg/translator.c	2026-09-11 09:05:40.433817278 +0000
++++ b/accel/tcg/translator.c	2026-09-11 08:50:39.933445894 +0000
+@@ -108,6 +108,23 @@
+     return ((addr ^ db->pc_first) & TARGET_PAGE_MASK) == 0;
+ }
+ 
++void translator_note_succ(DisasContextBase *db, vaddr dest)
++{
++#ifdef CONFIG_TCG_WASM64
++    TranslationBlock *tb = db->tb;
++    unsigned i;
++
++    for (i = 0; i < tb->w64_nsucc; i++) {
++        if (tb->w64_succ[i] == dest) {
++            return;
++        }
++    }
++    if (tb->w64_nsucc < ARRAY_SIZE(tb->w64_succ)) {
++        tb->w64_succ[tb->w64_nsucc++] = dest;
++    }
++#endif
++}
++
+ bool translator_use_goto_tb(DisasContextBase *db, vaddr dest)
+ {
+     /* Suppress goto_tb if requested. */
+@@ -115,15 +132,7 @@
+         return false;
+     }
+ 
+-#ifdef CONFIG_TCG_WASM64
+-    {
+-        TranslationBlock *tb = db->tb;
+-        if (tb->w64_nsucc < 2 &&
+-            !(tb->w64_nsucc == 1 && tb->w64_succ[0] == dest)) {
+-            tb->w64_succ[tb->w64_nsucc++] = dest;
+-        }
+-    }
+-#endif
++    translator_note_succ(db, dest);
+ 
+     /* Check for the dest on the same page as the start of the TB.  */
+     return translator_is_same_page(db, dest);
+diff --git a/include/exec/translation-block.h b/include/exec/translation-block.h
+--- a/include/exec/translation-block.h	2026-09-11 09:05:40.433817278 +0000
++++ b/include/exec/translation-block.h	2026-09-11 08:50:39.929256473 +0000
+@@ -133,7 +133,7 @@
+      * of execution so the browser compiles TBs in batches
+      * (accel/tcg/cpu-exec.c w64_speculate).  A hint only.
+      */
+-    vaddr w64_succ[2];
++    vaddr w64_succ[3];
+     uint8_t w64_nsucc;
+ #endif
+ 
+diff --git a/include/exec/translator.h b/include/exec/translator.h
+--- a/include/exec/translator.h	2026-09-11 09:05:39.640193745 +0000
++++ b/include/exec/translator.h	2026-09-11 08:50:39.933018582 +0000
+@@ -162,6 +162,17 @@
+ bool translator_use_goto_tb(DisasContextBase *db, vaddr dest);
+ 
+ /**
++ * translator_note_succ
++ * @db: disassembly context
++ * @dest: a guest address control flow is likely to reach after this TB
++ *
++ * Speculation hint only (wasm64 backend: ahead-of-execution translation
++ * of successors); a no-op elsewhere.  Call sites: the return address of
++ * a direct call.
++ */
++void translator_note_succ(DisasContextBase *db, vaddr dest);
++
++/**
+  * translator_io_start
+  * @db: Disassembly context
+  *
+diff --git a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
+--- a/target/arm/tcg/translate.c	2026-09-11 09:05:40.402939910 +0000
++++ b/target/arm/tcg/translate.c	2026-09-11 08:50:39.935351399 +0000
+@@ -5409,6 +5409,7 @@
+ 
+ static bool trans_BL(DisasContext *s, arg_i *a)
+ {
++    translator_note_succ(&s->base, s->base.pc_next);
+     gen_pc_plus_diff(s, cpu_R[14], curr_insn_len(s) | s->thumb);
+     gen_jmp(s, jmp_diff(s, a->imm));
+     return true;
+@@ -5416,6 +5417,7 @@
+ 
+ static bool trans_BLX_i(DisasContext *s, arg_BLX_i *a)
+ {
++    translator_note_succ(&s->base, s->base.pc_next);
+     /*
+      * BLX <imm> would be useless on M-profile; the encoding space
+      * is used for other insns from v8.1M onward, and UNDEFs before that.
