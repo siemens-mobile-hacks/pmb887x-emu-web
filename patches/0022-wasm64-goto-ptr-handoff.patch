@@ -1,0 +1,35 @@
+From: perf session 2026-09-11
+Subject: [PATCH 0022] wasm64: the goto_ptr handoff slot was read at the wrong offset (every indirect jump unwound to cpu_exec_loop)
+
+tcg_out_goto_ptr stores the next TB's descriptor at [sp-8] with
+sp = frame+16, i.e. frame+8; the dispatcher read frame+0 (always 0),
+so W64_EXIT_GOTOPTR always looked like a lookup miss: every indirect
+jump (bx lr, pop {pc}, ldr pc) returned to cpu_exec_loop for a fresh
+tb_lookup + cpu_loop_exec_tb instead of continuing in the dispatcher
+loop.  Temporary exit-kind counters over a 30 s boot: 16.8M dispatcher
+exits, 14.9M of them goto_ptr "misses", 0 hits.  Read frame+8 and treat
+tcg_code_gen_epilogue as the miss value.
+
+Measured (idlebench --quick vs the 0021 dist, both orders):
+  window 24.3 -> 21.9 (-10 %) / 23.7 -> 21.9 (-8 %)
+  t0.5G  39.1 -> 37.6 (-4 %) / 38.6 -> 37.1 (-4 %)
+  t1.3G  57.6 -> 54.5 (-5 %) / 55.7 -> 54.5 (-2 %)
+Gates: op-suite wasm64 1156/1156, lockstep 250e6 clean, Firefox idle.
+
+diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
+--- a/tcg/wasm64/wasm64.c	2026-09-11 09:54:24.016735104 +0000
++++ b/tcg/wasm64/wasm64.c	2026-09-11 09:49:32.955895253 +0000
+@@ -1906,8 +1906,11 @@
+         }
+ 
+         if (res & W64_EXIT_GOTOPTR) {
+-            uintptr_t next = *(uintptr_t *)w64_frame;
+-            if (next == 0) {
++            /* the handoff slot is [sp-8] = frame+8 (sp = frame+16); the
++             * dispatcher read frame+0 — always 0 — so every goto_ptr
++             * unwound to cpu_exec_loop (14.9M of 16.8M exits per boot) */
++            uintptr_t next = *(uintptr_t *)(w64_frame + 8);
++            if (next == 0 || next == (uintptr_t)tcg_code_gen_epilogue) {
+                 return 0;
+             }
+             tb = next;

@@ -170,6 +170,7 @@ mmiopoll only) makes a whole-run profile pure — see the sessions doc,
 | 0019 wasm64: speculative successor translation + compile-once batching + compaction | goto_tb destinations recorded per TB; on a lookup miss the successors are translated breadth-first into the open batch (non-faulting probes before any lookup — the faulting `get_page_addr_code` delivered a spurious prefetch abort for a blx Thumb target); the batch is compiled when its first member runs (no per-TB temp module); landed batches keep re-assemblable records, live FIFO cap + on-demand re-ensure, and every 256 small batches are compacted into one module; a 32 MB throwaway allocation per 256 instantiations keeps Firefox's worker GC collecting dropped modules (Firefox: ~16.3k live modules max, code memory is not GC pressure) | idlebench `--runs 2` interleaved: tIdle 76.2/71.5 → 65.0/64.9 s (−15 %), window 30.4/28.7 → 26.0/25.7, t0.25G −13 %, t0.5G −14 %, t1.3G −15 %, RSS −4..−12 %; vCPU `Module` self-time 21 % → ~3 % early boot; Firefox boots to idle (was OOM at 10 s); op-suite 1156/1156 ×4, lockstep 20e6+250e6 clean, native suite 4/4 |
 | 0020 wasm64: call-return + `ldr pc,[pc,#-4]` trampoline successors, W64_SPEC_N 32 | ARM `bl`/`blx` record the return address via `translator_note_succ`; a TB ending in the firmware's `ldr pc,[pc,#-4]` thunk contributes its literal | batches 29.5k → 11.3k per 25 s, 3.1 → 12.7 members, misses −60 %; idlebench `--quick` vs 0019, both orders: t0.5G −8 %/−5 %, window −5 %/−5 %; gates green (op-suite, lockstep 250e6, Firefox idle, native 4/4) |
 | 0021 wasm: untimed cond waits + atomic event notifiers | `qemu_cond_wait_impl` passed 0 ms to `emscripten_futex_wait` = immediate "timeout" → every untimed wait (vCPU halt, RCU, io-dump threads) was a BQL lock/unlock spin; `event_notifier_set/test_and_clear` did proxied eventfd `write`/`read` (~1 ms sync round trip to the main thread, per icount deadline via `qemu_clock_notify`) → atomic flag | idlebench both orders: dist-jit tIdle 66→62.6 / 68→58.9 s, dist 76→73 / 73.5→64.7 s; gain from t0.75G on (the display-DMA stretch); op-suite ×4, lockstep 250e6, Firefox idle |
+| 0022 wasm64: goto_ptr handoff slot offset | `tcg_out_goto_ptr` stores the next TB at `[sp-8]` = frame+8; the dispatcher read frame+0 (always 0) → every indirect jump was a "miss" that unwound to `cpu_exec_loop` (exit-kind counters: 14.9M misses, 0 hits of 16.8M exits in 30 s) | idlebench `--quick` vs 0021 both orders: window −10 %/−8 %, t0.5G −4 %/−4 %, t1.3G −5 %/−2 %; op-suite, lockstep 250e6, Firefox idle |
 | 0018 cputlb: fill-time MMIO dispatch + victim-TLB masked compare | (a) `tlb_set_page_full` resolves `(callback, opaque, size-mask, swap, align, re-entrancy guard)` per iotlb entry — the MMIO access path becomes one mask test + indirect call instead of dispatch_read→access_valid→adjusted_size→accessor; (b) `victim_tlb_hit` compared `cmp == page` unmasked, but every MMIO entry carries TLB_FORCE_SLOW in addr_idx → the victim TLB *never hit for MMIO*, so two MMIO pages aliasing on one TLB index (sysctl 0x10000000 + VIC 0x10140000, both index 0 under ARMv5 1K target pages) re-walked the guest page tables on **every access** | tcgbench mirrors: mmiopoll **534→202 ns** (dist-jit), 606→252 (dist), mmiow 305→227; native parity (223).  bootbench finalV/insns@110 s up on every pair (windows noisy under host load); op-suite 1156/1156 byte-identical ×3, native suite 4/4 on the branch binary, lockstep 20e6+250e6 clean (sessions doc, 2026-09-11 device-path) |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
@@ -231,8 +232,12 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
 4. **AOT cache — OPEN, orthogonal** (backend plan phase 5): persist
    translated batches (Cache API/IndexedDB, keyed by flash hash) —
    zero-translation second boots; would also attack #1.
-5. **Backend tail — small, `/dist-jit` only**: `lookup_tb_ref` direct
-   import (~4 % of vCPU), dispatch-loop work (~9 %).  Few % each.
+5. **Backend tail — `/dist-jit` only**: 0022 fixed the dead goto_ptr
+   fast path (the "dispatch-loop ~9 %" was mostly that).  Left:
+   `helper_lookup_tb_ptr` (~5 % of vCPU: a C helper + qht lookup per
+   indirect jump — an inline jmp-cache probe in the emitted goto_ptr
+   would skip the import for hits), `cpu_exec_loop` rounds for goto_tb
+   first-links.  Meter: `W64_DEBUG` exit-kind counters (sessions doc).
 
 Landed/closed since the last ranking: MMIO dispatch path (0018 —
 mmiopoll 534→202 ns, native parity; re-measure before reopening).

@@ -221,6 +221,11 @@ lands in `/tmp/pmb887x-serial.log`.
                               notifiers did proxied eventfd writes (~1 ms
                               each, per icount deadline): tIdle -5..-13 %
                               on both dists (the display-DMA stretch)
+    0022-wasm64-goto-ptr-handoff.patch  the dispatcher read the goto_ptr
+                              handoff slot at frame+0 instead of frame+8,
+                              so every indirect jump unwound to
+                              cpu_exec_loop (14.9M of 16.8M exits/boot):
+                              window -8..-10 %, t1.3G -2..-5 %
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression, superseded by the reworked
                               0004; 0015 diag counters: measured neutral, no
