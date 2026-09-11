@@ -1,3 +1,10 @@
+// DEPRECATED: superseded by tools/idlebench.mjs, which now reports the
+// same window metric in one boot. Legacy equivalents:
+//   node tools/bootbench.mjs 110        -> PORT=$PORT node tools/idlebench.mjs $DIST --noref --runs 1 --max 110
+//   LO=2 HI=7                           -> --window 2:7
+//   JS_FLAGS / EXTRA_Q / RATES          -> same env vars, still honored by idlebench
+// This file is kept for reference; do not add new features here.
+//
 // Deterministic A/B boot benchmark for the wasm build (patch-series work).
 //
 // Boots the S75 fullflash in headless Chromium for --secs seconds and
@@ -55,6 +62,7 @@ function rssMB(browser) {
 }
 
 const secs = Number(process.argv[2] || 110);
+console.warn("[deprecated] bootbench is superseded by idlebench (--noref --window); this tool will be removed");
 const LO = Number(process.env.LO || 2.0);
 const HI = Number(process.env.HI || 7.0);
 const port = process.env.PORT || "8080";

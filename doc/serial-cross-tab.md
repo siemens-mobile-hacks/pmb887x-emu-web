@@ -95,7 +95,7 @@ consumer tab can be any page we host next to the emulator.
   can't balloon a ring in wasm heap. At 115200 baud even the current
   slow-motion boot produces trivial data rates, but a flashing tool bursts.
 
-### QEMU-side prerequisite: a `wasm` chardev backend (new patch, e.g. `0007`)
+### QEMU-side prerequisite: a `wasm` chardev backend (a new patch — next free number in the series)
 
 Today's `-serial file:/serial.log` is write-only, so guest RX (typing into the
 phone, x73/loadtool upload) is impossible regardless of transport. Follow the
@@ -119,8 +119,8 @@ proven `ui/wasm.c` (patch 0001) pattern:
 * Native build is unaffected (`run-native.sh SERIAL=path|...` keeps working).
 
 **Interim zero-patch hack:** the consumer tab can already tail `/serial.log`
-(read-only) via `BroadcastChannel` messages from `app.js`'s existing poll loop
-(`site/app.js:352`). Good enough to demo a cross-tab *monitor*; not enough
+(read-only) via `BroadcastChannel` messages from `app.js`'s existing
+serial-poll loop. Good enough to demo a cross-tab *monitor*; not enough
 for interactive tools.
 
 ## Option B: a *real* `navigator.serial` device via a native bridge
@@ -162,7 +162,7 @@ driven from a browser page.
 
 ## Recommended sequencing
 
-1. **Patch 0007** (`chardev/wasm.c` + app.js wiring) — unlocks *any* serious
+1. **The chardev patch** (`chardev/wasm.c` + app.js wiring) — unlocks *any* serious
    serial use, cross-tab or not (today you can't even type into the phone).
    Moderate, well-precedented work (~a day, pattern is proven twice already:
    keyboard input and fb blit in `ui/wasm.c`).

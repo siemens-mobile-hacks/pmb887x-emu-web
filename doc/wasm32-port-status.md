@@ -37,7 +37,7 @@ Two independent web builds, both served simultaneously:
 | | dist/ (port 8080) | dist-jit/ (port 8082) |
 |---|---|---|
 | TCG engine | TCI interpreter (wasm64) | **wasm32 runtime JIT** + TCI fallback |
-| Build | `scripts/build-qemu.sh` | `scripts/build-qemu-jit.sh` |
+| Build | `scripts/build-qemu.sh` | ~~`scripts/build-qemu-jit.sh`~~ (removed; see `patches/attic/wasm32-rebase/` to recreate) |
 | Patches | 0001–0004 + 0007–0015 | 0005 DRAFT — superseded by `patches/attic/wasm32-rebase/` |
 | Status | boots (stock icount `shift=3,sleep=off`) at ~15M insns/s sustained, S75 idle screen ≈ 3 min | boots in slow motion to v≈6, then watchdog-reset loop (see verdict above) |
 

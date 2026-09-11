@@ -1,5 +1,14 @@
  Dropped patches
 
+## Stale copies from the previous pin (`*-old-2735ce4e.patch`)
+
+`0002-old-2735ce4e.patch`, `0004-old-2735ce4e.patch` and
+`0006-old-2735ce4e.patch` are pre-switch revisions of the patches
+below, captured against the previous qemu pin (`2735ce4e`, before the
+2026-09-07 move to alula's `dsp-stuff` @ `b31b98fe1e` — see
+`tests/RESULTS-switch.md`). Kept for archaeology only; the current
+patches/ series is authoritative.
+
 ## 0006 — wasm: run icount2 at the fixed hardware frequency (104 MHz)
 
 Dropped 2026-09-08: **superseded by a stock-icount boot configuration.**

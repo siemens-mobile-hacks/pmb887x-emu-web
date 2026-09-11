@@ -6,6 +6,11 @@ the fullflashes that currently work: **s75, el71, c81, ke800**
 EFA block — its `KE800-v11b.bin.cfi-efa` sidecar must sit next to the
 fullflash (the emulator picks it up automatically).
 
+Sibling suites in this directory (each with its own README): `tcg-isa/`
+(the guest op-suite, gate `scripts/run-tcg-isa.sh`) and `tcgbench/` (the
+versatilepb perf bench + device-tax mirrors, `tools/tcgbench.mjs`). The
+lockstep harness is documented below.
+
 ## Running
 
 ```bash
@@ -119,7 +124,7 @@ and are not guest-deterministic enough for digest comparison).
 
 ## Notes
 
-- The three instances run in parallel on a ≥ 4-core host; ~35 cores are
+- The four instances run in parallel on a ≥ 4-core host; ~35 cores are
   plenty. Under heavy contention a phone may miss a firmware deadline
   (`>>EXIT<<`) — rerun or reduce parallelism if a flake is suspected.
 - `lit` = non-black pixels of the qemu console screendump (240×320 frame

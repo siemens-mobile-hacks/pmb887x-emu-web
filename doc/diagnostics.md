@@ -13,14 +13,21 @@ playwright-downloaded `chromium-headless-shell`; `npm i` in that dir once).
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
 | `?debug=1` | print every stderr line to console (no dedup) |
 | `?qargs=<args>` | append raw qemu arguments (e.g. `qargs=-d exec -D /exec.log`) |
+| `?dist=<dir>` | alternate build output under `site/` (default `dist`; `dist-jit` = the wasm64 TCG backend) |
+| `?suite=<url>` | boot the guest op-suite image headlessly (`tests/tcg-isa`; the suite's own `?icount=1` adds the phones' stock timing model for the tcgbench icount-tax leg) |
+| `?env=NAME=VAL` | extra environment for the build (repeatable) — knobs like `W64_BATCH_N=8`, `W64_NOTLB=1`, `W64_NOACCTINLINE=1` |
+| `?iorewind=1` | force the stock io-recompile everywhere (0004's A/B escape hatch) |
 | `?fullflash=`, others | options are form controls, not params |
 
 ## Exports on `window.__qemu` (the emscripten module)
 
 `_wasm_fb_ptr/_width/_height/_stride/_take_dirty/_updates`,
 `_wasm_vclock` (guest ns), `_wasm_tbs/_wasm_insns` (per-TB stats),
-`_wasm_exits(i)` (TB exit-code histogram, i=8 → REQUESTED-without-exit_request),
-`_wasm_irq_bits`, `_wasm_send_key(lnx, down)`, `_wasm_quit()`, `FS`, `ENV`.
+`_wasm_send_key(lnx, down)`, `_wasm_quit()`, `FS`, `ENV`.
+(The `_wasm_exits` TB-exit histogram and `_wasm_irq_bits` probe were
+trimmed from patch 0001 during the 2026-09-08 upstream review — see
+[upstream-analysis.md](upstream-analysis.md); tools that used them
+degrade gracefully.)
 
 ## Scripts
 
@@ -33,8 +40,12 @@ playwright-downloaded `chromium-headless-shell`; `npm i` in that dir once).
 | `execdump.mjs` | run with `-d exec -D /exec.log`, dump the exec log from MEMFS |
 | `wshot.mjs` | WASM-mode screenshot, waits for framebuffer activity |
 | `wprof.mjs` | (experimental, superseded) CDP profiling attempt via playwright's `page.workers()` — use `wprof2.mjs` instead |
-| `wprof2.mjs` | per-worker CDP profiler (raw websocket, page-target auto-attach). Repaired in the 0007–0009 sessions and extended with `wasm-function[N]` → symbol resolution via the `.symbols` sidecar. `PROF_FN=<substr>` prints caller stacks of a hot function |
+| `wprof2.mjs` | per-worker CDP profiler (raw websocket, page-target auto-attach). Repaired in the 0007–0009 sessions and extended with `wasm-function[N]` → symbol resolution via the `.symbols` sidecar (both dists). `PROF_FN=<substr>` prints caller stacks of a hot function; `PROF_DELAY=<s>` waits before `Profiler.start` (boot-phase selection) |
 | `bootbench.mjs` | the A/B boot benchmark for patch selection: one JSON line with the deterministic v-window wall time + final progress (see doc/optimization-playbook.md) |
+| `tcgbench.mjs` | fast-iteration perf bench on versatilepb (`tests/tcgbench`): per-phase backend A/B + the device/icount-tax mirrors (`mmiopoll`/`rampoll`/`mmiow` ns/access, `ICOUNTS=0,1`) — the primary meter of the device-path workstream |
+| `idlebench.mjs` | deterministic boot-to-idle benchmark: fresh headless browser per run, LCD bottom-139-rows vs a committed reference, config+artifact hashes pinned to `tests/results/idlebench-latest.json` |
+| `lockstep.mjs`, `lockstep-wasm.mjs` | cross-backend value-equality drivers — native JIT vs native TCI (plugin) / native JIT vs the wasm page (built-in fold); `scripts/run-lockstep.sh` is the native gate |
+| `tcgisa.mjs`, `tcgisa64.mjs` | drive the guest op-suite page leg (`scripts/run-tcg-isa.sh` is the gate; `tcgisa64.mjs` takes `--env` knobs) |
 
 ## Native reference runs
 

@@ -1,6 +1,6 @@
 # The upstream branch: `wasm-browser-port`
 
-The 13-patch series lives as a git branch, ready to push/PR to
+The patch series lives as a git branch, ready to push/PR to
 [Azq2/qemu-pmb887x](https://github.com/Azq2/qemu-pmb887x) — the QEMU
 fork that [pmb887x-emu](https://github.com/siemens-mobile-hacks/pmb887x-emu)
 embeds as its `qemu` submodule.
@@ -44,6 +44,12 @@ target/arm/tcg/translate.c, ui/, configs/meson/emscripten.txt).
 | 11 | wasm: take SVC exceptions without the cpu_loop_exit longjmp | emscripten + ARM frontend |
 | 12 | wasm: io barriers | emscripten + translator/cputlb |
 | 13 | memory: romd FlatView variants + range-scoped tlb flush | generic core (memory.c/physmem.c/cputlb.c) |
+| 14 | cputlb: fill-time MMIO dispatch resolution + victim-TLB flag-masked compare | generic core (cputlb.c; landed as patches/0018, 2026-09-11) |
+
+Not on the branch: `patches/0017-tcg-wasm64-backend.patch` (the wasm64
+TCG backend — large, emscripten-specific) — it is captured from the
+working tree via `scripts/capture-patch.sh`, not `format-patch`.
+Everything else in `patches/` maps 1:1 onto a branch commit.
 
 Each commit message carries the full rationale ("why this change is
 needed") plus the measured effect; the code hunks carry inline
@@ -56,16 +62,20 @@ users): everything that changes semantics under native builds is
 either `__EMSCRIPTEN__`-gated (patches 1, 2, 4, 5, 7, 8, 11, 12 —
 inert code on native), or confined to the TCI interpreter (patches 3,
 6, 9, 10 — TCI is not the default backend; native TCG codegen is
-untouched).  Patch 13 (romd FlatView variants) is generic core but
+untouched).  Patches 13 (romd FlatView variants) and 14 (fill-time MMIO
+dispatch + victim-TLB compare) are generic core but
 semantics-preserving by construction: a view is reused only when the
 MR tree is bit-identical up to romd flags, the TLB flush is only ever
-strictly smaller than stock's, and any recycle/eviction path falls
-back to the stock full flush; native suite 4/4.
+strictly smaller than stock's, any recycle/eviction path falls back to
+the stock full flush, and the iotlb-entry dispatch resolution produces
+exactly what the generic path resolves per access (special cases fall
+back to the stock path); native suite 4/4.
 
 ## Relationship to `patches/*.patch`
 
 `patches/NNNN-*.patch` are **generated from the branch commits**
-(`git format-patch b31b98fe..wasm-browser-port`), so:
+(`git format-patch b31b98fe..wasm-browser-port`) — except 0017 (see
+above) — so:
 
 * `scripts/build-qemu.sh` (which `git apply`s `patches/*.patch` onto
   the pinned pristine rev) reproduces the branch tree exactly;
@@ -81,16 +91,21 @@ cd build/qemu-upstream && git format-patch b31b98fe..HEAD -o /tmp/fp
 #  including the 0005/0006 gaps for the attic'd patches)
 ```
 
-## Verification status (2026-09-09)
+## Verification status (2026-09-09; branch facts re-checked 2026-09-11)
 
 Sanity gate after any git operation on the branch (an orphan rebase
 once grafted an unrelated fork commit under the series — caught by
 this check):
 
 ```bash
-git -C build/qemu-upstream rev-list --count b31b98fe..HEAD   # must be 12
-git -C build/qemu-upstream diff --name-only b31b98fe         # 25 files, no hw/arm/pmb887x/*
+git -C build/qemu-upstream rev-list --count b31b98fe..HEAD   # must be 14
+git -C build/qemu-upstream diff --name-only b31b98fe         # 30 files, no hw/arm/pmb887x/*
 ```
+
+(Counts above verified 2026-09-11 after the 0018 commit joined the
+branch; the boot/native verification bullets below are from 2026-09-09
+and predate 0018 — rerun bootbench + the native suite after further
+branch edits.)
 
 * branch tip ≡ pristine + patches/ (delta is comment lines only) — the
   inline "why" comments are the only difference vs the benchmarked

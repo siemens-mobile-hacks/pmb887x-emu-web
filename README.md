@@ -2,9 +2,12 @@
 
 The Siemens/LG-phone emulator, running **entirely in the browser**:
 qemu-system-arm compiled to WebAssembly (`./build.sh` + `./serve.mjs`) —
-deterministic boot, splash draws, keypad/serial work — **boots in slow
-motion** (stock icount timing model, see below; full boot takes minutes
-to tens of minutes at current TCI speed). See
+deterministic boot, splash draws, keypad/serial work, boot to the idle
+screen in ~70–75 s (the stock icount timing model below keeps correctness
+independent of host speed — a slow host merely boots slower). Two engines
+ship: the TCI interpreter (default) and a wasm64 TCG JIT backend
+(`?dist=dist-jit` — guest TBs compiled to wasm at runtime, ~7.4× TCI on
+compute). See
 [doc/livelock-postmortem.md](doc/livelock-postmortem.md) +
 [doc/performance-handoff.md](doc/performance-handoff.md).
 
@@ -24,7 +27,7 @@ physical-keyboard mapping).
 ## Running it (experimental)
 
 ```bash
-./build.sh          # ~30-60 min first run: emsdk 4.0.10 + glib/pixman/zlib
+./build.sh          # ~30-60 min first run: emsdk 4.0.10 + glib/pixman/zlib/libffi
                     # built for wasm64, then qemu → site/dist/qemu-system-arm.wasm
 ./serve.mjs         # http://127.0.0.1:8080 (COOP/COEP headers for pthreads)
                     # phone/LAN: auto-redirected to https://<lan-ip>:6808
@@ -39,9 +42,13 @@ re-download (`tools/loadbench.mjs` measures the startup path).
 
 Everything runs client-side: the picked fullflash is written into the
 emscripten MEMFS, board configs are unpacked from `site/dist/boards.tar`, and
-qemu boots with a small `-display wasm` backend (see below). The TCG
-interpreter (TCI) is the only TCG backend available on wasm64, so it is
-several times slower than native.
+qemu boots with a small `-display wasm` backend (see below). Two TCG
+engines are built from the same patched tree: the interpreter (TCI,
+`site/dist/`, the page default) and the wasm64 TCG backend (patch 0017,
+`site/dist-jit/`, page switch `?dist=dist-jit`) — boot-to-idle at TCI
+parity, ~7.4× TCI on compute. Both stay well behind native on
+device-heavy phases (a shared qemu-core dispatch cost — see
+[doc/performance-handoff.md](doc/performance-handoff.md)).
 
 **Timing model (stock icount, `-icount shift=3,sleep=off`):** Siemens
 firmware needs a virtual clock that is decoupled from wall time — with
@@ -62,11 +69,13 @@ devices by default. Override either default with `?icount=<spec>`
 (`precise-clocks=on`, `shift=N`, `none`, …). History: the interim
 hard-coded 104 MHz icount2 patch (0006) lives in `patches/attic/`.
 
-**Known limitation (raw speed):** boot wall-time is minutes (through
-patches 0007–0016 the guest runs at ~17M insns/s sustained — TB
-chaining, size-specialized memory ops, SVC exceptions without the
-emscripten longjmp and no recurring io-recompile rewinds; S75 reaches
-its idle screen in ~3 minutes on a quiet host). Keypad and LCD
+**Raw speed:** the boot sustains ~55M guest insns/s (it was ~17M through
+patches 0007–0016; the wasm64 backend + 0018's MMIO dispatch fix moved it
+further) and S75 reaches its idle screen in ~70–75 s on the deterministic
+idlebench protocol (~160 s on the older s75_working soak flash). The
+remaining gap to the ~562 MIPS compute ceiling (tcgbench) is the
+qemu-core device path — the current workstream
+([doc/performance-handoff.md](doc/performance-handoff.md)). Keypad and LCD
 remain live throughout. Full analysis: [doc/](doc/) — in
 particular [doc/optimization-playbook.md](doc/optimization-playbook.md)
 (the measurement method + what landed/rejected, per session),
@@ -110,15 +119,38 @@ lands in `/tmp/pmb887x-serial.log`.
   build.sh              one-shot WASM build (toolchain → deps → qemu → site/dist)
   serve.mjs             static server for the WASM page (COOP/COEP); serves
                         site/ — static files are edited in place, build
-                        artifacts (qemu wasm/js, boards.tar) live in site/dist/
+                        artifacts (qemu wasm/js, boards.tar) live in
+                        site/dist/ (TCI) and site/dist-jit/ (wasm64 backend)
   versions.env          pinned qemu-pmb887x / bsp / toolchain revisions
   scripts/
-    build-deps.sh       emsdk + glib/pixman/zlib built with emcc (wasm64)
-    build-qemu.sh       clones pinned qemu-pmb887x, applies patches/, builds
-    build-native.sh     native Linux build (pristine worktree, no patches)
+    build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
+    fetch-qemu.sh       clone/refresh the pinned qemu + bsp sources into build/
+    sync-bsp.sh         bsp checkout @ pin + patches/bsp workarounds
+    build-qemu.sh       applies patches/ to the pinned rev, builds the TCI
+                        wasm dist → site/dist/ (+ boards.tar)
+    build-qemu-wasm64.sh  same patched tree, wasm64 TCG backend → site/dist-jit
+    build-native.sh     native Linux JIT build (pristine worktree, no patches)
+    build-native-tci.sh native TCI build (plugins on — the lockstep b-side)
+    build-deps32.sh     wasm32 dependency stack (the attic 0005 experiment;
+                        historical, kept for reference — its build script
+                        build-qemu-jit.sh was removed, see doc/wasm32-port-status.md)
     run-native.sh       native launcher (same boot recipe as the web page)
+    ninja-fast.sh       incremental TCI rebuild + deploy (~8 s)
+    ninja-wasm64.sh     incremental wasm64-backend rebuild
+    capture-patch.sh    capture build/qemu edits as patches/NNNN-*.patch
+    switch-test.sh      patch-isolation A/B harness (rebuild minus/revert N)
+    run-tcg-isa.sh      guest op-suite gate (3 backends, byte-compared)
+    run-lockstep.sh     native cross-backend lockstep gate
+    iterate.sh          one-command edit→rebuild→browser-verdict loop
   patches/
     0001-ui-add-wasm-*.patch   wasm display/input backend (applied to the clone)
+    0002-wasm-*.patch          Asyncify-safe futex/condvar + per-TB (not
+                              per-insn) icount2 accounting
+    0003-tci-*.patch           TCI inline TLB probe + direct helper dispatch
+                              (generic TCI — measurably helps native TCI too)
+    0004-wasm-*.patch          io-recompile MMIO boundary accounting (stock
+                              rewind kept for flash-command accesses; the
+                              original skip lives in attic/)
     0007-wasm-tci-*.patch      TCI TB chaining + in-interpreter icount2
                               accounting (~2x guest throughput)
     0008-tci-immediate-*.patch immediate-form TCI ops (add/and/or/xor/
@@ -152,6 +184,12 @@ lands in `/tmp/pmb887x-serial.log`.
                               re-rendering every FlatView and stop flushing
                               the whole TLB per toggle (commit time -89%,
                               v-window -10%, variance collapsed)
+    0017-tcg-wasm64-backend.patch the wasm64 TCG backend (tcg/wasm64/:
+                              per-TB wasm functions → tail-call chaining →
+                              128-TB batched modules → inline TLB probe →
+                              inline TB accounting; served as site/dist-jit;
+                              boot at TCI parity, 7.4× TCI compute — see
+                              doc/wasm-tcg-backend-plan.md + -progress.md)
     0018-io-fast-dispatch-victim-tlb.patch fill-time MMIO dispatch
                               resolution in the iotlb entry + flag-masked
                               victim-TLB compare (MMIO entries carry
@@ -170,9 +208,10 @@ lands in `/tmp/pmb887x-serial.log`.
   `wasm-browser-port` (git worktree `build/qemu-upstream`, one commit
   per patch, base = the pinned qemu rev, ready to PR against
   Azq2/qemu-pmb887x): every commit carries its rationale + measurements,
-  the hunks carry inline why-comments.  See doc/upstream-branch.md —
-  regenerate patches/*.patch after branch edits (`git format-patch
-  b31b98fe..wasm-browser-port`).
+  the hunks carry inline why-comments.  0017 is the exception — captured
+  from the working tree via scripts/capture-patch.sh.  See
+  doc/upstream-branch.md — regenerate patches/*.patch after branch edits
+  (`git format-patch b31b98fe..wasm-browser-port`).
   tests/
     tcg-isa/               phase-0a guest op-suite (bare-metal ARM926
                            versatilepb image asserting (value, NZCV)
@@ -182,6 +221,15 @@ lands in `/tmp/pmb887x-serial.log`.
                            tools/tcgisa.mjs drives the page leg,
                            `?suite=dist/tcgisa.bin` boots it in the
                            browser — see doc/wasm-tcg-backend-plan.md
+    lockstep.c (+ tools/lockstep*.mjs, scripts/run-lockstep.sh)
+                           whole-boot cross-backend value equality
+                           (per-epoch register + memory digests; the
+                           full 2.5e9-insn gate) — see tests/README.md
+    tcgbench/ (+ tools/tcgbench.mjs)
+                           fast-iteration perf bench on versatilepb:
+                           per-phase backend A/B + the device/icount-tax
+                           mirrors (mmiopoll/rampoll) — the primary meter
+                           of the current workstream
     run.mjs (+ RESULTS-switch.md)  A/B harness for qemu/bsp bumps
   site/                 the served web root — editable static page (index.html /
                         app.js / style.css / keyboards.js; fullflashes.js holds
@@ -231,26 +279,31 @@ Notes for bumping:
   `patches/bsp/0001` re-points the two affected includes until upstream
   grows the device.
 - `tests/run.mjs` (+ `tests/RESULTS-switch.md`) is the A/B harness for
-  bumping: it boots s75/el71/c81 and benchmarks before/after.
+  bumping: it boots s75/el71/c81/ke800 and benchmarks before/after.
 
-## Performance work (see doc/performance-handoff.md + doc/wasm32-port-status.md)
+## Performance work (see doc/performance-handoff.md + doc/wasm-tcg-backend-plan.md)
 
-The wasm32 runtime-JIT backend (the old 0005 draft) was fully rebased,
-benchmarked (~1.3–2.3x TCI ceiling, boot hangs) and **discarded** on
-2026-09-09 — the TCI series is the shipping engine; the JIT sources and
-post-mortem live in patches/attic/wasm32-rebase/.
+The wasm32 runtime-JIT backend (the old 0005 draft, ktock design) was
+fully rebased, benchmarked (~1.3–2.3x TCI ceiling, boot hangs) and
+**discarded** on 2026-09-09 — see doc/wasm32-port-status.md and
+patches/attic/wasm32-rebase/. Its redesigned successor **landed**: patch
+0017, the wasm64 TCG backend (tail-call chaining, regs-as-locals, batched
+modules) — performance-complete 2026-09-11 (boot at TCI parity, compute
+7.4× TCI, all gates green; doc/wasm-tcg-backend-plan.md +
+-progress.md). The current workstream is the qemu-core device path
+(MMIO dispatch, timer storms) that every backend pays identically
+(doc/performance-handoff.md; its first slice landed as 0018).
 
-- `site/dist/` — TCI build (patches 0001–0004 + 0007–0016; timing model is
+- `site/dist/` — TCI build (patches 0001–0004 + 0007–0018; timing model is
   stock `-icount shift=3,sleep=off`, no fork-specific clock patch — see
   the interim 0006 in patches/attic; 0004 reworked: the
   io-recompile longjmp storm is gone, MMIO accounted at the rewind's
-  clock, stock rewind kept for flash-command accesses — boots 2.5–12×
-  further per wall second, see doc/early-crash-postmortem.md §9).
-- The wasm32 runtime-JIT experiment (the old 0005 draft) is **closed**:
-  fully rebased, benchmarked at ~1.3–2.3x TCI ceiling with an unresolved
-  boot-hang — discarded. See doc/wasm32-port-status.md and
-  patches/attic/wasm32-rebase/. A redesigned backend (tail-call chaining,
-  regs-as-locals, batched modules) is assessed + planned in
-  doc/wasm-tcg-backend-plan.md.
-- Fast iteration: `scripts/ninja-fast.sh` (incremental, correct env);
+  clock, stock rewind kept for flash-command accesses — see
+  doc/early-crash-postmortem.md §9).
+- `site/dist-jit/` — the wasm64 TCG backend build (0017 on top of the
+  shared series; `scripts/build-qemu-wasm64.sh`, page switch
+  `?dist=dist-jit`).
+- Fast iteration: `scripts/ninja-fast.sh` / `scripts/ninja-wasm64.sh`
+  (incremental, correct env) + `node tools/tcgbench.mjs` (seconds-per-leg
+  A/B); end-to-end meters: `tools/bootbench.mjs` / `tools/idlebench.mjs`;
   profiling: `tools/wprof2.mjs` (per-worker CDP CPU profiles).

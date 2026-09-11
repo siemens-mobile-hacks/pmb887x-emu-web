@@ -37,7 +37,7 @@ measured baseline, targets, plan, constraints.  Working method:
 the A/B meter for this workstream is tcgbench's tax mirrors, not the
 v-window alone).
 
-## Where the time goes now (all measured 2026-09-11)
+## Where the time goes (slice-0 attribution, measured 2026-09-11 — the pre-0018 baseline)
 
 | component | number | whose code | note |
 |---|---|---|---|
@@ -49,6 +49,10 @@ v-window alone).
 | vCPU: `helper_lookup_tb_ptr` | ~4 % | qemu-core | |
 | main thread: mailbox/futex-wake/`_emscripten_get_now` | ~8 % | emscripten runtime | device bookkeeping wakeups |
 | remaining emitter levers | ~10–15 % of vCPU ≈ few % end-to-end | wasm64 | tail work, `/dist-jit` only |
+
+(0018 has since landed — mmiopoll is now ~202 ns on `/dist-jit` and
+~252 ns on `/dist`, i.e. native parity; the table above preserves the
+slice-0 baseline the plan was written against.)
 
 The two facts that define the workstream:
 

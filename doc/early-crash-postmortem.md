@@ -4,13 +4,15 @@ Committed to answer: *"the emulator was getting much further in the boot
 process in dfb4e21c018e641cbcb64206944064db038b0874; in the next commit
 (ea28492) it started crashing before anything is drawn."*
 
-Status: **RESOLVED — the storm is fixed properly. `dist/` = patches
-0001–0004 (io-accounting rework) + 0006.** The early `FILE: flash ExitCode
-0x0552` abort is gone; the follow-on `l1bbcsg` L1 timeout is separately
-fixed by 0006 (fixed 104 MHz virtual clock, see
-[livelock-postmortem.md](livelock-postmortem.md)); the build boots
+Status: **RESOLVED — the storm is fixed properly.** The early `FILE: flash
+ExitCode 0x0552` abort is gone (0004 io-accounting rework); the follow-on
+`l1bbcsg` L1 timeout was separately fixed by the timing model — first by
+the interim fixed-104 MHz patch 0006, since dropped to `patches/attic/`
+in favor of stock icount `shift=3,sleep=off` (see
+[livelock-postmortem.md](livelock-postmortem.md) §4); the build boots
 through both crash points 2.5–12× faster per wall second than the
-stock rewind path (4–17M insns/s sustained). What follows is the
+stock rewind path (4–17M insns/s sustained at the time; the current
+series runs far faster — see README.md). What follows is the
 original investigation record, plus §9 for the 0004 rework.
 
 ## 1. Symptom (reproduced at HEAD 4294229)
@@ -298,6 +300,8 @@ Also note: the stock wasm build's per-TB accounting under-credits TBs
       (790k figure + "TCI 790k ✓" claim need a booting-build re-run).
       → DONE: §5.1 (drop 0004) + 0006; figures updated in
         performance-handoff.md.
-- [ ] Re-test dist-jit with 0004 removed/reworked.
-      → OPEN (paused perf effort; dist-jit still carries the old
-        0003+0004-era assumptions and needs a fresh baseline).
+- [x] Re-test dist-jit with 0004 removed/reworked.
+      → RESOLVED (superseded): dist-jit was later rebuilt as the wasm64
+        TCG backend (patch 0017) from the current patch series and fully
+        re-gated (op-suite ×3, lockstep windows + full 2.5e9 gate,
+        idlebench) — see doc/wasm-tcg-backend-progress.md.

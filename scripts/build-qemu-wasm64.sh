@@ -7,11 +7,10 @@
 #
 # Prereqs (already present in this tree):
 #   - build/deps/emsdk (emsdk env + wasm64 sysroot under build/deps/target)
-#   - build/qemu checked out @ b31b98fe1e with patches 0001-0016 + 0017 applied
-#
-# The 0017 patch is the wasm64 backend skeleton (tcg/wasm64/ + the
-# meson/tcg.h/getpc.h integration). Apply it first if it isn't already:
-#   cd build/qemu && git apply /workspace/patches/0017-tcg-wasm64-backend.patch
+#   - build/qemu checked out @ b31b98fe1e with patches/ applied
+#     (0001-0018; scripts/build-qemu.sh applies the whole series —
+#     0017 is the wasm64 backend this script builds, 0018 the cputlb
+#     MMIO dispatch fix both engines share)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

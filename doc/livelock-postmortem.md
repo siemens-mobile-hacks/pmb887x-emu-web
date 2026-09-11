@@ -163,5 +163,5 @@ what remains is a pure usability question of boot wall-time
 | Keypad input path, quit path, serial, options | ✅ |
 | Deterministic execution, no worker traps | ✅ |
 | L1↔DSP handshake / no `>>EXIT<<` (stock icount `shift=3,sleep=off`) | ✅ slow-motion |
-| S75 full boot to idle screen (WASM) | ⏳ slow motion — minutes to tens of minutes of wall time at current TCI speed |
+| S75 full boot to idle screen (WASM) | ✅ ~70–75 s to idle on the current series (deterministic idlebench protocol — at the time of this post-mortem it was minutes; speed history: doc/optimization-playbook.md) |
 | LG full boot without icount (`-icount` omitted) | ✅ wasm + native (LG firmware has no wall-clock-starved budgets) |
