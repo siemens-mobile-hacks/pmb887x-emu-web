@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
---- a/accel/tcg/tb-maint.c	2026-09-10 22:46:09.938276525 +0000
+--- a/accel/tcg/tb-maint.c	2026-09-11 00:10:32.421050505 +0000
 +++ b/accel/tcg/tb-maint.c	2026-09-10 18:32:01.454742551 +0000
 @@ -34,6 +34,9 @@
  #include "tb-internal.h"
@@ -25,7 +25,7 @@ diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
      /* XXX: flush processor icache at this point if cache flush is expensive */
      qatomic_inc(&tb_ctx.tb_flush_count);
 diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
---- a/configs/meson/emscripten.txt	2026-09-10 22:46:09.890140982 +0000
+--- a/configs/meson/emscripten.txt	2026-09-11 00:10:32.373361414 +0000
 +++ b/configs/meson/emscripten.txt	2026-09-10 04:16:21.439029876 +0000
 @@ -13,9 +13,9 @@
  #                       from the asyncify import (libffi's ffi_call_js) and
@@ -40,7 +40,7 @@ diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
  
  [project options]
 diff --git a/include/accel/tcg/getpc.h b/include/accel/tcg/getpc.h
---- a/include/accel/tcg/getpc.h	2026-09-10 22:46:09.165613404 +0000
+--- a/include/accel/tcg/getpc.h	2026-09-11 00:10:31.589709498 +0000
 +++ b/include/accel/tcg/getpc.h	2026-09-10 02:45:12.222977042 +0000
 @@ -13,9 +13,12 @@
  #endif
@@ -57,7 +57,7 @@ diff --git a/include/accel/tcg/getpc.h b/include/accel/tcg/getpc.h
  # define GETPC() \
      ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))
 diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
---- a/include/tcg/tcg.h	2026-09-10 22:46:09.258615819 +0000
+--- a/include/tcg/tcg.h	2026-09-11 00:10:31.684071314 +0000
 +++ b/include/tcg/tcg.h	2026-09-10 02:45:12.222977042 +0000
 @@ -934,7 +934,7 @@
  #define TB_EXIT_IDXMAX    1
@@ -69,7 +69,7 @@ diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
  #else
  typedef uintptr_t tcg_prologue_fn(CPUArchState *env, const void *tb_ptr);
 diff --git a/meson.build b/meson.build
---- a/meson.build	2026-09-10 22:46:09.883510474 +0000
+--- a/meson.build	2026-09-11 00:10:32.365091731 +0000
 +++ b/meson.build	2026-09-10 02:44:50.615404259 +0000
 @@ -924,9 +924,8 @@
        error('Unsupported CPU @0@, try --enable-tcg-interpreter'.format(cpu))
@@ -92,7 +92,7 @@ diff --git a/meson.build b/meson.build
  config_host_data.set('CONFIG_TPM', have_tpm)
  config_host_data.set('CONFIG_TSAN', get_option('tsan'))
 diff --git a/tcg/meson.build b/tcg/meson.build
---- a/tcg/meson.build	2026-09-10 22:46:09.591145543 +0000
+--- a/tcg/meson.build	2026-09-11 00:10:32.051082318 +0000
 +++ b/tcg/meson.build	2026-09-10 02:44:59.281633941 +0000
 @@ -22,6 +22,10 @@
    tcg_ss.add(files('tci.c'))
@@ -106,7 +106,7 @@ diff --git a/tcg/meson.build b/tcg/meson.build
  if host_os == 'linux'
    tcg_ss.add(files('perf.c'))
 diff --git a/tcg/tcg.c b/tcg/tcg.c
---- a/tcg/tcg.c	2026-09-10 22:46:09.597624623 +0000
+--- a/tcg/tcg.c	2026-09-11 00:10:32.060082588 +0000
 +++ b/tcg/tcg.c	2026-09-10 02:59:59.038321064 +0000
 @@ -118,6 +118,10 @@
  static void tcg_out_tb_start(TCGContext *s);
@@ -3014,7 +3014,7 @@ diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
 new file mode 100644
 --- /dev/null
 +++ b/tcg/wasm64/wasm64.c
-@@ -0,0 +1,1232 @@
+@@ -0,0 +1,1386 @@
 +/*
 + * TCG wasm64 backend — runtime dispatch (tcg_qemu_tb_exec).
 + *
@@ -3521,6 +3521,11 @@ new file mode 100644
 +    uint32_t tcptr;         /* descriptor address (code buffer) */
 +    uint32_t body_len;      /* [size LEB][locals][expr] bytes */
 +    uint32_t fix_end;       /* fixup arena entries below this are ours */
++    uint32_t sum;           /* FNV-1a of the staged body bytes, taken at
++                             * add time — re-verified at close to split
++                             * "source corrupted in place between staging
++                             * and close" (foreign writer into the code
++                             * buffer) from record/assembly bugs */
 +};
 +
 +static __thread struct {
@@ -3756,6 +3761,103 @@ new file mode 100644
 +    return addFunction(inst.exports.run, 'jjjii');
 +});
 +
++/* flaky-batch-corruption forensics: stage-time vs close-time source
++ * comparison.  Every member checksums its staged body bytes at add
++ * time; w64_batch_close re-reads the source (LEB + checksum) before
++ * assembling.  A mismatch means the CODE BUFFER was overwritten in
++ * place between this member's staging and the batch close — nothing
++ * in the batch machinery writes there, so that would be a foreign
++ * writer.  On any failure the full evidence set is written to the
++ * page FS as /w64bad-<id>.bin (all member sources + records + the
++ * assembled module if any) — the console drops multi-line output.
++ * All checks are O(bytes) per close (~60KB), amortized over a
++ * WebAssembly.Module compile, and free when nothing fails. */
++
++#define W64_FNV0 0x811c9dc5u
++
++static uint32_t w64_sum(const uint8_t *p, uint32_t n)
++{
++    uint32_t h = W64_FNV0;
++    while (n--) {
++        h = (h ^ *p++) * 0x01000193u;
++    }
++    return h;
++}
++
++/* read the emitter's 5-byte padded size LEB (values < 2^32, so 5
++ * bytes is the cap; the emitter always writes exactly 5) */
++static uint32_t w64_read_leb5(const uint8_t *p, uint32_t *nbytes)
++{
++    uint32_t v = 0, shift = 0, k = 0;
++    do {
++        uint8_t b = p[k++];
++        v |= (uint32_t)(b & 0x7f) << shift;
++        shift += 7;
++        if (!(b & 0x80)) {
++            break;
++        }
++    } while (k < 5);
++    *nbytes = k;
++    return v;
++}
++
++/* append a forensic record to the open /w64bad file, if any */
++static FILE *w64_badf;
++static unsigned w64_badn;
++
++static void w64_bad_open(void)
++{
++    char name[32];
++    if (w64_badf) {
++        return;
++    }
++    snprintf(name, sizeof(name), "/w64bad-%u.bin", ++w64_badn);
++    w64_badf = fopen(name, "wb");
++    fprintf(stderr, "W64BADFILE %s\n", name);
++}
++
++static void w64_bad_member(unsigned m, const char *why)
++{
++    const uint8_t *src = (const uint8_t *)(uintptr_t)B.member[m].tcptr;
++    uint32_t fs = m ? B.member[m - 1].fix_end : 0;
++    unsigned i;
++
++    fprintf(stderr, "W64BADSRC member %u tcptr=%#x len=%u sum=%08x: %s\n",
++            m, B.member[m].tcptr, B.member[m].body_len, B.member[m].sum,
++            why);
++    if (!w64_badf) {
++        return;
++    }
++    /* records + full source region: descriptor, prelude, body and the
++     * following 64 bytes of slack (import table + next TB head) */
++    fprintf(w64_badf, "M %u tcptr=%#x body_len=%u fix_end=%u sum=%08x"
++            " why=%s fixes=%u\n",
++            m, B.member[m].tcptr, B.member[m].body_len,
++            B.member[m].fix_end, B.member[m].sum, why,
++            B.member[m].fix_end - fs);
++    for (i = fs; i < B.member[m].fix_end; i++) {
++        fprintf(w64_badf, "F pos=%u uimp=%u\n", B.fix[i].pos, B.fix[i].uimp);
++    }
++    fwrite(src, 1, W64_BODY_OFF + B.member[m].body_len + 64, w64_badf);
++    fprintf(w64_badf, "\nEOM %u\n", m);
++}
++
++static void w64_bad_close(void)
++{
++    if (w64_badf) {
++        unsigned i;
++        fprintf(w64_badf, "B id=%u members=%u utypes=%u uimps=%u"
++                " next_tidx=%u\n",
++                B.id, B.n_member, B.n_utypes, B.n_uimp, w64_next_tidx);
++        for (i = 0; i < B.n_uimp; i++) {
++            fprintf(w64_badf, "I fptr=%u type=%u\n",
++                    B.uimp[i].fptr, B.uimp[i].type);
++        }
++        fclose(w64_badf);
++        w64_badf = NULL;
++    }
++}
++
 +static void w64_batch_close(void)
 +{
 +    static const uint8_t magic[8] = { 0, 'a', 's', 'm', 1, 0, 0, 0 };
@@ -3776,6 +3878,45 @@ new file mode 100644
 +    uint64_t code_total = 0;
 +
 +    mb_put(&mod, magic, sizeof(magic));
++
++    /* pre-assembly source re-validation: every member's staged bytes
++     * are re-read and compared against the records taken at add time.
++     * A mismatch here is the split we need: the code buffer changed
++     * under us (or the records were never right) — independent of the
++     * module assembly below. */
++    {
++        bool badsrc = false;
++        for (m = 0; m < B.n_member; m++) {
++            const uint8_t *src =
++                (const uint8_t *)(uintptr_t)B.member[m].tcptr;
++            uint32_t nbytes, leb;
++            leb = w64_read_leb5(src + W64_BODY_OFF, &nbytes);
++            if (nbytes != 5 || leb != B.member[m].body_len - 5) {
++                w64_bad_open();
++                w64_bad_member(m, "size LEB changed since staging");
++                badsrc = true;
++                break;
++            }
++            if (w64_sum(src + W64_BODY_OFF, B.member[m].body_len)
++                != B.member[m].sum) {
++                w64_bad_open();
++                w64_bad_member(m, "body bytes changed since staging");
++                badsrc = true;
++                break;
++            }
++        }
++        if (badsrc) {
++            fprintf(stderr, "W64BATCHSKIP id=%u members=%u SOURCE-CORRUPT"
++                    " (members stay on temp modules)\n", B.id, B.n_member);
++            w64_bad_close();
++            B.id = 0;
++            B.n_utypes = 0;
++            B.n_uimp = 0;
++            B.n_member = 0;
++            B.n_fix = 0;
++            return;
++        }
++    }
 +
 +    /* type section: union types + the thunk signature */
 +    mb_uleb(&sec, B.n_utypes + 1);
@@ -4008,6 +4149,17 @@ new file mode 100644
 +            fprintf(stderr, "W64BATCHSKIP id=%u members=%u bytes=%zu "
 +                    "(members stay on temp modules)\n",
 +                    B.id, B.n_member, mod.n);
++            /* full evidence: all member sources + the assembled module
++             * bytes that failed the walk */
++            w64_bad_open();
++            if (w64_badf) {
++                fwrite(mod.b, 1, mod.n, w64_badf);
++                fprintf(w64_badf, "\nEOMOD %zu\n", mod.n);
++                for (m = 0; m < B.n_member; m++) {
++                    w64_bad_member(m, "assembled walk failed");
++                }
++                w64_bad_close();
++            }
 +            g_free(mod.b);
 +            g_free(sec.b);
 +            B.id = 0;
@@ -4111,6 +4263,8 @@ new file mode 100644
 +    B.member[B.n_member].tcptr = (uint32_t)tcptr;
 +    B.member[B.n_member].body_len = body_len;
 +    B.member[B.n_member].fix_end = B.n_fix + ncf;
++    B.member[B.n_member].sum =
++        w64_sum((const uint8_t *)(uintptr_t)tcptr + W64_BODY_OFF, body_len);
 +    B.n_fix += ncf;
 +    B.n_member++;
 +
