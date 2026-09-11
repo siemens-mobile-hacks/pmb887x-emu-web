@@ -1,5 +1,24 @@
 # Performance hand-off: the qemu-core device-path workstream
 
+Status (2026-09-11, RTC session — patch 0033): **the displayed clock and
+the initial date are fixed; both were one bug, and it was never a wasm
+or warp-patch regression.**  The pinned rev's "fix RTC date/time
+encoding" (3e497d7ae7) seeds RTC `CNT` as a packed calendar (fields
+sec/min/hour/yday with 964/4/40 reloads) — right for the LG firmware
+(KE800 reads the fields), wrong for Siemens, which treats `CNT` as one
+linear Unix-seconds counter: the packed value decodes to "Wed 02 May
+2091" and, because a minute wrap is +965 in the linear reading, the
+shown clock jumped +16 min at every minute boundary (the "~22×").
+Reproduced identically on the pristine native build (~300× there, the
+idle virtual clock also warping without 0032).  0033 adds a per-board
+`cnt-format` (board config `board.rtc.format`, vendor default LG →
+calendar, else unix).  Verified on native S75/C81/KE800 and on both
+wasm dists (S75 "Пт 11 Сен", advancing 1 min per wall minute).  The
+RTC-CNT-vs-vclock method that found it: `?trace=rtc&tracebuf=1` reads
+decoded both ways next to LCD screenshots (`tools/` has no permanent
+script; the probe lived in the session scratchpad).  Note for the
+benchmarks: nothing else changed, no perf gate re-run was needed.
+
 Status (2026-09-11, Asyncify + real-time-cap session — patches 0031,
 0032): `/dist-jit` boots to idle in **33.2 s** (idlebench `--runs 2`
 interleaved vs the session-start dist at 40.3 s: **−18 %**; −24 % vs the
@@ -26,12 +45,10 @@ where the warp is RT-paced).  The vCPU now sleeps (kick-interruptible)
 until wall reaches the virtual target; "banked" never throttles the
 compute-bound boot (virtual runs *behind* wall there), only idle overrun,
 so boot-to-idle is unchanged and the idle virtual clock tracks wall (v
-166 → 44.8 s at t=45 s).  **Still open — the displayed digital clock:**
-even with the virtual clock at real-time the phone's shown time advances
-too fast per virtual second, which points at an RTC/timer *decode* issue
-(the counter models are all virtual-paced); the user reports it absent in
-native main, i.e. a regression from an earlier session's warp patches
-worth a focused RTC trace.  The J2ME stopwatch running ~0.1× is the
+166 → 44.8 s at t=45 s).  The displayed digital clock still advanced
+too fast per virtual second after this session — resolved by 0033 (see
+the status above: the RTC `CNT` seed layout, not a rate or warp issue).
+The J2ME stopwatch running ~0.1× is the
 opposite problem (compute-bound guest, not a pacing bug) and the cap does
 not address it.  Gates: op-suite native JIT+TCI 1156/1156 byte-identical,
 wasm64 lockstep 250e6 serial+regs identical, both dists boot to the idle

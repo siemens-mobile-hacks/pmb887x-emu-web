@@ -958,3 +958,50 @@ the same line — 0032's rr was first diffed with the guard removed, so it
 baseline already carries 0031) so the delta is only the cap.  `idlebench`,
 `bootbench` and `lockstep-wasm` now pass `rt=off` so a faster-than-real-time
 boot is timed at full speed (a `?rt=` knob run is never a baseline).
+
+## Session log: 2026-09-11 (patch 0033 — the displayed clock and the initial date: one RTC seed-layout bug)
+
+**Symptom.**  Two user reports: the phone's displayed clock runs ~22×
+even with the virtual clock pinned to wall (left open by the 0032
+session), and the initial date is wrong (reported as absent on the
+Linux build).
+
+**Method.**  A page probe with `?trace=rtc&tracebuf=1` (RTC I/O trace
+kept in `window.__qemulog`) sampled every 15–20 s next to `wasm_vclock`
+and an LCD screenshot.  The RTC `CNT` register itself advanced 1:1 with
+the virtual clock (17:00:00 → 17:00:18 over 15 s wall, day 253 = Sep 11),
+so the device and the pacing were fine — yet the LCD read "Ср 02 Май
+15:39" and became 15:55 one wrap later, then 15:56 a minute after that.
+The same run on the *pristine* native build (rebuilt from the clean
+worktree; the "native" binary on disk was a stale patched build) showed
+the same date and 19:38 → 23:03 over 42 s, i.e. the bug predates every
+patch here and is not wasm-specific.  `date -u -d @0xE4391BEA` = Wed May
+2 2091 12:39 UTC, + the phone's UTC+3 = 15:39: the Siemens firmware reads
+`CNT` as linear Unix seconds, and the packed calendar (introduced by the
+pinned rev's "fix RTC date/time encoding", 3e497d7ae7, which replaced
+`cnt = host seconds; rel = 0`) jumps by 965 at each minute wrap = +16 min.
+
+**Why not just revert the encoding.**  The KE800 (LG) shows "17:17 11/9"
+with the packed layout and "00:00 1/1" with linear seconds — the LG
+firmware reads the fields, which is what the upstream fix targeted.  So
+0033 makes it per board: `pmb887x-rtc` property `cnt-format`
+(`calendar`|`unix`), set from the optional board config key
+`board.rtc.format`, vendor default LG → calendar, else unix.  The seed
+still goes through `qemu_get_timedate()` (lockstep's fixed `-rtc base=`
+stays deterministic).  EL71 shows its "set time and date?" wizard with
+either layout — pre-existing, unrelated.
+
+**Verified.**  Native (branch tree, `QEMU_ICOUNT_RTCAP=banked`): S75 "Пт
+11 Сен 21:22", C81 "11.09.2026 20:22", KE800 unchanged; wasm dist-jit
+21:23 → 21:24 over 60 s wall, dist 21:26 → 21:27 over 40 s.  Host was
+17:2x UTC; the phones apply their saved zones (+4 / +3).
+
+**Lessons.**  (1) The 0032 session's "RTC decode, regression from the
+warp patches" note was half right: decode yes, regression no — check the
+pristine native build before attributing anything to the series.
+(2) `build/qemu-native-build/qemu-system-arm` had been rebuilt from the
+patched tree at some point; `ninja -n` against its pristine worktree is
+the cheap way to tell (it now is pristine again; the patched-tree native
+binary is `build/qemu-native-jit`).  (3) A memory note that says "do not
+re-touch X" needs the measurement that justified it; the previous
+session's raw-seconds attempt was reverted without one.
