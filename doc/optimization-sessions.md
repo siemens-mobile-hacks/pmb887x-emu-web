@@ -678,3 +678,41 @@ via the new exports), `tools/peek.mjs` (dump guest memory → objdump),
 `tools/iotrace.mjs` (now takes DIST= and EXTRA_Q=; TRACE=flash), the
 multi-insn lockstep leg (`LS_QARGS=` override in lockstep-wasm.mjs: wasm
 vs wasm digests without one-insn-per-tb).
+
+## Session log: 2026-09-11 (patches 0020, 0021 — successor hints; the wait fixes behind the display-DMA stretch)
+
+**0020** (backend): the 0019 batch histogram said 60 % of misses had
+every goto_tb successor already translated (avg 2.6 members).  Two more
+successor sources — the return address after `bl`/`blx`
+(`translator_note_succ`, an empty hook outside CONFIG_TCG_WASM64) and the
+literal of the firmware's `ldr pc, [pc, #-4]` call thunks (read through
+the non-faulting probe's host pointer) — plus `W64_SPEC_N` 32: batches
+29.5k → 11.3k per 25 s (3.1 → 12.7 members), misses −60 %, t0.5G −5..−8 %
+in both orders.  A 16/32/64 budget sweep was inside noise.
+
+**0021** (both dists).  The ~12 s stretch (v 4.6→23.5 at 2–4 MIPS) is
+~12k single-word DMA transfers to the display, one IRQ + halt per word.
+Three theories died in order, each with a number:
+
+1. *REALTIME completion timers* (dmac +1 ns, dif/ssc `timer_mod(…, 0)`)
+   → switched to QEMU_CLOCK_VIRTUAL: tIdle flat (66→65 / 70.5→71.9).
+   Reverted (REJECTED row).
+2. *eventfd wake*: `qemu_clock_notify → event_notifier_set → write()`
+   is a proxied syscall (~1 ms) per icount deadline — the atomic-flag
+   replacement alone was also flat at tIdle (63.1→62.2 / 71.3→69.8),
+   because the vCPU was not the one waiting.
+3. *The halt wait never waited*: `qemu_cond_wait_impl` handed
+   `emscripten_futex_wait` a 0 ms timeout = "return now, timed out", so
+   `rr_wait_io_event` spun lock/unlock on the BQL (HALTLAT counters:
+   4–10 iterations per halt) and the main loop's `bql_lock` queued
+   behind it through emscripten's whole-ms mutex wait (2.5 s of a 10 s
+   stretch profile).  INFINITY.  With both fixes: dist-jit 66→62.6 /
+   68→58.9 s, dist 76→73 / 73.5→64.7 s (both orders).
+
+Profiling notes: `tools/wprof2.mjs` now prefers the queried dist's
+symbol map (it silently used `/dist`'s for dist-jit runs) and takes
+`PROF_WORKER=<n>|main` to restrict `PROF_FN` caller stacks to one worker
+(stacks aggregated across workers pointed at the io-dump thread's spin,
+not the vCPU).  Per-worker self-time of the stretch: vCPU 36 % in futex
+waits + 11 % waking the main loop, main loop 92 % idle — i.e. handoff
+latency, not work.

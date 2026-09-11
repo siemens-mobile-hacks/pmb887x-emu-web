@@ -11,7 +11,9 @@ import path from "node:path";
 // wasm-function[N] -> C symbol map (emcc --emit-symbol-map sidecar; the
 // wasm binary carries no name section). Looked up next to the wasm being
 // served (site/dist/ or site/dist-jit/) and in the build dirs.
+const qDist = (/(?:^|&)dist=([^&]+)/.exec(process.argv[3] || "") || [])[1];
 const symPaths = [
+  ...(qDist ? [`../site/${qDist}/qemu-system-arm.js.symbols`] : []),
   "../site/dist/qemu-system-arm.js.symbols",
   "../site/dist-jit/qemu-system-arm.js.symbols",
   "../build/qemu-wasm/qemu-system-arm.js.symbols",
@@ -165,7 +167,9 @@ try {
   console.log("\n=== caller stacks for a target fn (env PROF_FN) ===");
   const want = process.env.PROF_FN || "throw_longjmp";
   const tstacks = new Map();
-  for (const profile of profiles) {
+  const wantWorker = process.env.PROF_WORKER;   // "0" = worker #0 (profiles[1]), "main" = page
+  for (const [pi, profile] of profiles.entries()) {
+    if (wantWorker !== undefined && (wantWorker === "main" ? pi !== 0 : pi !== Number(wantWorker) + 1)) continue;
     const byId = new Map(profile.nodes.map((n) => [n.id, n]));
     const parent = new Map();
     for (const n of profile.nodes) for (const c of n.children || []) parent.set(c, n.id);
@@ -174,7 +178,7 @@ try {
       if (!node || !symOf(node.callFrame.functionName).includes(want) && !(node.callFrame.functionName || "").includes(want)) continue;
       const chain = [];
       let cur = parent.get(profile.samples[j]);
-      while (cur !== undefined && chain.length < 10) {
+      while (cur !== undefined && chain.length < 14) {
         const anc = byId.get(cur);
         if (anc) chain.push(symOf(anc.callFrame.functionName) || "?");
         cur = parent.get(cur);

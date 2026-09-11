@@ -215,6 +215,12 @@ lands in `/tmp/pmb887x-serial.log`.
     0020-wasm64-successor-hints.patch  call-return + ldr-pc trampoline
                               successors, W64_SPEC_N 32: batches 3 -> 13
                               members, misses -60 %, t0.5G -5..-8 %
+    0021-wasm-wait-fixes.patch untimed QemuCond waits passed a 0 ms
+                              futex timeout (= immediate return: the
+                              vCPU halt wait spun on the BQL) and event
+                              notifiers did proxied eventfd writes (~1 ms
+                              each, per icount deadline): tIdle -5..-13 %
+                              on both dists (the display-DMA stretch)
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression, superseded by the reworked
                               0004; 0015 diag counters: measured neutral, no
