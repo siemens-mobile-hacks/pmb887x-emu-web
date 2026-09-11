@@ -38,6 +38,7 @@ import { chromium } from "playwright-core";
 import { createHash } from "node:crypto";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
@@ -158,7 +159,7 @@ const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
 // end-state screenshot -> tests/results (page + LCD crop). Never fatal:
 // a wedged/crashed page just means no shot.
 async function shoot(p, tag) {
-  const base = `${here}../tests/results/idlebench-${stamp}-${tag}`;
+  const base = path.join(here, `../tests/results/idlebench-${stamp}-${tag}`);
   try { await p.screenshot({ path: `${base}.png` }); } catch { return null; }
   const shots = { page: `${base}.png` };
   try {

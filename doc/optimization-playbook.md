@@ -8,6 +8,16 @@ document**.  Read together with [performance-handoff.md](performance-handoff.md)
 (targets/constraints) and [wasm32-port-status.md](wasm32-port-status.md)
 (the JIT port).
 
+**Current workstream (since 2026-09-10): the wasm64 TCG backend** — see
+[wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) +
+[wasm-tcg-backend-progress.md](wasm-tcg-backend-progress.md).  It replaces
+TCI micro-optimization as the throughput lever (end-to-end boot progress
+already ≥ TCI; idlebench puts /dist-jit ≈ /dist + 8–10 %) and brings its
+own gates (op-suite, lockstep, idlebench — rule 4 below).  **Never cite
+the "~1.3–2.3x JIT" numbers in the rejected table below as this
+backend's** — they belong to the discarded wasm32/ktock port; the
+wasm64 backend's numbers live only in its plan/progress docs.
+
 ## The golden rules
 
 1. **No change lands without a measurement.** If a patch does not
@@ -22,7 +32,12 @@ document**.  Read together with [performance-handoff.md](performance-handoff.md)
    rebuilds, long soaks) runs in the background and is polled.
 4. **Tests after every landed patch**: `node tests/run.mjs` (native
    suite, ~65 s, all PASS) plus a wasm boot verification (deep boot /
-   idle screen screenshot, no `>>EXIT<<`).
+   idle screen screenshot, no `>>EXIT<<`).  For wasm64-backend changes
+   (2026-09-10+) the gates are: op-suite `scripts/run-tcg-isa.sh`
+   (1156 cases on native JIT / native TCI / wasm page, byte-identical
+   serial), lockstep windows `tools/lockstep-wasm.mjs --insns
+   20e6|250e6|700e6` (full 2.5e9 gate per the plan's phases), and
+   `tools/idlebench.mjs` for the end-to-end human metric.
 
 ## The fast feedback loop
 
@@ -53,6 +68,13 @@ bash scripts/capture-patch.sh my-change-name
 bash scripts/capture-patch.sh verify-tmp
 ```
 
+(`ninja-fast.sh` builds the **TCI** dist.  The wasm64 backend builds
+with `scripts/ninja-wasm64.sh qemu-system-arm.js`; `scripts/build-qemu-wasm64.sh`
+rebuilds + deploys it **atomically** into `site/dist-jit/` — never a
+plain `cp` over the live-served wasm, which can serve a torn 45 MB
+file.  A/B it with `DIST=dist-jit node tools/bootbench.mjs 110`, or
+end-to-end with `node tools/idlebench.mjs dist,dist-jit --runs 2`.)
+
 Native suite after landing: `node tests/run.mjs --label <patch> --timeout 240`.
 
 ### Boot verification (correctness bar)
@@ -62,7 +84,14 @@ Native suite after landing: `node tests/run.mjs --label <patch> --timeout 240`.
 - Long soak to the idle screen: screenshot + eyeball (wallpaper, clock,
   "Поиск сети"): see the `shot`-style script in git history of this doc
   or `tools/smoke.mjs` as a base.  Idle screen wall times by build:
-  0007 ≈ 260 s, 0008 ≈ 235 s, 0009 ≈ 195 s.
+  0007 ≈ 260 s, 0008 ≈ 235 s, 0009 ≈ 195 s, 0016 ≈ 160 s (all on
+  `s75_working20060710172101.bin`).  The current end-to-end metric is
+  `tools/idlebench.mjs` on S75v40lg1 (deterministic protocol: committed
+  idle reference, bottom-139-rows compare, fresh browser per run,
+  config + artifact hashes pinned to `tests/results/idlebench-latest.json`)
+  — first results: /dist 70.4/74.4 s, /dist-jit 78.4/78.4 s.
+  **Different flash + protocol: idlebench seconds are NOT comparable to
+  the soak times above.**
 
 ## Measurement methodology (and its traps)
 
@@ -193,14 +222,16 @@ no controller).  Numbers in [upstream-branch.md](upstream-branch.md).
    interrupt exits, rare traps) — no longer worth chasing. The generic
    wasm-EH longjmp replacement stays blocked (asyncify/fiber conflict,
    see rejected table).
-2. **TCI interpreter dispatch, ~57 % of vCPU** — 0012 specialized the
-   memory ops; the TLB table-base caching and MMIO dispatch fast-path
-   experiments (session 2026-09-08/09 evening) both measured FLAT and
-   were reverted — this path is at its micro-optimization floor.
-   Remaining levers are the big ones: the 64-bit TCI encoding (est.
-   8–15 %, 2–4 h, see regfile experiment below for why 5-bit regs
-   alone lost) or the 0005 wasm32 runtime JIT (10–100× ceiling,
-   porting effort, separate session).
+2. **TCI interpreter dispatch, ~57 % of vCPU — CLOSED as a target
+   (2026-09-10).**  0012 specialized the memory ops; the TLB table-base
+   caching and MMIO dispatch fast-path experiments (session
+   2026-09-08/09 evening) both measured FLAT and were reverted — this
+   path is at its micro-optimization floor, and the wasm32 JIT attempt
+   (rejected table) showed codegen alone can't beat it through the
+   per-TB dispatch protocol.  The big lever is now the **wasm64 TCG
+   backend** ([wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md));
+   TCI remains as the reference/fallback tier.  The 64-bit TCI encoding
+   sketch below stays for the record.
 3. **Flash romd topology churn, ~4–5 % of vCPU — CLOSED by 0016.** The sketched FlatView-variant stash landed together with a range-scoped tcg-commit TLB flush (the two only win together: recycling views without keeping the untouched TLB entries still re-walks the running code per flip; see the 2026-09-10 session log for the three-way interaction and the measurement traps).  The remaining per-flip cost (~20 µs commit bookkeeping + the semantically-required invalidation of the flipped part's own pages) is at the floor.
 4. **V8 tier-up warm-up — measured 2026-09-08, no in-window effect (closed).**
    `--no-wasm-lazy-compilation`, `--wasm-tiering-budget=100000`, and both

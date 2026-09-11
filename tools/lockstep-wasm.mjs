@@ -323,8 +323,9 @@ const worker = async (wi) => {
     const dir = path.join(baseDir, `run${r}`);
     log(`== run ${r + 1}/${args.runs}: JIT(native) vs wasm64(browser) flash=${args.flash} budget=${fmt(args.insns)} insns`);
     const { a, b, wallS } = await runPairWasm(args, flash, dir, log);
-    // end-state screenshots -> tests/results (native screendump + browser
-    // page/LCD crop; especially useful when the wasm leg dies mid-run)
+    // end-state screenshots -> tests/results: the wasm leg's page + LCD
+    // crop, plus the native leg's screendump when it's still around at
+    // quit time (the plugin's stop_at normally self-exits it first)
     const screenshots = {};
     const aPng = ppmFileToPng(path.join(a.dir, "final.ppm"));
     if (aPng) {

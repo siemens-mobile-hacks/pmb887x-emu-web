@@ -89,7 +89,12 @@ emconfigure "$BUILD/qemu/configure" \
 
 emmake ninja -j"$(nproc)" qemu-system-arm.js
 
-cp qemu-system-arm.js qemu-system-arm.wasm "$DIST/"
+# Deploy atomically (temp name + rename): a plain cp over the live-served
+# wasm can serve a torn file if the server is running.
+for f in qemu-system-arm.js qemu-system-arm.wasm; do
+  cp "$f" "$DIST/.$f.tmp"
+  mv -f "$DIST/.$f.tmp" "$DIST/$f"
+done
 [ -f qemu-system-arm.worker.js ] && cp qemu-system-arm.worker.js "$DIST/" || true
 [ -f qemu-system-arm.wasm.map ] && cp qemu-system-arm.wasm.map "$DIST/" || true
 

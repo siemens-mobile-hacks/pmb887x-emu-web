@@ -46,9 +46,13 @@ fi
 echo "== ninja qemu-system-arm.js"
 ninja -C "$BUILD" qemu-system-arm.js
 
-echo "== deploy -> site/dist-jit"
+echo "== deploy -> site/dist-jit (atomic: temp name + rename — the server may
+   be serving the previous artifact; a plain cp can serve a torn 45 MB file)"
 mkdir -p site/dist-jit
-cp "$BUILD/qemu-system-arm.js" "$BUILD/qemu-system-arm.wasm" site/dist-jit/
+for f in qemu-system-arm.js qemu-system-arm.wasm; do
+  cp "$BUILD/$f" "site/dist-jit/.$f.tmp"
+  mv -f "site/dist-jit/.$f.tmp" "site/dist-jit/$f"
+done
 # The lockstep fold reads the insn budget + grid from the URL (ls-* params).
 ls -la site/dist-jit/qemu-system-arm.{js,wasm}
 echo "== done. Serve: node scripts/serve.mjs 8094   Run: cd tools && node lockstep-wasm.mjs --runs 3"
