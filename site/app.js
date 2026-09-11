@@ -288,12 +288,17 @@ async function bootSuite(url) {
     const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
     const factory = (await import(`./${DIST}/qemu-system-arm.js`)).default;
     let modRef = null; // FS access in onExit (qemuModule not yet assigned)
+    /* ?icount=1: the phones' stock timing model — measures the icount
+     * tax on the tcgbench workload (TB icount-capping + accounting +
+     * virtual-timer runs) against the same run without it */
+    const icount = new URLSearchParams(location.search).get("icount") === "1";
     qemuModule = await factory({
       arguments: [
         "-display", "wasm",
         "-M", "versatilepb",
         "-kernel", "/data/tcgisa.bin",
         "-semihosting",
+        ...(icount ? ["-icount", "shift=3,sleep=off"] : []),
         "-serial", "file:/serial.log",
         "-monitor", "none",
       ],

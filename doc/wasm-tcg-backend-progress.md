@@ -92,6 +92,24 @@ the plan file itself carries the phase gates.
   node's event loop alive (`unref()` it or `tail` never sees EOF —
   looked like a hang); native TCI on this workload takes minutes
   (short branchy TBs are its worst case) so it is not a default leg.
+- **Device/icount-tax mirrors added same session** (user request):
+  `rampoll` vs `mmiopoll` are disassembly-verified instruction-shape
+  mirrors over SRAM vs 4 inert MMIO regs; `mmiow` covers the write
+  side; `ICOUNTS=0,1` + `?icount=1` (app.js) run the phones' stock
+  timing model on the same workload.  Guest-side gotcha: the RAM
+  mirror's buffer must be `volatile` — gcc hoisted the plain loads
+  and the phase silently degenerated to pure ALU.  **Numbers:
+  MMIO dispatch tax 586 ns/access on wasm64 vs 224 native JIT (2.6×
+  worse, a qemu-core/emscripten path cost independent of backend
+  compute speed); icount shift=3 is FREE on short-TB workloads
+  post-slice-2** (390→405 MIPS, noise; TB sizes uncapped far from
+  deadlines — the v-clock sanity check `v=5.34e9×8ns=42.7` confirms
+  icount engages).  So the boot-throughput gap (compute 562 → boot
+  ~55 MIPS) prices as: MMIO polling density + timer/device storms,
+  NOT icount accounting — and the 2.6× native-vs-wasm dispatch
+  multiplier is itself a measurable qemu-core target
+  (FlatView/TLB-cached callbacks; NOT memory.c — rejected there on
+  TCI, and this bench gives it a clean before/after metric now).
 
 ### Session 2026-09-11 (early) — user regression report → real benchmark; corruption forensics hardened
 

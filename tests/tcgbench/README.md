@@ -5,8 +5,15 @@ fixed bare-metal ARM926EJ-S workload on `-M versatilepb` whose phases hit
 the wasm64 TCG backend's per-op paths directly, timed by timestamping
 each phase's serial line. **Phone-firmware boots are the final gates
 only** — 80 s+ per run, device-model noise, hard to attribute; this is
-the A/B loop: ~2.5 s native-JIT / ~8 s on the wasm page per run, with
+the A/B loop: ~2.5 s native-JIT / ~15 s on the wasm page per run, with
 per-phase attribution and a cross-backend checksum.
+
+It doubles as the **device/icount-tax bench**: `rampoll` vs `mmiopoll`
+are instruction-shape mirrors (4 volatile loads + 4 conditional updates
+per iteration; verified in disassembly) over SRAM vs four inert MMIO
+registers, so their per-access delta *is* the device-dispatch tax; and
+the whole workload runs with/without `-icount shift=3,sleep=off`
+(`ICOUNTS=0,1`, `?icount=1` on the page) to price the icount side.
 
 ## Strategy (where each tool sits)
 
@@ -30,11 +37,16 @@ changed) lockstep 20M/250M → idlebench + full 2.5e9 gate at slice close.**
 | `ldrd` | 20M | ldrd/strd + unaligned ldr (64-bit + natural-LE arms) | ~0.25G |
 | `branch` | 150M | data-dependent short branches — goto_tb chaining both ways, short TBs | ~1.2G |
 | `mix` | 40M | branch + SRAM traffic + rare MMIO poll (UART FR) — the idle-poll shape | ~0.4G |
+| `rampoll` | 48M | 4 volatile SRAM loads + branch per iter — RAM half of the tax mirror | ~0.55G |
+| `mmiopoll` | 1.5M | same loop over 4 inert MMIO regs (PL011 FR, sysctl ID, PL190 status, SP804 value) — the MMIO half | ~0.02G |
+| `mmiow` | 1M | MMIO write+read (SP804 control=0, inert) — the write side | ~0.01G |
 
-Total ≈ 4.6G guest insns, ≈665M TB entries (6.9 insns/TB). Defaults
-target ~2.5 s on the native JIT; `make ITERS_DIV=8` shrinks every phase
+Total ≈ 5.3G guest insns, ≈720M TB entries (7.4 insns/TB). Defaults
+target ~4.4 s on the native JIT; `make ITERS_DIV=8` shrinks every phase
 8-fold for smoke runs (calibration: keep phases ≥1 s on the *slowest leg
 you care about* — the wasm leg's serial-poll quantization is 150 ms).
+Note the poll mirrors intentionally differ in iteration count (RAM is
+~2 orders faster per access) — compare **ns/access**, not phase seconds.
 
 Output contract (byte-exact across backends; the per-phase checksum
 `ck=` defeats dead-code elimination and cross-checks legs — a value bug
@@ -56,6 +68,7 @@ make -C tests/tcgbench install    # -> site/dist/tcgbench.bin (page: ?suite=dist
 
 node tools/tcgbench.mjs                                  # native-jit + dist-jit (wasm64)
 LEGS=native-jit,native-tci,dist-jit,dist node tools/tcgbench.mjs
+ICOUNTS=0,1 node tools/tcgbench.mjs                      # icount-tax matrix
 EXTRA_Q="env=W64_NOACCTINLINE=1" node tools/tcgbench.mjs   # backend knob A/B
 RUNS=3 node tools/tcgbench.mjs                           # medians
 ```
@@ -74,10 +87,38 @@ RUNS=3 node tools/tcgbench.mjs                           # medians
 
 | leg | total | MIPS | insns/TB |
 |---|---|---|---|
-| native-jit | 2.44 s | ~1900 | — |
-| dist-jit (wasm64) | 8.20 s | 562 | 6.9 |
+| native-jit | 4.41 s | ~1200 | — |
+| dist-jit (wasm64) | 13.7 s | 390 | 7.4 |
+| dist-jit + icount shift=3 | 13.2 s | 405 | 7.5 |
 
-Knob A/B on dist-jit (seconds per phase):
+### The device/icount tax (ns per access, mirrors)
+
+| leg | ram poll | MMIO read | MMIO write | dispatch tax | MMIO/RAM |
+|---|---|---|---|---|---|
+| native-jit | 1.5 | 225.8 | 166 | **224 ns** | 151× |
+| dist-jit | 4.7 | 590.2 | 379 | **586 ns** | 126× |
+| dist-jit +icount | 4.7 | 530.3 | 303 | **526 ns** | 113× |
+
+Conclusions pinned by these numbers:
+
+- **The MMIO dispatch tax is ~2.6× worse on wasm64 than native JIT**
+  (586 vs 224 ns/access) — a pure qemu-core/emscripten path cost (TLB
+  miss → `*_mmu` helper import → memory.c FlatView dispatch → device
+  callback), independent of the backend's compute speed. A phone
+  firmware polling at ~30% density would burn ~18% of its time in this
+  path on wasm64. This is the FlatView/TLB-cached-callbacks lever (the
+  one §4.7 pointed at — but it must sit in qemu-core where it also
+  helps /dist, NOT in memory.c where TCI already rejected it).
+- **icount shift=3 is free on this workload post-slice-2** (390 → 405
+  MIPS, within noise; insns/TB unchanged 7.4 → 7.5): with inline TB
+  accounting the stock model costs nothing on short-TB code, and the
+  TB icount-cap never bites far from deadlines. (It does NOT capture
+  the phone boots' timer storms — versatilepb with no guest timers
+  armed never fires the v-timer machinery; that part of the boot tax
+  still needs wprof on real firmware.)
+
+Knob A/B on dist-jit without the tax phases (seconds per phase,
+2026-09-11, slice-2 landing):
 
 | phase | default | `W64_NOACCTINLINE=1` | `W64_NOTLB=1` |
 |---|---|---|---|

@@ -22,6 +22,7 @@ const here = new URL(".", import.meta.url).pathname;
 const ROOT = path.resolve(here, "..");
 const port = process.env.PORT || "8094";
 const legs = (process.env.LEGS || "native-jit,dist-jit").split(",");
+const icounts = (process.env.ICOUNTS || "0").split(","); // e.g. "0,1": tax matrix
 const extraQ = process.env.EXTRA_Q || "";
 const runs = Number(process.env.RUNS || 1);
 const bins = {
@@ -32,11 +33,12 @@ const bins = {
 const stamp = () => Number(process.hrtime.bigint() / 1000000n) / 1000; // s, µs res
 
 // run one native leg: returns { phases: [[name, ts]], serial, rc }
-function runNative(bin) {
+function runNative(bin, icount) {
   return new Promise((resolve, reject) => {
     const args = ["-M", "versatilepb",
-      "-kernel", `${ROOT}/tests/tcgbench/tcgbench.bin`,
-      "-semihosting", "-display", "none", "-monitor", "none", "-serial", "stdio"];
+      "-kernel", `${ROOT}/tests/tcgbench/tcgbench.bin`, "-semihosting",
+      ...(icount ? ["-icount", "shift=3,sleep=off"] : []),
+      "-display", "none", "-monitor", "none", "-serial", "stdio"];
     const p = spawn(bin, args, { stdio: ["ignore", "pipe", "inherit"] });
     let buf = "";
     const phases = [];
@@ -62,9 +64,10 @@ function runNative(bin) {
 }
 
 // run one wasm page leg: poll /serial.log, timestamp new lines
-async function runWasm(dist, browser) {
+async function runWasm(dist, browser, icount) {
   const page = await browser.newPage();
   const q = new URLSearchParams({ suite: "dist/tcgbench.bin", dist });
+  if (icount) q.set("icount", "1");
   for (const kv of extraQ.split("&").filter(Boolean)) {
     const i = kv.indexOf("=");
     q.append(i > 0 ? kv.slice(0, i) : kv, i > 0 ? kv.slice(i + 1) : "");
@@ -119,35 +122,53 @@ function phaseSecs(phases) {
   return out;
 }
 
+// per-phase memory accesses per iteration (the poll mirrors and mix):
+// the runner turns phase seconds into ns/access — the device-tax metric
+const ACC_PER_ITER = { rampoll: 4, mmiopoll: 4, mmiow: 2 };
+const ITERS = {}; // phase -> n, parsed from the serial lines
+
 const results = [];
 const browser = await chromium.launch({ headless: true });
 try {
   for (let r = 0; r < runs; r++) {
     for (const leg of legs) {
+      for (const ic of icounts) {
+      const icount = ic === "1";
       const t0 = stamp();
       const res = leg.startsWith("native-")
-        ? await runNative(bins[leg])
-        : await runWasm(leg, browser);
+        ? await runNative(bins[leg], icount)
+        : await runWasm(leg, browser, icount);
       const secs = phaseSecs(res.phases);
       const total = secs.reduce((a, [, s]) => a + s, 0);
       const cksum = (res.serial.join("\n").match(/^BENCH done cksum=(\S+)/m) || [])[1] || null;
+      for (const l of res.serial) {
+        const m = l.match(/^BENCH (\S+) n=(\d+)/);
+        if (m) ITERS[m[1]] = Number(m[2]);
+      }
       const entry = {
-        leg, run: r + 1, rc: res.rc, total: +total.toFixed(3),
+        leg, icount, run: r + 1, rc: res.rc, total: +total.toFixed(3),
         wasm: leg.startsWith("native-") ? undefined : path.join("site", leg, "qemu-system-arm.wasm"),
         wasmSha: leg.startsWith("native-") ? null : (() => {
           try { return createHash("sha256").update(fs.readFileSync(path.join(ROOT, "site", leg, "qemu-system-arm.wasm"))).digest("hex").slice(0, 16); } catch { return null; }
         })(),
-        phases: secs.map(([n, s]) => ({ n, s: +s.toFixed(3) })),
+        phases: secs.map(([n, s]) => ({
+          n, s: +s.toFixed(3),
+          nsPerAccess: ACC_PER_ITER[n] && ITERS[n]
+            ? +((s * 1e9) / (ITERS[n] * ACC_PER_ITER[n])).toFixed(1)
+            : undefined,
+        })),
         insns: res.insns, tbs: res.tbs,
         mips: res.insns && total ? +(res.insns / total / 1e6).toFixed(1) : null,
         cksum,
       };
       results.push(entry);
-      console.log(`== ${leg} run${r + 1}: total ${entry.total}s` +
+      console.log(`== ${leg}${icount ? "+icount" : ""} run${r + 1}: total ${entry.total}s` +
         (entry.mips ? ` (${entry.mips} MIPS, ${(entry.insns / 1e6).toFixed(0)}M insns, ${(entry.tbs / 1e6).toFixed(1)}M TBs, ${(entry.insns / Math.max(1, entry.tbs)).toFixed(1)} insns/TB)` : "") +
         `  cksum=${cksum}`);
-      for (const { n, s } of entry.phases) {
-        console.log(`   ${n.padEnd(8)} ${s.toFixed(3)}s`);
+      for (const { n, s, nsPerAccess } of entry.phases) {
+        console.log(`   ${n.padEnd(8)} ${s.toFixed(3)}s` +
+          (nsPerAccess ? `  (${nsPerAccess} ns/access)` : ""));
+      }
       }
     }
   }
@@ -158,8 +179,9 @@ try {
 // summary + cross-leg checks
 const byLeg = new Map();
 for (const e of results) {
-  if (!byLeg.has(e.leg)) byLeg.set(e.leg, []);
-  byLeg.get(e.leg).push(e);
+  const k = e.leg + (e.icount ? "+icount" : "");
+  if (!byLeg.has(k)) byLeg.set(k, []);
+  byLeg.get(k).push(e);
 }
 console.log("\n=== medians ===");
 const med = {};
@@ -170,6 +192,27 @@ for (const [leg, es] of byLeg) {
   for (const { n, s } of es.flatMap((e) => e.phases)) (ph[n] ||= []).push(s);
   console.log(`${leg.padEnd(12)} total ${med[leg].toFixed(3)}s  ` +
     Object.entries(ph).map(([n, v]) => `${n}=${v.sort((a, b) => a - b)[Math.floor(v.length / 2)].toFixed(2)}`).join(" "));
+}
+
+// device-tax summary: ns/access for the poll mirrors, per leg+icount
+{
+  console.log("\n=== device tax (ns per access, median) ===");
+  const rows = [];
+  for (const [leg, es] of byLeg) {
+    const acc = {};
+    for (const p of es.flatMap((e) => e.phases)) {
+      if (p.nsPerAccess) (acc[p.n] ||= []).push(p.nsPerAccess);
+    }
+    if (Object.keys(acc).length) {
+      const medOf = (a) => a.sort((x, y) => x - y)[Math.floor(a.length / 2)];
+      const r = {};
+      for (const n of Object.keys(acc)) r[n] = medOf(acc[n]);
+      rows.push([leg, r]);
+      const ram = r.rampoll, mmio = r.mmiopoll;
+      const extra = ram && mmio ? `  MMIO/RAM = ${(mmio / ram).toFixed(0)}x, dispatch tax = ${(mmio - ram).toFixed(0)} ns/access` : "";
+      console.log(`${leg.padEnd(12)} ram=${r.rampoll} mmio=${r.mmiopoll ?? "-"} mmiow=${r.mmiow ?? "-"}${extra}`);
+    }
+  }
 }
 const ref = med["native-jit"];
 if (ref) {
@@ -185,7 +228,7 @@ console.log(cksums.size === 1 && !cksums.has(null)
 
 const out = {
   ts: new Date().toISOString(),
-  legs, extraQ, runs,
+  legs, icounts, extraQ, runs,
   results, medians: med,
 };
 const file = `${ROOT}/tests/results/tcgbench-${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16)}.json`;

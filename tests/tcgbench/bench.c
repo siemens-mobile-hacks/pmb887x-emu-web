@@ -241,6 +241,95 @@ static void phase_mix(void)
     phase_footer();
 }
 
+/* ---- device/icount tax mirrors (same loop body, SRAM vs MMIO) ----
+ *
+ * rampoll and mmiopoll are written to compile to the SAME instruction
+ * sequence (4 volatile reads + 4 conditional updates per iteration);
+ * only the addresses differ.  The per-access cost delta IS the
+ * device-dispatch tax (TLB-miss helper -> memory.c FlatView dispatch ->
+ * device callback).  All four MMIO registers are inert reads:
+ *   UART0 FR   0x101f1018  PL011 flags (TXFE set, no side effects)
+ *   sysctl ID  0x10000000  V2P-Bus sysreg ID (read-only)
+ *   VIC status 0x10140000  PL190 IRQStatus (0 with IRQs masked)
+ *   SP804 val  0x101e2004  timer1 value (timer never started)
+ * mmiow writes timer1 control=0 (already the reset state — inert) and
+ * reads it back: the write side of the same dispatch path.
+ *
+ * Iteration counts differ between the mirrors (RAM is ~2 orders faster
+ * per access); the runner reports ns/access per phase, so the mirrors
+ * compare per-access, not per-phase. */
+static volatile uint32_t pollram[16];  /* 4 words used; volatile: keep
+ * the loads in the loop (gcc hoists them otherwise — the phase would
+ * measure pure ALU, not RAM polling) */
+
+#define MMIO_UART_FR  (*(volatile uint32_t *)0x101F1018u)
+#define MMIO_SYS_ID   (*(volatile uint32_t *)0x10000000u)
+#define MMIO_VIC_STAT (*(volatile uint32_t *)0x10140000u)
+#define MMIO_SP804_V  (*(volatile uint32_t *)0x101E2004u)
+#define MMIO_SP804_C  (*(volatile uint32_t *)0x101E2008u)
+
+static void phase_rampoll(void)
+{
+    uint32_t n = IT(48000000u);
+    uint32_t h = 0;
+
+    pollram[0] = 0x20u;                 /* TXFE-like constants so the */
+    pollram[1] = 0x41001174u;           /* branch pattern matches too */
+    pollram[2] = 0u;
+    pollram[3] = 0xffffffffu;
+
+    phase_header("rampoll", n);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t v0 = pollram[0];
+        uint32_t v1 = pollram[1];
+        uint32_t v2 = pollram[2];
+        uint32_t v3 = pollram[3];
+        if (v0 & 0x20u) h += 1;
+        if (v1 & 0x10u) h ^= v1 >> 4;
+        if (v2)         h -= 2;
+        if (v3 & 1u)    h += 3;
+        (void)i;
+    }
+    cksum += h;
+    phase_footer();
+}
+
+static void phase_mmiopoll(void)
+{
+    uint32_t n = IT(1500000u);
+    uint32_t h = 0;
+
+    phase_header("mmiopoll", n);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t v0 = MMIO_UART_FR;
+        uint32_t v1 = MMIO_SYS_ID;
+        uint32_t v2 = MMIO_VIC_STAT;
+        uint32_t v3 = MMIO_SP804_V;
+        if (v0 & 0x20u) h += 1;
+        if (v1 & 0x10u) h ^= v1 >> 4;
+        if (v2)         h -= 2;
+        if (v3 & 1u)    h += 3;
+    }
+    cksum += h;
+    phase_footer();
+}
+
+static void phase_mmiow(void)
+{
+    uint32_t n = IT(1000000u);
+    uint32_t h = 0;
+
+    phase_header("mmiow", n);
+    for (uint32_t i = 0; i < n; i++) {
+        MMIO_SP804_C = 0u;               /* control=0: disabled (reset state) */
+        uint32_t v = MMIO_SP804_C;
+        if (v & 0x80u) h += 1;           /* enabled bit: never set */
+        h += v & 1u;
+    }
+    cksum += h;
+    phase_footer();
+}
+
 int bench_main(void)
 {
     uart_puts("BENCH begin\n");
@@ -250,6 +339,9 @@ int bench_main(void)
     phase_ldrd();
     phase_branch();
     phase_mix();
+    phase_rampoll();
+    phase_mmiopoll();
+    phase_mmiow();
     uart_puts("BENCH done cksum=");
     uputhex8(cksum);
     uart_puts("\nBENCH DONE\n");
