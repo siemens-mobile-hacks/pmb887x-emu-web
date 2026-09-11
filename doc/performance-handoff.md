@@ -1,5 +1,12 @@
 # Performance hand-off: the qemu-core device-path workstream
 
+Status (2026-09-11, later): **0019 landed on the wasm64 backend** —
+compile-once batching with speculative successor translation and batch
+compaction: idlebench tIdle 76 → 65 s (−15 %) on `/dist-jit`, and the
+Firefox out-of-memory (its ~16k live-module executable budget) is fixed.
+Details: playbook landed table + sessions doc (2026-09-11, 0019).  The
+device-path status below is unchanged.
+
 Status (2026-09-11, end of device-path session): **slice 1+ landed as
 0018** — the MMIO dispatch tax is at native parity (tcgbench mmiopoll
 202 ns/access on `/dist-jit`, 252 on `/dist`, vs 223 native; was

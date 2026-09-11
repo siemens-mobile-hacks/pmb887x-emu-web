@@ -8,7 +8,7 @@ const b = await chromium.launch({ headless: true });
 const p = await b.newPage();
 const lines = [];
 p.on("console", m => { const t = m.text(); if (t.startsWith("[qemu]")) lines.push(t.slice(7)); });
-await p.goto(`http://127.0.0.1:${port}/?trace=${spec}`, { waitUntil: "domcontentloaded" });
+await p.goto(`http://127.0.0.1:${port}/?trace=${spec}&dist=${process.env.DIST || "dist"}${process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : ""}`, { waitUntil: "domcontentloaded" });
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 await new Promise(r => setTimeout(r, secs * 1000));

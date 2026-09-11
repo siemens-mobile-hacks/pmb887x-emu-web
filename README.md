@@ -203,6 +203,15 @@ lands in `/tmp/pmb887x-serial.log`.
                               tcgbench mmiopoll 534->202 ns/access on
                               dist-jit (606->252 on dist), mmiow -25%;
                               native-jit parity reached
+    0019-wasm64-speculative-batching.patch  wasm64 only: goto_tb
+                              successors translated ahead on a lookup miss,
+                              TBs compiled once (as the batch of miss +
+                              successors, no per-TB temp module), landed
+                              batches compacted into ~1024-member modules
+                              + live cap/re-ensure + Firefox GC nudge:
+                              idlebench tIdle 76->65 s (-15 %), every
+                              milestone -13..-15 %; Firefox no longer runs
+                              out of executable memory (16k-module budget)
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression, superseded by the reworked
                               0004; 0015 diag counters: measured neutral, no
@@ -305,9 +314,10 @@ green; the boot's early phase is still ~27 % behind TCI — the
   io-recompile longjmp storm is gone, MMIO accounted at the rewind's
   clock, stock rewind kept for flash-command accesses — see
   doc/early-crash-postmortem.md §9).
-- `site/dist-jit/` — the wasm64 TCG backend build (0017 on top of the
-  shared series; `scripts/build-qemu-wasm64.sh`, page switch
-  `?dist=dist-jit`).
+- `site/dist-jit/` — the wasm64 TCG backend build (0017 + 0019 on top of
+  the shared series; `scripts/build-qemu-wasm64.sh`, page switch
+  `?dist=dist-jit`).  Boots in Firefox too (0019); `tools/ffboot.mjs`
+  is the cross-browser smoke.
 - Fast iteration: `scripts/ninja-fast.sh` / `scripts/ninja-wasm64.sh`
   (incremental, correct env) + `node tools/tcgbench.mjs` (seconds-per-leg
   A/B) + `node tools/idlebench.mjs --quick` (~1 min per dist: boot

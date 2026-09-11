@@ -91,7 +91,7 @@ class WasmSide {
       `ls-epoch=${this.args.epoch}`,
       `ls-meminsns=${this.args.meminsns}`,
       ...(this.args.mem ? [`ls-mem=${encodeURIComponent(this.args.mem)}`] : []),
-      "qargs=" + encodeURIComponent(
+      "qargs=" + encodeURIComponent(process.env.LS_QARGS ??
         "-accel tcg,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,clock=vm"),
       ...(this.args.env || []).map((e) => "env=" + encodeURIComponent(e)),
     ].join("&");
