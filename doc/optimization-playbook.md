@@ -1,22 +1,25 @@
 # WASM performance optimization playbook
 
-This documents the working method of the 2026-09-07/08 optimization
-sessions (patches 0007–0009, ~2.4× guest throughput, boot to idle screen
-~500 s → ~195 s) so future sessions can pick up the same loop:
-**profile → hypothesize → small patch → measure → keep or revert →
-document**.  Read together with [performance-handoff.md](performance-handoff.md)
-(targets/constraints) and [wasm32-port-status.md](wasm32-port-status.md)
-(the JIT port).
+This documents the working method of the optimization sessions since
+2026-09-07 so future sessions pick up the same loop: **profile →
+hypothesize → small patch → measure → keep or revert → document**.
+Read together with [performance-handoff.md](performance-handoff.md)
+(current workstream: targets/plan/constraints) and the backend docs
+below.  **Never cite the "~1.3–2.3x JIT" numbers in the rejected table
+below as the wasm64 backend's** — they belong to the discarded
+wasm32/ktock port; the wasm64 backend's numbers live only in its own
+docs.
 
-**Current workstream (since 2026-09-10): the wasm64 TCG backend** — see
-[wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) +
-[wasm-tcg-backend-progress.md](wasm-tcg-backend-progress.md).  It replaces
-TCI micro-optimization as the throughput lever (end-to-end boot progress
-already ≥ TCI; idlebench puts /dist-jit ≈ /dist + 8–10 %) and brings its
-own gates (op-suite, lockstep, idlebench — rule 4 below).  **Never cite
-the "~1.3–2.3x JIT" numbers in the rejected table below as this
-backend's** — they belong to the discarded wasm32/ktock port; the
-wasm64 backend's numbers live only in its plan/progress docs.
+**Workstream history**: TCI patches 0007–0016 (2026-09-07/10, ~4×
+guest throughput, idle screen ~500 → ~160 s) → **wasm64 TCG backend**
+0017 (2026-09-10/11, [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md)
++ progress doc — performance-complete: boot at TCI parity, compute
+7.4× TCI, all gates green) → **current workstream since 2026-09-11:
+qemu-core device-path** — the dispatch/timer/main-loop tax that every
+backend pays identically (~590 ns per MMIO access on wasm vs 224
+native; boot ~55 MIPS vs 562 compute ceiling).  Its targets, plan and
+constraints are [performance-handoff.md](performance-handoff.md); its
+A/B meter is tcgbench's tax mirrors.
 
 ## The golden rules
 
@@ -32,53 +35,54 @@ wasm64 backend's numbers live only in its plan/progress docs.
    rebuilds, long soaks) runs in the background and is polled.
 4. **Tests after every landed patch**: `node tests/run.mjs` (native
    suite, ~65 s, all PASS) plus a wasm boot verification (deep boot /
-   idle screen screenshot, no `>>EXIT<<`).  For wasm64-backend changes
-   (2026-09-10+) the gates are: op-suite `scripts/run-tcg-isa.sh`
-   (1156 cases on native JIT / native TCI / wasm page, byte-identical
-   serial), lockstep windows `tools/lockstep-wasm.mjs --insns
-   20e6|250e6|700e6` (full 2.5e9 gate per the plan's phases), and
-   `tools/idlebench.mjs` for the end-to-end human metric.
+   idle screen screenshot, no `>>EXIT<<`).  Backend-only changes
+   (`/dist-jit`): op-suite `scripts/run-tcg-isa.sh` + lockstep windows
+   `tools/lockstep-wasm.mjs --insns 20e6|250e6|700e6` (full 2.5e9 gate
+   at slice close).  **qemu-core changes touch every backend** — op-suite
+   must stay byte-identical ×3 AND the native suite green AND lockstep
+   windows clean, A/B'd on both dists.
    **Iteration loop (2026-09-11+): `tools/tcgbench.mjs` first** —
-   per-phase backend A/B in ~10 s/leg (phone boots are final gates
-   only, they are 80 s+ and device-bound — see
+   per-phase backend A/B and the device-tax mirrors in ~10–60 s/leg
+   (phone boots are final gates only — 80 s+ and device-bound; see
    [tests/tcgbench/README.md](../tests/tcgbench/README.md) for the
    tool ladder).
 
 ## The fast feedback loop
 
 ```bash
-# 0. serve the current dist (keep running)
+# 0. serve the current dists (keep running)
 PORT=8080 HTTPS_PORT=6808 node serve.mjs &
 
 # 1. edit sources in build/qemu (patches 0001..000N already applied there)
 
-# 2. incremental rebuild + deploy (~8 s)
-bash scripts/ninja-fast.sh
+# 2. incremental rebuild + atomic deploy (~8 s)
+#    qemu-core changes need BOTH dists rebuilt (they shift /dist too):
+bash scripts/ninja-fast.sh                    # TCI  -> site/dist
+bash scripts/ninja-wasm64.sh qemu-system-arm.js   # wasm64; deploy via
+    # scripts/build-qemu-wasm64.sh (atomic tmp+rename — never a plain
+    # cp over the live-served wasm, which can serve a torn 45 MB file)
 
-# 3. A/B benchmark (110 s; prints one JSON line)
-PORT=8080 node tools/bootbench.mjs 110
-#   window = wall secs of deterministic guest work between v=LO and v=HI
-#   (defaults LO=2 HI=7).  Lower is better.  Primary metric.
+# 3. fast A/B first: tcgbench (per-phase + device-tax mirrors, seconds)
+node tools/tcgbench.mjs                     # native-jit + dist-jit
+LEGS=dist,dist-jit ICOUNTS=0,1 node tools/tcgbench.mjs
 
-# 4. profile the workers when looking for the next target (~40 s)
-PORT=8080 node tools/wprof2.mjs 40 "" 100          # per-worker self-time
+# 4. phone-boot window (110 s; prints one JSON line) — both dists for
+#    qemu-core changes:
+DIST=dist-jit node tools/bootbench.mjs 110
+
+# 5. profile when looking for the next target (~40 s; PROF_DELAY picks
+#    the boot phase)
+PORT=8080 node tools/wprof2.mjs 40 "" 100
 PROF_FN=phys_page PORT=8080 node tools/wprof2.mjs 30 "" 100   # callers
 
-# 5. capture the surviving change as the next patch (stacks on 0001..N)
+# 6. capture the surviving change as the next patch (stacks on 0001..N)
 bash scripts/capture-patch.sh my-change-name
 # then prepend a Subject/description header WITH MEASUREMENTS to the
 # generated patches/NNNN-my-change-name.patch (see 0007/0008/0009)
 
-# 6. confirm nothing is left un-captured (must print "nothing to do")
+# 7. confirm nothing is left un-captured (must print "nothing to do")
 bash scripts/capture-patch.sh verify-tmp
 ```
-
-(`ninja-fast.sh` builds the **TCI** dist.  The wasm64 backend builds
-with `scripts/ninja-wasm64.sh qemu-system-arm.js`; `scripts/build-qemu-wasm64.sh`
-rebuilds + deploys it **atomically** into `site/dist-jit/` — never a
-plain `cp` over the live-served wasm, which can serve a torn 45 MB
-file.  A/B it with `DIST=dist-jit node tools/bootbench.mjs 110`, or
-end-to-end with `node tools/idlebench.mjs dist,dist-jit --runs 2`.)
 
 Native suite after landing: `node tests/run.mjs --label <patch> --timeout 240`.
 
@@ -94,13 +98,22 @@ Native suite after landing: `node tests/run.mjs --label <patch> --timeout 240`.
   `tools/idlebench.mjs` on S75v40lg1 (deterministic protocol: committed
   idle reference, bottom-139-rows compare, fresh browser per run,
   config + artifact hashes pinned to `tests/results/idlebench-latest.json`)
-  — first results: /dist 70.4/74.4 s, /dist-jit 78.4/78.4 s.
+  — **current: /dist and /dist-jit at parity, median 76.4 s both**
+  (9+9 interleaved runs; was +8–10 % before account-inline).
   **Different flash + protocol: idlebench seconds are NOT comparable to
   the soak times above.**
 
 ## Measurement methodology (and its traps)
 
-- **Primary metric — the v-window**: wall seconds between virtual time
+- **Primary metrics by question** (2026-09-11+): *device-path work →
+  the tcgbench mirrors* (`mmiopoll`/`rampoll`/`mmiow` ns/access — the
+  dispatch tax directly, seconds per A/B, checksum cross-checked
+  across every leg); *end-to-end phone work → the v-window below +
+  `tools/idlebench.mjs`* (the human metric, deterministic protocol);
+  *attribution → wprof2*.  Compute-phase speedups show on tcgbench
+  phases first and may never show on the phone (device-bound) — that
+  is not a failed patch, it is the boot's shape; the mirrors decide.
+- **The v-window**: wall seconds between virtual time
   v=2.0 and v=7.0 (interpolated from 10 s WATCH samples).  Guest work is
   deterministic, so equal v-ranges are equal work; idle (WFI) stretches
   are real-time-gated for every build and dilute all builds equally.
@@ -127,8 +140,11 @@ Native suite after landing: `node tests/run.mjs --label <patch> --timeout 240`.
 profiles before) attaches the CDP Profiler to the emscripten pthread
 workers:
 
-- Worker #0 is the vCPU (TCI interpreter).  Workers #1–#4: pool,
-  io_dump/RCU, **main loop** (worker #2), DSP.
+- Worker #0 is the vCPU (TCI interpreter on `/dist`, the wasm64
+  dispatcher on `/dist-jit`).  Workers #1–#4: pool,
+  io_dump/RCU, **main loop** (worker #2), DSP.  `PROF_DELAY=<s>` waits
+  before `Profiler.start` — boot-phase selection (early vs the
+  poll-heavy late window, the two behave differently).
 - wasm functions show up as `wasm-function[N]`; wprof2 maps them via the
   `qemu-system-arm.js.symbols` sidecar.  That sidecar exists because
   `--emit-symbol-map` is hacked into `build/qemu-wasm/build.ninja`
@@ -151,6 +167,10 @@ workers:
 | 0014 wasm: io barriers | recurring ROM-device io_recompile (0010 kept the stock rewind for flash-command accesses; the unsplit cached TB re-paid the ~17 µs unwind on every status-poll iteration, 1.67k/s) — on rewind, record the faulting insn pc (64-entry direct-mapped set) + `tb_phys_invalidate` the TB; the translator keeps barrier insns in single-insn TBs (stop before mid-TB / after at TB start), so `can_do_io` is true and the access completes with stock 1-insn-clock precision — no further unwinding | ioRewind 1.67k/s → ~0; window wins 3/3 pairs (25.2–24.8 vs 25.3–27.5); insns@110 s +3–5 % on all pairs; soak v=373 @330 s, keypad works; native suite PASS ×4 |
 | 0016 memory: romd FlatView variants + range-scoped tlb flush | romd toggle per flash command = full FlatView re-render of every root (~200 µs, 16k radix page inserts over the flash) + full tlb_flush + ~33-entry refill storm, ~18k flips per boot — (a) FlatViews tagged (topo_gen, romd_sig), romd-only commits adopt the recycled variant from a 16-slot stash (roots whose tag already matches are skipped); (b) tcg listener records region_add/del phys ranges, flush drops only entries translating into them (evicted-variant latch falls back to full flush; entries never dereference a dead view) | topo-commit time 3857→421 ms (−89 %), 30894 variant reuses; v-window 25.1–28.3 → 22.5–25.1 s (8/8 interleaved pairs, every candidate run beats every baseline); insns@110 s +4–9 %; idle screen ~160 s; run-to-run variance collapsed; native suite PASS ×4 (see § Session log: 2026-09-10 for the measurement traps this one surfaced) |
 | 0015 wasm: diagnostics counters | txnF/tbGen/tbFlush/ioRewind/lookupTB cold-path counters (killed two wprof2 ghost theories — see session log) | zero hot-path cost; measurement infra — **dropped 2026-09-09**: isolation testing measured it neutral, no tool consumed its counters (see attic/README.md and § Patch-isolation testing) |
+| 0017 wasm64 TCG backend | full backend: per-TB wasm modules → chaining → batching (128/B module) → inline TLB probe → inline TB accounting; `tcg/wasm64/` + small hooks | boot-to-idle at TCI parity (idlebench median 76.4 s both dists; was +8–10 %); compute 7.4× TCI on tcgbench (562 vs 53 MIPS; per-phase 7–18×); all gates green incl. full 2.5e9 lockstep — numbers and history in [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) |
+
+(The 0017 row is a pointer, not a summary — that patch's own docs are
+authoritative for its numbers.)
 
 ## Patch-isolation testing (2026-09-09 session — is every patch required?)
 
@@ -210,7 +230,7 @@ no controller).  Numbers in [upstream-branch.md](upstream-branch.md).
 | **wasm32 runtime-JIT TCG backend (0005, ktock port fully rebased)** (2026-09-09 session; see [wasm32-port-status.md](wasm32-port-status.md) + `patches/attic/wasm32-rebase/`) | v-window 2→7: JIT 18.7–20.1 s vs TCI 24.8–28.3 quiet / 45–46 loaded — **~1.3–2.3x ceiling**, and the boot deterministically hangs at v≈6 (BROM USART-RIS poll data divergence → watchdog reset → recovery loop forever; LG/no-icount boot fully dead) | per-TB dispatch protocol (instance return → C dispatcher → indirect instance call per chained TB) + per-new-TB JS `WebAssembly.Module` compile eat the codegen gains on this 3–4 insn/TB branchy firmware; ~4200-line surface; discarded — the draft and the full rebase live in `patches/attic/` |
 | **tci.c interpreter stack as a parameter** (during the 0005 rebase: split `tcg_qemu_tb_exec` into a core + wrapper taking `uint64_t *call_stack`) | TCI v-window 25→45 s (**−60%**, 4/4 interleaved runs) | the pointer-select makes the interpreter stack alias every local array in LLVM's analysis; the TCI stack is per-TB scratch anyway — keep a single function with a local array |
 |---|---|---|
-| **MMIO dispatch fast path** (memory.c: direct `ops->read/write` call for exact-size aligned accesses, skipping valid-check + access_with_adjusted_size + accessor layers; reentrancy guard replicated; `__EMSCRIPTEN__`-gated) | window 24.9–25.2 → 25.1–25.3 s (**consistently 0.1–0.7 s WORSE on a quiet host**, 4/4 pairs); finalV ±noise; insns@110 s +0.1–5.8 % inconsistent; a late-window A/B (LO=30 HI=60) was flat too | the pre-dispatch condition chain (accepts/align/size/trace/ioeventfd checks) costs as much as the ~3 non-inlined calls it saves at ~90k dispatches/s; V8 already keeps the dispatch path hot. Reverted; don't retry without cross-TU inlining (LTO) |
+| **MMIO dispatch fast path** (memory.c: direct `ops->read/write` call for exact-size aligned accesses, skipping valid-check + access_with_adjusted_size + accessor layers; reentrancy guard replicated; `__EMSCRIPTEN__`-gated) | window 24.9–25.2 → 25.1–25.3 s (**consistently 0.1–0.7 s WORSE on a quiet host**, 4/4 pairs); finalV ±noise; insns@110 s +0.1–5.8 % inconsistent; a late-window A/B (LO=30 HI=60) was flat too | the pre-dispatch condition chain (accepts/align/size/trace/ioeventfd checks) costs as much as the ~3 non-inlined calls it saves at ~90k dispatches/s; V8 already keeps the dispatch path hot. Reverted; don't retry a *runtime* cache without cross-TU inlining (LTO). **NOT the same as the current workstream's fill-time precompute** (store `(fn, opaque, attrs)` in the iotlb entry when it is filled — zero added per-access checks): that one is the plan in [performance-handoff.md](performance-handoff.md) slice 1 |
 | **TLB table-base caching in the TCI interpreter** (cache `(fast->table, fast->mask)` per mmu_idx across ops, dropped after helper calls and ldst fallbacks — the only paths that can resize/flush the tlb on this single-cpu machine) | window 25.9/25.2/25.2/25.2 → 24.5/25.3/25.1/25.1 (flat, ±0.1); late-window LO=30 HI=60: 19.7/20.3 → 19.6/20.0 (flat); finalInsns won 4/4 (+1…5.7 %) but finalV-at-200 s varies ±45 v run-to-run — no reproducible win | the two saved loads are L1-hot; the memory-op path is at its practical floor for micro-tweaks (0011+0012 already removed the real work). Reverted; only a big lever (64-bit TCI encoding, wasm32 JIT) can move the interpreter now |
 | Lazy flash romd restore (flip back to array mode on first array read, not eagerly on every `0xFF`) | 7.4× fewer topology flips but **32 % slower** in the flash-heavy window | keeping romd off during bursts turns array reads (incl. fetches) into MMIO dispatches, which costs more than the flips save |
 | icount2_advance thread-local batching (single-writer mirror, publish every 256 calls) | no measurable change (±noise) | the per-TB atomics are cheap on wasm; reverted |
@@ -218,41 +238,40 @@ no controller).  Numbers in [upstream-branch.md](upstream-branch.md).
 | QemuCond-based main-loop wait (instead of the raw futex) | same early-window numbers but only ~half the end-to-end gain | qemu condvar waits truncate to whole milliseconds on wasm; the firmware's ~100 µs WFI windows each pay +1 ms |
 | `-sSUPPORT_LONGJMP=wasm` (native unwinding for the SVC-exception longjmps) | binaryen's Asyncify pass crashes on it (verified with a standalone emcc test) | wasm-EH longjmp and `-sASYNCIFY` are incompatible in emsdk 4.0.10; ASYNCIFY is required (coroutine backend/condvar sleeps) |
 
-## Remaining opportunities (ranked, with the analysis already done)
+## Remaining opportunities (ranked, 2026-09-11 rewrite — the plan lives in performance-handoff.md)
 
-1. **Exception longjmps — mostly CLOSED by 0013/0014.** SVC (the bulk,
-   ~15 % of vCPU) is gone; the recurring ROM-device io_recompile rewind
-   (~2.8 %) is gone. What remains of `__emscripten_throw_longjmp` is
-   ~2.6 % and falling (the one-shot io_recompile per barrier pc,
-   interrupt exits, rare traps) — no longer worth chasing. The generic
-   wasm-EH longjmp replacement stays blocked (asyncify/fiber conflict,
-   see rejected table).
-2. **TCI interpreter dispatch, ~57 % of vCPU — CLOSED as a target
-   (2026-09-10).**  0012 specialized the memory ops; the TLB table-base
-   caching and MMIO dispatch fast-path experiments (session
-   2026-09-08/09 evening) both measured FLAT and were reverted — this
-   path is at its micro-optimization floor, and the wasm32 JIT attempt
-   (rejected table) showed codegen alone can't beat it through the
-   per-TB dispatch protocol.  The big lever is now the **wasm64 TCG
-   backend** ([wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md));
-   TCI remains as the reference/fallback tier.  The 64-bit TCI encoding
-   sketch below stays for the record.
-3. **Flash romd topology churn, ~4–5 % of vCPU — CLOSED by 0016.** The sketched FlatView-variant stash landed together with a range-scoped tcg-commit TLB flush (the two only win together: recycling views without keeping the untouched TLB entries still re-walks the running code per flip; see the 2026-09-10 session log for the three-way interaction and the measurement traps).  The remaining per-flip cost (~20 µs commit bookkeeping + the semantically-required invalidation of the flipped part's own pages) is at the floor.
-4. **V8 tier-up warm-up — measured 2026-09-08, no in-window effect (closed).**
-   `--no-wasm-lazy-compilation`, `--wasm-tiering-budget=100000`, and both
-   together leave the v-window at 33.9–34.1 s vs 34.2 s baseline (flags
-   verified live: `--no-liftoff` stalls boot, so the plumbing works).  The
-   12→44 M insns/s rate ramp across samples is guest-phase behavior — it is
-   identical with tier-up triggered 130× earlier.  On a 32-core host the
-   45 MB module streams/Liftoff-compiles in ~80 ms, so there is nothing to
-   warm up.  The warm-up cost is real only on *slow devices*; the page-side
-   lever for those is delivery-path (see the session log below) and, some
-   day, the browser's wasm code cache (not observed to engage in headless
-   Chromium 153, possibly disabled there — revisit on real hardware).
-5. **Main-loop residuals** — after 0009 the main loop sleeps properly;
-   remaining cost is per-wake glib iteration + BQL handoffs (measured
-   2026-09-09 evening: vCPU `qemu_cond_timedwait_bql` ≈ 0.8 % — not a
-   target anymore).
+1. **MMIO dispatch path — OPEN, the headline.**  590 ns/access on
+   wasm64, 632 on TCI, 224 on native (tcgbench mirrors); ~90k
+   dispatches/s in poll phases; identical across wasm backends → fixing
+   it helps `/dist` as much as `/dist-jit`.  Plan: attribute (slice 0),
+   iotlb fill-time `(fn, opaque, attrs)` precompute riding the FlatView
+   generation (slice 1, the 0016 machinery is the template — NOT the
+   rejected memory.c runtime cache), wasm-multiplier work (slice 2).
+   Target: mmiopoll ≤ 300 ns → idlebench ≤ 55–60 s on both dists.
+2. **Timer storms / main-loop wakeups — OPEN.**  ~8 % of the late
+   window in mailbox/futex-wake/`_emscripten_get_now` + device timer
+   callbacks nobody observes.  Coalesce icount deadlines, skip
+   unchanged LCD composites, batch main-thread wakeups.  Meter: wprof
+   main-thread self-time + idlebench.
+3. **Backend tail — OPEN, small, `/dist-jit` only** (backend plan
+   phase-3 leftovers): `lookup_tb_ref` direct import (~4 % of vCPU),
+   dispatch-loop work (~9 % with `cpu_exec_loop`); tcgbench `branch`
+   (4.55 s, weakest vs native) says chaining still has headroom.
+   Few % end-to-end each — behind the qemu-core slices by an order of
+   magnitude.
+4. **AOT cache — OPEN, orthogonal** (backend plan phase 5): persist
+   translated batches (Cache API/IndexedDB, keyed by flash hash) —
+   zero-translation second boots, `/dist-jit` only.
+
+Closed (do not reopen without new ideas): exception longjmps (0013/0014
+— SVC inline exit + io barriers; the generic wasm-EH longjmp stays
+blocked by asyncify); TCI interpreter dispatch (0007–0016 took it to its
+micro-optimization floor; the wasm64 backend supersedes it, TCI remains
+the reference/fallback tier); flash romd topology churn (0016); V8
+warm-up (no in-window effect on this host); main-loop busy-wait (0009);
+register-file expansion (measured worse); icount2 thread-local batching
+(flat — the per-TB atomics are cheap on wasm; and the account is now
+inline on wasm64 anyway).
 
 ## Gotchas cheat-sheet
 
@@ -281,12 +300,20 @@ no controller).  Numbers in [upstream-branch.md](upstream-branch.md).
 
 ## Session checklist
 
-1. `git log` / `ls patches/` — see where the series stands.
-2. Serve dist, run `bootbench` twice — establish today's baseline.
-3. Profile, pick ONE target, check the rejected list first.
-4. Patch → build → bench twice → keep/revert → capture with a measured
-   header.
-5. `node tests/run.mjs --label <name> --timeout 240` + wasm boot soak.
+1. `git log` / `ls patches/` — see where the series stands; read
+   [performance-handoff.md](performance-handoff.md) for the current
+   workstream's plan and where it left off.
+2. Establish today's baseline: `node tools/tcgbench.mjs` (seconds;
+   mirrors + phases) and `bootbench` ×2 (window; both dists for
+   qemu-core work).
+3. Profile, pick ONE target, check the rejected list first (note the
+   MMIO nuance: the *runtime* cache is rejected, the *fill-time*
+   precompute is the plan).
+4. Patch → build (both dists if qemu-core) → A/B twice, pairwise →
+   keep/revert → capture with a measured header.
+5. Correctness bar for the change class: native suite always; op-suite
+   ×3 + lockstep windows for anything touching TCG/memory/exec paths;
+   full 2.5e9 gate at workstream close.
 6. Update this playbook's tables (landed/rejected/remaining) and the
    README patch list.
 

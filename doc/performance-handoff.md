@@ -1,129 +1,139 @@
-# Performance hand-off: getting the phone to fully boot in WASM
+# Performance hand-off: the qemu-core device-path workstream
 
-Status (superseded — see [wasm32-port-status.md](wasm32-port-status.md)
-and [early-crash-postmortem.md](early-crash-postmortem.md)):
-**the timing problem is fixed and boot correctness no longer depends on
-speed — and the io-recompile storm is fixed too.** The first 0004
-(skip `cpu_io_recompile`) was a regression (early `FILE: flash`
-boot-ROM abort) and was dropped; the reworked 0004 (MMIO-boundary
-accounting, see post-mortem §9) removes the storm correctly: the
-stock rewind's icount2 clock is reproduced without the ~150 µs
-longjmp (kept only for ROM-device flash-command accesses).
-The timing model no longer uses icount2 at all (2026-09-08): the
-interim patch 0006 (fixed 104 MHz icount2 clock) was dropped in favor
-of stock **`-icount shift=3,sleep=off`** — same instruction-proportional
-clock with zero fork-specific code; LG boards boot without any
-`-icount` (see [livelock-postmortem.md](livelock-postmortem.md) §4 and
-`patches/attic/`). Measured on the reworked build: splash in ~25–30 s
-(stock rewind path: ~85 s), 4–17M insns/s sustained (stock path:
-0.2–5M), 49.8 s of virtual time / 1.25B insns in the first 180 s.
-What remains
-here is raw throughput for *wall-clock* boot time only. The document
-below is the original hand-off from the previous session; its
-measurement methodology and constraints still apply.
+Status (2026-09-11): **the wasm64 TCG backend is performance-complete and
+the interpreter-era targets are all met.**  Boot-to-idle at TCI parity
+(idlebench median 76.4 s on `/dist` and `/dist-jit` alike, 9+9
+interleaved runs — was +8–10 % behind), compute 7.4× TCI on tcgbench
+(562 MIPS sustained on compute phases vs the TCI page's 53; per-phase
+7–18×), every correctness gate green (op-suite 1156/1156 byte-identical
+×3 backends, full 2.5e9 lockstep gate, native suite ×4).  That
+workstream's history lives in
+[wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) /
+[wasm-tcg-backend-progress.md](wasm-tcg-backend-progress.md) (and the
+discarded wasm32/ktock attempt in
+[wasm32-port-status.md](wasm32-port-status.md)); the original 2024
+hand-off text is in git history — everything it demanded (deterministic
+boot, ≥50M insns/s comfortable boot, correct-at-any-speed timing) is
+done and closed.
 
-Historical status: **correct but slow.** The wasm build is now deterministic and
-crash-free (see [livelock-postmortem.md](livelock-postmortem.md)); what
-remains is raw interpreter throughput. This document sets the targets and
-leaves the implementation open.
+**What remains for wall-clock boot time sits one layer down — in
+qemu-core and the emscripten runtime — where every backend pays it
+identically.**  This document is the hand-off for that workstream:
+measured baseline, targets, plan, constraints.  Working method:
+[optimization-playbook.md](optimization-playbook.md) (unchanged rules;
+the A/B meter for this workstream is tcgbench's tax mirrors, not the
+v-window alone).
 
-## Measurements (2024 session, S75 fullflash, Chrome headless)
+## Where the time goes now (all measured 2026-09-11)
 
-| Build | Steady rate | Notes |
-|---|---|---|
-| per-instruction icount2 helper (upstream-style) | ~574k insns/s | every guest insn = one TCI helper call = one libffi→`ffi_call_js`→JS roundtrip (~1.7 µs) |
-| per-TB accounting + broken chaining (buggy) | ~10k cycles/s | the wild-TB bug; see post-mortem |
-| per-TB accounting, chaining terminated via `exit_tb` | ~90–180k insns/s | ~2.6 insns/TB; ≈28 µs per cpu_exec round-trip |
-| + `-sASYNCIFY_REMOVE=tcg_qemu_tb_exec` | ~400–700k insns/s | interpreter un-instrumented; V8 tier-up visible over the first minute |
+| component | number | whose code | note |
+|---|---|---|---|
+| one MMIO access | **590 ns** wasm64 / **632 ns** TCI / **224 ns** native JIT | qemu-core + emscripten | the mirrors: `rampoll` vs `mmiopoll`, same instruction shape |
+| one RAM access | 4.7 / 52.8 / 1.5 ns | backend | wasm64 ≈ native here |
+| boot sustained rate | ~55 MIPS | — | vs 562 MIPS compute ceiling: the boot cannot spend the backend's speed |
+| icount (`shift=3,sleep=off`) | free on short-TB workloads | qemu-core | measured on tcgbench `ICOUNTS=0,1` post account-inline |
+| vCPU: `cpu_exec_loop` + dispatcher | ~9 % | qemu-core | |
+| vCPU: `helper_lookup_tb_ptr` | ~4 % | qemu-core | |
+| main thread: mailbox/futex-wake/`_emscripten_get_now` | ~8 % | emscripten runtime | device bookkeeping wakeups |
+| remaining emitter levers | ~10–15 % of vCPU ≈ few % end-to-end | wasm64 | tail work, `/dist-jit` only |
 
-Observations that constrain any fix:
+The two facts that define the workstream:
 
-- Guest TBs here average **~3–4 instructions** (branchy firmware, polling
-  loops). Per-TB overheads are amortised over very little work.
-- The firmware **busy-polls** (SCU_UID2 ×800 loops, DSP flag polling,
-  handshake retries): natively it executes on the order of 10⁸–10⁹
-  instructions during the first ~30 virtual seconds of boot. It needs a
-  sustained guest pace of **≥50M insns/s**, ideally ≥300M.
-- `precise-clocks=on` (icount2) locks virtual ≈ real time by adapting its
-  frequency; when the host can't keep up, every wall-clock-timeout protocol
-  (L1↔DSP handshake first) fails — ExitCode 0x0B, phone crash.
-- TCI always routes loads/stores through `helper_*_mmu`
-  (`tcg/tci.c:tci_qemu_ld/st`) — no inline TLB fast path.
-- The DSP worker (teakra interpreter, C++) is *fast* once the condvar fix
-  is in; it is not the bottleneck.
+1. **wasm64 ≈ TCI on MMIO (7 % apart)** — the dispatch tax is shared
+   qemu-core cost, so fixing it helps `/dist` as much as `/dist-jit`
+   (and native).
+2. **both wasm builds pay ~2.6× native per access** (590/632 vs 224 ns)
+   — ~370 ns per access of pure dispatch-path overhead that runs before
+   the device callback.  The firmware busy-polls (~90k dispatches/s in
+   poll phases), so a poll-dense phase spends most of its wall time in
+   this path.
 
-## Target
+The path being taxed (re-resolved generically on every access):
+TB/interpreter → `helper_*_mmu` → `io_readx` → `iotlb_to_section` →
+`address_space_read` → FlatView/`flatview_translate` →
+`memory_region_dispatch_read` → ops resolution (+ RCU/atomic guards)
+→ device callback.
 
-**Definition of done:** the S75 fullflash boots to its idle screen in the
-browser (WASM mode) in under ~10 minutes wall time, no `>>EXIT<<` on
-serial, keypad input visibly navigates the menu, and the LCD updates
-smoothly.
+## Targets
 
-That implies ≥ **3–5M guest insns/s sustained** (the phone will still boot
-"slow-motion"; icount2 will lock low and virtual deadlines arrive with the
-full instruction budget the firmware expects — correctness holds at any
-speed once deadlines are instruction-proportional, but the L1 handshake
-needs the DSP round-trips to fit inside firmware wall-clock budgets, so
-realistically we want ≥50M insns/s for a comfortable boot).
+**Definition of done for this workstream**: S75v40lg1 boots to idle in
+**≤ 55–60 s on both `/dist` and `/dist-jit`** (idlebench protocol),
+with the full correctness matrix green — op-suite ×3 byte-identical,
+native suite ×4, lockstep windows (full 2.5e9 gate at close) — because
+qemu-core changes touch every backend.
 
-## Next steps (open implementation)
+Intermediate gates (meters, all seconds-fast):
 
-1. **Port a native wasm TCG backend (recommended path).**
-   ktock's [qemu-wasm](https://github.com/ktock/qemu-wasm) (qemu 8.2) ships
-   a working wasm32 TCG backend (`tcg/wasm32.c`, `tcg/wasm32/tcg-target.c.inc`,
-   ~5.4k lines) that emits wasm at runtime (table growth + JS trampolines;
-   `-sALLOW_TABLE_GROWTH` + `addFunction` are already in our link flags).
-   Upstream qemu merged only the TCI path for wasm, not this backend.
-   Task: rebase that backend onto this fork (APIs moved 8.2→11:
-   `tcg-opc`, TB management, `qemu_thread_jit_*`, splitwx…), decide
-   wasm32+MEMORY64 vs wasm64 addressing, keep TCI as a fallback
-   (`--enable-tcg-interpreter` coexistence). Expected: 10–100× TCI.
-   Risk: port surface; self-modifying-code invalidation; the fork's DSP
-   TCG engine (newer revisions) would eventually want the same treatment.
+- tcgbench mirrors: **`mmiopoll` ≤ 300 ns/access** on wasm (from 590;
+  native is 224) and no regression on `rampoll`/compute phases;
+- bootbench v-window and idlebench improve **on both dists** (a
+  qemu-core win that only shows on `/dist-jit` is suspect);
+- wprof main-thread self-time (mailbox/futex/`get_now`) halves.
 
-2. **Or: make TCI competitive (partial credit, smaller effort).**
-   - Inline TLB fast path for `qemu_ld/qemu_st` in `tcg/tci.c` (mirror
-     `accel/tcg/cputlb.c`'s `tlb_hit` probe before calling
-     `helper_*_mmu`). Expected 2–5×.
-   - Direct C dispatch for common helper signatures instead of
-     `ffi_call` for `INDEX_op_call` (cache `cif` per call site; fast-path
-     signatures ≤4 args).
-   - Reduce per-TB `cpu_exec` round-trip cost: batch `icount2_advance`
-     every N TBs, avoid `icount2_sync` when no virtual timer is armed.
-   Even stacked, this likely lands at 2–5M insns/s — enough for a
-   "slow-motion" correct boot, not a comfortable one.
+Realistic ceiling: ~1.3–1.8× end-to-end.  The boot still has to do real
+device work; this is not another 7×.
 
-3. **V8 tier-up warm-up.** `tcg_qemu_tb_exec` is a huge function; Liftoff→
-   TurboFan tier-up takes ~a minute under load (visible in the rate
-   curves). Pre-warm by running a synthetic hot loop right after boot, or
-   ship `--wasm-tiering-budget`-tuned flags in the page (Chrome flags may
-   not be controllable from a plain page — a service-worker or NMP could
-   help; investigate `WebAssembly.compileStreaming` + eager tiering APIs).
+## Plan (measurement-gated slices, same discipline as the backend plan)
 
-4. **Re-check the DSP paths once speed lands.** At ≥10M insns/s re-run the
-   DSP trace comparison (`tools/dsplive.mjs`) against the native run —
-   expect the boot-loader handshake (PC `A09A26xx`, `SCU_DSP_INT` pulses,
-   `boot command: PLOAD…` prints) to appear, then the L1 exit to
-   disappear. If any timing pathology remains, revisit the icount2 floor
-   (system/icount2.c) and the per-TB accounting granularity.
+1. **Slice 0 — attribute the 590 ns** (~a day; gates everything else).
+   wprof2 with symbol maps on a tcgbench MMIO-heavy run (both wasm
+   dists), plus `perf` on the native JIT running the same phase.  Split
+   the cost into: helper entry/import call, `io_readx`, section/FlatView
+   resolution, `memory_region_dispatch_read`, RCU/atomics, callback.
+   If the atomics dominate instead of the lookups, slice 2 comes first.
+2. **Slice 1 — precompute the dispatch resolution at TLB-fill time**
+   (the headline change, ~2–4 days).  When an iotlb entry is filled for
+   an MMIO page, store the already-resolved `(read_fn, write_fn, opaque,
+   attrs)` in the entry; the miss path becomes one compare + one
+   indirect call.  Invalidation rides the FlatView generation counter —
+   the machinery 0016 built for romd variants is the template.  **This
+   is NOT the rejected memory.c runtime cache** (that added a per-access
+   condition chain and measured worse); this adds zero per-access checks
+   — the resolution moves to fill time.  Watch upstreamability: generic
+   TCG-system-mode win.
+3. **Slice 2 — the wasm multiplier.**  Whatever slice 0 says: single-vCPU
+   non-MTTCG builds don't need the full RCU/seqlock treatment on this
+   path (the main thread is the only other contender and mostly sleeps)
+   — plain loads under a build flag if atomics show up; check the
+   helper-import boundary cost on wasm64.
+4. **Slice 3 — timer storms and the main loop.**  Coalesce icount timer
+   deadlines; skip LCD composites for unchanged frames; batch main-thread
+   wakeups (the ~8 %).  Meter: idlebench + wprof main-thread time.
+5. **Tail (optional, `/dist-jit` only)**: backend plan phase-3 leftovers
+   (`lookup_tb_ref` direct import, dispatch loop) and phase-5 AOT cache
+   (Cache API/IndexedDB batch persistence, keyed by flash hash) — see
+   the backend plan; they do not block anything here.
 
-5. **If a JIT lands, revisit `-sASYNCIFY`.** With a wasm TCG backend the
-   interpreter disappears; Asyncify remains only for the coroutine
-   backend. Consider `-sASYNCIFY_ADVISE`/`ASYNCIFY_ONLY` to shrink the
-   instrumented set further, or the stack-switching proposal once it
-   ships broadly (`-fwasm-exceptions`/`--experimental-wasm-stack-switching`).
+## Constraints (what still binds, from the whole project's history)
 
-## Non-goals / notes for whoever picks this up
+- **The timing model is fixed**: stock `-icount shift=3,sleep=off`,
+  instruction-proportional deadlines; correctness must never depend on
+  execution speed (lockstep gates enforce this).  Do not "fix" pacing by
+  pinning clock frequencies — virtual time outrunning instructions
+  kills the boot (measured, BROM delay loops).
+- **The firmware busy-polls** (SCU/DSP/USART status loops): per-access
+  costs are multiplied by ~50–100k/s.  Any per-access condition added to
+  a hot path must pay for itself at that rate — this is exactly how the
+  memory.c fast path was rejected.
+- **qemu-core changes shift all backends**: A/B on both dists, correctness
+  matrix per landing (op-suite ×3, native suite ×4, lockstep windows;
+  full gate at workstream close).
+- **3–4 insn/TBs** are the firmware's shape — per-TB overheads amortize
+  over almost nothing; per-access and per-wake costs are the only ones
+  that scale with this workload.
+- emscripten traps that don't compose: wasm-EH longjmp × ASYNCIFY,
+  `poll()` never sleeps, condvar waits are whole-ms.  See the playbook
+  cheat-sheet before designing anything that waits or unwinds.
+- Diagnostics that stay useful: `QEMU_ICOUNT2_DEBUG=1` (controller
+  state, for the `?icount=precise-clocks` experiment path only),
+  `wasm-diag.h` cold counters, `tools/wprof2.mjs` + symbol maps
+  (`PROF_DELAY=` selects boot phase), tcgbench mirrors + `ICOUNTS`.
 
-- (2026-09-08 update: the timing model is now stock `-icount
-  shift=3,sleep=off` — icount2 is not in the default path anymore; the
-  notes below are kept for the `?icount=precise-clocks=on` experiment
-  path.)
-- Do not "fix" timing by pinning icount2's frequency high without also
-  raising execution speed: virtual time would outrun instructions and every
-  deadline fires early (measured: boot hangs in the BROM delay loops).
-- `QEMU_ICOUNT2_DEBUG=1` (page: `?icount2debug=1`) prints the controller
-  state every second — frequency, executed cycles, error. Keep it.
-- All diagnostics used in this investigation are in `tools/` and
-  documented in [diagnostics.md](diagnostics.md); the raw numbers above are
-  reproducible with `node serialwatch.mjs 120`.
+## Non-goals
+
+- More emitter/interpreter micro-optimization as the primary lever —
+  the backend holds a ~10× compute reserve the boot cannot spend until
+  this workstream lands (the tail items above are optional extras).
+- Changing the timing model or any device's semantics for speed.
+- MTTCG, in-wasm JIT APIs, resurrecting the ktock dispatch design
+  (measured ceilings — see backend plan §7).
