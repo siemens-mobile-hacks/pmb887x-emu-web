@@ -1,5 +1,45 @@
 # Performance hand-off: the qemu-core device-path workstream
 
+Status (2026-09-11, halt-path session — patches 0023–0030, closing
+run): `/dist-jit` boots to idle in **43.8 s median** (runs 43.8 / 41.9;
+idlebench --runs 2 interleaved against the saved session-start dist:
+50.2 s in the same invocation, 52.9 s in the morning's run; 71–76 s two
+sessions ago) and `/dist` in **57.9 s** (63.6 s base in the same
+invocation).  t1.3G: dist-jit 48.7 → 42.6 s, dist 61.5 → 55.8 s.
+Where the JIT boot's time goes now (host-time counters, one boot):
+translation ~6.7 s (38 µs per TB × 176k), module compile ~3.9 s (35k
+modules, ~33 µs fixed + 5.5 µs/KB), the display-DMA stretch ~7 s of
+guest work at 10–20 MIPS, the rest guest execution.  The next levers
+are structural: fewer/larger modules (an interpreter tier for cold TBs,
+or the AOT cache for second boots), cheaper translation (the generic
+TCG passes at wasm speed), and the per-word IRQ/WFI path of the display
+stretch.  Rejected this session with numbers: the per-TB goto_ptr inline
+cache (80 % hits, flat — `patches/attic/goto-ptr-inline-cache.diff`).
+Patches 0028–0030 mechanisms: a timer re-armed beyond the running icount budget no longer
+kicks the vCPU (0028; 37k kicks/s → the needed 1 %), and the per-TB
+atomic icount2 tick accounting is emitted only under the opt-in icount2
+model (0029; −5 % on every milestone).  Trap found and fixed on the way:
+the virtual-clock completions (0024) stall the opt-in
+`?icount=precise-clocks` boot because icount2 runs due timers
+synchronously inside `timer_mod` — that mode keeps the realtime clock
+(`pmb887x_completion_clock()`); a 40 s precise-clocks smoke is now part
+of the gates.  Earlier in the session: the halted vCPU warps
+the virtual clock and runs its timers itself instead of the two-hop
+main-loop handoff (0023, both dists), display-DMA completions on the
+virtual clock (0024), no realtime-clock JS imports in the icount budget
++ WFI without a longjmp (0025), goto_ptr tail calls inside wasm (0026),
+CPSR writes / exception returns via goto_ptr instead of a plain exit
+(0027, the most frequent exit of the boot).  Method that found them:
+counters over profiles — the caller-stack profile claimed 30 % halt
+wait in the early phase, the halt counters said <1k halts before
+38 s; the exit-kind histogram + a per-TB exit histogram (descriptor
+tagged exit_tb(0), `tcg_tb_lookup`, `peekcode.mjs` disassembly)
+pointed at `msr CPSR`.  What is left: per-module compile (~10 % of
+the early vCPU), `helper_lookup_tb_ptr` + qht (~8 %), the display
+stretch's guest work (~7 s at 10–20 MIPS), `TB_EXIT_REQUESTED` rounds
+(~25k/s).  Gates green: op-suite ×4 identical, native 4/4 (branch
+binary), lockstep 250e6, Firefox idle (errors=0).
+
 Status (2026-09-11, end of the wasm64 module-economy session — patches
 0019–0022): `/dist-jit` boots to idle in **52.9 s median** (idlebench --runs 2; was
 71–76 s at the start of the day) and `/dist` in **67.4 s** (was 71–76 s); Firefox

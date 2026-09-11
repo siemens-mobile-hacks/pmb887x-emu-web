@@ -1,0 +1,76 @@
+From: perf session 2026-09-11
+Subject: [PATCH 0029] wasm64: no icount2 tick accounting in TB prologues when icount2 is off
+
+The inline TB prologue mirrored icount2_advance for every TB entry: an
+i64.atomic.load + i64.atomic.store of icount2_ticks (seq-cst, an xchg on
+x86) and an atomic load + compare of icount2_deadline — at ~5M TB entries
+per second on the default boot, whose timing model is stock -icount
+(icount2 / ?icount=precise-clocks is opt-in and fixed at command-line
+parse time, before the first translation).  Emit that part (and its
+sync import) only when icount2_enabled(); the plain wasm_tb_stats
+counters the tooling reads stay.
+
+Measured (idlebench --quick, one pair, on top of 0023-0028):
+  t0.25G 16.7->15.6 (-7 %), t0.5G 32.1->30.4 (-5 %),
+  t0.75G 39.5->37.5 (-5 %), t1.3G 42.8->40.5 (-5 %)
+  (vs the session's base dist-jit: t1.3G 48.4 -> 40.5, -16 %)
+Gates: see 0028.
+
+diff --git a/tcg/wasm64/tcg-target.c.inc b/tcg/wasm64/tcg-target.c.inc
+--- a/tcg/wasm64/tcg-target.c.inc	2026-09-11 11:52:10.313674658 +0000
++++ b/tcg/wasm64/tcg-target.c.inc	2026-09-11 11:51:38.083812530 +0000
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "wasm64.h"
++#include "system/cpu-timers.h"      /* icount2_enabled() */
+ 
+ /* ------------------------------------------------------------------ */
+ /* per-TB assembly state                                              */
+@@ -2286,12 +2287,15 @@
+      * Registered first so their indices are deterministic (the
+      * prologue's calls are the body's first instructions). */
+     if (w64_acct_inline()) {
+-        sync_type = w64_add_type(0, NULL, 0xff);          /* () -> () */
+-        sync_uimp = w64_union_type(0, NULL, 0xff);
+-        sync_imp = w64_import_idx((uint32_t)(uintptr_t)w64_icount2_sync_now,
+-                                  sync_type);
+-        sync_uimp = w64_union_import(
+-            (uint32_t)(uintptr_t)w64_icount2_sync_now, sync_uimp);
++        sync_type = sync_imp = sync_uimp = 0;
++        if (icount2_enabled()) {
++            sync_type = w64_add_type(0, NULL, 0xff);      /* () -> () */
++            sync_uimp = w64_union_type(0, NULL, 0xff);
++            sync_imp = w64_import_idx(
++                (uint32_t)(uintptr_t)w64_icount2_sync_now, sync_type);
++            sync_uimp = w64_union_import(
++                (uint32_t)(uintptr_t)w64_icount2_sync_now, sync_uimp);
++        }
+ 
+         ls_type = w64_add_type(1, p1, 0xff);            /* (i32) -> () */
+         ls_uimp = w64_union_type(1, p1, 0xff);
+@@ -2345,7 +2349,15 @@
+ 
+         /* icount2_advance fast path: ticks += icount — atomic accesses,
+          * mirroring the qatomic_read/qatomic_set the C function emits
+-         * (timers_state is read/written cross-thread) */
++         * (timers_state is read/written cross-thread).  Only for the
++         * opt-in icount2 (?icount=precise-clocks) timing model: the
++         * default stock-icount boot never sets icount2_deadline, so an
++         * atomic RMW + a deadline compare per TB entry (~5M/s) would be
++         * pure overhead there.  icount2 is fixed at command-line parse
++         * time, before the first translation. */
++        if (!icount2_enabled()) {
++            goto no_icount2;
++        }
+         w64_const_i64(s, (int64_t)w64_acct_addr[2]);
+         w64_u8(s, 0xfe); w64_u8(s, 0x11);
+         w64_memarg(s, 3, 0);                          /* i64.atomic.load */
+@@ -2374,6 +2386,7 @@
+         w64_u8(s, 0x10);                              /* call */
+         w64_callidx(s, sync_imp, sync_uimp);
+         w64_blk_pop(s);
++    no_icount2:
+ 
+         /* if (w64_ls_on) w64_lockstep_account(icount) — the lockstep
+          * fold import, only when armed (normal boots: one i32.load) */

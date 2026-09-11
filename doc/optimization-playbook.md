@@ -13,9 +13,14 @@ patch-isolation study live in [optimization-sessions.md](optimization-sessions.m
 wasm64 TCG backend 0017 (compute 7.4× TCI; boot early phase still ~27 %
 behind TCI, see § Remaining) → qemu-core device path (0018: MMIO
 dispatch at native parity) → wasm64 module economy 0019 (compile-once
-batching + compaction: tIdle −15 %, Firefox OOM fixed) → **open now**:
-the real-time-paced device stretch and the remaining translation cost
-(§ Remaining).
+batching + compaction: tIdle −15 %, Firefox OOM fixed) → halt path
+0023–0029 (idle warp on the vCPU thread, virtual-clock device
+completions, goto_ptr for indirect jumps and CPSR writes, budget-aware
+timer kicks, no icount2 accounting under stock icount: dist-jit
+tIdle 50.1→43.9 s, dist 63.4→57.0 s in one interleaved `--runs 2`) →
+**open now**: the module compile share (~11 % of the early vCPU:
+36k modules / 231 MB per boot), the TB lookup path (~8 %), the
+display stretch's guest work (§ Remaining).
 
 ## The iteration ladder (cheapest reject first)
 
@@ -106,11 +111,13 @@ garbage.
   real-time gating; `window` = wall s between v=2 and v=7
   (interpolated).  Attribution → wprof2.
 - **The boot has three phases** (per-second MIPS in the idlebench
-  JSON `samples`): translation/flash-command heavy to ~0.75 G insns
-  (JIT 3–10 MIPS vs TCI 11–20 at v 2→3.5), a ~9 s real-time-paced
-  stretch (v 4.7→23.5, ~3 MIPS both — device timers on
-  `QEMU_CLOCK_REALTIME`/`HOST`), then compute (TCI 45 MIPS, JIT
-  120).  A change can move one phase and leave tIdle flat.
+  JSON `samples`): new-code heavy to ~0.5 G insns (JIT 7–20 MIPS in
+  2 s intervals with 5–10k new TBs/s, 30–45 MIPS when translation
+  drops below 2k/s — the early phase is bound by translation + module
+  compile, ~11 s of a 41 s boot after 0030), the display-DMA stretch
+  (v 4.7→23.5, ~7 s at 10–20 MIPS: one IRQ + WFI per word, no
+  main-loop handoffs since 0023/0024), then compute (TCI 45 MIPS, JIT
+  190).  A change can move one phase and leave tIdle flat.
 - **tcgbench and idlebench are complementary, not substitutes**:
   tcgbench cannot see translation cost (hot loops), idlebench `--quick`
   cannot attribute to an op class.  A compute win on tcgbench that does
@@ -171,6 +178,14 @@ mmiopoll only) makes a whole-run profile pure — see the sessions doc,
 | 0020 wasm64: call-return + `ldr pc,[pc,#-4]` trampoline successors, W64_SPEC_N 32 | ARM `bl`/`blx` record the return address via `translator_note_succ`; a TB ending in the firmware's `ldr pc,[pc,#-4]` thunk contributes its literal | batches 29.5k → 11.3k per 25 s, 3.1 → 12.7 members, misses −60 %; idlebench `--quick` vs 0019, both orders: t0.5G −8 %/−5 %, window −5 %/−5 %; gates green (op-suite, lockstep 250e6, Firefox idle, native 4/4) |
 | 0021 wasm: untimed cond waits + atomic event notifiers | `qemu_cond_wait_impl` passed 0 ms to `emscripten_futex_wait` = immediate "timeout" → every untimed wait (vCPU halt, RCU, io-dump threads) was a BQL lock/unlock spin; `event_notifier_set/test_and_clear` did proxied eventfd `write`/`read` (~1 ms sync round trip to the main thread, per icount deadline via `qemu_clock_notify`) → atomic flag | idlebench both orders: dist-jit tIdle 66→62.6 / 68→58.9 s, dist 76→73 / 73.5→64.7 s; gain from t0.75G on (the display-DMA stretch); op-suite ×4, lockstep 250e6, Firefox idle |
 | 0022 wasm64: goto_ptr handoff slot offset | `tcg_out_goto_ptr` stores the next TB at `[sp-8]` = frame+8; the dispatcher read frame+0 (always 0) → every indirect jump was a "miss" that unwound to `cpu_exec_loop` (exit-kind counters: 14.9M misses, 0 hits of 16.8M exits in 30 s) | idlebench `--quick` vs 0021 both orders: window −10 %/−8 %, t0.5G −4 %/−4 %, t1.3G −5 %/−2 %; op-suite, lockstep 250e6, Firefox idle |
+| 0023 icount rr: idle warp on the vCPU thread | stock icount routes every idle virtual deadline through the main loop (notify → `icount_start_warp_timer` → `async_run_on_cpu(do_nothing)` kick → `icount_handle_deadline` on the vCPU): two cross-thread hops per deadline; `rr_idle_advance` does the warp + `QEMU_CLOCK_VIRTUAL` timer run on the vCPU thread under the BQL (≤64 iterations, BQL released between them) before the cond wait | counters: ~50k halts/boot, ~5 deadlines per halt, the halt cond wait is never reached; alone: dist-jit t0.75G..t1.3G −5 %, dist −2 %; stack 0023–0027 (`--runs 2`): dist-jit tIdle 51.9→46.2 s (−11 %), t1.3G 50.7→44.3 (−13 %); dist tIdle 62.2→58.2 (−6 %), t1.3G 60.1→55.8 (−7 %) |
+| 0024 pmb887x: dmac/dif/ssc completion timers on QEMU_CLOCK_VIRTUAL | the display-DMA word completed from a REALTIME "now" timer on the main loop; on the virtual clock the vCPU runs it at the next TB boundary or in the first 0023 warp — deterministic and hop-free (the same change was neutral before 0023: REJECTED row superseded) | on top of 0023: display stretch (0.5G→0.75G) dist 15.2→12.5 s, dist-jit 11.1→9.1 s; t1.2G dist −4 %, t1.3G dist-jit −2 % |
+| 0025 wasm: halt-path costs | `icount_get_limit` read the REALTIME deadline (a ~3 µs JS clock import) twice per vCPU loop round — 8 % of the vCPU in the halt-dense stretch (dropped on wasm: the main-loop worker paces its own wait); `icount_start_warp_timer`'s VIRTUAL_RT read moved into the sleep=on branch; `helper_wfi` returns instead of `cpu_loop_exit` (WFI ends its TB, the 0013 early return delivers EXCP_HLT) — no ~15 µs JS unwind per halt | with 0026 on 0023+0024: dist-jit t0.75G −7 %, t1.3G 47.9→43.8 (−9 %) |
+| 0026 wasm64: goto_ptr in-wasm tail call | `tcg_out_goto_ptr` return_call_indirect's an instantiated target through the chain table (same fidx / chain-stop guards as goto_tb) instead of returning to the C dispatcher; handoff slot kept as the fallback | goto_ptr dispatcher exits 14.9M/30 s → 17k per boot (true misses); measured only in the stack above |
+| 0027 target/arm: CPSR writes / exception returns via goto_ptr | exit_tb(0) was the most frequent exit (~190k/s, 4.2M in 33 s from 230 TBs): `msr CPSR_*` in the firmware's critical sections and `ldm {..pc}^`; a plain exit only buys `cpu_handle_interrupt`, so the helpers set `icount_decr.u16.high` when `interrupt_request` is pending (the next TB start unwinds exactly as before) and the TB ends with `DISAS_JUMP` | on top of 0023–0026, `--quick`: window −7 %, t0.25G −7 %, t0.5G −4 %, t1.3G 46.8→42.2 (−11 %); op-suite ×4 identical, native 4/4, lockstep 250e6 |
+| 0028 icount: timer re-arms beyond the running budget don't kick the vCPU | `qemu_timer_notify_cb` did `cpu_exit` on every vCPU-thread `timer_mod` (37k/s: device callbacks + the idle warp's own re-arms); only 1.2 % moved the deadline inside the remaining budget (`icount_decr.u16.low + icount_extra`); each needless kick = an empty `cpu_exec` round + a `TB_EXIT_REQUESTED` unwind | `TB_EXIT_REQUESTED` exits 554k → 75k per boot; inside noise on its own (t1.3G 42.8 vs the 0023–0027 stack's 42.2–43.8) |
+| 0029 wasm64: no icount2 accounting in TB prologues under stock icount | the prologue mirrored `icount2_advance` per TB entry: atomic i64 load+store of `icount2_ticks` + atomic load/compare of the deadline — ~5M TB entries/s for a clock that is opt-in (`?icount=precise-clocks`, decided at command-line parse); emitted only when `icount2_enabled()` | `--quick` one pair on top of 0023–0028: t0.25G −7 %, t0.5G 32.1→30.4 (−5 %), t1.3G 42.8→40.5 (−5 %); session base 48.4→40.5 (−16 %) |
+| 0030 wasm64: speculation explored flag | the BFS through already-translated TBs re-probed and re-looked-up every edge of a fully translated neighbourhood on each miss inside it; `tb->w64_explored` marks a node whose expansion found every successor present | host-time counters: speculation walk overhead 0.87 → 0.29 s per boot (translations unchanged); stack 0023–0030 `--quick`: t1.3G 48.4→40.3 (−17 %) |
 | 0018 cputlb: fill-time MMIO dispatch + victim-TLB masked compare | (a) `tlb_set_page_full` resolves `(callback, opaque, size-mask, swap, align, re-entrancy guard)` per iotlb entry — the MMIO access path becomes one mask test + indirect call instead of dispatch_read→access_valid→adjusted_size→accessor; (b) `victim_tlb_hit` compared `cmp == page` unmasked, but every MMIO entry carries TLB_FORCE_SLOW in addr_idx → the victim TLB *never hit for MMIO*, so two MMIO pages aliasing on one TLB index (sysctl 0x10000000 + VIC 0x10140000, both index 0 under ARMv5 1K target pages) re-walked the guest page tables on **every access** | tcgbench mirrors: mmiopoll **534→202 ns** (dist-jit), 606→252 (dist), mmiow 305→227; native parity (223).  bootbench finalV/insns@110 s up on every pair (windows noisy under host load); op-suite 1156/1156 byte-identical ×3, native suite 4/4 on the branch binary, lockstep 20e6+250e6 clean (sessions doc, 2026-09-11 device-path) |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
@@ -194,7 +209,8 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
 | **tci.c interpreter stack as a parameter** (during the 0005 rebase: split `tcg_qemu_tb_exec` into a core + wrapper taking `uint64_t *call_stack`) | TCI v-window 25→45 s (**−60%**, 4/4 interleaved runs) | the pointer-select makes the interpreter stack alias every local array in LLVM's analysis; the TCI stack is per-TB scratch anyway — keep a single function with a local array |
 | **MMIO dispatch fast path** (memory.c: direct `ops->read/write` call for exact-size aligned accesses, skipping valid-check + access_with_adjusted_size + accessor layers; reentrancy guard replicated; `__EMSCRIPTEN__`-gated) | window 24.9–25.2 → 25.1–25.3 s (**consistently 0.1–0.7 s WORSE on a quiet host**, 4/4 pairs); finalV ±noise; insns@110 s +0.1–5.8 % inconsistent; a late-window A/B (LO=30 HI=60) was flat too | the pre-dispatch condition chain (accepts/align/size/trace/ioeventfd checks) costs as much as the ~3 non-inlined calls it saves at ~90k dispatches/s; V8 already keeps the dispatch path hot. Reverted; don't retry a *runtime* cache without cross-TU inlining (LTO). **NOT the same as the current workstream's fill-time precompute** (store `(fn, opaque, attrs)` in the iotlb entry when it is filled — zero added per-access checks): that one is the plan in [performance-handoff.md](performance-handoff.md) slice 1 |
 | **TLB table-base caching in the TCI interpreter** (cache `(fast->table, fast->mask)` per mmu_idx across ops, dropped after helper calls and ldst fallbacks — the only paths that can resize/flush the tlb on this single-cpu machine) | window 25.9/25.2/25.2/25.2 → 24.5/25.3/25.1/25.1 (flat, ±0.1); late-window LO=30 HI=60: 19.7/20.3 → 19.6/20.0 (flat); finalInsns won 4/4 (+1…5.7 %) but finalV-at-200 s varies ±45 v run-to-run — no reproducible win | the two saved loads are L1-hot; the memory-op path is at its practical floor for micro-tweaks (0011+0012 already removed the real work). Reverted; only a big lever (64-bit TCI encoding, wasm32 JIT) can move the interpreter now |
-| **Device completion timers on QEMU_CLOCK_VIRTUAL** (dmac/dif_v1/dif_v2/ssc `timer_new_ns(QEMU_CLOCK_REALTIME, …)` → VIRTUAL, 2026-09-11) | tIdle 66 → 65 (dist-jit) / 70.5 → 71.9 (dist): flat | the display-DMA stretch is not paced by the timer clock but by the halt/wake handoff (fixed by 0021: cond-wait spin + proxied eventfd writes); native suite 4/4 with the change, reverted as neutral |
+| **Device completion timers on QEMU_CLOCK_VIRTUAL** (dmac/dif_v1/dif_v2/ssc `timer_new_ns(QEMU_CLOCK_REALTIME, …)` → VIRTUAL, 2026-09-11) — **SUPERSEDED, landed as 0024** | tIdle 66 → 65 (dist-jit) / 70.5 → 71.9 (dist): flat *before 0023* | the hop chain was the same for both clocks then; once the vCPU thread warps and runs VIRTUAL timers itself (0023) the virtual-clock completion is hop-free: display stretch −2..−3 s |
+| **wasm64 goto_ptr per-TB inline cache** (`patches/attic/goto-ptr-inline-cache.diff`, 2026-09-11) | 80 % hit rate (57.8M/72.7M lookups per boot) but `--quick` both orders: t1.3G ratios 0.824/0.864 with, 0.823/0.844 without — flat | the inline ARM key computation (pc, hflags, flags2 + 5 deposited fields, ~10 loads + 4 compares) costs what `helper_lookup_tb_ptr`'s jump-cache hit path saves; the helper is ~40–50 ns, not the 150 ns assumed.  Only a cheaper key (e.g. a hflags generation counter maintained by the target) would change this |
 | **TB jump cache 4k → 32k entries on wasm** (`TB_JMP_CACHE_BITS` 15, 2026-09-11) | quick A/B vs 0022: +4..+9 % slower / flat (pairs disagree) | `qht_lookup` behind indirect jumps is 2.5 % of vCPU, but the 512 KB clears and cache footprint cost as much; reverted |
 | **Compaction threshold sweep** (`W64_COMPACT_BATCHES` 16/32/64/256/1024, 2026-09-11) | single quick runs suggested 16 (t1.3G 52.2 vs 56.9 s) but the interleaved pairs vs 0022 said +3 % slower in both orders; 1024 is +19 % at t0.5G | single-run sweeps on this host are noise at the ±5 % level — only interleaved pairs decide; 256 kept |
 | Lazy flash romd restore (flip back to array mode on first array read, not eagerly on every `0xFF`) | 7.4× fewer topology flips but **32 % slower** in the flash-heavy window | keeping romd off during bursts turns array reads (incl. fetches) into MMIO dispatches, which costs more than the flips save |
@@ -217,29 +233,39 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
    65 % of them single-member (indirect `bx lr`/`ldr pc,[rN]` targets,
    mode switches).  Candidates: cheaper first execution, AOT cache (#4).  Meter: `idlebench --quick` t0.25G/t0.5G + `W64_DEBUG=1` batch
    histogram (`tools/iotrace.mjs`).
-2. **The real-time-paced stretch (v 4.7→23.5) — PARTLY CLOSED by 0021,
-   still ~9 s.**  It is ~12k single-word DMA transfers to the display
-   (dmac → dif FIFO → IRQ per word), each a vCPU halt/wake + main-loop
-   handoff; 0021 removed the cond-wait spin and the proxied eventfd
-   write (−3..−9 s).  The REALTIME→VIRTUAL timer change was neutral
-   (§ REJECTED).  What remains per word: guest IRQ entry/exit (~3k
-   insns), `helper_wfi` longjmp exit, BQL handoffs.  Meter: the
+2. **The display-DMA stretch (v 4.7→23.5) — MOSTLY CLOSED by
+   0021/0023/0024/0025, ~7 s left (was ~12 s, then ~9 s).**  ~12k
+   single-word DMA transfers, one IRQ + WFI per word; the halt/wake
+   handoffs are gone (vCPU futex wait 31 % → 4 % of the stretch), the
+   remaining time is guest work at 10–20 MIPS: ~100 M insns of IRQ
+   entry/exit + DMA setup, TPU/VIC device work (`tpu_update_timer`,
+   `qemu_set_irq`), `cpu_exec` re-entry per halt (~4k/s).  Meter: the
    per-second MIPS/v curve (`samples`) between v 4.6 and 23.5, then
-   tIdle; `HALTLAT`-style host-time counters (sessions doc) for the
-   handoff.
-3. **Timer storms / main-loop wakeups — OPEN.**  ~8 % of the late
-   window in mailbox/futex-wake/`_emscripten_get_now` + device timer
-   callbacks nobody observes.  Meter: wprof main-thread self-time +
-   idlebench t1.3G.
+   tIdle.
+3. **Timer storms / main-loop wakeups — OPEN, smaller.**  The vCPU now
+   runs virtual timers itself; what is left is the main loop's own
+   realtime timers (gui refresh, DSP AFE 1 ms tick, PCM refill) and
+   `qemu_notify_event` wakes.  Meter: wprof main-thread self-time +
+   idlebench t1.3G.  Exit-kind counters (2026-09-11, after 0027): the
+   remaining dispatcher exits are `TB_EXIT_REQUESTED` (~25k/s early —
+   icount budget ends at every virtual deadline) and goto_tb first
+   links (~3k/s).
 4. **AOT cache — OPEN, orthogonal** (backend plan phase 5): persist
    translated batches (Cache API/IndexedDB, keyed by flash hash) —
    zero-translation second boots; would also attack #1.
 5. **Backend tail — `/dist-jit` only**: 0022 fixed the dead goto_ptr
-   fast path (the "dispatch-loop ~9 %" was mostly that).  Left:
-   `helper_lookup_tb_ptr` (~5 % of vCPU: a C helper + qht lookup per
-   indirect jump — an inline jmp-cache probe in the emitted goto_ptr
-   would skip the import for hits), `cpu_exec_loop` rounds for goto_tb
-   first-links.  Meter: `W64_DEBUG` exit-kind counters (sessions doc).
+   fast path, 0026 keeps indirect jumps inside wasm, 0027 turned the
+   CPSR-write exits into goto_ptr.  Left: `helper_lookup_tb_ptr`
+   (~5–7 % of vCPU: a C helper + `arm_get_tb_cpu_state` + jmp-cache
+   probe per indirect jump, now also per CPSR write — an inline
+   jmp-cache probe in the emitted goto_ptr would skip the import for
+   hits), qht misses (~3 %), `tcg_qemu_tb_exec` self time (~15 %,
+   partly guest code misattributed by the profiler — verify with
+   counters before chasing).  The per-TB inline cache for the lookup
+   was tried and is flat (§ REJECTED): `helper_lookup_tb_ptr` is ~40–50
+   ns per call at 1.75M calls/s, and the inline key costs the same.
+   Meter: temporary exit-kind counters in `tcg_qemu_tb_exec` (sessions
+   doc, 2026-09-11 0027 entry).
 
 Landed/closed since the last ranking: MMIO dispatch path (0018 —
 mmiopoll 534→202 ns, native parity; re-measure before reopening).
@@ -278,6 +304,18 @@ inline on wasm64 anyway).
   every TB starts with `tci_tbhdr` (icount) — chain jumps and
   `lookup_tb_ptr` targets all pass through it.  Anything that jumps
   into a TB must land on the header.
+
+## Gates added 2026-09-11
+
+- **precise-clocks smoke** (any change near timers/halt/rr):
+  `cd tools && PORT=8080 DIST=dist-jit MATCH=WATCH EXTRA_Q=icount=precise-clocks=on node conlog.mjs 40`
+  must show v advancing to ≈45 by 40 s (a stall reads as a frozen
+  `v=`/`insns=` — 0024's first build froze at v=7.2).
+- **gzip sidecar warm-up** before any idlebench:
+  `curl -s -o /dev/null -H 'Accept-Encoding: gzip' http://localhost:8080/<dist>/qemu-system-arm.wasm`
+  for every dist in the run (serve.mjs regenerates the sidecar on the
+  first request after a deploy — ~1.3 s inside `tModule`, i.e. on every
+  milestone of the fresh candidate).
 
 ## Session checklist
 

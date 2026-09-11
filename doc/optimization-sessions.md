@@ -734,3 +734,134 @@ Rejected the same afternoon (numbers in the playbook): TB jump cache
 4k → 32k entries on wasm (pairs disagree, +4..+9 %/flat), compaction
 threshold 256 → 16 (single-run sweep said −8 %, interleaved pairs said
 +3 % both orders — on this host only interleaved pairs decide).
+
+## Session log: 2026-09-11 (patches 0023–0027 — the halt path: no main-loop handoffs, goto_ptr for CPSR writes)
+
+Start: dist-jit 52.9 s / dist 67.4 s to idle.  End: 46.2 s / 58.2 s
+(`--runs 2`, interleaved, base dists saved as `dist-jit-base`/`dist-base`).
+
+**How the target was found.**  The caller-stack profile
+(`PROF_FN=emscripten_futex_wait PROF_WORKER=0`) showed 10.6 s of 35 s in
+`qemu_cond_wait_bql` from `rr_wait_io_event` — "30 % of the early boot is
+the halt wait".  Reading the stock icount chain explained the cost
+structure: a halted vCPU notifies the main loop, the main loop warps the
+clock (`icount_start_warp_timer`) and `qemu_timer_notify_cb` kicks the vCPU
+back with `async_run_on_cpu(do_nothing)` so that `icount_handle_deadline`
+runs the virtual timers *on the vCPU thread* (the main loop never runs
+`QEMU_CLOCK_VIRTUAL` timers under icount — `qemu_clock_use_for_deadline`).
+Two futex hops + two BQL handoffs per deadline.  0023 does the warp and
+the timer run in `rr_idle_advance()` on the vCPU thread.  Temporary
+counters then corrected the profile: the halt cond wait is never reached
+any more (`waits=0`), ~50k idle episodes per boot with ~5 deadlines each,
+but fewer than 1k of them before 38 s — the "30 %" was the profiler
+slowing the main loop's wakeups (the sampled worker count matters), not
+the unprofiled boot.  Keep/revert on idlebench, never on a share.
+
+**The display-DMA stretch** then dropped the vCPU's futex-wait share from
+31 % to 4 % once the dmac/dif/ssc completion timers moved to the virtual
+clock (0024 — the same change was neutral in the morning because the
+hop chain was identical for both clocks).  The next profile of the
+stretch was clock reads (`_emscripten_get_now` + BigInt wrappers 8 %):
+`icount_get_limit` reads the REALTIME deadline twice per vCPU loop round
+(0025), plus the WFI longjmp (2.8 %).
+
+**The exit histogram.**  With goto_ptr tail calls in wasm (0026 — after
+0022 they still unwound to the C dispatcher), exit counters over 43 s:
+7.3M exits, 6.5M of them `exit_tb(0)`.  A per-TB histogram (the backend
+tagged exit_tb(0) with the descriptor address, `tcg_tb_lookup` gave the
+TB, `tb_page_addr0` the flash offset, `first_cpu->cc->get_pc` the next
+pc; `tools/peekcode.mjs` dumps + disassembles guest memory) showed 230
+TBs: `msr CPSR_fsxc` after `orr #0xc0`/`bic` (critical sections), `ldm
+{..pc}^` (exception return), `svceq`.  0027 ends those TBs with
+`DISAS_JUMP`; the CPSR helpers request the next-TB-start interrupt check
+only when `interrupt_request` is pending.  Quick pair: window −7 %,
+t0.5G −4 %, t1.3G −11 %.
+
+**Measurement notes.**  (1) The first page load of a freshly deployed
+wasm pays serve.mjs's gzip sidecar generation (~1.3 s of `tModule`) —
+warm every dist with one `curl -H 'Accept-Encoding: gzip'` before an
+A/B or the candidate carries a 1.3 s handicap on every milestone.
+(2) `capture-patch.sh` only diffs files that differ from the pinned rev:
+a file reverted to its pinned content is invisible to `verify-tmp`;
+after a staged multi-patch capture, restore every file and re-verify.
+(3) Splitting one session into per-mechanism patches: stage each file
+group against a baseline worktree (pinned + patches) and capture in
+order; a file touched by two groups needs a hand-made intermediate
+version (op_helper.c here).
+
+Tools added: `tools/conlog.mjs` (boot a dist, print `[qemu]` console
+lines matching MATCH= with timestamps — the counter reader),
+`tools/peekcode.mjs` (guest memory ranges → arm-none-eabi-objdump).
+
+**Second round (0028, 0029).**  Counters after 0027: 1.57M dispatcher
+exits per 40 s (was 7.3M), of which 554k `TB_EXIT_REQUESTED`.  A
+counter in `qemu_timer_notify_cb` showed 37k vCPU-thread notifies/s
+(every `timer_mod` from a device callback *and* from the idle warp's own
+timer run), 1.2 % of them inside the running budget — 0028 skips the
+`cpu_exit` otherwise (554k → 75k requested exits).  A timer-callback
+histogram (function pointers resolved through `wasmTable.get(...).name`
++ the `.symbols` map) put `tpu_timer_callback` at 65k of 82k callbacks.
+A mid-boot batch module dumped from C (`/w64sampleN.wasm`, `wasm-dis`)
+showed the TB prologue doing an atomic `icount2_ticks` RMW plus an atomic
+deadline load per entry for the opt-in icount2 clock — 0029 drops it
+under stock icount: t0.5G −5 %, t1.3G −5 % (48.4 → 40.5 vs the session
+base, −16 %).  Module-instantiation counters for the compile share:
+36k modules / 231 MB of wasm per boot (10 members, ~560 B per 3–4-insn
+TB; roughly half of the bytes are compaction re-compiles) — the
+remaining `Module` ~11 % of the vCPU is ~half per-module fixed cost,
+~half bytes.
+
+**icount2 trap.**  The virtual-clock completion timers (0024) stalled the
+opt-in `?icount=precise-clocks` boot at v=7.2: icount2 runs a due
+virtual timer synchronously inside `timer_mod` (`timerlist_rearm` →
+`icount2_sync` → `qemu_clock_run_timers`), i.e. re-entrantly from the
+device callback that armed it (`dmac_schedule` inside `dmac_channel_run`).
+`pmb887x_completion_clock()` keeps REALTIME under icount2.  Gate added to
+the checklist: a 40 s `conlog.mjs EXTRA_Q=icount=precise-clocks=on`
+smoke (base reaches v≈45).
+
+**Third round (0030) and the cost model of a new TB.**  Host-time
+counters around `tb_gen_code`, `w64_speculate` and the JS instantiate
+(one boot, ~176k TBs, ~35k modules):
+
+| item | total | per unit |
+|---|---|---|
+| translation (`tb_gen_code`) | 6.7 s | 38 µs/TB: ARM frontend 11, `tcg_optimize`+liveness 8.5, reg-alloc+wasm emission ~11, batch finalize 3.3, rest ~5 |
+| `new WebAssembly.Module` | 3.4 s | 99 µs/module in situ; standalone (unique bytes): 37 µs for a 1-member 585 B module, 46 µs for 3 members, 104 µs for 23 members/13 KB → ~33 µs fixed + ~5.5 µs/KB |
+| `new Instance` + imports + `addFunction` | 0.5 s | 15 µs/module |
+| speculation walk (minus nested translation) | 0.87 s → 0.29 s with 0030 | |
+
+Roughly 11 s of a 41 s boot is translation + compile, i.e. the early
+phase is bound by *new code*, not by executing it: 2 s intervals with
+8k new TBs/s run at 7–20 MIPS, intervals under 2k/s at 30–45, the
+compute phase at 190.  Speculation width re-measured on this base
+(`W64_SPEC_N` knob, `--quick`): 0 → t1.3G 51.9, 8 → 44.5, 32 → ~42.5,
+64 → 43.2; 32 stays.
+
+Traps: (1) a compile micro-benchmark must vary the bytes per iteration
+(V8 caches native modules by wire-byte hash: identical bytes compile in
+11 µs, a cache hit); (2) `_emscripten_get_now`-based timers cost ~2 µs
+per read on this path — remove them before any A/B (a build with the
+timers in was 40.3 vs 40.5 s at t1.3G, i.e. they were cheap here, but
+the rule stands).  The 32 MB GC-nudge buffer is not a V8 cost (skipping
+it on Chrome left `Module` time unchanged).  TLB fills are ~30k/s and
+the TLB resizes to 256–1024 entries — not a target.  DSP handshake
+waits: <256 per boot — not a target.
+
+**Fourth round: the goto_ptr inline cache (rejected).**  1.75M
+`helper_lookup_tb_ptr` calls/s after 0027 (CPSR writes now go through
+it too).  A per-TB one-entry cache with the ARM key computed inline hit
+80 % of the time yet was flat in both A/B orders (numbers in the
+playbook's REJECTED table, diff in `patches/attic/`): the helper's hit
+path is cheap (~40–50 ns), and the inline key is ~10 loads.  Lesson:
+size a helper by counting calls and dividing its profile share, not by
+assuming an import call is expensive.
+
+**Tooling trap that cost a rebuild**: `git -C <worktree> apply
+patches/x.patch` resolves the *patch path* inside the worktree — with a
+relative path nothing applies and the "baseline" is the pristine pinned
+tree.  Copying "base" files from such a worktree over build/qemu strips
+every patch hunk from them, and `capture-patch.sh verify-tmp` cannot
+see it (files equal to the pinned rev are invisible to it).  Always pass
+absolute patch paths, and check the worktree has `tcg/wasm64/` before
+using it as a baseline.

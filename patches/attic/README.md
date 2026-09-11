@@ -85,3 +85,17 @@ The cold-path counter *infrastructure* (include/qemu/wasm-diag.h, the
 wasm_diag_stat array, `_wasm_memstat` export) comes from 0012/0014 and
 remains; future ad-hoc counters can be added as un-captured local edits
 or a fresh patch when a session needs them.
+
+## goto-ptr-inline-cache.diff — wasm64: per-TB inline cache for lookup_and_goto_ptr (2026-09-11, REJECTED: flat)
+
+The emitted `lookup_and_goto_ptr` computed the ARM lookup key inline
+(regs[15], hflags.flags, hflags.flags2 with THUMB/CONDEXEC/VECLEN/
+VECSTRIDE/VFPEN deposited; layout supplied by `w64_target_gp_layout()`
+in target/arm) and tail-called a one-entry per-TB cache of the last
+resolution (guards: CF_INVALID on the cached TB, descriptor fidx, the
+lockstep brake, SS_ACTIVE).  Correct (op-suite 1156/1156, lockstep
+250e6 clean, boots) and 80 % hits (57.8M hits / 14.9M misses per boot),
+but idlebench `--quick` in both orders vs the session base gave t1.3G
+ratios 0.824/0.864 with it against 0.823/0.844 without: the inline key
+computation (~10 loads) costs about what the helper's jump-cache probe
+saves.  Applies on top of 0030 (`git apply` after stripping the header).

@@ -226,6 +226,38 @@ lands in `/tmp/pmb887x-serial.log`.
                               so every indirect jump unwound to
                               cpu_exec_loop (14.9M of 16.8M exits/boot):
                               window -8..-10 %, t1.3G -2..-5 %
+    0023-idle-warp-on-vcpu-thread.patch  icount rr: a halted vCPU warps
+                              the virtual clock and runs its timers
+                              itself instead of the two-hop main-loop
+                              handoff per deadline (halt cond wait never
+                              reached during the boot); both dists
+    0024-device-timers-virtual-clock.patch  dmac/dif/ssc completion
+                              timers on QEMU_CLOCK_VIRTUAL (the display
+                              DMA word completes at the next TB boundary
+                              / first idle warp, no main-loop round trip)
+    0025-wasm-halt-path-costs.patch  no realtime-clock reads in the
+                              icount budget on wasm (2 JS clock imports
+                              per vCPU loop round), WFI without a longjmp
+    0026-wasm64-goto-ptr-tailcall.patch  goto_ptr tail-calls the looked-up
+                              TB in wasm (goto_ptr dispatcher exits
+                              14.9M/30 s -> 17k, true misses only)
+    0027-arm-cpsr-write-goto-ptr.patch  msr CPSR / exception returns end
+                              their TB with goto_ptr; the helper requests
+                              the interrupt check only when one is
+                              pending (was the most frequent exit: ~190k/s)
+                              0023-0027 together: dist-jit tIdle 51.9->46.2 s,
+                              dist 62.2->58.2 s (idlebench --runs 2)
+    0028-icount-timer-notify-budget.patch  a timer_mod from the vCPU
+                              thread kicks the vCPU only when the new
+                              deadline is inside the running icount
+                              budget (was 37k needless kicks/s)
+    0029-wasm64-no-icount2-prologue.patch  the per-TB atomic icount2
+                              tick accounting is emitted only when the
+                              opt-in icount2 model is on: t0.5G -5 %,
+                              t1.3G -5 % (session base -16 %)
+    0030-wasm64-spec-explored-flag.patch  speculation stops re-walking
+                              neighbourhoods whose successors all exist
+                              (walk overhead 0.87 -> 0.29 s per boot)
     attic/                    dropped patches (the original 0004 io-recompile
                               skip: boot regression, superseded by the reworked
                               0004; 0015 diag counters: measured neutral, no

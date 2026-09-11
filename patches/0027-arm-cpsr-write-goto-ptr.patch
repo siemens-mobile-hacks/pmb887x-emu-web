@@ -1,0 +1,106 @@
+From: perf session 2026-09-11
+Subject: [PATCH 0027] target/arm: CPSR writes and exception returns continue through goto_ptr, not a plain exit
+
+The most frequent TB exit of the boot (exit_tb(0): ~190k/s early, 4.2M in
+33 s, 230 distinct TBs) was the firmware's critical sections: msr CPSR_*
+(gen_set_psr -> gen_lookup_tb -> DISAS_EXIT) and the exception returns
+(ldm {..pc}^ / rfe -> DISAS_EXIT, "must exit loop to check un-masked
+IRQs").  A plain exit costs a full cpu_exec_loop round (cpu_tb_exec ->
+cpu_handle_interrupt -> tb_lookup -> dispatcher re-entry).  The only thing
+that round provides is cpu_handle_interrupt, and it only matters when an
+interrupt is pending: helper_cpsr_write / helper_cpsr_write_eret now set
+icount_decr.u16.high when cpu->interrupt_request is non-zero (the write
+may have unmasked it), which makes the next TB start unwind to
+cpu_handle_interrupt exactly as before; the TB itself ends with
+DISAS_JUMP (goto_ptr, lookup with the rebuilt hflags).  Generic change
+(all backends); cp15 writes, msr_banked, setend keep the plain exit.
+
+Measured on top of 0023-0026 (idlebench --quick, one pair):
+  dist-jit window 19.3->18.1 (-7 %), t0.25G 17.6->16.5 (-7 %),
+           t0.5G 33.0->31.6 (-4 %), t1.3G 46.8->42.2 (-11 %)
+Gates: op-suite 1156/1156 x4 backends byte-identical, native suite 4/4 on
+the branch binary, lockstep 250e6 clean, Firefox idle.
+
+diff --git a/target/arm/tcg/op_helper.c b/target/arm/tcg/op_helper.c
+--- a/target/arm/tcg/op_helper.c	2026-09-11 11:23:18.323479748 +0000
++++ b/target/arm/tcg/op_helper.c	2026-09-11 11:23:17.112086735 +0000
+@@ -802,11 +802,27 @@
+     return cpsr_read(env) & ~CPSR_EXEC;
+ }
+ 
++/*
++ * The TB that wrote CPSR continues through goto_ptr rather than a plain
++ * exit (gen_set_psr / gen_rfe): if any interrupt is pending — including
++ * one that was masked until this write — make the next TB start unwind
++ * to cpu_handle_interrupt, exactly where the plain exit would have gone.
++ */
++static void cpsr_write_check_irq(CPUARMState *env)
++{
++    CPUState *cs = env_cpu(env);
++
++    if (qatomic_read(&cs->interrupt_request)) {
++        qatomic_set(&cs->neg.icount_decr.u16.high, -1);
++    }
++}
++
+ void HELPER(cpsr_write)(CPUARMState *env, uint32_t val, uint32_t mask)
+ {
+     cpsr_write(env, val, mask, CPSRWriteByInstr);
+     /* TODO: Not all cpsr bits are relevant to hflags.  */
+     arm_rebuild_hflags(env);
++    cpsr_write_check_irq(env);
+ }
+ 
+ /* Write the CPSR for a 32-bit exception return */
+@@ -832,6 +848,7 @@
+     bql_lock();
+     arm_call_el_change_hook(env_archcpu(env));
+     bql_unlock();
++    cpsr_write_check_irq(env);
+ }
+ 
+ /* Access to user mode registers from privileged modes.  */
+diff --git a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
+--- a/target/arm/tcg/translate.c	2026-09-11 11:23:18.303328421 +0000
++++ b/target/arm/tcg/translate.c	2026-09-11 11:23:17.109867230 +0000
+@@ -1490,7 +1490,16 @@
+     } else {
+         gen_set_cpsr(t0, mask);
+     }
+-    gen_lookup_tb(s);
++    /*
++     * Continue through goto_ptr (next-TB lookup with the rebuilt hflags)
++     * instead of a plain exit to cpu_exec_loop: the only thing the loop
++     * round added was cpu_handle_interrupt, and helper_cpsr_write requests
++     * exactly that (an exit at the next TB start) whenever an interrupt is
++     * pending — this write may just have unmasked it.  The firmware's
++     * critical sections make this the most frequent TB exit of the boot.
++     */
++    gen_pc_plus_diff(s, cpu_R[15], curr_insn_len(s));
++    s->base.is_jmp = DISAS_JUMP;
+     return 0;
+ }
+ 
+@@ -1729,8 +1738,9 @@
+      */
+     translator_io_start(&s->base);
+     gen_helper_cpsr_write_eret(tcg_env, cpsr);
+-    /* Must exit loop to check un-masked IRQs */
+-    s->base.is_jmp = DISAS_EXIT;
++    /* Un-masked IRQs: the helper requests the next-TB-start exit (see
++     * gen_set_psr); pc is already stored, so look up and go. */
++    s->base.is_jmp = DISAS_JUMP;
+ }
+ 
+ /* Generate an old-style exception return. Marks pc as dead. */
+@@ -5301,8 +5311,8 @@
+         tmp = load_cpu_field(spsr);
+         translator_io_start(&s->base);
+         gen_helper_cpsr_write_eret(tcg_env, tmp);
+-        /* Must exit loop to check un-masked IRQs */
+-        s->base.is_jmp = DISAS_EXIT;
++        /* Un-masked IRQs: see gen_rfe */
++        s->base.is_jmp = DISAS_JUMP;
+     }
+     clear_eci_state(s);
+     return true;

@@ -1,0 +1,378 @@
+goto_ptr per-TB inline cache (2026-09-11, REJECTED: flat)
+
+The emitted lookup_and_goto_ptr computed the ARM lookup key (pc, hflags, cs_base
+with THUMB/CONDEXEC/VECLEN/VECSTRIDE/VFPEN) inline and tail-called a one-entry
+per-TB cache of the last resolution (validated: CF_INVALID, fidx, chain brake).
+Hit rate 80 % (57.8M hits / 14.9M misses per boot, 1.75M lookups/s) but idlebench
+--quick both orders vs the session base: t1.3G ratios 0.824/0.864 with it,
+0.823/0.844 without; t0.5G 0.893/0.940 vs 0.900/0.915 — the inline key
+computation costs about what the helper's jump-cache probe saves.
+Applies on top of 0030 with: git apply patches/attic/goto-ptr-inline-cache.diff
+
+--- a/include/exec/translation-block.h	2026-09-11 12:59:26.953440777 +0000
++++ b/include/exec/translation-block.h	2026-09-11 12:59:28.009372718 +0000
+@@ -136,6 +136,12 @@
+     vaddr w64_succ[3];
+     uint8_t w64_nsucc;
+     uint8_t w64_explored;   /* speculation: every successor already exists */
++    /*
++     * wasm64 goto_ptr inline cache (one per TB, filled by the miss path
++     * of the TB's lookup_and_goto_ptr): the last (pc, flags, cs_base)
++     * looked up here and the descriptor + TB it resolved to.
++     */
++    uint64_t w64_gp[5];
+ #endif
+ 
+     /*
+--- a/accel/tcg/translate-all.c	2026-09-11 12:59:26.953440777 +0000
++++ b/accel/tcg/translate-all.c	2026-09-11 12:59:28.009372718 +0000
+@@ -318,6 +318,7 @@
+ #ifdef CONFIG_TCG_WASM64
+     tb->w64_nsucc = 0;
+     tb->w64_explored = 0;
++    memset(tb->w64_gp, 0, sizeof(tb->w64_gp));
+ #endif
+     tb_set_page_addr0(tb, phys_pc);
+     tb_set_page_addr1(tb, -1);
+--- a/include/exec/translator.h	2026-09-11 12:59:26.913591697 +0000
++++ b/include/exec/translator.h	2026-09-11 12:59:28.009474981 +0000
+@@ -172,6 +172,25 @@
+  */
+ void translator_note_succ(DisasContextBase *db, vaddr dest);
+ 
++/*
++ * wasm64 backend: layout of the CPU state that feeds the target's
++ * get_tb_cpu_state(), so the emitted lookup_and_goto_ptr can compute the
++ * lookup key inline and hit a per-TB cache without calling the helper.
++ * Returns false when the target/CPU cannot be described (the backend then
++ * always calls the helper).  Implemented by the target (target/arm).
++ */
++struct w64_gp_layout {
++    uint32_t off_pc;                    /* u32 field */
++    uint32_t off_flags, off_flags2;     /* hflags: u32, u64 */
++    uint32_t off_thumb, off_condexec;   /* u8, u32 */
++    uint32_t off_veclen, off_vecstride; /* i32, i32 */
++    uint32_t off_fpexc;                 /* u32; bit 30 = VFP enabled */
++    uint32_t ss_active_mask;            /* in flags: refuse the cache */
++    uint32_t thumb_shift, condexec_shift, veclen_shift, vecstride_shift,
++             vfpen_shift;               /* deposits into cs_base */
++};
++bool w64_target_gp_layout(struct w64_gp_layout *l);
++
+ /**
+  * translator_io_start
+  * @db: Disassembly context
+--- a/target/arm/tcg/hflags.c	2026-09-11 12:59:26.448504640 +0000
++++ b/target/arm/tcg/hflags.c	2026-09-11 12:59:28.009474981 +0000
+@@ -13,6 +13,7 @@
+ #include "exec/translation-block.h"
+ #include "accel/tcg/cpu-ops.h"
+ #include "cpregs.h"
++#include "exec/translator.h"
+ 
+ static inline bool fgt_svc(CPUARMState *env, int el)
+ {
+@@ -752,3 +753,39 @@
+         .cs_base = flags.flags2,
+     };
+ }
++
++/*
++ * wasm64 goto_ptr inline cache: describe arm_get_tb_cpu_state() for the
++ * A32 (non-M) case — pc = regs[15]; flags = hflags.flags (+PSTATE__SS
++ * only when SS_ACTIVE, which the backend refuses); cs_base = hflags.flags2
++ * with VECLEN/VECSTRIDE/VFPEN(FPEXC.EN)/THUMB/CONDEXEC deposited.
++ */
++bool w64_target_gp_layout(struct w64_gp_layout *l)
++{
++    CPUARMState *env = cpu_env(first_cpu);
++
++    if (arm_feature(env, ARM_FEATURE_M) ||
++        arm_feature(env, ARM_FEATURE_AARCH64)) {
++        return false;
++    }
++    l->off_pc = offsetof(CPUARMState, regs[15]);
++    l->off_flags = offsetof(CPUARMState, hflags.flags);
++    l->off_flags2 = offsetof(CPUARMState, hflags.flags2);
++    l->off_thumb = offsetof(CPUARMState, thumb);
++    l->off_condexec = offsetof(CPUARMState, condexec_bits);
++    l->off_veclen = offsetof(CPUARMState, vfp.vec_len);
++    l->off_vecstride = offsetof(CPUARMState, vfp.vec_stride);
++    l->off_fpexc = offsetof(CPUARMState, vfp.xregs[ARM_VFP_FPEXC]);
++    l->ss_active_mask = R_TBFLAG_ANY_SS_ACTIVE_MASK;
++    l->thumb_shift = R_TBFLAG_AM32_THUMB_SHIFT;
++    l->condexec_shift = R_TBFLAG_AM32_CONDEXEC_SHIFT;
++    l->veclen_shift = R_TBFLAG_A32_VECLEN_SHIFT;
++    l->vecstride_shift = R_TBFLAG_A32_VECSTRIDE_SHIFT;
++    l->vfpen_shift = R_TBFLAG_A32_VFPEN_SHIFT;
++    QEMU_BUILD_BUG_ON(sizeof(env->thumb) != 1);
++    QEMU_BUILD_BUG_ON(sizeof(env->hflags.flags) != 4);
++    QEMU_BUILD_BUG_ON(sizeof(env->hflags.flags2) != 8);
++    QEMU_BUILD_BUG_ON(sizeof(env->vfp.vec_len) != 4);
++    QEMU_BUILD_BUG_ON(sizeof(env->condexec_bits) != 4);
++    return true;
++}
+--- a/accel/tcg/cpu-exec.c	2026-09-11 12:59:26.953378306 +0000
++++ b/accel/tcg/cpu-exec.c	2026-09-11 12:59:28.009474981 +0000
+@@ -379,6 +379,11 @@
+  * If found, return the code pointer.  If not found, return
+  * the tcg epilogue so that we return into cpu_tb_exec.
+  */
++#ifdef CONFIG_TCG_WASM64
++/* the TB helper_lookup_tb_ptr last resolved (goto_ptr inline cache fill) */
++TranslationBlock *w64_last_tb;
++#endif
++
+ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+ {
+     CPUState *cpu = env_cpu(env);
+@@ -408,6 +413,9 @@
+     if (qemu_loglevel_mask(CPU_LOG_TB_CPU | CPU_LOG_EXEC)) {
+         log_cpu_exec(s.pc, cpu, tb);
+     }
++#ifdef CONFIG_TCG_WASM64
++    w64_last_tb = tb;
++#endif
+ 
+     return tb->tc.ptr;
+ }
+--- a/tcg/wasm64/tcg-target.c.inc	2026-09-11 12:59:26.949447858 +0000
++++ b/tcg/wasm64/tcg-target.c.inc	2026-09-11 12:59:28.009545987 +0000
+@@ -17,6 +17,7 @@
+ 
+ #include "wasm64.h"
+ #include "system/cpu-timers.h"      /* icount2_enabled() */
++#include "exec/translator.h"         /* w64_gp_layout */
+ 
+ /* ------------------------------------------------------------------ */
+ /* per-TB assembly state                                              */
+@@ -1002,6 +1003,200 @@
+     }
+ }
+ 
++/* ------------------------------------------------------------------ */
++/* goto_ptr inline cache                                               */
++/*                                                                    */
++/* lookup_and_goto_ptr = helper_lookup_tb_ptr(env) + goto_ptr.  The   */
++/* helper computes the lookup key from the CPU state (target's        */
++/* get_tb_cpu_state), probes the jump cache, falls back to the qht —   */
++/* an import call + ~150 ns per indirect jump, ~6-8 % of the vCPU.    */
++/* Each TB keeps a one-entry cache (tb->w64_gp: pc, flags, cs_base,   */
++/* desc, tb) of what its lookup last resolved to; the emitted code     */
++/* computes the same key inline (layout from the target,              */
++/* w64_target_gp_layout) and tail-calls the cached descriptor when the */
++/* key matches and the target is still valid (not CF_INVALID, still   */
++/* instantiated, no lockstep brake).  Misses take the helper and       */
++/* refill the entry.  Keys with SS_ACTIVE (gdb singlestep) never hit.  */
++/* W64_NOGPCACHE=1 disables it (A/B).                                  */
++/* ------------------------------------------------------------------ */
++
++extern TranslationBlock *w64_last_tb;   /* accel/tcg/cpu-exec.c */
++
++static struct w64_gp_layout GPL;
++static int gpl_state = -1;
++
++static bool w64_gp_on(void)
++{
++    if (gpl_state < 0) {
++        gpl_state = getenv("W64_NOGPCACHE") == NULL &&
++                    w64_target_gp_layout(&GPL);
++    }
++    return gpl_state == 1;
++}
++
++/* env-relative load of an unsigned field as i64 */
++static void w64_gp_ld(TCGContext *s, uint8_t opc, unsigned align, uint32_t off)
++{
++    w64_local_get(s, W64_P_ENV);
++    w64_u8(s, opc);
++    w64_memarg(s, align, off);
++}
++
++static void w64_gp_slot_load(TCGContext *s, uintptr_t cache, unsigned slot)
++{
++    w64_const_i64(s, (int64_t)cache);
++    w64_u8(s, 0x29);                        /* i64.load */
++    w64_memarg(s, 3, 8 * slot);
++}
++
++/* key -> $scr0 (pc), $scr32 (flags), $scr1 (cs_base); hit -> tail call */
++static void w64_out_gp_probe(TCGContext *s)
++{
++    uintptr_t cache = (uintptr_t)s->gen_tb + offsetof(TranslationBlock, w64_gp);
++
++    w64_gp_ld(s, 0x35, 2, GPL.off_pc);      /* i64.load32_u regs[15] */
++    w64_local_set(s, W64_L_SCR0);
++    w64_gp_ld(s, 0x28, 2, GPL.off_flags);   /* i32.load hflags.flags */
++    w64_local_set(s, W64_L_SCR32);
++
++    w64_gp_ld(s, 0x35, 2, GPL.off_flags2);  /* (u32)hflags.flags2 */
++    w64_gp_ld(s, 0x31, 0, GPL.off_thumb);   /* i64.load8_u thumb */
++    w64_const_i64(s, GPL.thumb_shift);
++    w64_u8(s, 0x86);                        /* i64.shl */
++    w64_u8(s, 0x84);                        /* i64.or */
++    w64_gp_ld(s, 0x35, 2, GPL.off_condexec);
++    w64_const_i64(s, 0xff);
++    w64_u8(s, 0x83);                        /* i64.and */
++    w64_const_i64(s, GPL.condexec_shift);
++    w64_u8(s, 0x86);
++    w64_u8(s, 0x84);
++    w64_gp_ld(s, 0x35, 2, GPL.off_veclen);
++    w64_const_i64(s, 7);
++    w64_u8(s, 0x83);
++    w64_const_i64(s, GPL.veclen_shift);
++    w64_u8(s, 0x86);
++    w64_u8(s, 0x84);
++    w64_gp_ld(s, 0x35, 2, GPL.off_vecstride);
++    w64_const_i64(s, 3);
++    w64_u8(s, 0x83);
++    w64_const_i64(s, GPL.vecstride_shift);
++    w64_u8(s, 0x86);
++    w64_u8(s, 0x84);
++    w64_gp_ld(s, 0x35, 2, GPL.off_fpexc);
++    w64_const_i64(s, 30);
++    w64_u8(s, 0x88);                        /* i64.shr_u */
++    w64_const_i64(s, 1);
++    w64_u8(s, 0x83);
++    w64_const_i64(s, GPL.vfpen_shift);
++    w64_u8(s, 0x86);
++    w64_u8(s, 0x84);
++    w64_local_set(s, W64_L_SCR1);
++
++    tcg_debug_assert(W.n_blk < W64_MAX_BLK);
++    w64_u8(s, 0x02);                        /* block void */
++    w64_u8(s, 0x40);
++    W.blk[W.n_blk].kind = W64_BLK_IF;
++    W.blk[W.n_blk].label = -1;
++    W.n_blk++;
++
++    /* every br_if 0 below is a miss: fall through to the helper call */
++    w64_local_get(s, W64_L_SCR32);
++    w64_const_i32(s, (int32_t)GPL.ss_active_mask);
++    w64_u8(s, 0x71);                        /* i32.and */
++    w64_u8(s, 0x0d); w64_uleb(s, 0);
++
++    w64_local_get(s, W64_L_SCR0);
++    w64_gp_slot_load(s, cache, 0);
++    w64_u8(s, 0x52);                        /* i64.ne */
++    w64_u8(s, 0x0d); w64_uleb(s, 0);
++
++    w64_local_get(s, W64_L_SCR32);
++    w64_u8(s, 0xad);                        /* i64.extend_i32_u */
++    w64_gp_slot_load(s, cache, 1);
++    w64_u8(s, 0x52);
++    w64_u8(s, 0x0d); w64_uleb(s, 0);
++
++    w64_local_get(s, W64_L_SCR1);
++    w64_gp_slot_load(s, cache, 2);
++    w64_u8(s, 0x52);
++    w64_u8(s, 0x0d); w64_uleb(s, 0);
++
++    w64_gp_slot_load(s, cache, 3);          /* desc */
++    w64_local_set(s, W64_L_SCR2);
++    w64_local_get(s, W64_L_SCR2);
++    w64_u8(s, 0x50);                        /* i64.eqz */
++    w64_u8(s, 0x0d); w64_uleb(s, 0);
++
++    w64_gp_slot_load(s, cache, 4);          /* tb */
++    w64_u8(s, 0x28);                        /* i32.load tb->cflags */
++    w64_memarg(s, 2, offsetof(TranslationBlock, cflags));
++    w64_const_i32(s, CF_INVALID);
++    w64_u8(s, 0x71);
++    w64_u8(s, 0x0d); w64_uleb(s, 0);
++
++    w64_const_i64(s, (int64_t)(uintptr_t)&w64_chain_stop);
++    w64_u8(s, 0x28);
++    w64_memarg(s, 2, 0);
++    w64_u8(s, 0x0d); w64_uleb(s, 0);
++
++    w64_local_get(s, W64_L_SCR2);
++    w64_u8(s, 0x28);                        /* i32.load fidx */
++    w64_memarg(s, 2, W64_DESC_FIDX);
++    w64_u8(s, 0x45);                        /* i32.eqz */
++    w64_u8(s, 0x0d); w64_uleb(s, 0);
++
++    w64_local_get(s, W64_L_SCR2);
++    w64_u8(s, 0x28);                        /* i32.load tidx */
++    w64_memarg(s, 2, W64_DESC_TIDX);
++    w64_local_set(s, W64_L_SCR32);
++    w64_local_get(s, W64_P_ENV);
++    w64_local_get(s, W64_P_SP);
++    w64_local_get(s, W64_P_TP);
++    w64_local_get(s, W64_L_SCR32);
++    w64_u8(s, 0x13);                        /* return_call_indirect */
++    w64_uleb(s, 0);
++    w64_uleb(s, 0);
++
++    w64_blk_pop(s);                         /* end */
++}
++
++/* after the helper returned into $R0: refill the entry on a hit */
++static void w64_out_gp_fill(TCGContext *s)
++{
++    uintptr_t cache = (uintptr_t)s->gen_tb + offsetof(TranslationBlock, w64_gp);
++
++    tcg_debug_assert(W.n_blk < W64_MAX_BLK);
++    w64_u8(s, 0x02);
++    w64_u8(s, 0x40);
++    W.blk[W.n_blk].kind = W64_BLK_IF;
++    W.blk[W.n_blk].label = -1;
++    W.n_blk++;
++
++    w64_local_get(s, W64_L64(TCG_REG_R0));
++    w64_u8(s, 0x50);                        /* i64.eqz: miss (epilogue) */
++    w64_u8(s, 0x0d); w64_uleb(s, 0);
++
++    w64_const_i64(s, (int64_t)cache);
++    w64_local_get(s, W64_L_SCR0);
++    w64_u8(s, 0x37); w64_memarg(s, 3, 0);
++    w64_const_i64(s, (int64_t)cache);
++    w64_local_get(s, W64_L_SCR32);
++    w64_u8(s, 0xad);
++    w64_u8(s, 0x37); w64_memarg(s, 3, 8);
++    w64_const_i64(s, (int64_t)cache);
++    w64_local_get(s, W64_L_SCR1);
++    w64_u8(s, 0x37); w64_memarg(s, 3, 16);
++    w64_const_i64(s, (int64_t)cache);
++    w64_local_get(s, W64_L64(TCG_REG_R0));
++    w64_u8(s, 0x37); w64_memarg(s, 3, 24);
++    w64_const_i64(s, (int64_t)cache);
++    w64_const_i64(s, (int64_t)(uintptr_t)&w64_last_tb);
++    w64_u8(s, 0x29); w64_memarg(s, 3, 0);
++    w64_u8(s, 0x37); w64_memarg(s, 3, 32);
++
++    w64_blk_pop(s);
++}
++
+ static void tcg_out_call(TCGContext *s, const tcg_insn_unit *target,
+                          const TCGHelperInfo *info)
+ {
+@@ -1010,10 +1205,17 @@
+     unsigned np = info->nr_in, i;
+     uintptr_t ra = w64_pc(s);
+     uint8_t imp, uimp;
++    bool gp = info->name && !strcmp(info->name, "lookup_tb_ptr") &&
++              w64_gp_on();
+ 
+     tcg_debug_assert(info->out_kind == TCG_CALL_RET_NORMAL);
+     tcg_debug_assert(np <= ARRAY_SIZE(p));
+ 
++    if (gp) {
++        w64_out_gp_probe(s);
++        ra = w64_pc(s);
++    }
++
+     /* retaddr for GETPC()-using helpers */
+     w64_local_get(s, W64_P_TP);
+     w64_const_i64(s, ra);
+@@ -1085,6 +1287,10 @@
+         w64_local_set(s, W64_L32(TCG_REG_R0));
+         W.rep &= ~(1u << TCG_REG_R0);
+     }
++    if (gp) {
++        tcg_debug_assert(ret == 1);
++        w64_out_gp_fill(s);
++    }
+ }
+ 
+ /* ------------------------------------------------------------------ */
