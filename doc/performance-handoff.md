@@ -1,11 +1,19 @@
 # Performance hand-off: the qemu-core device-path workstream
 
-Status (2026-09-11, later): **0019 landed on the wasm64 backend** —
-compile-once batching with speculative successor translation and batch
-compaction: idlebench tIdle 76 → 65 s (−15 %) on `/dist-jit`, and the
-Firefox out-of-memory (its ~16k live-module executable budget) is fixed.
-Details: playbook landed table + sessions doc (2026-09-11, 0019).  The
-device-path status below is unchanged.
+Status (2026-09-11, end of the wasm64 module-economy session — patches
+0019–0022): `/dist-jit` boots to idle in **52.9 s median** (idlebench --runs 2; was
+71–76 s at the start of the day) and `/dist` in **67.4 s** (was 71–76 s); Firefox
+boots to idle with no console errors (was out of executable memory at
+10 s).  Mechanisms, in landing order: speculative successor translation
++ compile-once batching + compaction (0019, −15 %), call-return / ldr-pc
+successor hints (0020, −5..−8 % t0.5G), untimed cond waits that really
+wait + atomic event notifiers (0021, both dists, −5..−13 % tIdle), the
+goto_ptr handoff-slot offset fix (0022, window −8..−10 %).  Rejected with
+numbers: device timers on the virtual clock, 32k jump cache, compaction
+threshold sweep (playbook § REJECTED).  What is left is structural: the
+display-DMA stretch (~9 s, one IRQ + halt per word), per-module compile
+cost (~10 % of the early vCPU), `helper_lookup_tb_ptr` (~6 %).  Working
+method and forensics: playbook + sessions doc (2026-09-11 entries).
 
 Status (2026-09-11, end of device-path session): **slice 1+ landed as
 0018** — the MMIO dispatch tax is at native parity (tcgbench mmiopoll

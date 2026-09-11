@@ -716,3 +716,21 @@ symbol map (it silently used `/dist`'s for dist-jit runs) and takes
 not the vCPU).  Per-worker self-time of the stretch: vCPU 36 % in futex
 waits + 11 % waking the main loop, main loop 92 % idle — i.e. handoff
 latency, not work.
+
+## Session log: 2026-09-11 (patch 0022 — the goto_ptr handoff slot; two rejections)
+
+Temporary exit-kind counters in `tcg_qemu_tb_exec` (W64_DEBUG) over a
+30 s boot: 16.8M dispatcher exits, **14.9M goto_ptr "misses", 0 hits**
+— the in-wasm indirect-jump fast path had never worked.  `tcg_out_goto_ptr`
+stores the next descriptor at `[sp-8]` with `sp = frame+16` (frame+8);
+the dispatcher read frame+0, which is always 0 (the layout comment even
+says so).  Every `bx lr`/`pop {pc}`/`ldr pc` therefore returned to
+`cpu_exec_loop` for a second lookup.  Fix: read frame+8, treat
+`tcg_code_gen_epilogue` as the miss value.  Early-phase vCPU profile:
+`cpu_exec_loop` 8.2 % → 2.2 %; idlebench quick both orders window
+−8..−10 %, t0.5G −4 %.
+
+Rejected the same afternoon (numbers in the playbook): TB jump cache
+4k → 32k entries on wasm (pairs disagree, +4..+9 %/flat), compaction
+threshold 256 → 16 (single-run sweep said −8 %, interleaved pairs said
++3 % both orders — on this host only interleaved pairs decide).
