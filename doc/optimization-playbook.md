@@ -38,6 +38,11 @@ wasm64 backend's numbers live only in its plan/progress docs.
    serial), lockstep windows `tools/lockstep-wasm.mjs --insns
    20e6|250e6|700e6` (full 2.5e9 gate per the plan's phases), and
    `tools/idlebench.mjs` for the end-to-end human metric.
+   **Iteration loop (2026-09-11+): `tools/tcgbench.mjs` first** —
+   per-phase backend A/B in ~10 s/leg (phone boots are final gates
+   only, they are 80 s+ and device-bound — see
+   [tests/tcgbench/README.md](../tests/tcgbench/README.md) for the
+   tool ladder).
 
 ## The fast feedback loop
 

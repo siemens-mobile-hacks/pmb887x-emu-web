@@ -40,3 +40,8 @@ tests/tcg-isa/*.elf
 
 # fullflash dumps + sidecars (firmware images, not for git)
 /fullflashes/
+
+# tcgbench build artifacts (make -C tests/tcgbench)
+/tests/tcgbench/*.o
+/tests/tcgbench/*.elf
+/tests/tcgbench/*.bin
