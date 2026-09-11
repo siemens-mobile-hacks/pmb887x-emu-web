@@ -21,7 +21,13 @@ an early-window wprof2 profile of the phase-3 backend shows the window is
 *not* MMIO-bound (top: dispatcher 15 %, per-TB-entry accounting import
 8.3 %, lookup_tb_ptr 3.7 %, temp-module instantiate ~3 %) — the §4.7
 MMIO-fast-path premise must be re-verified against a late-window profile
-before any emitter work.  Note: the "JIT ~1.3–2.3x" numbers in
+before any emitter work. 2026-09-11 (later): **the late-window profile
+killed the §4.7 premise (MMIO absent from the top in both windows) and
+slice 2 — inline TB accounting — landed the same day**: v=2..7 window
+−16 % (36.6→30.7 s vs the import-call fallback), and on the idlebench
+human metric /dist-jit is now statistically indistinguishable from
+/dist (median 76.4 s both, 9+9 interleaved runs; was +8–10 % behind).
+Note: the "JIT ~1.3–2.3x" numbers in
 [optimization-playbook.md](optimization-playbook.md) belong to the
 discarded wasm32/ktock port, not this backend.)
 
@@ -164,9 +170,12 @@ exit to C by return code only.**
 ## 5. Plan — phases, gates, effort
 
 Tooling: `tools/bootbench.mjs` (A/B windows), `tools/rawspeed.mjs`,
-`tools/wprof2.mjs` (CPU profiles), `tools/tracediff.mjs` (PC traces), plus
-the op-suite runner (`tools/tcgisa.mjs` + `scripts/run-tcg-isa.sh`, below)
-and the lockstep harness. Every phase ends boot-clean on S75 *and*
+`tools/wprof2.mjs` (CPU profiles), `tools/tracediff.mjs` (PC traces),
+the op-suite runner (`tools/tcgisa.mjs` + `scripts/run-tcg-isa.sh`,
+below), the lockstep harness, and **`tests/tcgbench` +
+`tools/tcgbench.mjs` (2026-09-11: the fast-iteration perf bench on
+versatilepb — per-phase backend attribution in ~10 s/leg; phone boots
+are final gates only)**. Every phase ends boot-clean on S75 *and*
 LG (no-icount).
 
 - **Phase 0a — guest op-suite (quick per-op debugging; the lesson of the
@@ -439,22 +448,59 @@ LG (no-icount).
        if their /dist-jit still shows 10x it is environment-specific
        (Chrome version / machine state) and the new /w64bad-* forensics
        will capture whatever fires.
-    2. **Early-window profile of this backend says the v=2..7 window is
-       not MMIO-bound**: vCPU self-time — `tcg_qemu_tb_exec` 15 %,
-       `w64_tb_account` (per-TB-entry accounting import) **8.3 %**,
-       `cpu_exec_loop` 6 %, `helper_lookup_tb_ptr` 3.7 %, instantiate ~3 %;
-       MMIO dispatch absent from the top. The §4.7 premise ("MMIO now the
-       dominant cost") still plausibly holds for the *late* poll-heavy
-       window (finalV gap), but that needs its own profile
-       (`PROF_DELAY=115` in wprof2) before building anything. Slice-2
-       candidates by current evidence: (a) inline the w64_tb_account
-       icount/deadline work into emitted code (import call per TB entry
-       → a few i32 ops + rare import call), (b) late-window profile →
-       MMIO fast-path only if it confirms, (c) direct imports /
-       lookup_tb_ref. Remember the playbook's rejected table: a
-       memory.c-level MMIO dispatch fast path already measured WORSE on
-       TCI — any MMIO work must sit at a different level (FlatView/TLB-
-       cached callbacks) or not happen.
+  - **Status 2026-09-11 (later): slice selection resolved by
+     measurement — slice 2 (inline TB accounting) landed the same
+     day.** The two inputs above resolved as follows:
+    1. The idlebench item stays as written (user-side repro pending;
+       this host's numbers below move the baseline).
+    2. **The late-window profile ran (`PROF_DELAY=115`, v≈132–209, the
+       poll-heavy phase) and killed the §4.7 premise**: MMIO dispatch
+       is absent from the top in BOTH windows. vCPU self-time:
+       `w64_tb_account` **9.1 %** (early window 8.3 % — the #1 real
+       consumer in both), `cpu_exec_loop` 7.1 %,
+       `helper_lookup_tb_ptr` 4.1 %, emscripten mailbox/futex-wake
+       ~8 %, MMIO — nothing. **No MMIO fast-path work** — the
+       playbook's rejected table already killed the memory.c-level
+       version on TCI; now the whole lever is dead at current speed.
+    3. **Slice 2 = the measurement's #1 target: the TB accounting is
+       now emitted inline.** The prologue performs `wasm_tb_stats[0]++
+       / [1]+=icount` (plain RMWs, exactly what the C compiles to)
+       and the `icount2_advance` fast path (`i64.atomic.load`/`store`
+       on `icount2_ticks` — matching the relaxed `qatomic_*` clang
+       emits; opcodes pinned empirically: `fe 11` load / `fe 18`
+       store) with imports only for the rare tails:
+       `w64_icount2_sync_now()` (deadline crossed — BQL+`icount2_sync`,
+       byte-equal to `icount2_advance`'s tail) and
+       `w64_lockstep_account(icount)` behind an `i32.load` of
+       `w64_ls_on` (one load when the fold is off; the fold's lazy
+       init moved from the first account call to `w64_init`).
+       `W64_NOACCTINLINE=1` reverts to the old single import call
+       (A/B knob + fallback). Wasm lesson: integer casts of addresses
+       are NOT static-initializer constants — `w64_acct_addr[]` is
+       filled lazily at the first translation (which precedes the
+       first exec).
+       - **Gates**: op-suite 1156/1156 (plain + `W64_NOACCTINLINE` +
+         `W64_BATCH_N=4` knob runs); lockstep 20M + 250M clean
+         (exact budget stop both legs, HARD SRAM digests identical);
+         full 2.5e9 one-insn-per-tb gate — see the progress log.
+       - **Perf (bootbench, 2×2 interleaved, pair-wise dominant)**:
+         v=2..7 window **36.6/37.1 s → 30.7/30.9 s (−16 %)**;
+         finalV@110 s 90.1/90.2 → 105.8/108.6. **idlebench (the
+         human metric, 9+9 interleaved runs)**: /dist 74.4–76.4 s
+         (median 76.4) vs /dist-jit 74.4–76.5 s (median 76.4) — **the
+         wasm64 backend is now statistically indistinguishable from
+         TCI on boot-to-idle** (was +8–10 % behind), both reaching
+         identical guest state (v@idle ≈51, insns ≈1.35e9, tbs ≈246M;
+         the metric saturates its 2 s sample grid once the gap drops
+         below ~2 s). Phase-3's "idle < 90 s" gate is met with
+         margin.
+       - Remaining slice-3 candidates by the same profiles:
+         `helper_lookup_tb_ptr` (3.7–4.1 %) via direct import /
+         `lookup_tb_ref`, and the `cpu_exec_loop`+
+         `tcg_qemu_tb_exec` dispatch slice (6–7 % + 2.5 %) — the
+         classic next backend lever.  Weigh them against the tcgbench
+         finding below: compute ceiling ≈562 MIPS ≈10× boot throughput
+         — the device/icount tax now dominates end-to-end.
 - **Phase 4 — robustness.** SMC invalidation storms (flash unlock/write
   cycles), LG no-icount path, table-index recycling over 10⁶ translations,
   deterministic module lifecycle (no FinalizationRegistry), Chrome + Firefox

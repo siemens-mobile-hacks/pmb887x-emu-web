@@ -3,7 +3,95 @@
 Working log for `doc/wasm-tcg-backend-plan.md`. Updated periodically;
 the plan file itself carries the phase gates.
 
-## Status: phase 3 (slice 1 landed) — slice selection now measurement-gated; end-to-end idle benchmark in place
+## Status: phase 3 (slices 1+2 landed) — account inline closed the idlebench gap to TCI; next: lookup_tb_ref / dispatch
+
+### Session 2026-09-11 (01:00) — late-window profile → slice 2: inline TB accounting
+
+- **The measurement gate ran first** (`PROF_DELAY=115`, v≈132–209,
+  poll-heavy window): `w64_tb_account` **9.1 %** of vCPU self-time
+  (vs 8.3 % early — #1 real consumer in BOTH windows), `cpu_exec_loop`
+  7.1 %, `helper_lookup_tb_ptr` 4.1 %, mailbox/futex-wake ~8 % —
+  **MMIO dispatch absent from the top in both windows ⇒ §4.7's
+  MMIO fast-path lever is dead** (no FlatView/TLB-callback work).
+- **Slice 2 landed**: the TB-prologue accounting is emitted inline.
+  Design: `wasm_tb_stats[0]++/[1]+=icount` as plain RMWs (byte-equal
+  to the C), `icount2_advance`'s fast path inline with
+  `i64.atomic.load/store` on `icount2_ticks` (relaxed-atomic, matching
+  clang's lowering of `qatomic_*`; opcodes pinned by compiling a probe
+  with the same emcc flags and disassembling: `fe 11` load / `fe 18`
+  store), imports only for the rare tails — `w64_icount2_sync_now()`
+  (deadline crossed: BQL+`icount2_sync`, exactly `icount2_advance`'s
+  tail) and `w64_lockstep_account(icount)` gated by an `i32.load` of
+  the new `w64_ls_on` (fold off = one load, no import).  The fold's
+  lazy init moved from "first account call" to `w64_init` (the
+  emitted code skips the C path entirely, so nothing else would have
+  inited it — same point in boot, one TB earlier).
+- **Two wasm/clang traps on the way**: (1) `cpu-timers-internal.h`
+  needs a pile of prerequisites — an `icount2_w64_acct_addrs()`
+  accessor in icount2.c is cleaner than including it; (2) **integer
+  casts of addresses are NOT static-initializer constants in wasm**
+  (clang cannot fold `&x` → u64 into a data segment) — `w64_acct_addr[]`
+  is filled lazily at the first `tcg_out_tb_start` (translation of the
+  first TB precedes `w64_init`/first exec; sentinel `addr[0]==0` is
+  safe — linear-memory data starts above 0).
+- **Knob**: `W64_NOACCTINLINE=1` reverts to the imported
+  `w64_tb_account(icount)` (A/B + fallback); patch 0017 regenerated
+  (18 files).
+- **Gates**: op-suite 1156/1156 plain + `W64_NOACCTINLINE` +
+  `W64_BATCH_N=4`; lockstep 20M + 250M clean (exact budget stop, HARD
+  SRAM digests identical); full 2.5e9 gate run (see below).
+- **Perf**: bootbench v=2..7 **36.6/37.1 → 30.7/30.9 s (−16 %)**,
+  finalV@110 s 90.1/90.2 → 105.8/108.6 (2×2 interleaved, pair-wise
+  dominant).  **idlebench 9+9 interleaved: /dist median 76.4 s
+  (74.4–76.4), /dist-jit median 76.4 s (74.4–76.5) — parity with TCI
+  on the human metric** (yesterday: 78.4/78.4 vs 70.4/74.4).  Caveat
+  learned about the metric: tIdle quantizes to the 2 s sample grid
+  (3 consecutive matches ≥4 s apart); once the dists are within ~2 s
+  it saturates — the v@idle / insns@idle / tbs@idle fields (all
+  identical across dists: v≈51, 1.35e9, 246M) are the cross-check
+  that both backends reached the same guest state.
+- **Deploy hygiene + playbook updates from the previous session's TODO
+  landed as their own commit** (atomic tmp+rename deploys in both
+  build scripts; playbook now points at the wasm64 workstream and its
+  gates).
+- One `W64BATCHSKIP SOURCE-CORRUPT` fired during a bootbench (the
+  known flaky corruption, root cause open; the differential forensics
+  are in place — batch skipped, boot continued, numbers unaffected).
+- **Full 2.5e9 one-insn-per-tb gate on the slice-2 backend: CLEAN**
+  (298 HARD internal-SRAM digests + serial identical, exact budget
+  stop, wall ~815 s, renderer RSS flat ~1.9–2.0 GB).
+
+### Session 2026-09-11 (02:00) — tcgbench: the fast-iteration bench strategy
+
+- **New tool: [tests/tcgbench/](../tests/tcgbench/) + `tools/tcgbench.mjs`**
+  — a bare-metal versatilepb *perf* workload (same boot path as the
+  op-suite; zero page changes needed — `?suite=` is name-agnostic).
+  Six phases (alu/mul/ldst/ldrd/branch/mix ≈4.6G insns, 665M TB
+  entries) each aimed at one backend path; the runner timestamps each
+  phase's serial line (native: `-serial stdio` streamed; wasm:
+  `/serial.log` polled) and cross-checks per-phase checksums across
+  legs.  **Phone-firmware boots are now FINAL GATES ONLY** — the
+  iteration loop is tcgbench A/B → op-suite → lockstep windows →
+  (slice close) idlebench + 2.5e9 gate.
+- **What it immediately measured** (phase-3 backend, this host):
+  native-jit 2.44 s (~1900 MIPS) vs **dist-jit 8.20 s — 562 MIPS
+  sustained, 6.9 insns/TB** (checksum identical).  Knob A/B, per
+  phase (s): `W64_NOACCTINLINE=1` → total 25.0 (alu 3.35, branch
+  14.08 — the account import call cost ~25 ns × 665M entries =
+  **3.05×** on TB-dense compute); `W64_NOTLB=1` → total 24.7
+  (ldst 6.07, ldrd 10.45 — the inline TLB probe is **13–17×** on
+  memory-dense phases; alu/mul/branch untouched — clean phase
+  attribution).
+- **The big picture number this exposes**: 562 MIPS compute vs ~55
+  MIPS during phone boots — the backend's compute ceiling is ~10×
+  the boot throughput; the difference is the device-model + icount
+  tax, not the emitter.  Any further end-to-end lever must come from
+  that side (or from icount/deadline batching — cf. slice-2's
+  sync-path rarity).
+- Tool gotchas for the record: a `setTimeout` kill-timer keeps
+  node's event loop alive (`unref()` it or `tail` never sees EOF —
+  looked like a hang); native TCI on this workload takes minutes
+  (short branchy TBs are its worst case) so it is not a default leg.
 
 ### Session 2026-09-11 (early) — user regression report → real benchmark; corruption forensics hardened
 
@@ -288,6 +376,20 @@ the plan file itself carries the phase gates.
 
 ### Next (post-phase-2)
 
+- [ ] **Phase 3 slice 3 — candidates by measurement** (tcgbench + wprof):
+      `helper_lookup_tb_ptr` (3.7–4.1 % of vCPU in boot windows) via
+      direct import / `lookup_tb_ref`, and the cpu_exec_loop /
+      tcg_qemu_tb_exec dispatch slice (6–7 % + 2.5 %).  BUT note the
+      tcgbench finding: the backend's compute ceiling (562 MIPS) is
+      ~10× the boot throughput — the device/icount tax dominates
+      end-to-end now, so backend slices buy less than they used to;
+      weigh any slice against device-side work (which is qemu-core,
+      not the wasm64 backend, and helps /dist too).  div/rem N/A on
+      arm926.  tcgbench `branch` (4.55 s = the weakest phase vs native
+      ~1.3× slower than alu) says short-TB chaining still has headroom.
+- [x] **tcgbench** — landed (see session log): the fast-iteration A/B
+      loop; phone boots are final gates only.
+
 - [x] **Batching + eviction** — landed (see session log above).
 - [x] Re-run the full 3×2.5e9 gate on the batched backend: **3/3 clean**
       (298 HARD SRAM digests identical per run, serial identical, RSS
@@ -298,24 +400,29 @@ the plan file itself carries the phase gates.
       RSS plateau ~2.0GB).
 - [ ] **User-side repro of the /dist-jit 10x report** — same idlebench
       protocol on their machine (fresh reload of the S75v40lg1 boot);
-      this host shows /dist-jit ≈ /dist + 8–10 % to idle.  If it
-      reproduces, the hardened forensics capture the cause; if not, it
-      was environment (Chrome update/machine state/torn deploy).
-- [ ] **Deploy hygiene**: make wasm deploys atomic (deploy to a temp
-      name + `mv`, like serve.mjs's .gz sidecar) in the deploy scripts.
-- [ ] **Phase 3 slice 2 — pick by measurement, not by §4.7 assumption**:
-      1. late-window profile (`PROF_DELAY=115 node tools/wprof2.mjs …`)
-         — is the poll phase actually MMIO-bound?
-      2. if yes: MMIO fast-path at FlatView/TLB level (NOT memory.c —
-         rejected there on TCI);
-      3. regardless: `w64_tb_account` inline accounting (8.3 % of vCPU
-         in the early window — emit the deadline decrement in wasm,
-         import-call only on underflow) and direct imports for top
-         helpers, `lookup_tb_ref` (3.7 %).  div/rem N/A on arm926.
-- [ ] Interleaved idlebench A/B (playbook discipline: alternate runs,
-      2× each, pair-wise dominance) becomes the phase-3 acceptance
-      metric ("S75 idle screen < 90 s" gate — measure on S75v40lg1
-      with idlebench, not just v-window).
+      NOTE: since slice 2, this host shows /dist-jit ≈ /dist (median
+      76.4 s both) — the reference numbers for their re-run are
+      `tests/results/idlebench-latest.json`.  If it reproduces, the
+      hardened forensics capture the cause; if not, it was environment
+      (Chrome update/machine state/torn deploy).
+- [x] **Deploy hygiene** — atomic tmp+rename deploys in both build
+      scripts (committed with the playbook updates).
+- [x] **Phase 3 slice 2 — picked by measurement, not by §4.7
+      assumption**:
+      1. [x] late-window profile (`PROF_DELAY=115`): poll phase NOT
+         MMIO-bound — MMIO absent from the top in both windows ⇒ no
+         MMIO fast-path work (FlatView/TLB lever dead).
+      2. [x] `w64_tb_account` inline accounting — landed (see session
+         log): −16 % v-window, idlebench parity with TCI.
+      3. [ ] direct imports for top helpers / `lookup_tb_ref`
+         (3.7–4.1 %) — next slice candidate, plus the
+         cpu_exec_loop/tcg_qemu_tb_exec dispatch slice (6–7 % +
+         2.5 %).  div/rem N/A on arm926.
+- [x] Interleaved idlebench A/B as the phase-3 acceptance metric —
+      protocol proven (9+9 interleaved runs; the 2 s sample grid
+      saturates once the gap < ~2 s — v@idle/insns/tbs fields are the
+      same-guest-state cross-check).  Phase-3 gate "idle < 90 s":
+      met (median 76.4 s).
 - [ ] LRU cap on landed batches (live modules < 100) — not needed for
       the 2.5e9 gate (RSS plateau ~1.9GB, ~6k batch instances at the
       800k-TB working set); add when a longer soak or the full gate
@@ -351,6 +458,11 @@ cd tools && node lockstep-wasm.mjs --insns 2.5e9 --secs 2700  # full gate (~13mi
 
 # A/B boot bench (v=2..7 window; add DIST=dist-jit / dist-p1 / default=TCI)
 PORT=8094 DIST=dist-jit node tools/bootbench.mjs 110
+
+# fast-iteration backend bench (versatilepb, ~10 s/leg; per-phase + knobs)
+make -C tests/tcgbench install
+node tools/tcgbench.mjs                                  # native-jit + dist-jit
+EXTRA_Q="env=W64_NOACCTINLINE=1" node tools/tcgbench.mjs # knob A/B
 
 # end-to-end boot-to-idle benchmark (the human metric; deterministic protocol)
 PORT=8094 node tools/idlebench.mjs dist,dist-jit --runs 2   # ~2×80s + 2×80s

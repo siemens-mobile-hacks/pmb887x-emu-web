@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
---- a/accel/tcg/tb-maint.c	2026-09-11 00:10:32.421050505 +0000
+--- a/accel/tcg/tb-maint.c	2026-09-11 01:47:28.192563370 +0000
 +++ b/accel/tcg/tb-maint.c	2026-09-10 18:32:01.454742551 +0000
 @@ -34,6 +34,9 @@
  #include "tb-internal.h"
@@ -25,7 +25,7 @@ diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
      /* XXX: flush processor icache at this point if cache flush is expensive */
      qatomic_inc(&tb_ctx.tb_flush_count);
 diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
---- a/configs/meson/emscripten.txt	2026-09-11 00:10:32.373361414 +0000
+--- a/configs/meson/emscripten.txt	2026-09-11 01:47:28.147370412 +0000
 +++ b/configs/meson/emscripten.txt	2026-09-10 04:16:21.439029876 +0000
 @@ -13,9 +13,9 @@
  #                       from the asyncify import (libffi's ffi_call_js) and
@@ -40,7 +40,7 @@ diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
  
  [project options]
 diff --git a/include/accel/tcg/getpc.h b/include/accel/tcg/getpc.h
---- a/include/accel/tcg/getpc.h	2026-09-11 00:10:31.589709498 +0000
+--- a/include/accel/tcg/getpc.h	2026-09-11 01:47:27.406075430 +0000
 +++ b/include/accel/tcg/getpc.h	2026-09-10 02:45:12.222977042 +0000
 @@ -13,9 +13,12 @@
  #endif
@@ -57,7 +57,7 @@ diff --git a/include/accel/tcg/getpc.h b/include/accel/tcg/getpc.h
  # define GETPC() \
      ((uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0)))
 diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
---- a/include/tcg/tcg.h	2026-09-11 00:10:31.684071314 +0000
+--- a/include/tcg/tcg.h	2026-09-11 01:47:27.501457560 +0000
 +++ b/include/tcg/tcg.h	2026-09-10 02:45:12.222977042 +0000
 @@ -934,7 +934,7 @@
  #define TB_EXIT_IDXMAX    1
@@ -69,7 +69,7 @@ diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
  #else
  typedef uintptr_t tcg_prologue_fn(CPUArchState *env, const void *tb_ptr);
 diff --git a/meson.build b/meson.build
---- a/meson.build	2026-09-11 00:10:32.365091731 +0000
+--- a/meson.build	2026-09-11 01:47:28.141380564 +0000
 +++ b/meson.build	2026-09-10 02:44:50.615404259 +0000
 @@ -924,9 +924,8 @@
        error('Unsupported CPU @0@, try --enable-tcg-interpreter'.format(cpu))
@@ -91,8 +91,27 @@ diff --git a/meson.build b/meson.build
  endif
  config_host_data.set('CONFIG_TPM', have_tpm)
  config_host_data.set('CONFIG_TSAN', get_option('tsan'))
+diff --git a/system/icount2.c b/system/icount2.c
+--- a/system/icount2.c	2026-09-11 01:47:28.156479710 +0000
++++ b/system/icount2.c	2026-09-11 00:54:52.126560283 +0000
+@@ -129,6 +129,15 @@
+ 	return qatomic_read(&timers_state.icount2_ticks);
+ }
+ 
++/* wasm64 TCG backend: addresses of the icount2 state that emitted TB
++ * prologues advance inline (w64_acct_addr, tcg/wasm64/wasm64.c).  The
++ * emitter needs the addresses as plain integers at translation time
++ * and cannot include cpu-timers-internal.h for the struct. */
++void icount2_w64_acct_addrs(uintptr_t *ticks, uintptr_t *deadline) {
++	*ticks = (uintptr_t)&timers_state.icount2_ticks;
++	*deadline = (uintptr_t)&timers_state.icount2_deadline;
++}
++
+ #ifdef __EMSCRIPTEN__
+ /*
+  * wasm: mid-TB MMIO accounting (see io_prepare(), cputlb.c).  Called
 diff --git a/tcg/meson.build b/tcg/meson.build
---- a/tcg/meson.build	2026-09-11 00:10:32.051082318 +0000
+--- a/tcg/meson.build	2026-09-11 01:47:27.845469194 +0000
 +++ b/tcg/meson.build	2026-09-10 02:44:59.281633941 +0000
 @@ -22,6 +22,10 @@
    tcg_ss.add(files('tci.c'))
@@ -106,7 +125,7 @@ diff --git a/tcg/meson.build b/tcg/meson.build
  if host_os == 'linux'
    tcg_ss.add(files('perf.c'))
 diff --git a/tcg/tcg.c b/tcg/tcg.c
---- a/tcg/tcg.c	2026-09-11 00:10:32.060082588 +0000
+--- a/tcg/tcg.c	2026-09-11 01:47:27.851469397 +0000
 +++ b/tcg/tcg.c	2026-09-10 02:59:59.038321064 +0000
 @@ -118,6 +118,10 @@
  static void tcg_out_tb_start(TCGContext *s);
@@ -261,7 +280,7 @@ diff --git a/tcg/wasm64/tcg-target.c.inc b/tcg/wasm64/tcg-target.c.inc
 new file mode 100644
 --- /dev/null
 +++ b/tcg/wasm64/tcg-target.c.inc
-@@ -0,0 +1,2559 @@
+@@ -0,0 +1,2660 @@
 +/*
 + * Tiny Code Generator for QEMU — wasm64 target emitters.
 + *
@@ -2442,13 +2461,33 @@ new file mode 100644
 +/* module assembly                                                     */
 +/* ------------------------------------------------------------------ */
 +
++/* W64_NOACCTINLINE=1 disables the inline TB accounting (A/B measurement,
++ * debugging) — the prologue then calls the imported w64_tb_account */
++static bool w64_acct_inline(void)
++{
++    static int mode = -1;
++    if (mode < 0) {
++        mode = getenv("W64_NOACCTINLINE") == NULL;
++    }
++    return mode != 0;
++}
++
 +static void tcg_out_tb_start(TCGContext *s)
 +{
 +    static const uint8_t magic[8] = { 0, 'a', 's', 'm', 1, 0, 0, 0 };
-+    uint8_t acc_type, acc_imp, acc_uimp;
++    static const uint8_t p1[1] = { 0 };    /* (i32) */
++    uint8_t acc_type = 0, acc_imp = 0, acc_uimp = 0;
++    uint8_t sync_type, sync_imp, sync_uimp;
++    uint8_t ls_type, ls_imp, ls_uimp;
 +
 +    memset(&W, 0, sizeof(W));
 +    n_cf = 0;
++
++    /* lazy one-time init of the inline-accounting address table
++     * (translation of the first TB precedes w64_init/first exec) */
++    if (w64_acct_inline() && w64_acct_addr[0] == 0) {
++        w64_acct_init();
++    }
 +
 +    /* descriptor */
 +    stl_p(s->code_buf + W64_DESC_FIDX, 0);
@@ -2467,20 +2506,35 @@ new file mode 100644
 +        w64_add_type(3, p, 0);
 +    }
 +
-+    /* import 0: w64_tb_account(icount) — called at every TB entry
-+     * (dispatcher call or chain target), mirroring TCI's tci_tbhdr:
-+     * icount2 + diagnostics + the lockstep fold stay per-TB-entry
-+     * exact while TBs are chained.  Registered first so its function
-+     * index is deterministic (the prologue call below is the body's
-+     * first instruction). */
-+    {
-+        static const uint8_t p[1] = { 0 };  /* (i32) -> void */
-+        acc_type = w64_add_type(1, p, 0xff);
-+        acc_uimp = w64_union_type(1, p, 0xff);
++    /* TB accounting (phase 3): by default the prologue performs
++     * wasm_tb_account + icount2_advance's fast path INLINE (see
++     * w64_acct_inline below) and imports only the rare/conditional
++     * tails; W64_NOACCTINLINE=1 falls back to the single imported
++     * w64_tb_account(icount) call (A/B measurement, debugging).
++     * Registered first so their indices are deterministic (the
++     * prologue's calls are the body's first instructions). */
++    if (w64_acct_inline()) {
++        sync_type = w64_add_type(0, NULL, 0xff);          /* () -> () */
++        sync_uimp = w64_union_type(0, NULL, 0xff);
++        sync_imp = w64_import_idx((uint32_t)(uintptr_t)w64_icount2_sync_now,
++                                  sync_type);
++        sync_uimp = w64_union_import(
++            (uint32_t)(uintptr_t)w64_icount2_sync_now, sync_uimp);
++
++        ls_type = w64_add_type(1, p1, 0xff);            /* (i32) -> () */
++        ls_uimp = w64_union_type(1, p1, 0xff);
++        ls_imp = w64_import_idx((uint32_t)(uintptr_t)w64_lockstep_account,
++                                ls_type);
++        ls_uimp = w64_union_import(
++            (uint32_t)(uintptr_t)w64_lockstep_account, ls_uimp);
++    } else {
++        acc_type = w64_add_type(1, p1, 0xff);            /* (i32) -> () */
++        acc_uimp = w64_union_type(1, p1, 0xff);
++        acc_imp = w64_import_idx((uint32_t)(uintptr_t)w64_tb_account,
++                                 acc_type);
++        acc_uimp = w64_union_import((uint32_t)(uintptr_t)w64_tb_account,
++                                    acc_uimp);
 +    }
-+    acc_imp = w64_import_idx((uint32_t)(uintptr_t)w64_tb_account, acc_type);
-+    acc_uimp = w64_union_import((uint32_t)(uintptr_t)w64_tb_account,
-+                                acc_uimp);
 +
 +    /* body: [body-size LEB (patched)] [locals] [expr...] */
 +    s->code_ptr = s->code_buf + W64_BODY_OFF;
@@ -2493,10 +2547,76 @@ new file mode 100644
 +    w64_u8(s, 0x01); w64_u8(s, 0x7f);       /* i32: $scr32 */
 +    w64_u8(s, 0x03); w64_u8(s, 0x7e);       /* i64: $scr0..$scr2 */
 +
-+    /* prologue: w64_tb_account(tb->icount) */
-+    w64_const_i32(s, s->gen_tb->icount);
-+    w64_u8(s, 0x10);                        /* call */
-+    w64_callidx(s, acc_imp, acc_uimp);
++    /* prologue: TB accounting — inline fast path (default) or the
++     * imported w64_tb_account(icount) */
++    if (w64_acct_inline()) {
++        /* wasm_tb_stats[0]++ and [1] += icount (plain RMWs — exactly
++         * what wasm_tb_account compiles to; the fields are only ever
++         * written by this vCPU thread) */
++        w64_const_i64(s, (int64_t)w64_acct_addr[0]);
++        w64_u8(s, 0x29);  w64_memarg(s, 3, 0);        /* i64.load */
++        w64_const_i64(s, 1);
++        w64_u8(s, 0x7c);                              /* i64.add */
++        w64_local_set(s, W64_L_SCR0);
++        w64_const_i64(s, (int64_t)w64_acct_addr[0]);
++        w64_local_get(s, W64_L_SCR0);
++        w64_u8(s, 0x37);  w64_memarg(s, 3, 0);        /* i64.store */
++
++        w64_const_i64(s, (int64_t)w64_acct_addr[1]);
++        w64_u8(s, 0x29);  w64_memarg(s, 3, 0);
++        w64_const_i64(s, s->gen_tb->icount);
++        w64_u8(s, 0x7c);
++        w64_local_set(s, W64_L_SCR0);
++        w64_const_i64(s, (int64_t)w64_acct_addr[1]);
++        w64_local_get(s, W64_L_SCR0);
++        w64_u8(s, 0x37);  w64_memarg(s, 3, 0);
++
++        /* icount2_advance fast path: ticks += icount — atomic accesses,
++         * mirroring the qatomic_read/qatomic_set the C function emits
++         * (timers_state is read/written cross-thread) */
++        w64_const_i64(s, (int64_t)w64_acct_addr[2]);
++        w64_u8(s, 0xfe); w64_u8(s, 0x11);
++        w64_memarg(s, 3, 0);                          /* i64.atomic.load */
++        w64_const_i64(s, s->gen_tb->icount);
++        w64_u8(s, 0x7c);
++        w64_local_set(s, W64_L_SCR0);                /* new ticks */
++        w64_const_i64(s, (int64_t)w64_acct_addr[2]);
++        w64_local_get(s, W64_L_SCR0);
++        w64_u8(s, 0xfe); w64_u8(s, 0x18);
++        w64_memarg(s, 3, 0);                          /* i64.atomic.store */
++
++        /* if (deadline > 0 && new_ticks >= deadline)
++         *     w64_icount2_sync_now()   — the rare slow path */
++        w64_const_i64(s, (int64_t)w64_acct_addr[3]);
++        w64_u8(s, 0xfe); w64_u8(s, 0x11);
++        w64_memarg(s, 3, 0);
++        w64_local_set(s, W64_L_SCR1);                /* deadline */
++        w64_local_get(s, W64_L_SCR1);
++        w64_const_i64(s, 0);
++        w64_u8(s, 0x55);                              /* i64.gt_s */
++        w64_local_get(s, W64_L_SCR0);
++        w64_local_get(s, W64_L_SCR1);
++        w64_u8(s, 0x59);                              /* i64.ge_s */
++        w64_u8(s, 0x71);                              /* i32.and */
++        w64_blk_push(s, W64_BLK_IF, -1);
++        w64_u8(s, 0x10);                              /* call */
++        w64_callidx(s, sync_imp, sync_uimp);
++        w64_blk_pop(s);
++
++        /* if (w64_ls_on) w64_lockstep_account(icount) — the lockstep
++         * fold import, only when armed (normal boots: one i32.load) */
++        w64_const_i64(s, (int64_t)w64_acct_addr[4]);
++        w64_u8(s, 0x28);  w64_memarg(s, 2, 0);        /* i32.load */
++        w64_blk_push(s, W64_BLK_IF, -1);
++        w64_const_i32(s, s->gen_tb->icount);
++        w64_u8(s, 0x10);                              /* call */
++        w64_callidx(s, ls_imp, ls_uimp);
++        w64_blk_pop(s);
++    } else {
++        w64_const_i32(s, s->gen_tb->icount);
++        w64_u8(s, 0x10);                              /* call */
++        w64_callidx(s, acc_imp, acc_uimp);
++    }
 +
 +    w64_emit_loop_head(s);
 +}
@@ -3014,7 +3134,7 @@ diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
 new file mode 100644
 --- /dev/null
 +++ b/tcg/wasm64/wasm64.c
-@@ -0,0 +1,1386 @@
+@@ -0,0 +1,1435 @@
 +/*
 + * TCG wasm64 backend — runtime dispatch (tcg_qemu_tb_exec).
 + *
@@ -3037,11 +3157,16 @@ new file mode 100644
 +#include "qemu/osdep.h"
 +#include "tcg/tcg.h"
 +#include "system/cpu-timers.h"
++#include "qemu/main-loop.h"             /* bql_lock (w64_icount2_sync_now) */
 +#include "exec/cpu-common.h"
 +#include "exec/gdbstub.h"
 +#include "hw/core/cpu.h"
 +#include <emscripten.h>
 +#include "wasm64.h"
++
++/* icount2.c: addresses of the fields emitted TB prologues touch
++ * (cpu-timers-internal.h needs too many prerequisites to include here) */
++void icount2_w64_acct_addrs(uintptr_t *ticks, uintptr_t *deadline);
 +
 +__thread uintptr_t w64_tb_ptr;
 +
@@ -3214,13 +3339,50 @@ new file mode 100644
 +typedef uint32_t w64_run_fn(uintptr_t env, uintptr_t sp, uintptr_t tp,
 +                            uint32_t tidx);
 +
++static void w64_ls_init(void);
++
++/* Rare slow path for the inline TB-prologue accounting: the icount2
++ * virtual-clock deadline was crossed.  Mirrors icount2_advance()'s
++ * tail exactly — the ticks themselves were already advanced inline. */
++void w64_icount2_sync_now(void)
++{
++    bql_lock();
++    icount2_sync();
++    bql_unlock();
++}
++
 +static void w64_init(void)
 +{
 +    if (!w64_inited) {
 +        size_t sz = 16 + TCG_STATIC_CALL_ARGS_SIZE + TCG_STATIC_FRAME_SIZE;
 +        w64_frame = g_malloc0(sz);
 +        w64_inited = true;
++        /* Eager lockstep init: the inline TB accounting (below) tests
++         * w64_ls_on before any import call, so the fold must be armed
++         * before the first executed TB's prologue runs — this is the
++         * same point where the old lazy init (first w64_tb_account)
++         * fired, one TB earlier than execution. */
++        w64_ls_init();
 +    }
++}
++
++/* Addresses for the inline TB-prologue accounting (tcg_out_tb_start
++ * reads these at translation time; see wasm64.h).  Filled lazily by
++ * the emitter's first tcg_out_tb_start — wasm cannot fold integer casts
++ * of addresses into static initializers, and translation of the first
++ * TB happens before w64_init()/first exec. */
++uint64_t w64_acct_addr[5];
++
++void w64_acct_init(void)
++{
++    uintptr_t ticks, deadline;
++
++    icount2_w64_acct_addrs(&ticks, &deadline);
++    w64_acct_addr[0] = (uint64_t)(uintptr_t)&wasm_tb_stats[0];
++    w64_acct_addr[1] = (uint64_t)(uintptr_t)&wasm_tb_stats[1];
++    w64_acct_addr[2] = (uint64_t)ticks;
++    w64_acct_addr[3] = (uint64_t)deadline;
++    w64_acct_addr[4] = (uint64_t)(uintptr_t)&w64_ls_on;
 +}
 +
 +/* ------------------------------------------------------------------ */
@@ -3253,6 +3415,10 @@ new file mode 100644
 +    FILE *f;
 +};
 +static struct w64_ls_state LS;
++
++/* Mirror of LS.on for the emitted TB prologues (stable address, set
++ * once by w64_ls_init; the emitter embeds &w64_ls_on via w64_acct_addr). */
++uint32_t w64_ls_on;
 +
 +static uint64_t w64_ls_fnv(uint64_t h, const void *p, size_t n)
 +{
@@ -3411,6 +3577,7 @@ new file mode 100644
 +        return;
 +    }
 +    LS.on = 1;
++    w64_ls_on = 1;      /* emitted prologues: route to w64_lockstep_account */
 +    LS.period = 1ull << 16;
 +    LS.epoch = 1ull << 20;
 +    LS.meminsns = 1ull << 23;
@@ -3451,6 +3618,7 @@ new file mode 100644
 +    if (!LS.f) {
 +        fprintf(stderr, "w64 lockstep: cannot open /lockstep.log\n");
 +        LS.on = 0;
++        w64_ls_on = 0;
 +        return;
 +    }
 +    fprintf(LS.f, "C period=%llu epoch=%llu meminsns=%llu from=%llu to=%llu mem=",
@@ -3466,8 +3634,9 @@ new file mode 100644
 +    fflush(LS.f);
 +}
 +
-+/* called from the dispatcher before each TB executes */
-+static void w64_lockstep_account(unsigned insns)
++/* called from the emitted TB prologue (import, only when w64_ls_on) —
++ * and from w64_tb_account (the W64_NOACCTINLINE fallback) */
++void w64_lockstep_account(unsigned insns)
 +{
 +    if (!LS.inited) {
 +        w64_ls_init();
@@ -4405,7 +4574,7 @@ diff --git a/tcg/wasm64/wasm64.h b/tcg/wasm64/wasm64.h
 new file mode 100644
 --- /dev/null
 +++ b/tcg/wasm64/wasm64.h
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,173 @@
 +/*
 + * TCG wasm64 backend — shared definitions (tcg-target.c.inc + wasm64.c).
 + *
@@ -4453,9 +4622,12 @@ new file mode 100644
 + * (tb->tc.ptr + jmp_reset_offset[n]), TCI-style; the emitted code reads
 + * it at runtime and tail-calls the target through the shared funcref
 + * table ("e"/"t") when linked, else falls through to the exit_tb that
-+ * follows.  TBs entered via a chain still run their prologue's imported
-+ * w64_tb_account(icount) call, so accounting and the lockstep fold stay
-+ * per-TB-entry exact.  The chain also refuses targets whose descriptor
++ * follows.  TBs entered via a chain still run their prologue's TB
++ * accounting (inline by default, phase 3: wasm_tb_stats + the icount2
++ * fast path emitted directly, imports only for the deadline-crossed
++ * sync and the lockstep fold; W64_NOACCTINLINE=1 reverts to the
++ * imported w64_tb_account(icount)), so accounting and the lockstep
++ * fold stay per-TB-entry exact.  The chain also refuses targets whose descriptor
 + * fidx is 0 (evicted batch member — v1 only happens across tb_flush,
 + * the check keeps a future LRU cap sound).
 + *
@@ -4538,8 +4710,35 @@ new file mode 100644
 +
 +/* runtime (wasm64.c), used by the emitters */
 +uint32_t w64_alloc_tidx(void);   /* next shared-chain-table index (>=1) */
-+void w64_tb_account(unsigned insns); /* per-TB-entry accounting import */
++void w64_tb_account(unsigned insns); /* per-TB-entry accounting import
++                                       * (W64_NOACCTINLINE=1 fallback) */
 +extern uint32_t w64_chain_stop;  /* lockstep budget reached: stop chaining */
++
++/* Inline TB-prologue accounting (phase 3): addresses of the state the
++ * emitted prologue touches directly, read at translation time.
++ * Order: [0]=wasm_tb_stats[0] (tbs), [1]=wasm_tb_stats[1] (insns),
++ * [2]=&timers_state.icount2_ticks, [3]=&timers_state.icount2_deadline,
++ * [4]=&w64_ls_on. */
++extern uint64_t w64_acct_addr[5];
++
++/* One-time lazy fill of w64_acct_addr (called from the emitter's first
++ * tcg_out_tb_start — translation of the first TB precedes first exec). */
++void w64_acct_init(void);
++
++/* Rare slow path from the inline prologue: the icount2 virtual-clock
++ * deadline was crossed (mirrors icount2_advance's tail — BQL + sync). */
++void w64_icount2_sync_now(void);
++
++/* Lockstep fold accounting (emitted prologue calls it only when armed;
++ * exported for the emitter's import registration). */
++void w64_lockstep_account(unsigned insns);
++
++/* 1 once w64_ls_init() armed the lockstep fold; the emitted prologue
++ * tests it via w64_acct_addr[4] to skip the import entirely when off. */
++extern uint32_t w64_ls_on;
++
++/* wasm_tb_stats as [tbs, insns] (ui/wasm.c); see w64_acct_addr above. */
++extern uint64_t wasm_tb_stats[2];
 +
 +/* batching API (wasm64.c) — called from tcg-target.c.inc */
 +uint8_t w64_union_type(unsigned np, const uint8_t *p, uint8_t ret);
@@ -4549,3 +4748,44 @@ new file mode 100644
 +void w64_batch_flush(void);     /* tb_flush teardown */
 +
 +#endif /* TCG_WASM64_H */
+diff --git a/ui/wasm.c b/ui/wasm.c
+--- a/ui/wasm.c	2026-09-11 01:47:28.182375967 +0000
++++ b/ui/wasm.c	2026-09-11 00:51:27.864013438 +0000
+@@ -144,29 +144,28 @@
+  * Per-TB execution statistics (diagnostics): fed once per executed TB
+  * from the TCI interpreter's TB header op (see the wasm-tci-tb-chaining
+  * patch); wasm_tbs()/wasm_insns() are what the page and the benchmark
+- * tooling read as the guest-throughput metric.
++ * tooling read as the guest-throughput metric.  Non-static array
++ * [tbs, insns]: the wasm64 TCG backend inlines these increments into
++ * TB prologues (w64_acct_addr, tcg/wasm64/).
+  */
+-static struct {
+-    uint64_t tbs;
+-    uint64_t insns;
+-} wasm_tb_stats;
++uint64_t wasm_tb_stats[2];
+ 
+ void wasm_tb_account(unsigned insns)
+ {
+-    wasm_tb_stats.tbs++;
+-    wasm_tb_stats.insns += insns;
++    wasm_tb_stats[0]++;
++    wasm_tb_stats[1] += insns;
+ }
+ 
+ EMSCRIPTEN_KEEPALIVE
+ uint64_t wasm_tbs(void)
+ {
+-    return wasm_tb_stats.tbs;
++    return wasm_tb_stats[0];
+ }
+ 
+ EMSCRIPTEN_KEEPALIVE
+ uint64_t wasm_insns(void)
+ {
+-    return wasm_tb_stats.insns;
++    return wasm_tb_stats[1];
+ }
+ 
+ /* Diagnostics: memory-subsystem counters (see include/qemu/wasm-diag.h). */
