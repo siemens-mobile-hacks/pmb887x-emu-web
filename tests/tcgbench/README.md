@@ -89,7 +89,16 @@ RUNS=3 node tools/tcgbench.mjs                           # medians
 |---|---|---|---|
 | native-jit | 4.41 s | ~1200 | — |
 | dist-jit (wasm64) | 13.7 s | 390 | 7.4 |
+| dist (TCI page) | 101.0 s | 53 | — |
 | dist-jit + icount shift=3 | 13.2 s | 405 | 7.5 |
+
+**Compute: wasm64 is 7.4× the TCI page on the bench total** (alu 18×,
+mul/ldrd 11.7×, ldst 10×, branch 6.9×, mix 10.3×) — the plan's
+"compute 3–10× TCI" landed at the top of its range.  **MMIO:
+1.07×/1.2× (mmiopoll/mmiow)** — the dispatch tax is shared qemu-core
+cost, identical across wasm backends; that is why the device-bound
+phone boot sits at TCI parity (idlebench) while the backend holds a
+~10× compute reserve.
 
 ### The device/icount tax (ns per access, mirrors)
 
@@ -97,18 +106,22 @@ RUNS=3 node tools/tcgbench.mjs                           # medians
 |---|---|---|---|---|---|
 | native-jit | 1.5 | 225.8 | 166 | **224 ns** | 151× |
 | dist-jit | 4.7 | 590.2 | 379 | **586 ns** | 126× |
+| dist (TCI) | 52.8 | 631.5 | 454 | **579 ns** | 12× |
 | dist-jit +icount | 4.7 | 530.3 | 303 | **526 ns** | 113× |
 
 Conclusions pinned by these numbers:
 
-- **The MMIO dispatch tax is ~2.6× worse on wasm64 than native JIT**
-  (586 vs 224 ns/access) — a pure qemu-core/emscripten path cost (TLB
-  miss → `*_mmu` helper import → memory.c FlatView dispatch → device
-  callback), independent of the backend's compute speed. A phone
-  firmware polling at ~30% density would burn ~18% of its time in this
-  path on wasm64. This is the FlatView/TLB-cached-callbacks lever (the
-  one §4.7 pointed at — but it must sit in qemu-core where it also
-  helps /dist, NOT in memory.c where TCI already rejected it).
+- **The MMIO dispatch tax is shared qemu-core cost**: wasm64 ≈ TCI
+  (590 vs 632 ns, 7 % apart) while both are ~2.6× the native JIT —
+  the multiplier is the wasm/emscripten leg of the TLB-miss → `*_mmu`
+  helper → memory.c FlatView dispatch → device callback path,
+  independent of the backend's compute speed (18× on alu, 1.07× on
+  mmiopoll).  A phone firmware polling at ~30 % density would burn
+  ~18 % of its time in this path on wasm64.  This is the
+  FlatView/TLB-cached-callbacks lever (the one §4.7 pointed at — but
+  it must sit in qemu-core where it also helps /dist, NOT in
+  memory.c where TCI already rejected it), and the mirrors are its
+  clean before/after metric.
 - **icount shift=3 is free on this workload post-slice-2** (390 → 405
   MIPS, within noise; insns/TB unchanged 7.4 → 7.5): with inline TB
   accounting the stock model costs nothing on short-TB code, and the

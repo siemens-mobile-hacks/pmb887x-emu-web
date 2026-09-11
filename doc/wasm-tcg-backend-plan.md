@@ -27,6 +27,16 @@ slice 2 — inline TB accounting — landed the same day**: v=2..7 window
 −16 % (36.6→30.7 s vs the import-call fallback), and on the idlebench
 human metric /dist-jit is now statistically indistinguishable from
 /dist (median 76.4 s both, 9+9 interleaved runs; was +8–10 % behind).
+2026-09-11 (latest): **tcgbench landed — the fast-iteration perf bench
+on versatilepb, and the device/icount-tax mirrors priced the remaining
+gap**: compute 562 MIPS sustained = **7.4× the TCI page** on the bench
+(the verdict's "compute 3–10×" hit the top of its range; per-phase up
+to 18×), but **1.07× on MMIO-dense phases** — the dispatch tax (~590 ns
+wasm vs ~224 native vs ~632 TCI) is shared qemu-core cost, so the
+device-bound phone boot sits at TCI parity on a ~10× compute reserve it
+cannot spend.  icount shift=3 measured FREE on short-TB workloads now
+that TB accounting is inline.  Phone-firmware boots are final gates
+only from here on.
 Note: the "JIT ~1.3–2.3x" numbers in
 [optimization-playbook.md](optimization-playbook.md) belong to the
 discarded wasm32/ktock port, not this backend.)
@@ -161,11 +171,23 @@ exit to C by return code only.**
    `EXIT_ICOUNT` when exhausted. The stock `shift=3,sleep=off` model stays
    byte-for-byte identical (deadlines are instruction-proportional —
    correctness must not depend on this backend at all).
-7. **MMIO fast-path follow-up** (separate from the backend): at ≥4x guest
-   speed the ~1–2 µs/access device dispatch becomes ~30–40% of the profile
-   (this firmware polls constantly). Per-region callback caching in the
-   FlatView, in the spirit of 0016, is the next lever after the backend
-   lands.
+7. **MMIO / device-dispatch follow-up** (separate from the backend;
+   re-scoped by measurement 2026-09-11).  The original premise — "at ≥4x
+guest speed, device dispatch becomes ~30–40 % of the profile" — is
+**dead at current speeds**: MMIO dispatch is absent from the top of both
+boot-window profiles (early and late).  What the tcgbench tax mirrors
+pinned instead: a single MMIO access costs **~590 ns on wasm64,
+~632 ns on the TCI page, ~224 ns on the native JIT** (RAM access:
+4.7 / 52.8 / 1.5 ns) — the wasm64-vs-TCI delta on MMIO is ~7 %
+(shared path), while the ~2.6× native-vs-wasm multiplier sits in the
+whole TLB-miss → `*_mmu` helper → memory.c FlatView →
+device-callback path, independent of backend compute speed.  So the
+lever exists but lives in **qemu-core** (per-region callback caching in
+the FlatView, in the spirit of 0016 — where it would also help /dist
+and native), NOT in memory.c (rejected there on TCI) and NOT in the
+wasm64 emitter.  It is not the next thing to build — boot profiles say
+so — but tcgbench's `rampoll`/`mmiopoll` mirrors are its clean
+before/after metric the day it is.
 
 ## 5. Plan — phases, gates, effort
 
@@ -174,9 +196,10 @@ Tooling: `tools/bootbench.mjs` (A/B windows), `tools/rawspeed.mjs`,
 the op-suite runner (`tools/tcgisa.mjs` + `scripts/run-tcg-isa.sh`,
 below), the lockstep harness, and **`tests/tcgbench` +
 `tools/tcgbench.mjs` (2026-09-11: the fast-iteration perf bench on
-versatilepb — per-phase backend attribution in ~10 s/leg; phone boots
-are final gates only)**. Every phase ends boot-clean on S75 *and*
-LG (no-icount).
+versatilepb — per-phase backend attribution in ~10 s/leg; doubles as
+the device/icount-tax bench via `rampoll`/`mmiopoll` mirrors and
+`ICOUNTS=0,1`; phone boots are final gates only)**. Every phase ends
+boot-clean on S75 *and* LG (no-icount).
 
 - **Phase 0a — guest op-suite (quick per-op debugging; the lesson of the
   failed attempt made cheap).** A bare-metal ARM926EJ-S test image,
@@ -501,6 +524,53 @@ LG (no-icount).
          classic next backend lever.  Weigh them against the tcgbench
          finding below: compute ceiling ≈562 MIPS ≈10× boot throughput
          — the device/icount tax now dominates end-to-end.
+  - **Status 2026-09-11 (latest): tcgbench landed — fast-iteration A/B
+     + the device/icount tax priced; the phase-3 gate honestly
+     re-scoped.**  [tests/tcgbench/](../tests/tcgbench/) +
+     `tools/tcgbench.mjs` (see the tooling line above) — the iteration
+     loop from here on is **tcgbench → op-suite → lockstep windows →
+     idlebench + full 2.5e9 gate at slice close**; phone boots are
+     final gates only.  Findings that reframed the remaining work:
+    1. **Compute ceiling: 562 MIPS sustained, 7.4× the TCI page** —
+       the 5.3G-insn bench: native JIT 4.4 s, wasm64 13.7 s, TCI page
+       101.0 s (per-phase wasm64-vs-TCI: alu 18×, mul/ldrd 11.7×, ldst
+       10×, branch 6.9×, mix 10.3× — the original verdict's "compute
+       3–10× TCI" hit the top of its range).  But **mmiopoll is 1.07×
+       and mmiow 1.2×** — the MMIO dispatch tax is shared qemu-core
+       cost, identical across wasm backends; the phone boot (device-
+       bound) therefore sees parity while sitting on a ~10× compute
+       reserve it cannot spend.  The knob A/B that validated the
+       bench: `W64_NOACCTINLINE=1` → 3.05× slower (the pre-slice-2
+       import call cost ~25 ns × 665M TB entries), `W64_NOTLB=1` →
+       ldst/ldrd 13–17× slower — both exactly the slices that landed,
+       with clean phase attribution.
+    2. **Device dispatch tax, measured** (instruction-shape mirror
+       phases over SRAM vs 4 inert MMIO regs, verified in disassembly):
+       **590 ns/access wasm64 vs 224 native JIT vs 632 TCI page** (the
+       2.6× vs native is the emscripten/qemu-core path — shared by both
+       wasm backends, hence the 1.07× wasm64-vs-TCI on mmiopoll; RAM
+       4.7 vs 1.5 vs 52.8 ns; MMIO write 379/166/454).  A qemu-core
+       lever with a clean before/after metric now (see §4.7) — but not
+       next, per the boot profiles.
+    3. **icount shift=3 is FREE on short-TB workloads post-slice-2**
+       (390 → 405 MIPS, within noise; TB sizes uncapped far from
+       deadlines; v-clock sanity check confirms the model engages) —
+       the stock timing model costs nothing measurable outside timer
+       storms, which this workload can't generate (no guest timers
+       armed on versatilepb — that slice of the boot tax still needs
+       wprof on real firmware).
+    4. **Phase-3 gate, honest status**: "S75 idle < 90 s" is met
+       (median 76.4 s, = TCI parity); "≥3× end-to-end vs the TCI dist"
+       is **not achievable by backend work alone** — the backend is
+       already at TCI parity on the human metric while holding a ~10×
+       compute reserve the boot can't spend.  Remaining end-to-end
+       levers sit in qemu-core (device dispatch path, timer storms,
+       main-loop/BQL overheads — the wprof mailbox/futex-wake ~8 %)
+       where they help every backend; the emitter-side slices
+       (`lookup_tb_ref`, dispatch loop) are now tail work by
+       comparison.  Re-scope: phase 3 closes on the parity + gate-green
+       + tooling above; the “≥3× end-to-end” ambition moves to a new
+       qemu-core workstream with tcgbench/wprof as its meters.
 - **Phase 4 — robustness.** SMC invalidation storms (flash unlock/write
   cycles), LG no-icount path, table-index recycling over 10⁶ translations,
   deterministic module lifecycle (no FinalizationRegistry), Chrome + Firefox
@@ -528,8 +598,14 @@ contain it), not the wasm platform.
   Chromium-class browsers for wasm64+threads).
 - Asyncify interaction: TB modules are never asyncified; the vCPU thread
   yields only via return-code exits → the 0009 futex wait path stays in C.
-- End-to-end ceiling may be MMIO-bound at ~2x if phase-3 MMIO fast-path
-  work doesn't land — keep it in scope as the immediate follow-up.
+- End-to-end ceiling: originally feared "MMIO-bound at ~2x"; now
+  measured (2026-09-11) — MMIO dispatch is absent from the top of both
+  boot-window profiles, the per-access tax is 586 ns (2.6× native JIT,
+  §4.7), and the boot rate (~55 MIPS) sits ~10× under the backend's
+  compute ceiling (562 MIPS).  The ceiling is the device-model + icount
+  machinery in qemu-core; fixing it helps every backend and has a clean
+  meter (tcgbench mirrors + wprof), but it is separate work from this
+  backend plan.
 
 ## 7. Non-goals
 

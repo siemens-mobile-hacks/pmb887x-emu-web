@@ -110,6 +110,18 @@ the plan file itself carries the phase gates.
   multiplier is itself a measurable qemu-core target
   (FlatView/TLB-cached callbacks; NOT memory.c — rejected there on
   TCI, and this bench gives it a clean before/after metric now).
+- **The TCI page reference leg landed last (101.0 s total)** and
+  completes the story: **wasm64 is 7.4× TCI on the bench total**
+  (alu 18×, mul/ldrd 11.7×, ldst 10×, branch 6.9×, mix 10.3× — the
+  plan verdict's "compute 3–10× TCI" hit the top of its range) but
+  **1.07× on mmiopoll** (590 vs 632 ns/access — the dispatch tax is
+  shared qemu-core cost, ~2.6× native on BOTH wasm backends).  That
+  is the whole phase-3 story in one table: the device-bound phone
+  boot sits at TCI parity (idlebench) because its MMIO cost is
+  backend-independent, while the backend holds a ~10× compute
+  reserve the boot cannot spend.  End-to-end gains from here are
+  qemu-core work (dispatch path, timer storms, main-loop/BQL) that
+  helps /dist as much as /dist-jit.
 
 ### Session 2026-09-11 (early) — user regression report → real benchmark; corruption forensics hardened
 
