@@ -16,7 +16,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/versions.env"
-SRC="$ROOT/build/qemu"
+SRC="$ROOT/pmb887x-emu/qemu"
 WT="$ROOT/build/qemu-native"
 BUILD="$ROOT/build/qemu-native-tci-build"
 

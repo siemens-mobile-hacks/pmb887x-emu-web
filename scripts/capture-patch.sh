@@ -1,5 +1,5 @@
 #!/bin/bash
-# Capture uncommitted C edits from build/qemu into patches/ so that
+# Capture uncommitted C edits from pmb887x-emu/qemu into patches/ so that
 # scripts/build-qemu.sh (which hard-resets the clone to the pinned rev)
 # cannot lose iteration work, and other machines can reproduce the tree.
 #
@@ -12,7 +12,7 @@
 set -euo pipefail
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$WEB_DIR/versions.env"
-QEMU="$WEB_DIR/build/qemu"
+QEMU="$WEB_DIR/pmb887x-emu/qemu"
 PATCHES="$WEB_DIR/patches"
 NAME="${1:-wip}"
 
@@ -21,7 +21,7 @@ NAME="${1:-wip}"
 REV="$(git -C "$QEMU" rev-parse HEAD)"
 PIN="$(git -C "$QEMU" rev-parse "$QEMU_PMB887X_REV^{commit}" 2>/dev/null || true)"
 [ "$REV" = "$PIN" ] || [ "${FORCE:-0}" = "1" ] ||
-  { echo "build/qemu is at $REV, versions.env pins $QEMU_PMB887X_REV — refusing (FORCE=1 to override)" >&2; exit 1; }
+  { echo "pmb887x-emu/qemu is at $REV, versions.env pins $QEMU_PMB887X_REV — refusing (FORCE=1 to override)" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
 cleanup() {
@@ -76,7 +76,7 @@ while IFS= read -r line; do
 done < <(git -C "$QEMU" status --porcelain -uall)
 
 if ! grep -q "^diff --git" "$TMP/wip.patch"; then
-  echo "capture-patch: no uncommitted changes in build/qemu beyond patches/ (nothing to do)"
+  echo "capture-patch: no uncommitted changes in pmb887x-emu/qemu beyond patches/ (nothing to do)"
   exit 0
 fi
 

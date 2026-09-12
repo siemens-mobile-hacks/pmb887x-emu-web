@@ -1,31 +1,25 @@
 #!/bin/bash
-# Ensure the pinned qemu revision exists in build/qemu (clone if needed).
-#
-# The pinned QEMU_PMB887X_REV may live on a fork branch
-# (QEMU_PMB887X_ALT_REPO/BRANCH, see versions.env); fetch it explicitly
-# when origin does not have the commit.
+# Ensure the qemu source tree is ready: the pmb887x-emu meta-repo is
+# checked out at the repo root as pmb887x-emu/ (a submodule of this
+# repo), and its qemu submodule is checked out at the pinned revision
+# (the wasm-patches branch tip, see versions.env). All wasm/tci patches
+# are committed on that branch — nothing is applied from patches/ here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/versions.env"
 
-SRC="${1:-$ROOT/build/qemu}"
+EMU="$ROOT/pmb887x-emu"
+QEMU="$EMU/qemu"
 
-if [ ! -d "$SRC/.git" ]; then
-  git clone "$QEMU_PMB887X_REPO" "$SRC"
+if [ ! -e "$EMU/.git" ]; then
+  echo "pmb887x-emu missing — run: git submodule update --init pmb887x-emu" >&2
+  exit 1
 fi
-cd "$SRC"
-git fetch --all --quiet 2>/dev/null || true
+git -C "$EMU" submodule update --init qemu
 
-if ! git cat-file -e "$QEMU_PMB887X_REV^{commit}" 2>/dev/null; then
-  if [ -n "${QEMU_PMB887X_ALT_REPO:-}" ]; then
-    echo "qemu: $QEMU_PMB887X_REV not on $QEMU_PMB887X_REPO — fetching $QEMU_PMB887X_ALT_REPO ($QEMU_PMB887X_ALT_BRANCH)"
-    git remote add alt "$QEMU_PMB887X_ALT_REPO" 2>/dev/null || git remote set-url alt "$QEMU_PMB887X_ALT_REPO"
-    git fetch alt "$QEMU_PMB887X_ALT_BRANCH" --quiet
-    git cat-file -e "$QEMU_PMB887X_REV^{commit}"  # verify
-  else
-    echo "qemu: revision $QEMU_PMB887X_REV not found" >&2
-    exit 1
-  fi
+if [ "$(git -C "$QEMU" rev-parse HEAD)" != "$QEMU_PMB887X_REV" ]; then
+  git -C "$QEMU" checkout -q -B "$QEMU_PMB887X_BRANCH" "$QEMU_PMB887X_REV" 2>/dev/null \
+    || git -C "$QEMU" checkout -q -f "$QEMU_PMB887X_REV"
 fi
-echo "qemu source ready: $SRC @ $QEMU_PMB887X_REV"
+echo "qemu source ready: $QEMU @ $QEMU_PMB887X_REV"

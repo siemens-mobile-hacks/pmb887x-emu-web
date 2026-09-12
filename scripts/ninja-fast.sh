@@ -4,7 +4,7 @@
 # TCI=1 targets the TCG-interpreter build instead (build/qemu-wasm ->
 # site/dist). Skips the tree reset/patch/reconfigure that
 # scripts/build-qemu.sh does; use it while iterating on files already
-# patched into build/qemu.
+# committed on the qemu wasm-patches branch (pmb887x-emu/qemu submodule).
 #
 # With no arguments: builds qemu-system-arm.js and DEPLOYS the emscripten
 # artifacts to $WEB_DIST (default site/dist-jit/, TCI=1: site/dist/) so the

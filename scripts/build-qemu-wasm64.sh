@@ -8,8 +8,8 @@
 #
 # Prereqs (already present in this tree):
 #   - build/deps/emsdk (emsdk env + wasm64 sysroot under build/deps/target)
-#   - build/qemu checked out @ b31b98fe1e with patches/ applied
-#     (0001-0018; scripts/build-qemu.sh applies the whole series —
+#   - pmb887x-emu/qemu (submodule) on the wasm-patches branch (all patches
+#     committed); scripts/build-qemu.sh initializes it —
 #     0017 is the wasm64 backend this script builds, 0018 the cputlb
 #     MMIO dispatch fix both engines share)
 set -euo pipefail
@@ -21,7 +21,7 @@ export CPATH="$ROOT/build/deps/target/include"
 export PKG_CONFIG_PATH="$ROOT/build/deps/target/lib/pkgconfig"
 
 BUILD=build/qemu-wasm64
-SRC=build/qemu
+SRC=pmb887x-emu/qemu
 
 if [ ! -f "$BUILD/build.ninja" ] || [ ! -f "$BUILD/meson-private/coredata.dat" ]; then
   echo "== configuring $BUILD"
@@ -51,7 +51,7 @@ fi
 # regresses it +26 %), so this override is wasm64-only and is applied here
 # rather than in the shared configs/meson/emscripten.txt.  Absolute path so
 # meson's compile probes (run from temp dirs on a reconfigure) find the list.
-ONLY="$ROOT/build/qemu/configs/meson/asyncify-only.txt"
+ONLY="$ROOT/pmb887x-emu/qemu/configs/meson/asyncify-only.txt"
 LA="['-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']"
 # qom_cast_debug: OBJECT_CHECK() casts assert the QOM type on every call —
 # the display path (lcd_transfer, the LCD/SSI pin handlers) does that per

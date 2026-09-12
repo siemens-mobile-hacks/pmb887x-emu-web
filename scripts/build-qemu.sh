@@ -1,8 +1,9 @@
 #!/bin/bash
 # Build qemu-system-arm (pmb887x) as WebAssembly + assemble dist.
 #
-# Clones the pinned qemu-pmb887x revision into build/qemu (pristine
-# upstream + patches/*.patch), then builds:
+# Uses the pmb887x-emu/qemu submodule at the pinned rev (the
+# wasm-patches branch — all patches committed there; previously a
+# pristine clone + patches/*.patch), then builds:
 #   default: the wasm64 TCG backend -> site/dist-jit/ (the page default)
 #   TCI=1 : additionally the TCG-interpreter dist -> site/dist/ (the
 #           comparison baseline, reachable as ?dist=dist; every board
@@ -27,38 +28,18 @@ export CPATH="$TARGET/include"
 export PKG_CONFIG_PATH="$TARGET/lib/pkgconfig"
 export EM_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
 
-# --- qemu source: pinned clone + patches ---
-bash "$WEB_DIR/scripts/fetch-qemu.sh" "$BUILD/qemu"
+# --- qemu source: pmb887x-emu/qemu submodule (patches committed on the
+# wasm-patches branch, see versions.env) ---
+QEMU_SRC="$WEB_DIR/pmb887x-emu/qemu"
+bash "$WEB_DIR/scripts/fetch-qemu.sh"
 # optional teakra submodule (used by older qemu-pmb887x trees; the current
 # tree has its own native DSP). HTTPS rewrite like the sie-mcp Dockerfile.
-if grep -q 'subprojects/teakra' "$BUILD/qemu/.gitmodules" 2>/dev/null; then
-  (cd "$BUILD/qemu" \
+if grep -q 'subprojects/teakra' "$QEMU_SRC/.gitmodules" 2>/dev/null; then
+  (cd "$QEMU_SRC" \
     && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
     && git submodule update --init --recursive --depth 1 \
     && (cd subprojects/teakra && git checkout -q -f HEAD))
 fi
-cd "$BUILD/qemu"
-if [ -e tcg/wasm32.c ] || [ -n "$(git status --porcelain -- tcg/wasm32.c tcg/wasm32 2>/dev/null)" ]; then
-  echo "REFUSING to reset the qemu tree: uncommitted wasm32 draft work present." >&2
-  echo "  (re-commit patches/0005 first, or delete tcg/wasm32* to force)" >&2
-  exit 1
-fi
-git fetch --all --quiet 2>/dev/null || true
-git checkout -q -- . 2>/dev/null || true
-# stale nested repo from older trees (teakra) blocks clean checkouts
-rm -rf "$BUILD/qemu/subprojects/teakra"
-git checkout -q -f "$QEMU_PMB887X_REV"
-git reset -q --hard "$QEMU_PMB887X_REV"
-git clean -qfd
-git apply --check "$WEB_DIR"/patches/*.patch 2>/dev/null || true
-for p in "$WEB_DIR"/patches/*.patch; do
-  if git apply --check "$p" 2>/dev/null; then
-    echo "applying $(basename "$p")"
-    git apply "$p"
-  else
-    echo "skip $(basename "$p") (already applied?)"
-  fi
-done
 
 # --- board configs from bsp (pinned rev + patches/bsp workarounds) ---
 bash "$WEB_DIR/scripts/sync-bsp.sh"
@@ -87,7 +68,7 @@ BUILD_DIR="$BUILD/qemu-wasm"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-emconfigure "$BUILD/qemu/configure" \
+emconfigure "$QEMU_SRC/configure" \
   --static --cpu=wasm64 \
   --target-list=arm-softmmu \
   --without-default-features \

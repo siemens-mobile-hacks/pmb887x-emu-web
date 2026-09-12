@@ -1,3 +1,4 @@
 [submodule "pmb887x-emu"]
 	path = pmb887x-emu
 	url = https://github.com/siemens-mobile-hacks/pmb887x-emu
+	branch = wasm-patches
