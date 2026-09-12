@@ -1,5 +1,9 @@
 #!/bin/bash
-# Switch qemu to a given patch-set configuration and rebuild+deploy.
+# LEGACY (patch-file era, before 2026-09-12): switch qemu to a given
+# patch-set configuration and rebuild+deploy. The pinned submodule rev
+# already contains every patch, so patches/*.patch no longer apply to it;
+# use `git -C qemu revert`/`checkout` of individual commits instead. Kept
+# for the patch-isolation study in doc/optimization-sessions.md.
 #   switch-test.sh PRISTINE            reset to pinned rev, no patches
 #   switch-test.sh FULL                apply patches/*.patch
 #   switch-test.sh MINUS:NNNN          apply all patches except NNNN

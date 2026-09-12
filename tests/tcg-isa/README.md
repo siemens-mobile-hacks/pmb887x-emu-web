@@ -3,7 +3,7 @@
 The bare-metal ARM926EJ-S test image from
 [doc/wasm-tcg-backend-plan.md](../../doc/wasm-tcg-backend-plan.md) §5
 phase 0a: it exercises the guest instruction classes that map onto the
-TCG ops the future wasm64 backend must implement, asserts
+TCG ops the wasm64 backend implements, asserts
 oracle-computed `(value, NZCV)` pairs and *dumps* every computed value —
 one stream, three uses:
 
@@ -11,7 +11,8 @@ one stream, three uses:
    exact op class + operands when something diverges;
 2. **cross-backend diffing** — the `# name: v=XXXXXXXX f=NZCV` dump
    lines make the whole run byte-comparable (native JIT vs native TCI vs
-   wasm TCI; later: the wasm64 backend);
+   the wasm page — `tools/tcgisa.mjs` for the TCI dist, `tcgisa64.mjs`
+   for the wasm64 backend);
 3. **emulator-semantics canary** — rare/unpredictable corners are pinned
    to this qemu's behavior (see below), so a backend change that alters
    them fails the byte-diff.

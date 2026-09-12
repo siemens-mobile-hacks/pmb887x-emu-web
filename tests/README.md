@@ -61,15 +61,16 @@ instruction-count plugin.
 
 - `tests/insncount.c` — TCG plugin that counts executed guest
   instructions (compiled to `tests/insncount.so`, needs the qemu source
-  tree headers: `gcc -O2 -fPIC -shared -I <qemu-src>/include
+  tree headers: `gcc -O2 -fPIC -shared -I qemu/include
   $(pkg-config --cflags glib-2.0) tests/insncount.c -o tests/insncount.so`).
 - **MIPS** — executed instructions per second over the `--bench-secs`
   window (plugin's own monotonic clock; comparable across builds,
   independent of guest-visible milestones).
 - **milestone timings** — seconds to first serial byte / LCD lit / LCD
-  content. Boot is deterministic, so these track emulation speed too
-  (adaptive icount2 makes the phone wait real-time during idle windows;
-  the instruction window is the pure-CPU measure).
+  content. Boot is deterministic under `-icount shift=3,sleep=off`, so
+  these track emulation speed too (the native build has no real-time
+  cap, so idle warps are free; the instruction window is the pure-CPU
+  measure).
 
 The suite stops each instance ~10 s after the benchmark window once all
 verdicts are in (fast path); the `--timeout` deadline is the worst case.
@@ -77,8 +78,12 @@ verdicts are in (fast path); the `--timeout` deadline is the worst case.
 ## Lockstep (phase 0b — cross-backend value equality)
 
 Whole-boot, value-level comparison of guest state between two TCG
-backends, the containment net for the future wasm64 backend
-([doc/wasm-tcg-backend-plan.md](../doc/wasm-tcg-backend-plan.md) §5).
+backends — the containment net the wasm64 backend was built under
+([doc/wasm-tcg-backend-plan.md](../doc/wasm-tcg-backend-plan.md) §5);
+`tools/lockstep-wasm.mjs` runs the same comparison against the wasm page.
+Caveat learned on 2026-09-12: the gate forces `one-insn-per-tb`, so it
+cannot see multi-insn-TB bugs (0034 slipped through it) —
+`tools/bootcheck.mjs` covers those.
 
 ```bash
 scripts/build-native.sh          # a-side: reference JIT

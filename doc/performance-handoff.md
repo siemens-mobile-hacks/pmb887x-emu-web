@@ -1,4 +1,10 @@
-# Performance hand-off: the qemu-core device-path workstream
+# Performance hand-off
+
+Status entries newest first (patch numbers = commits on the `qemu/`
+submodule branch, see [upstream-branch.md](upstream-branch.md)); the
+device-path workstream's baseline, targets, plan and constraints follow
+the status log. Since 2026-09-12 every board, LG included, runs on the
+wasm64 backend (`dist-jit`) by default.
 
 Status (2026-09-12, profile session — patches 0042–0045):
 `/dist-jit` boot on a quiet host (rt=off, interleaved `--runs 4` vs the
@@ -93,7 +99,8 @@ shown clock jumped +16 min at every minute boundary (the "~22×").
 Reproduced identically on the pristine native build (~300× there, the
 idle virtual clock also warping without 0032).  0033 adds a per-board
 `cnt-format` read from the board config's `[rtc] format` key (default
-`unix`; the LG configs set `calendar` via `patches/bsp/0002`).  Verified on native S75/C81/KE800 and on both
+`unix`; the LG configs set `calendar` — now upstream in the pinned bsp
+rev `e6e73d1`).  Verified on native S75/C81/KE800 and on both
 wasm dists (S75 "Пт 11 Сен", advancing 1 min per wall minute).  The
 RTC-CNT-vs-vclock method that found it: `?trace=rtc&tracebuf=1` reads
 decoded both ways next to LCD screenshots (`tools/` has no permanent

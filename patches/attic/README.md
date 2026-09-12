@@ -1,4 +1,9 @@
- Dropped patches
+# Dropped patches
+
+Everything in `patches/` (this directory included) is history: since
+2026-09-12 the series lives as commits on the `qemu/` submodule branch
+(`doc/upstream-branch.md`), and the `patches/NNNN-*.patch` files next to
+this directory are a frozen mirror that no build step reads.
 
 ## Stale copies from the previous pin (`*-old-2735ce4e.patch`)
 
@@ -6,8 +11,7 @@
 `0006-old-2735ce4e.patch` are pre-switch revisions of the patches
 below, captured against the previous qemu pin (`2735ce4e`, before the
 2026-09-07 move to alula's `dsp-stuff` @ `b31b98fe1e` — see
-`tests/RESULTS-switch.md`). Kept for archaeology only; the current
-patches/ series is authoritative.
+`tests/RESULTS-switch.md`). Kept for archaeology only.
 
 ## 0006 — wasm: run icount2 at the fixed hardware frequency (104 MHz)
 
@@ -44,8 +48,9 @@ Full analysis: `../doc/early-crash-postmortem.md` (bisect, divergence
 point, mechanism).
 
 **Superseded 2026-09-07 (same day, later session) by
-`../0004-wasm-io-recompile-mmio-boundary-accounting.patch`** — kept in
-`patches/` and part of the build again.  The rework does not skip the
+`../0004-wasm-io-recompile-mmio-boundary-accounting.patch`** (the
+series commit "wasm: io-recompile MMIO boundary accounting").  The
+rework does not skip the
 rewind's *semantics*, only its repeated cost: on emscripten the mid-TB
 MMIO accounting is performed at exactly the clock the stock rewind
 produces (io-access boundary of the current TB, stock-equivalent

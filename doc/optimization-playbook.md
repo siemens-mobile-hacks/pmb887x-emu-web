@@ -22,10 +22,20 @@ Asyncify onlylist + real-time cap 0031/0032 (instrument only the
 coroutine-switch stack, not everything the invoke_* wrappers reach:
 dist-jit 45→28 MB, tIdle 40.3→33.2 s / −18 %, wasm64-only; and a
 sleep=off real-time cap so the idle clock/animations stop running ahead
-of wall) → **open now**: the displayed digital clock still ticks too
-fast per virtual second (RTC/timer decode, not virtual-rate — see
-§ Remaining), the module compile share (~11 % of the early vCPU), the TB
-lookup path (~8 %), the display stretch's guest work.
+of wall) → RTC seed layout 0033 (the too-fast clock and the 2091 date
+were one bug, not a rate issue) → EL71/KE800 on the wasm builds
+0034–0038 (every board now boots on the wasm64 backend, which became
+the page default for all of them) → display path + fill-time TLB growth
+0039–0041 (stopwatch vratio 0.19 → 0.33) → TB lookup / hflags /
+range-flush 0042–0045 (−2..−4 % on the milestones; the counters that
+showed the shipping boot is virtual-time-bound after t0.75G and that
+197 MB of wasm is compiled per boot) → **open now**: emitted code volume
+(§ Remaining 0b), the J2ME throughput target (§ Remaining 0), the
+batcher's rare SOURCE-CORRUPT (§ Remaining 4), the AOT cache.
+
+Since 2026-09-12 the qemu tree is the `qemu/` submodule: a "patch" is
+a commit on its branch (numbering continues as before), and
+`versions.env` pins the tip — see [upstream-branch.md](upstream-branch.md).
 
 ## The iteration ladder (cheapest reject first)
 
@@ -46,8 +56,9 @@ Rules that keep the ladder honest:
 
 1. **No change lands without a measurement**; a rejected change gets
    a row in § REJECTED with its numbers so it is not retried blind.
-2. **One mechanism per patch**, stacked as `patches/NNNN-*.patch` via
-   `scripts/capture-patch.sh`, header WITH the measured numbers.
+2. **One mechanism per commit** on the `qemu/` submodule branch, the
+   commit message WITH the measured numbers; bump `QEMU_PMB887X_REV`
+   in `versions.env` when it lands.
 3. **A/B against a saved dist in one invocation.**  Before the first
    candidate deploy: `cp -a site/dist-jit site/dist-jit-base` (and
    `dist`→`dist-base` for qemu-core work).  Then
@@ -80,7 +91,7 @@ cp -a site/dist-jit site/dist-jit-base            # + dist -> dist-base for qemu
 node tools/tcgbench.mjs
 PORT=8080 node tools/idlebench.mjs dist,dist-jit --quick
 
-# 1. edit build/qemu (patches 0001..N applied) → 2. rebuild + deploy (~8 s)
+# 1. edit qemu/ (the submodule, all patches committed) → 2. rebuild + deploy (~8 s)
 bash scripts/ninja-fast.sh                        # wasm64 -> site/dist-jit
 TCI=1 bash scripts/ninja-fast.sh                  # interpreter -> site/dist (qemu-core changes)
 
@@ -92,12 +103,14 @@ PORT=8080 node tools/idlebench.mjs dist-jit-base,dist-jit --quick
 PORT=8080 node tools/wprof2.mjs 40 "" 100                 # PROF_DELAY=<s> picks the phase
 PROF_FN=<symbol> PORT=8080 node tools/wprof2.mjs 30 "" 100  # caller stacks
 
-# 5. gates for a keeper, then capture
+# 5. gates for a keeper, then commit
 scripts/run-tcg-isa.sh
 PORT=8080 node tools/idlebench.mjs dist-jit-base,dist-jit --runs 2
 node tests/run.mjs --label <name> --timeout 240
-bash scripts/capture-patch.sh <name>              # then add the measured header
-bash scripts/capture-patch.sh verify-tmp          # must print "nothing to do"
+git -C qemu commit -a                             # measured numbers in the message
+git -C qemu push origin wasm-browser-port:wasm-patches
+# then set QEMU_PMB887X_REV in versions.env to the new tip (fetch-qemu.sh
+# resets the checkout to the pin on the next full build)
 
 # 6. FINAL GATE before the session's last commit (~6 min): all three
 #    fullflashes must boot, native AND in the browser.
@@ -105,8 +118,8 @@ node tests/run.mjs --label <name>-final --timeout 240   # s75 el71 c81 ke800
 node tools/bootcheck.mjs --dist dist-jit --secs 150     # s75 el71 ke800
 ```
 
-Deploy hygiene: never plain-`cp` over a live-served wasm (a torn 45 MB
-file gets served) — the deploy scripts do tmp+rename; and refresh the
+Deploy hygiene: never plain-`cp` over a live-served wasm (a torn file
+gets served) — the deploy scripts do tmp+rename; and refresh the
 `.symbols` sidecar in `site/<dist>/` after a deploy or wprof2 profiles
 garbage.
 
@@ -199,7 +212,7 @@ mmiopoll only) makes a whole-run profile pure — see the sessions doc,
 | 0018 cputlb: fill-time MMIO dispatch + victim-TLB masked compare | (a) `tlb_set_page_full` resolves `(callback, opaque, size-mask, swap, align, re-entrancy guard)` per iotlb entry — the MMIO access path becomes one mask test + indirect call instead of dispatch_read→access_valid→adjusted_size→accessor; (b) `victim_tlb_hit` compared `cmp == page` unmasked, but every MMIO entry carries TLB_FORCE_SLOW in addr_idx → the victim TLB *never hit for MMIO*, so two MMIO pages aliasing on one TLB index (sysctl 0x10000000 + VIC 0x10140000, both index 0 under ARMv5 1K target pages) re-walked the guest page tables on **every access** | tcgbench mirrors: mmiopoll **534→202 ns** (dist-jit), 606→252 (dist), mmiow 305→227; native parity (223).  bootbench finalV/insns@110 s up on every pair (windows noisy under host load); op-suite 1156/1156 byte-identical ×3, native suite 4/4 on the branch binary, lockstep 20e6+250e6 clean (sessions doc, 2026-09-11 device-path) |
 | 0031 wasm64: Asyncify instrumentation allowlist (`-sASYNCIFY_ONLY`) | the emscripten fiber backend unwinds the whole C stack at a switch, so the old `-sASYNCIFY_REMOVE=tcg_qemu_tb_exec` instrumented ~everything the `invoke_*` longjmp wrappers reach (~21k fns / 17 MB / ~25 % of early-boot vCPU).  The wasm64 backend runs guest code as JIT'd modules, not `tcg_qemu_tb_exec`, so instrument ONLY the functions seen on a real switch stack (`configs/meson/asyncify-only.txt`, captured with `QEMU_COSTACK=1` over boot/rw-flash/shutdown + name families).  Prereqs: flash `blk_pwrite` deferred to a main-loop BH (a vCPU-thread block coroutine can't unwind a JIT frame); vCPU thread marked `qemu_coroutine_forbid_current_thread` (abort, not derail).  **wasm64-only** (`build-qemu-wasm64.sh` overrides the shared cross file): the TCI dist's hot path IS the interpreter, onlylist **regressed dist +26 %** | dist-jit wasm **45.1→27.8 MB**; idlebench `--runs 2`: **tIdle 40.3→33.2 s (−18 %)**, t0.5G 29.6→24.0 (−19 %), t0.1G 5.4→3.3 (−39 %); op-suite native JIT+TCI 1156/1156 identical, lockstep 250e6 serial+regs identical, Chromium idle |
 | 0032 icount: real-time cap for sleep=off (`QEMU_ICOUNT_RTCAP`, wasm default banked) | sleep=off warps the virtual clock straight to the next deadline (0023, on the vCPU), so a halted guest advances virtual time as fast as the host runs deadlines → the idle clock/animations run ahead of wall (~3.7× at t≈45 s; a regression vs native's RT-paced warp).  The vCPU sleeps (kick-interruptible, sub-ms `qemu_cond_timedwait_ns`) before a warp / after a budget round until wall reaches the virtual target.  "banked" measures allowed time from VM start, so the compute-bound boot (virtual *behind* wall) is never throttled and only idle overrun is paced; "strict" re-anchors on lag (paces the boot too — not the default).  Virtual time stays instruction-deterministic (lockstep/op-suite unaffected) | at t=45 s: virtual v=166 s (off) → **44.8 s (banked) ≈ wall**; boot-to-idle unchanged (insns@30 s 1.13 G banked vs 1.19 G off); default off on non-emscripten.  **Residual:** the phone's displayed digital clock still advances too fast per virtual second — an RTC/timer decode issue separate from the virtual-time rate, resolved by 0033 |
-| 0033 pmb887x: RTC `CNT` seed layout per board (`cnt-format`) | the pinned rev seeds `CNT` as a packed calendar (sec/min/hour/yday fields, 964/4/40 reloads); LG firmware reads those fields, Siemens firmware treats `CNT` as one linear Unix-seconds counter (+ its own time-zone setting), so the packed value decoded to "Wed 02 May 2091" and each minute wrap (0x3FF → 0x7C4 = +965) jumped the shown clock +16 min.  Not wasm- or warp-related: identical on the pristine native build.  Board config `[rtc] format` (default unix; the LG configs set calendar via `patches/bsp/0002`); both honour `-rtc base=` | native S75 "Пт 11 Сен 21:22" / C81 "11.09.2026 20:22" / KE800 unchanged "17:20 11/9"; wasm dist-jit 21:23 → 21:24 over 60 s, dist 21:26 → 21:27 over 40 s (was 15:39 → 15:55 over 40 s); no perf change |
+| 0033 pmb887x: RTC `CNT` seed layout per board (`cnt-format`) | the pinned rev seeds `CNT` as a packed calendar (sec/min/hour/yday fields, 964/4/40 reloads); LG firmware reads those fields, Siemens firmware treats `CNT` as one linear Unix-seconds counter (+ its own time-zone setting), so the packed value decoded to "Wed 02 May 2091" and each minute wrap (0x3FF → 0x7C4 = +965) jumped the shown clock +16 min.  Not wasm- or warp-related: identical on the pristine native build.  Board config `[rtc] format` (default unix; the LG configs set calendar — upstream in bsp `e6e73d1`); both honour `-rtc base=` | native S75 "Пт 11 Сен 21:22" / C81 "11.09.2026 20:22" / KE800 unchanged "17:20 11/9"; wasm dist-jit 21:23 → 21:24 over 60 s, dist 21:26 → 21:27 over 40 s (was 15:39 → 15:55 over 40 s); no perf change |
 | 0039 pmb887x: display path per-word costs | a redrawing J2ME app (the stopwatch, ~57 fps) pushes every LCD word through DIF FIFO → DMAC request → VIC; that chain was 44 % of the vCPU: `vic_update_state` scanned all 170 lines on every level change (now an asserted bitmap + unchanged-level no-op), the DIF re-drove 6 GPIO pins per FIFO word and 8 DMAC request lines per event (level caches; every consumer is level-idempotent), `dif_mux` was a 32-iteration bit loop per word (byte-lane tables), DMAC read a memory source word by word (burst read once), `srb_set_isr` tested 32 bits.  Plus `-Dqom_cast_debug=false` for the wasm64 build (`OBJECT_CHECK` asserted per FIFO word) | `tools/stopwatch.mjs` vratio **0.19 → 0.33** (25 → 41 MIPS); QOM casts off: boot −3..−5 % every milestone, both orders; op-suite 1156/1156, native 4/4, bootcheck s75/el71/ke800, lockstep 250e6 |
 | 0040 cputlb: fill-time TLB growth | QEMU's dynamic TLB resizes only at flush time; a phase with no flushes (the JVM: ARMv5 1 KB pages, ~6.2k-page working set) sat at 256 entries at 83k fills/s.  `tlb_set_page_full` doubles the table when fills since the last flush exceed 2× its size (cap 2^14); trap: index `f[]` through `cpu_tlb_fast()` (mmuidx_to_fast_index), not by mmu_idx | fills 83k/s → 35/s, table → 16384; boot (both orders, with 0039): t0.1G −18..−20 %, t0.5G −2..−3 %, t1.3G −1..−3 % |
 | 0041 wasm diag: lookup / fill / flush / halt counters | cold counters behind `wasm_memstat`: tb_lookup calls, jump-cache/qht hits, jump-cache flushes, table clears, fill classification, halts — read by `tools/memstat.mjs` / `tools/stopwatch.mjs` | zero hot-path cost; decided 0039/0040 (78 M lookups per boot at 92 % jc hits; 83k fills/s with 0 flushes; halts/s = 0 in the stopwatch) |
@@ -217,8 +230,10 @@ Every TCI/longjmp patch in 0001–0014 is empirically load-bearing
 (removal costs 15–40 % of the window or collapses the boot); 0015
 (diagnostics counters) was the only removable surface and was dropped;
 0002's condvar half is redundant since 0009 but cannot be split out
-without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
-(`MINUS:NNNN` / `REVERT:N1,N2`).  Table and dependency structure in
+without rebasing 0004/0007/0009.  Harness at the time:
+`scripts/switch-test.sh` (`MINUS:NNNN` / `REVERT:N1,N2`; patch-file
+era — today the equivalent is `git -C qemu revert` of the commit, then
+`ninja-fast.sh`).  Table and dependency structure in
 [optimization-sessions.md](optimization-sessions.md).
 
 ## What was tried and REJECTED (do not retry without new ideas)
@@ -372,10 +387,11 @@ inline on wasm64 anyway).
   patch (0007's `tci_tbhdr`, 0008's `_ri` forms); keep new DEFs appended
   so numbering stays stable, and remember `#ifdef __EMSCRIPTEN__` blocks
   in `tcg-target-opc.h.inc` shift numbering between builds.
-- **capture-patch.sh** diffs against pinned-rev+applied-patches via a
-  throwaway worktree; it refuses nothing except tree-state mismatches,
-  and its numbering now uses base-10 (`10#`) — octal `0008` used to
-  crash it.
+- **fetch-qemu.sh resets the submodule checkout to the pin** whenever
+  HEAD differs from `QEMU_PMB887X_REV` — `build-qemu.sh` runs it, so
+  commit *and pin* before a full rebuild (`ninja-fast.sh` never touches
+  the tree). `capture-patch.sh` / `switch-test.sh` are patch-file-era
+  tools and do not work against the submodule tree.
 - **The TCI TB layout (`/dist`)**: `tb->tc.ptr` points at the TCI stream;
   every TB starts with `tci_tbhdr` (icount) — chain jumps and
   `lookup_tb_ptr` targets all pass through it.  Anything that jumps
@@ -413,11 +429,11 @@ Why both, and why three devices:
 updates: EL71 finishes at a "set time and date?" wizard that never
 redraws, and is healthy there.
 
-**Known open**: KE800 fails `bootcheck --dist dist-jit` — it stops
-executing early in the GSM L1 loop and sometimes trips translator_ld's
-page assertion.  site/app.js runs the LG boards on `dist` until that is
-fixed; treat an s75/el71 PASS + ke800 FAIL as the current baseline, not
-as a green gate.
+KE800 on `dist-jit` was the last holdout (it stopped early in the GSM
+L1 loop and tripped translator_ld's page assertion); 0038 (narrowed
+speculated successor addresses) fixed it, and since 2026-09-12 every
+board runs on `dist-jit` by default — the gate is green only when all
+three PASS.
 
 ## The benchmark measured a configuration nobody ships (2026-09-12)
 
@@ -513,13 +529,14 @@ needs `tests/run.mjs` timeouts revisited first.
 
 ## Session checklist
 
-1. `git log` / `ls patches/`; read performance-handoff.md for where the
-   workstream stands.
+1. `git log` here and `git -C qemu log origin/master..` (the series);
+   read performance-handoff.md for where the workstream stands.
 2. Save baseline dists aside; `tcgbench` + `idlebench --quick` for
    today's numbers (≈3 min).
 3. Profile (step 4 of the command list), pick ONE target from § Remaining, check
    § REJECTED first.
-4. Patch → rungs 0–2 → keep/revert → gates → capture with a measured
-   header.
-5. Update the tables here (landed/rejected/remaining) and the README
-   patch list; put the narrative in optimization-sessions.md.
+4. Patch → rungs 0–2 → keep/revert → gates → commit on the qemu branch
+   with the measured numbers, push, bump the pin.
+5. Update the tables here (landed/rejected/remaining) and the commit
+   list in upstream-branch.md; put the narrative in
+   optimization-sessions.md.

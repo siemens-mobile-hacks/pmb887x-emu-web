@@ -1,8 +1,10 @@
 #!/bin/bash
 # Build the native (Linux) qemu-system-arm for pmb887x.
 #
-# Uses a pristine worktree of the pinned qemu-pmb887x revision (no wasm
-# patches) at build/qemu-native and builds it into build/qemu-native-build.
+# Uses a worktree of the pinned qemu-pmb887x revision (the qemu submodule's
+# series branch — the same tree the wasm builds use; the emscripten parts
+# are inert natively) at build/qemu-native and builds it into
+# build/qemu-native-build.
 # Run with: scripts/build-native.sh   -> build/qemu-native-build/qemu-system-arm
 set -euo pipefail
 

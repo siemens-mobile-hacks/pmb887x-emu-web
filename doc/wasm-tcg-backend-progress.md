@@ -3,7 +3,18 @@
 Working log for `doc/wasm-tcg-backend-plan.md`. Updated periodically;
 the plan file itself carries the phase gates.
 
-## Status: phase 3 (slices 1+2 landed) — account inline closed the idlebench gap to TCI; next: lookup_tb_ref / dispatch
+## Status: closed as a workstream — the backend is the shipping default; later work is logged in optimization-sessions.md
+
+The sessions below end at phase 3 slice 2 (2026-09-11). Everything after
+(speculative batching 0019, successor hints 0020, goto_ptr fixes
+0022/0026, no icount2 prologue 0029, explored flag 0030, Asyncify
+onlylist 0031, the retaddr fix 0034 and narrowed speculation 0038 that
+made EL71/KE800 boot) is in
+[optimization-sessions.md](optimization-sessions.md) and the playbook's
+"What landed" table. The "next: lookup_tb_ref / dispatch" items were
+overtaken: goto_ptr now tail-calls inside wasm (0026) and the lookup
+helper was devirtualised (0044); the per-TB inline lookup cache was
+measured flat and rejected.
 
 ### Session 2026-09-11 (01:00) — late-window profile → slice 2: inline TB accounting
 
@@ -469,12 +480,13 @@ the plan file itself carries the phase gates.
 ## Build/run cheat-sheet
 
 ```sh
-# build (deps pre-fetched; emsdk env + CPATH/PKG_CONFIG_PATH required)
-/workspace/scripts/ninja-wasm64.sh qemu-system-arm.js
-cp build/qemu-wasm64/qemu-system-arm.{js,wasm} site/dist-jit/
+# build + atomic deploy (emsdk env, CPATH/PKG_CONFIG_PATH, symbol map,
+# boards.tar refresh all handled; edits go in the qemu/ submodule)
+bash scripts/ninja-fast.sh                                # wasm64 -> site/dist-jit
+TCI=1 bash scripts/ninja-fast.sh                          # interpreter -> site/dist
 
 # serve + run
-PORT=8094 setsid nohup node serve.mjs > /tmp/serve.log 2>&1 &
+PORT=8094 HTTPS_PORT=6809 setsid nohup node serve.mjs > /tmp/serve.log 2>&1 &
 
 # op-suite
 cd tools && node tcgisa64.mjs 8094 dist-jit
@@ -482,12 +494,8 @@ cd tools && node tcgisa64.mjs 8094 dist-jit
 # lockstep (wasm leg) — native reference from scripts/build-native.sh
 cd tools && node lockstep-wasm.mjs --insns 20e6 --secs 200    # smoke (~15s)
 cd tools && node lockstep-wasm.mjs --insns 250e6 --secs 360   # window (~90s)
-cd tools && node lockstep-wasm.mjs --insns 700e6 --secs 900   # pre-OOM wall
 cd tools && node lockstep-wasm.mjs --insns 2.5e9 --secs 2700  # full gate (~13min)
-# knobs: --env W64_BATCH_N=8 / --env W64_NOBATCH=1 (b-rss in progress lines)
-
-# A/B boot bench (v=2..7 window; add DIST=dist-jit / dist-p1 / default=TCI)
-PORT=8094 DIST=dist-jit node tools/bootbench.mjs 110
+# knobs: --env W64_SPEC_N=0 / --env W64_LIVE_MAX=… (b-rss in progress lines)
 
 # fast-iteration backend bench (versatilepb, ~10 s/leg; per-phase + knobs)
 make -C tests/tcgbench install
@@ -495,9 +503,10 @@ node tools/tcgbench.mjs                                  # native-jit + dist-jit
 EXTRA_Q="env=W64_NOACCTINLINE=1" node tools/tcgbench.mjs # knob A/B
 
 # end-to-end boot-to-idle benchmark (the human metric; deterministic protocol)
-PORT=8094 node tools/idlebench.mjs dist,dist-jit --runs 2   # ~2×80s + 2×80s
-# late-window profile for phase-3 slice selection:
-PORT=8094 PROF_DELAY=115 node tools/wprof2.mjs 75 "dist=dist-jit" 200
+PORT=8094 node tools/idlebench.mjs dist-jit-base,dist-jit --quick   # ~1 min/dist
+PORT=8094 node tools/idlebench.mjs dist,dist-jit --runs 2
+# profile a boot phase:
+PORT=8094 PROF_DELAY=20 node tools/wprof2.mjs 40 "dist=dist-jit" 100
 
 # rebuild the lockstep plugin (auto-done by scripts/run-lockstep.sh)
 gcc -O2 -Wall -fPIC -shared -I build/qemu-native/include \
@@ -509,17 +518,19 @@ gcc -O2 -Wall -fPIC -shared -I build/qemu-native/include \
 - serve.mjs lives at the repo ROOT (not scripts/); one instance per
   port; second instance dies on the shared HTTPS_PORT — use
   `PORT=8094 HTTPS_PORT=6809`.
-- Old phase-1 dist kept at `site/dist-jit` → `site/dist-p1` for A/B
-  (gitignored).
-- Configure (build/qemu-wasm64): `--static --cpu=wasm64
-  --target-list=arm-softmmu --without-default-features --enable-system
-  --enable-tcg --enable-pixman --with-coroutine=wasm --disable-tools
-  --disable-docs --disable-install-blobs --disable-werror
-  -Dcpp_std=gnu++20 --extra-cflags="-O3 -pthread -DWASM_BIGINT
-  -sMEMORY64=1"`.
-- build/qemu = git @ b31b98fe1e + patches 0001–0016 (working tree) +
-  0017 (wasm64 backend, untracked files + tracked mods; intent-to-add
-  via `git add -N tcg/wasm64` so diffs capture them).
+- A/B snapshot dists live next to the live ones as `site/dist-*/`
+  (gitignored): `cp -a site/dist-jit site/dist-jit-base` before the
+  first candidate deploy.
+- Configure (build/qemu-wasm64, done by `scripts/build-qemu-wasm64.sh`):
+  `--static --cpu=wasm64 --target-list=arm-softmmu
+  --without-default-features --enable-system --enable-tcg
+  --enable-pixman --with-coroutine=wasm --disable-tools --disable-docs
+  --disable-install-blobs --disable-werror -Dcpp_std=gnu++20
+  --extra-cflags="-O3 -pthread -DWASM_BIGINT -sMEMORY64=1"`, then link
+  args with `-sASYNCIFY_ONLY=@configs/meson/asyncify-only.txt` and
+  `-Dqom_cast_debug=false`.
+- The source tree is the `qemu/` submodule (`tcg/wasm64/` is committed
+  there as 0017 and follow-ups); the pin is `QEMU_PMB887X_REV`.
 - Emscripten exit from deep vCPU context trips "function signature
   mismatch" — use the dispatcher's LS.stop exit path (return-code
   unwind then exit(0)); never exit() from inside a chain.

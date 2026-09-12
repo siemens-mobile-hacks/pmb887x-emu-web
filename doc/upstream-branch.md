@@ -1,140 +1,146 @@
-# The upstream branch: `wasm-browser-port`
+# The qemu series branch: `wasm-browser-port` / `wasm-patches`
 
-The patch series lives as a git branch, ready to push/PR to
+The whole wasm/TCI/perf series lives as commits on a branch of
 [Azq2/qemu-pmb887x](https://github.com/Azq2/qemu-pmb887x) — the QEMU
 fork that [pmb887x-emu](https://github.com/siemens-mobile-hacks/pmb887x-emu)
-embeds as its `qemu` submodule.
+embeds as its `qemu` submodule. Since 2026-09-12 that branch **is** this
+repo's qemu source tree: the `qemu/` root submodule, pinned in
+`versions.env`. There is no separate clone, worktree or patch-apply step
+any more.
 
 ```
-worktree:  build/qemu-upstream          (git worktree of build/qemu)
-branch:    wasm-browser-port
-base:      b31b98fe  (alula/dsp-stuff tip — the pinned rev in versions.env;
-                      NOT yet in Azq2 master, which is behind it)
+submodule:  qemu/                 (Azq2/qemu-pmb887x)
+branch:     wasm-browser-port     local name; tracks origin/wasm-patches
+pin:        debfa3d6f5            QEMU_PMB887X_REV in versions.env
+base:       8b9d485bc2            qemu-pmb887x master at the time of the switch
+companion:  pmb887x-emu/          the meta-repo, branch wasm-patches, whose
+                                  qemu submodule pin is the same revision
 ```
 
-To publish (adjust remote/author to taste):
+`origin/wasm-browser-port` (e0bcfe04b6) on the same remote is the older
+14-commit series from the patch-file era; it is superseded by
+`origin/wasm-patches` and kept only as history.
+
+## Working on the tree
 
 ```bash
-git -C build/qemu push <your-fork> wasm-browser-port:wasm-browser-port
-# or from the worktree:
-git -C build/qemu-upstream remote add <your-fork> git@github.com:you/qemu-pmb887x.git
-git -C build/qemu-upstream push -u <your-fork> wasm-browser-port
+scripts/fetch-qemu.sh                  # init the submodule, check out the pin
+# edit qemu/**, then:
+bash scripts/ninja-fast.sh             # incremental wasm64 rebuild + deploy
+git -C qemu commit -a                  # one mechanism per commit, measured header
+git -C qemu push origin wasm-browser-port:wasm-patches
+# bump QEMU_PMB887X_REV in versions.env to the new tip, commit both here
 ```
 
-Rebase note: the base is the dsp-stuff branch (it carries the AFE/DSP
-fix the web build pins — see versions.env).  Once dsp-stuff merges to
-master, rebase the branch onto master before the PR; expect only
-trivial conflicts (the series touches tcg/tci, accel/tcg, util/,
-target/arm/tcg/translate.c, ui/, configs/meson/emscripten.txt).
+`scripts/fetch-qemu.sh` resets the checkout to `QEMU_PMB887X_REV`
+whenever HEAD differs from it, so a commit that is not yet pinned is
+lost from the working checkout (not from the repo) on the next full
+build — pin before rebuilding with `build-qemu.sh`. `ninja-fast.sh`
+does not touch the tree.
 
-## Series contents (one commit per patch)
+Rebase note: the series sits on qemu-pmb887x master plus the AFE/DSP
+fix from alula's `dsp-stuff` (the commit master lacks; see versions.env).
+Once that lands upstream, rebase onto master; expect only trivial
+conflicts (the series touches tcg/tci, tcg/wasm64, accel/tcg, util/,
+target/arm/tcg, hw/arm/pmb887x, ui/, configs/meson/).
 
-| # | Commit subject | Scope |
+## Series contents (43 commits on master, in order)
+
+Patch numbers are the ones the docs use (the `patches/NNNN-*.patch`
+mirror keeps the same numbering; 0005/0006/0015 are attic'd and 0033
+was folded into the pinned rev as its top commit).
+
+| # | Commit | Scope |
 |---|---|---|
-| 1 | ui: add wasm display/input backend for emscripten builds | browser display/input + link flags |
-| 2 | wasm: Asyncify-safe futex/condvar + skip the per-insn icount2 helper | emscripten-only threading + icount2 |
-| 3 | tci: inline TLB probe + direct helper dispatch | generic TCI (native + wasm) |
-| 4 | wasm: io-recompile MMIO boundary accounting | emscripten + icount2 |
-| 5 | wasm: account icount2 per TB inside the TCI interpreter (TB header op) | TCI + icount2 |
-| 6 | tci: immediate-form ALU/setcond ops | generic TCI |
-| 7 | wasm: replace the main-loop poll() with a futex wait | emscripten-only |
-| 8 | wasm: skip the io-recompile rewind under stock icount too | emscripten-only |
-| 9 | tci: run the TLB fast path inline in the interpreter loop | generic TCI |
-| 10 | tci: size-specialized guest memory ops | generic TCI + cold-path counters |
-| 11 | wasm: take SVC exceptions without the cpu_loop_exit longjmp | emscripten + ARM frontend |
-| 12 | wasm: io barriers | emscripten + translator/cputlb |
-| 13 | memory: romd FlatView variants + range-scoped tlb flush | generic core (memory.c/physmem.c/cputlb.c) |
-| 14 | cputlb: fill-time MMIO dispatch resolution + victim-TLB flag-masked compare | generic core (cputlb.c; landed as patches/0018, 2026-09-11) |
+| 0001 | ui: add wasm display/input backend for emscripten builds | browser display/input + link flags |
+| 0002 | wasm: Asyncify-safe futex/condvar + skip the per-insn icount2 helper | emscripten-only threading + icount2 |
+| 0003 | tci: inline TLB probe + direct helper dispatch | generic TCI (native + wasm) |
+| 0004 | wasm: io-recompile MMIO boundary accounting | emscripten + icount2 |
+| 0007 | wasm: account icount2 per TB inside the TCI interpreter (TB header op) | TCI + icount2 |
+| 0008 | tci: immediate-form ALU/setcond ops | generic TCI |
+| 0009 | wasm: replace the main-loop poll() with a futex wait | emscripten-only |
+| 0010 | wasm: skip the io-recompile rewind under stock icount too | emscripten-only |
+| 0011 | tci: run the TLB fast path inline in the interpreter loop | generic TCI |
+| 0012 | tci: size-specialized guest memory ops | generic TCI + cold-path counters |
+| 0013 | wasm: take SVC exceptions without the cpu_loop_exit longjmp | emscripten + ARM frontend |
+| 0014 | wasm: io barriers | emscripten + translator/cputlb |
+| 0016 | memory: romd FlatView variants + range-scoped tlb flush | generic core |
+| 0017 | tcg wasm64 backend | `tcg/wasm64/` + hooks, emscripten-only |
+| 0018 | io fast dispatch victim tlb | generic core (cputlb) |
+| 0019 | wasm64 speculative batching | wasm64 |
+| 0020 | wasm64 successor hints | wasm64 + ARM translator notes |
+| 0021 | wasm wait fixes | emscripten-only |
+| 0022 | wasm64 goto ptr handoff | wasm64 |
+| 0023 | idle warp on vcpu thread | icount rr (all builds) |
+| 0024 | device timers virtual clock | pmb887x devices |
+| 0025 | wasm halt path costs | emscripten-only |
+| 0026 | wasm64 goto ptr tailcall | wasm64 |
+| 0027 | arm cpsr write goto ptr | ARM frontend |
+| 0028 | icount timer notify budget | icount (all builds) |
+| 0029 | wasm64 no icount2 prologue | wasm64 |
+| 0030 | wasm64 spec explored flag | wasm64 |
+| 0031 | wasm64 asyncify onlylist | emscripten build config + flash BH |
+| 0032 | icount realtime cap | icount (default on only under emscripten) |
+| 0034 | wasm64 retaddr getpc adj | wasm64 |
+| 0035 | wasm mainloop virtual deadlines without icount | emscripten-only |
+| 0036 | wasm io barrier split before insn | emscripten translator |
+| 0037 | wasm vcpu virtual timers without icount | emscripten-only |
+| 0038 | wasm64 spec narrow successor addresses | wasm64 |
+| 0039 | pmb887x display path per word | pmb887x devices |
+| 0040 | cputlb fill time growth | generic core |
+| 0041 | wasm diag lookup fill halt counters | cold counters |
+| 0042 | wasm diag warp module counters | cold counters + knobs |
+| 0043 | cputlb phys range summary | generic core |
+| 0044 | tb lookup devirtualise | emscripten-only |
+| 0045 | arm cpsr hflags skip | ARM frontend |
+| — | pmb887x: hacky AFE (LLE+HLE) implementation | cherry-pick from alula/dsp-stuff |
+| 0033 | pmb887x: seed the RTC counter in the layout the firmware expects | pmb887x RTC, per-board `[rtc] format` |
 
-Not on the branch: `patches/0017-tcg-wasm64-backend.patch` (the wasm64
-TCG backend — large, emscripten-specific) — it is captured from the
-working tree via `scripts/capture-patch.sh`, not `format-patch`.
-Everything else in `patches/` maps 1:1 onto a branch commit.
+The commits from 0001 to 0016 and 0018 carry the full rationale plus
+measured effect in their messages; the later ones carry the patch title
+only — their rationale and numbers live in
+[optimization-playbook.md](optimization-playbook.md) § What landed and
+in [optimization-sessions.md](optimization-sessions.md).
 
-Each commit message carries the full rationale ("why this change is
-needed") plus the measured effect; the code hunks carry inline
-comments at the non-obvious spots (TLB compare semantics, clock
-accounting deviations, gating conditions, safety arguments for the
-io-recompile skips).
+## Safety properties (why a merge is low-risk for native users)
 
-Safety properties (why an upstream merge is low-risk for native
-users): everything that changes semantics under native builds is
-either `__EMSCRIPTEN__`-gated (patches 1, 2, 4, 5, 7, 8, 11, 12 —
-inert code on native), or confined to the TCI interpreter (patches 3,
-6, 9, 10 — TCI is not the default backend; native TCG codegen is
-untouched).  Patches 13 (romd FlatView variants) and 14 (fill-time MMIO
-dispatch + victim-TLB compare) are generic core but
-semantics-preserving by construction: a view is reused only when the
-MR tree is bit-identical up to romd flags, the TLB flush is only ever
-strictly smaller than stock's, any recycle/eviction path falls back to
-the stock full flush, and the iotlb-entry dispatch resolution produces
-exactly what the generic path resolves per access (special cases fall
-back to the stock path); native suite 4/4.
+Everything that changes semantics under native builds is either
+`__EMSCRIPTEN__`-gated (inert code on native) or confined to the TCI
+interpreter (not the default backend; native TCG codegen is untouched).
+The generic-core commits are semantics-preserving by construction:
 
-## Relationship to `patches/*.patch`
+- 0016: a FlatView is reused only when the MR tree is bit-identical up
+  to romd flags; the TLB flush is only ever strictly smaller than
+  stock's; any recycle/eviction path falls back to the stock full flush.
+- 0018: the iotlb-entry dispatch resolution produces exactly what the
+  generic path resolves per access (special cases fall back to stock).
+- 0023/0028: icount-rr scheduling only; the virtual clock advances to
+  the same deadlines.
+- 0040/0043: TLB sizing and flush-victim selection; conservative masks,
+  entries dropped identical to the full walk (measured 22,007 = 22,007).
+- 0045: skips `arm_rebuild_hflags` only when `uncached_cpsr` is
+  unchanged; verified 2.1 M skips, 0 mismatches against a
+  recompute-and-compare build.
+- 0027: the ARM frontend ends CPSR-write TBs with goto_ptr; the interrupt
+  check is requested exactly when one is pending.
+- 0033: RTC `CNT` layout selected by the board config, default = the
+  Siemens (linear) layout; LG boards opt into the packed one.
 
-`patches/NNNN-*.patch` are **generated from the branch commits**
-(`git format-patch b31b98fe..wasm-browser-port`) — except 0017 (see
-above) — so:
+Native suite (`tests/run.mjs`) 4/4 and the op-suite byte-identical
+across native JIT / native TCI / wasm are the gates; both are green on
+the pinned rev (see [performance-handoff.md](performance-handoff.md)).
 
-* `scripts/build-qemu.sh` (which `git apply`s `patches/*.patch` onto
-  the pinned pristine rev) reproduces the branch tree exactly;
-* the branch is the single place to edit — after changing it,
-  regenerate the patch files (see below) and commit them in this repo.
-
-Regenerate after branch edits:
-
-```bash
-cd build/qemu-upstream && git format-patch b31b98fe..HEAD -o /tmp/fp
-# copy each file onto the matching patches/NNNN-<name>.patch name
-# (order = commit order; the filenames keep the web repo's numbering,
-#  including the 0005/0006 gaps for the attic'd patches)
-```
-
-## Verification status (2026-09-09; branch facts re-checked 2026-09-11)
-
-Sanity gate after any git operation on the branch (an orphan rebase
-once grafted an unrelated fork commit under the series — caught by
-this check):
-
-```bash
-git -C build/qemu-upstream rev-list --count b31b98fe..HEAD   # must be 14
-git -C build/qemu-upstream diff --name-only b31b98fe         # 30 files, no hw/arm/pmb887x/*
-```
-
-(Counts above verified 2026-09-11 after the 0018 commit joined the
-branch; the boot/native verification bullets below are from 2026-09-09
-and predate 0018 — rerun bootbench + the native suite after further
-branch edits.)
-
-* branch tip ≡ pristine + patches/ (delta is comment lines only) — the
-  inline "why" comments are the only difference vs the benchmarked
-  stack, plus one real fix (below);
-* wasm: rebuilt from the branch tree and re-benched — bootbench window
-  28.2–29.4 s (full-stack same-day baseline 25.1–28.5 s, within
-  run-to-run noise), soak to v=165 with growing LCD updates, no
-  `>>EXIT<<`;
-* native: configure + make (arm-softmmu, default TCG) from the branch
-  tree builds cleanly, and the native suite (tests/run.mjs) passes
-  4/4 devices (s75, el71, c81, ke800: boot-init, boot-progress,
-  no-exit);
-* per-patch: every patch was individually removal-tested (see
-  [optimization-playbook.md](optimization-playbook.md) § Patch-isolation
-  testing) — each one measurably improves the boot or is required by a
-  later patch that does.
-
-### Bug found and fixed while preparing the branch
+### Bug found while preparing the series (2026-09-09)
 
 Preparing the native build surfaced a latent native-link error the
 wasm build could never see: `wasm_diag_stat` was defined in
 `tcg/tci.c`, which only compiles under `--enable-tcg-interpreter`,
 while the always-compiled `accel/tcg/cputlb.c` and
 `target/arm/tcg/tlb_helper.c` reference the counters — every native
-softmmu build of the series since patch 0012 failed to link.  The
-definition now lives in `accel/tcg/cputlb.c` (compiled into every
-softmmu build; see the comment there).
+softmmu build of the series since patch 0012 failed to link. The
+definition lives in `accel/tcg/cputlb.c`.
 
-### Re-verified hunks: icount2 MIN_FREQUENCY floor (2026-09-09)
+### icount2 MIN_FREQUENCY floor (re-verified 2026-09-09)
 
 Patch 0002's `ICOUNT2_MIN_FREQUENCY 1000` (emscripten-only; stock is
 1 MHz) was re-tested after the TCI speedups made the original
@@ -143,29 +149,21 @@ rationale ("TCI sustains <1 MHz on wasm") stale on fast hosts:
 | Scenario | floor 1 kHz | floor 1 MHz (stock) |
 |---|---|---|
 | fast host, icount2 mode | controller converges 3–17 MHz — floor never binds; boot normal | identical — floor never binds |
-| 16× CPU-starved (browser + 15 hogs on one core, sustained ~2.5 kHz — "phone" amplified) | frequency converges to the real rate; **v=377 after 420 s**, boots in slow motion, no crash | frequency pins at 1.000 MHz; **virtual clock frozen at v=0.88 after 420 s** — guest never sees its timers, boot dead |
+| 16× CPU-starved (browser + 15 hogs on one core, sustained ~2.5 kHz) | frequency converges to the real rate; boots in slow motion, no crash | frequency pins at 1.000 MHz; virtual clock frozen — boot dead |
 
-Verdict: **kept** — inert on fast hosts, but it is exactly what keeps
-the opt-in `?icount=precise-clocks=on` mode alive on slow devices
-(phones).  The default timing model (stock `-icount shift=3,sleep=off`)
-has no frequency controller and is unaffected either way.  The code
-comment and the 0002 commit message now carry these numbers.
+Verdict: kept — inert on fast hosts, but it is what keeps the opt-in
+`?icount=precise-clocks=on` mode alive on slow devices. The default
+timing model (stock `-icount shift=3,sleep=off`) has no frequency
+controller and is unaffected either way.
 
-## The RTC fix branch: `rtc-cnt-format` (standalone, submit first)
+## The RTC fix upstream branch: `rtc-cnt-format`
 
-Patch 0033 is independent of the wasm series and fixes native too, so it
-has its own branch for a separate upstream PR:
-
-```
-worktree:  build/qemu-rtc            (git worktree of build/qemu)
-branch:    rtc-cnt-format            one commit on b31b98fe (also applies
-                                     cleanly to Azq2 master, 8b9d485bc2)
-companion: build/bsp-rtc             pmb887x-dev worktree, branch
-           rtc-calendar-format       (lg-ke800/lg-ke970 [rtc] format = "calendar")
-build:     build/qemu-rtc-build      native, for testing the branch as-is
-```
-
-The qemu commit defaults `[rtc] format` to `unix` (Siemens), so the
-pmb887x-dev change is what keeps the LG boards on the packed calendar —
-submit both, qemu first.  When the wasm series is rebased after this
-lands, drop 0033 from `patches/` and `patches/bsp/0002`.
+0033 is independent of the wasm series and fixes native too, so it also
+exists as a standalone branch for a separate upstream PR:
+`origin/rtc-cnt-format` (22e23cfb5b, one commit that applies to Azq2
+master), with a companion pmb887x-dev change (`lg-ke800`/`lg-ke970`
+`[rtc] format = "calendar"`) that is already in the pinned bsp rev
+`e6e73d1`. The qemu commit defaults `[rtc] format` to `unix` (Siemens),
+so the pmb887x-dev change is what keeps the LG boards on the packed
+calendar — submit both, qemu first. Once it lands, drop the top commit
+of the series on the next rebase.

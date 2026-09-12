@@ -1,6 +1,16 @@
 # A real WASM TCG backend — feasibility verdict and plan
 
-Status: **in progress** (2026-09-09: **phase 0a done** — the guest op-suite
+Status: **LANDED** — the backend described here ships as `site/dist-jit`,
+the page default for every board since 2026-09-12 (commit 0017 on the
+`qemu/` submodule branch plus its follow-ups 0019–0038; see
+[architecture.md](architecture.md)). What follows is the design record
+and the phase log as it was written; current numbers and open items live
+in [performance-handoff.md](performance-handoff.md) and the playbook.
+The "TCI parity" reading below was later shown to be phase cancellation
+(the JIT lost early and won late); the early phase was then fixed by the
+module economy and Asyncify work.
+
+Phase log (2026-09-09: **phase 0a done** — the guest op-suite
 below is implemented in [tests/tcg-isa/](../tests/tcg-isa/), gate
 `scripts/run-tcg-isa.sh` green on all three backends (native JIT, native
 TCI, wasm TCI page: 1156/1156 each, serial byte-identical, ~8 s total);

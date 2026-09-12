@@ -1,9 +1,8 @@
 #!/bin/bash
 # Build qemu-system-arm (pmb887x) as WebAssembly + assemble dist.
 #
-# Uses the qemu submodule at the pinned rev (the
-# wasm-patches branch — all patches committed there; previously a
-# pristine clone + patches/*.patch), then builds:
+# Uses the qemu submodule at the pinned rev (the series branch — all
+# patches committed there, see doc/upstream-branch.md), then builds:
 #   default: the wasm64 TCG backend -> site/dist-jit/ (the page default)
 #   TCI=1 : additionally the TCG-interpreter dist -> site/dist/ (the
 #           comparison baseline, reachable as ?dist=dist; every board
@@ -61,7 +60,8 @@ fi
 # module output, MEMFS for the fullflash, exported wasm_* helpers.
 # Emscripten link settings (threads, ASYNCIFY, ES6, ENV export, memory
 # growth) come from qemu's own configs/meson/emscripten.txt, extended by
-# patches/0001 (ENV + EXIT_RUNTIME + growable memory).
+# the series' first commit (ui: wasm backend — ENV + EXIT_RUNTIME +
+# growable memory).
 EXTRA_CFLAGS="-O3 -pthread -DWASM_BIGINT -sMEMORY64=1"
 
 BUILD_DIR="$BUILD/qemu-wasm"

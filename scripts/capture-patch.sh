@@ -1,7 +1,10 @@
 #!/bin/bash
-# Capture uncommitted C edits from qemu into patches/ so that
-# scripts/build-qemu.sh (which hard-resets the clone to the pinned rev)
-# cannot lose iteration work, and other machines can reproduce the tree.
+# LEGACY (patch-file era, before 2026-09-12): capture uncommitted C edits
+# from qemu into patches/. The qemu tree is now a submodule whose pinned
+# rev already contains every patch, so the baseline this script rebuilds
+# (pinned rev + patches/*.patch) no longer applies — commit on the
+# submodule branch instead (doc/upstream-branch.md). Kept for the history
+# in doc/optimization-sessions.md.
 #
 # The WIP diff is computed against (pinned rev + already-applied patches/)
 # via a throwaway git worktree, so the resulting patch contains ONLY the
