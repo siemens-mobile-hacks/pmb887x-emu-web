@@ -41,12 +41,14 @@ const BOARDS = [
   { id: "ke800", file: "KE800-v11b.bin", efa: "KE800-v11b.bin.cfi-efa" },
 ].filter((b) => (ONLY.length ? ONLY.includes(b.id) : true));
 
-// A guest that executes fewer than this many instructions over this
-// window has stopped making progress (KE800 used to sit on an I2C poll it
-// could never satisfy, halted, at ~0).  An idle phone still runs its
-// clock and network-search work, orders of magnitude above this.
-const STALL_S = 60;
-const STALL_INSNS = 2e6;
+// Progress = executed instructions or a framebuffer update.  A board is
+// only failed when *neither* moves for this long: KE800 spends minutes
+// around its GSM L1 sync mostly halted, executing well under a million
+// instructions per poll while it waits on radio-frame timing, and that is
+// healthy — what is not is a guest wedged on a device poll it can never
+// satisfy (both counters pinned, as KE800 was before 0035/0037/0038).
+const STALL_S = 150;
+const STALL_INSNS = 1e6;
 
 const probe = () => {
   const m = window.__qemu;
@@ -95,7 +97,7 @@ for (const board of BOARDS) {
       new Promise((r) => setTimeout(() => r({ err: "page unresponsive" }), 20000)),
     ]);
     if (mx.err) { errors.push(mx.err); break; }
-    if (mx.insns - lastProgress.insns >= STALL_INSNS) {
+    if (mx.insns - lastProgress.insns >= STALL_INSNS || mx.fb !== last.fb) {
       lastProgress = { t: Date.now(), insns: mx.insns };
     }
     last = mx;
@@ -108,7 +110,7 @@ for (const board of BOARDS) {
   const blank = last.fb < 2;
   const why = last.exit ? `firmware exit: ${last.exit.replace(/[\x00-\x1f\xfe\xff]/g, " ")}`
     : errors.length ? errors[0]
-    : stalled ? `guest stopped executing (<${STALL_INSNS / 1e6}M insns in ${STALL_S}s)`
+    : stalled ? `no progress for ${STALL_S}s (<${STALL_INSNS / 1e6}M insns, no fb update)`
     : blank ? "LCD never drew anything"
     : "";
   results.push({ id: board.id, pass: !why, why, fb: last.fb, insns: last.insns });

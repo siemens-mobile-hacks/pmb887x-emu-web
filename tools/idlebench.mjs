@@ -47,6 +47,10 @@
 //     the deltas of tIdle / window / t0.5G / t1.3G medians; |delta| >
 //     --regress (5) % is flagged REGRESSION / IMPROVEMENT on stdout, so
 //     a slower build cannot pass silently.
+//   - RT env: real-time cap mode (0032) the page boots with — default
+//     "off" so milestones measure engine speed; RT=banked measures the
+//     shipping configuration (site/app.js default).  Like JS_FLAGS/
+//     EXTRA_Q, an RT!=off run never becomes the baseline.
 //   - JS_FLAGS env: extra V8 flags for the browser (e.g. "--no-wasm-lazy-compilation").
 //   - EXTRA_Q env: extra query string appended to the page URL.
 //   - RATES=1 env: per-sample guest insns/s added to the JSON.
@@ -103,6 +107,13 @@ const port = process.env.PORT || "8080";
 const noref = argv.includes("--noref") || quick;
 const jsFlags = process.env.JS_FLAGS || "";
 const extraQ = process.env.EXTRA_Q || "";
+// RT env: the 0032 real-time cap mode the page boots with.  The default
+// stays "off" so the milestone numbers keep measuring engine speed (a
+// boot that runs faster than wall must not be paced), but the cap IS the
+// shipping default (site/app.js: banked), so a regression that only
+// exists under it was invisible here until this knob existed — measure
+// RT=banked whenever anything touches icount/halt/timers.
+const rtMode = process.env.RT || "off";
 const SAMPLE_MS = 1000;        // before the floor (v/insns curve)
 const SAMPLE_MS_IDLE = 500;    // at/after the floor (tIdle resolution)
 const INSN_MILESTONES = [0.1e9, 0.25e9, 0.5e9, 0.75e9, 1.0e9, 1.2e9, 1.3e9];
@@ -265,8 +276,9 @@ async function runOne(dist, hashes, r) {
     });
 
     try {
-      // rt=off: the real-time cap would pace a faster-than-realtime boot
-      await p.goto(`http://127.0.0.1:${port}/?dist=${dist}&rt=off${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+      // rt=off by default: the real-time cap would pace a
+      // faster-than-realtime boot (RT=banked measures what users get)
+      await p.goto(`http://127.0.0.1:${port}/?dist=${dist}&rt=${rtMode}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
       await p.selectOption("#startup", "ONLINE");
       await p.setInputFiles("#fullflash", FLASH);
     } catch (e) {
@@ -435,9 +447,9 @@ const out = {
 };
 // "latest" aliases: full runs -> idlebench-latest.json, --quick runs ->
 // idlebench-quick-latest.json (different caps, keep the baselines apart).
-// Knob runs (JS_FLAGS / EXTRA_Q set) never become a baseline.
+// Knob runs (JS_FLAGS / EXTRA_Q / RT set) never become a baseline.
 const latestPath = here + `../tests/results/idlebench-${quick ? "quick-" : ""}latest.json`;
-const knobRun = !!(jsFlags || extraQ);
+const knobRun = !!(jsFlags || extraQ || rtMode !== "off");
 const baselinePath = opt("baseline", latestPath);
 let baseline = null;
 try { baseline = JSON.parse(readFileSync(baselinePath, "utf8")); } catch {}

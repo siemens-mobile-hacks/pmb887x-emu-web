@@ -277,10 +277,23 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
    remaining dispatcher exits are `TB_EXIT_REQUESTED` (~25k/s early —
    icount budget ends at every virtual deadline) and goto_tb first
    links (~3k/s).
-4. **AOT cache — OPEN, orthogonal** (backend plan phase 5): persist
+4. **wasm64 batcher: `SOURCE-CORRUPT` on an open batch — OPEN, rare,
+   diagnostic.**  Seen once in a 285 s KE800 boot (2026-09-12): a staged
+   member's body-size LEB differed at `w64_batch_close()`, so the batch
+   was abandoned and its members stayed on temp modules (correctness is
+   safe — the detector exists for exactly this — but those members never
+   merge or compact).  `tb_flush` teardown and `w64_instantiate` are
+   ruled out; the only writer of that LEB is the emitter's
+   end-of-codegen patch, so the leading hypothesis is a code-buffer
+   position handed out twice, most likely around `w64_speculate()`'s
+   `tb_gen_code()` calls into an open batch.  The forensic dump
+   (`/w64bad-<n>.bin`) must be pulled out of MEMFS by the driver to get
+   further — full write-up in [optimization-sessions.md](optimization-sessions.md),
+   2026-09-12.
+5. **AOT cache — OPEN, orthogonal** (backend plan phase 5): persist
    translated batches (Cache API/IndexedDB, keyed by flash hash) —
    zero-translation second boots; would also attack #1.
-5. **Backend tail — `/dist-jit` only**: 0022 fixed the dead goto_ptr
+6. **Backend tail — `/dist-jit` only**: 0022 fixed the dead goto_ptr
    fast path, 0026 keeps indirect jumps inside wasm, 0027 turned the
    CPSR-write exits into goto_ptr.  Left: `helper_lookup_tb_ptr`
    (~5–7 % of vCPU: a C helper + `arm_get_tb_cpu_state` + jmp-cache
@@ -369,6 +382,30 @@ executing early in the GSM L1 loop and sometimes trips translator_ld's
 page assertion.  site/app.js runs the LG boards on `dist` until that is
 fixed; treat an s75/el71 PASS + ke800 FAIL as the current baseline, not
 as a green gate.
+
+## The benchmark measured a configuration nobody ships (2026-09-12)
+
+`idlebench` hardcoded `&rt=off` in the page URL from the day 0032 landed
+("the real-time cap would pace a faster-than-realtime boot" — true, and
+the right default for a *milestone* number), but `site/app.js` ships
+`rt=banked`.  So for the whole 0032→0038 stretch **no rung of the ladder
+ever measured what a user gets**, and a regression that existed only
+under the cap could not have been caught by any of them.
+
+Now an env knob: `RT=banked node tools/idlebench.mjs …` (default stays
+`off`; an `RT!=off` run is a knob run and never becomes a baseline).
+**Run it whenever a patch touches icount, the halt path or timers.**
+
+Measured cost of the cap itself (same wasm, S75v40lg1, quiet host):
+tIdle 34.8 → 40.6 s, t0.5G 25.8 → 28.2, every milestone +9…13 %.  That
+is not a bug — the cap is what stops the phone's clock and animations
+running ahead of wall — but it is a real user-visible price that was
+invisible here, and it belongs in any future "boot takes N seconds"
+claim.
+
+Generally: **if the page has a knob, the benchmark must be able to set
+it.**  A hardcoded query parameter in a measurement tool is a permanent
+blind spot, not a default.
 
 ## Gates added 2026-09-11
 

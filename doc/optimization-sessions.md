@@ -1066,3 +1066,69 @@ EL71 is the only one that programs flash while booting, KE800 the only
 one without icount, and each hid a distinct bug for the whole session.
 (3) The TCI dist is an oracle: any JIT-only failure can be bisected by
 diffing the same device trace between the two engines.
+
+## 2026-09-12 — wasm64 batcher: a staged member's body changed under it (OPEN)
+
+Seen once in a 285 s KE800 boot on `dist-jit` (the long verification run
+for 0038), at t=254 s:
+
+```
+W64BADFILE /w64bad-1.bin
+W64BADSRC member 0 tcptr=0xfb7f800 len=744 sum=b910facd: size LEB changed since staging
+W64BATCHSKIP id=170755 members=2 SOURCE-CORRUPT (members stay on temp modules)
+```
+
+**What the detector is.**  `w64_batch_close()` re-reads every staged
+member's bytes before assembling the merged module and compares them
+against the records taken at `w64_batch_add()` time: the 5-byte padded
+body-size LEB, then an FNV sum over `body_len` bytes from
+`W64_BODY_OFF`.  On a mismatch it abandons the whole batch — the members
+keep their individual temp modules — and dumps a forensic record to
+`/w64bad-<n>.bin` in MEMFS.  Someone built this deliberately, so the
+possibility that the code buffer moves under an open batch was already
+suspected; this is the first time it has been seen firing.
+
+**Consequence.**  Correctness is safe by construction (the batch is
+dropped, not assembled from bytes that no longer match the records), and
+the members stay executable on their temp modules.  The cost is the
+module economy 0019 exists to buy: that batch's members never merge, so
+they stay as individual small modules and are never compaction
+candidates.  One event per boot is negligible; the reason to chase it is
+that it is evidence of an invariant violation, not the lost batch.
+
+**What was ruled out.**
+
+- *tb_flush.*  `w64_batch_flush()` already tears the open batch down
+  (`B.n_member = 0`) along with the landed thunks, so a flush between
+  staging and close cannot leave stale members behind.
+- *Temp-module instantiation.*  `w64_instantiate()` only reads
+  (`HEAPU8.slice(p + 20, …)`); it never writes the body.
+- *Descriptor mutation.*  The dispatcher does write the descriptor after
+  staging — `W64_DESC_BATCH` aliases `W64_DESC_MODLEN` at offset 4 and is
+  cleared when a temp module is instantiated — but the check starts at
+  `W64_BODY_OFF` (276) and so does not cover, or trip on, the
+  descriptor.
+
+**Leading hypothesis.**  The only writer of that size LEB is the
+emitter's end-of-codegen patch (`tcg-target.c.inc`, "patch the body-size
+LEB", `s->code_buf + W64_BODY_OFF`).  If it changed after staging, the
+emitter ran again over that address — i.e. a code-buffer position was
+handed out twice, and a later TB's body landed on top of a staged
+member.  That points at the interaction between `w64_speculate()`'s
+`tb_gen_code()` calls and the open batch rather than at the batcher
+itself: speculation generates TBs into the same buffer while a batch is
+open, and it is the one path that translates TBs the guest has not
+reached.
+
+**Next step.**  The forensic dump is the whole point and it was lost —
+`/w64bad-1.bin` lives in MEMFS and died with the page.  A repro needs to
+pull it out (`m.FS.readFile("/w64bad-1.bin")` from the driver, the way
+`tools/conlog.mjs SAVE_FS=` does) and compare the staged record against
+the bytes now at `tcptr`: if the body there is a *valid, different* TB
+body, the double-hand-out is confirmed and the question becomes which
+path advanced `code_gen_ptr` twice.  Add `W64_DEBUG=1` for the batch
+histogram around the event.
+
+**Frequency note for whoever picks this up.**  One occurrence in 285 s on
+KE800; not seen in the S75/EL71 runs of the same session, which are also
+the shorter ones.  Do not assume it is LG-specific on that evidence.
