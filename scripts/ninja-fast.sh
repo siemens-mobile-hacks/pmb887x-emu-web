@@ -1,25 +1,36 @@
 #!/bin/bash
-# Fast incremental rebuild + deploy of the wasm qemu build (build/qemu-wasm).
-# Skips the tree reset/patch/reconfigure that scripts/build-qemu.sh does;
-# use it while iterating on files already patched into build/qemu.
+# Fast incremental rebuild + deploy of the default wasm build
+# (build/qemu-wasm64, the wasm64 TCG backend -> site/dist-jit).
+# TCI=1 targets the TCG-interpreter build instead (build/qemu-wasm ->
+# site/dist). Skips the tree reset/patch/reconfigure that
+# scripts/build-qemu.sh does; use it while iterating on files already
+# patched into build/qemu.
 #
 # With no arguments: builds qemu-system-arm.js and DEPLOYS the emscripten
-# artifacts to $WEB_DIST (default site/dist/) so the next page load runs the
+# artifacts to $WEB_DIST (default site/dist-jit/, TCI=1: site/dist/) so the
+# next page load runs the
 # new build — no manual cp, no stale-wasm traps (also drops stale .gz
 # sidecars, which serve.mjs would otherwise prefer over the fresh file).
 # With arguments they are passed to ninja verbatim and no deploy happens.
 #
 # Env:
+#   TCI=1        iterate the TCI dist (build/qemu-wasm -> site/dist)
 #   VERBOSE=1   full ninja output (default: warnings + last lines + summary)
 #   NO_DEPLOY=1 skip the dist/ deploy
-#   GZ=1        also refresh site/dist/qemu-system-arm.wasm.gz (slower deploy;
+#   GZ=1        also refresh the wasm .gz sidecar (slower deploy;
 #               only worth it when serving to a phone over the LAN)
 set -euo pipefail
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${WEB_BUILD:-$WEB_DIR/build}"
 DEPS_ROOT="${WASM_DEPS:-$BUILD/deps}"
 TARGET="$DEPS_ROOT/target"
-DIST="${WEB_DIST:-$WEB_DIR/site/dist}"
+if [ -n "${TCI:-}" ]; then
+  BUILD_DIR="$BUILD/qemu-wasm"
+  DIST="${WEB_DIST:-$WEB_DIR/site/dist}"
+else
+  BUILD_DIR="$BUILD/qemu-wasm64"
+  DIST="${WEB_DIST:-$WEB_DIR/site/dist-jit}"
+fi
 
 source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null 2>&1
 export PATH="$HOME/.local/bin:$PATH"
@@ -27,7 +38,7 @@ export CPATH="$TARGET/include"
 export PKG_CONFIG_PATH="$TARGET/lib/pkgconfig"
 export EM_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
 
-cd "$BUILD/qemu-wasm"
+cd "$BUILD_DIR"
 
 T0=$SECONDS
 LOG="$(mktemp)"
@@ -56,7 +67,7 @@ if [ "${NO_DEPLOY:-0}" = "1" ]; then
 fi
 
 mkdir -p "$DIST"
-for f in qemu-system-arm.js qemu-system-arm.wasm qemu-system-arm.worker.js qemu-system-arm.wasm.map; do
+for f in qemu-system-arm.js qemu-system-arm.wasm qemu-system-arm.worker.js qemu-system-arm.wasm.map qemu-system-arm.js.symbols; do
   [ -f "$f" ] && cp -f "$f" "$DIST/"
 done
 rm -f "$DIST/qemu-system-arm.wasm.gz" "$DIST/qemu-system-arm.js.gz"

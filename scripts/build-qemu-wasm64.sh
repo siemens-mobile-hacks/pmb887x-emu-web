@@ -3,7 +3,8 @@
 #
 # Builds the emscripten wasm64 qemu (memory64, pthreads, ASYNCIFY) into
 # build/qemu-wasm64/ and deploys qemu-system-arm.{js,wasm} into
-# site/dist-jit/ (served by the emulator page's ?dist=dist-jit switch).
+# site/dist-jit/ (the emulator page's default dist; ?dist=dist opts into
+# the TCI build instead).
 #
 # Prereqs (already present in this tree):
 #   - build/deps/emsdk (emsdk env + wasm64 sysroot under build/deps/target)

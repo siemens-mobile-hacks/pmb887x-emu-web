@@ -1,6 +1,7 @@
 // Run the phase-0a guest op-suite on the wasm TCI page and print the
 // serial log (doc/wasm-tcg-backend-plan.md). The page is loaded with
-// ?suite=dist/tcgisa.bin; the suite boots -M versatilepb, prints TAP +
+// ?suite=dist/tcgisa.bin&dist=dist (the TCI dist, explicitly — the page
+// default is dist-jit; the wasm64-backend leg is tools/tcgisa64.mjs); the suite boots -M versatilepb, prints TAP +
 // value dumps into /serial.log and then parks (the wasm pthread runtime
 // cannot take the semihosting exit path — the page would die before the
 // log could be collected), so this polls window.__qemu.FS until the
@@ -32,7 +33,7 @@ page.on("console", (m) => {
 });
 page.on("pageerror", (e) => console.error("[pageerror]", String(e).slice(0, 500)));
 
-await page.goto(`http://127.0.0.1:${port}/?suite=dist/tcgisa.bin`,
+await page.goto(`http://127.0.0.1:${port}/?suite=dist/tcgisa.bin&dist=dist`,
                 { waitUntil: "networkidle", timeout: 120000 });
 
 let serial = "";

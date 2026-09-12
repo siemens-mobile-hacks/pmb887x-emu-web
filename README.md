@@ -29,7 +29,9 @@ physical-keyboard mapping).
 
 ```bash
 ./build.sh          # ~30-60 min first run: emsdk 4.0.10 + glib/pixman/zlib/libffi
-                    # built for wasm64, then qemu → site/dist/qemu-system-arm.wasm
+                    # built for wasm64, then qemu → site/dist-jit/
+                    # qemu-system-arm.wasm (the page default; TCI=1 also
+                    # builds site/dist/, the fallback for the LG boards)
 ./serve.mjs         # http://127.0.0.1:8080 (COOP/COEP headers for pthreads)
                     # phone/LAN: auto-redirected to https://<lan-ip>:6808
                     # (self-signed — accept the browser warning once; browsers
@@ -121,7 +123,9 @@ lands in `/tmp/pmb887x-serial.log`.
 
 ```
 .
-  build.sh              one-shot WASM build (toolchain → deps → qemu → site/dist)
+  build.sh              one-shot WASM build (toolchain → deps → qemu →
+                        site/dist-jit, the page default; TCI=1 also builds
+                        site/dist)
   serve.mjs             static server for the WASM page (COOP/COEP); serves
                         site/ — static files are edited in place, build
                         artifacts (qemu wasm/js, boards.tar) live in
@@ -131,8 +135,9 @@ lands in `/tmp/pmb887x-serial.log`.
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
     fetch-qemu.sh       clone/refresh the pinned qemu + bsp sources into build/
     sync-bsp.sh         bsp checkout @ pin + patches/bsp workarounds
-    build-qemu.sh       applies patches/ to the pinned rev, builds the TCI
-                        wasm dist → site/dist/ (+ boards.tar)
+    build-qemu.sh       applies patches/ to the pinned rev, builds the wasm64
+                        TCG backend → site/dist-jit/ (the default) +
+                        boards.tar; TCI=1 also builds the TCI dist → site/dist/
     build-qemu-wasm64.sh  same patched tree, wasm64 TCG backend → site/dist-jit
     build-native.sh     native Linux JIT build (pristine worktree, no patches)
     build-native-tci.sh native TCI build (plugins on — the lockstep b-side)
@@ -140,7 +145,8 @@ lands in `/tmp/pmb887x-serial.log`.
                         historical, kept for reference — its build script
                         build-qemu-jit.sh was removed, see doc/wasm32-port-status.md)
     run-native.sh       native launcher (same boot recipe as the web page)
-    ninja-fast.sh       incremental TCI rebuild + deploy (~8 s)
+    ninja-fast.sh       incremental rebuild + deploy (default: wasm64 →
+                        site/dist-jit; TCI=1: dist)
     ninja-wasm64.sh     incremental wasm64-backend rebuild
     capture-patch.sh    capture build/qemu edits as patches/NNNN-*.patch
     switch-test.sh      patch-isolation A/B harness (rebuild minus/revert N)

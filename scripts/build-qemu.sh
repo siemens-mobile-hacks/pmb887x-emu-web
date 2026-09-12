@@ -2,10 +2,13 @@
 # Build qemu-system-arm (pmb887x) as WebAssembly + assemble dist.
 #
 # Clones the pinned qemu-pmb887x revision into build/qemu (pristine
-# upstream + patches/*.patch), configures it for emscripten/wasm64 with
-# the TCG interpreter, and produces:
-#   site/dist/qemu-system-arm.js / .wasm / .worker.js   (emscripten output)
-#   site/dist/boards.tar                                 (board configs from bsp)
+# upstream + patches/*.patch), then builds:
+#   default: the wasm64 TCG backend -> site/dist-jit/ (the page default)
+#   TCI=1 : additionally the TCG-interpreter dist -> site/dist/ (the
+#           fallback for boards that don't boot on the wasm64 backend —
+#           currently the LG boards — and the comparison baseline)
+# Either way it produces site/dist/boards.tar (board configs from bsp;
+# the page always fetches it from dist/).
 # site/ is served directly by serve.mjs — nothing is copied for it.
 set -euo pipefail
 
@@ -61,7 +64,16 @@ done
 bash "$WEB_DIR/scripts/sync-bsp.sh"
 tar -cf "$DIST/boards.tar" -C "$BUILD/bsp/lib/data/board" .
 
-# --- configure + build ---
+# --- build: wasm64 TCG backend (site/dist-jit/, the page default) ---
+bash "$WEB_DIR/scripts/build-qemu-wasm64.sh"
+
+# --- optional: TCG-interpreter dist (site/dist/) ---
+if [ -z "${TCI:-}" ]; then
+  echo "== skipping the TCI dist (site/dist/) — set TCI=1 to build it"
+  echo "=== web dist ready: $WEB_DIR/site/dist-jit ==="
+  exit 0
+fi
+
 # Flags follow qemu's CI wasm64 job (tests/docker/dockerfiles/emsdk-wasm64-cross.docker
 # + .gitlab-ci.d/buildtest.yml build-wasm64-64bit), plus the flags needed to
 # drive it from a browser: pthreads with main() proxied to a worker, ES6
@@ -98,4 +110,4 @@ done
 [ -f qemu-system-arm.worker.js ] && cp qemu-system-arm.worker.js "$DIST/" || true
 [ -f qemu-system-arm.wasm.map ] && cp qemu-system-arm.wasm.map "$DIST/" || true
 
-echo "=== web dist ready: $DIST ==="
+echo "=== web dists ready: $WEB_DIR/site/dist-jit (default) + $DIST (TCI) ==="
