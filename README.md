@@ -5,9 +5,10 @@ qemu-system-arm compiled to WebAssembly (`./build.sh` + `./serve.mjs`) —
 deterministic boot, splash draws, keypad/serial work, boot to the idle
 screen in ~70–75 s (the stock icount timing model below keeps correctness
 independent of host speed — a slow host merely boots slower). Two engines
-ship: the TCI interpreter (default) and a wasm64 TCG JIT backend
-(`?dist=dist-jit` — guest TBs compiled to wasm at runtime, ~7.4× TCI on
-compute). See
+ship: the wasm64 TCG JIT backend (the default — guest TBs compiled to
+wasm at runtime, ~7.4× TCI on compute, half the download) and the TCI
+interpreter (`?dist=dist`, still the default for the LG boards, which do
+not boot on the JIT yet). See
 [doc/livelock-postmortem.md](doc/livelock-postmortem.md) +
 [doc/performance-handoff.md](doc/performance-handoff.md).
 
@@ -43,9 +44,10 @@ re-download (`tools/loadbench.mjs` measures the startup path).
 Everything runs client-side: the picked fullflash is written into the
 emscripten MEMFS, board configs are unpacked from `site/dist/boards.tar`, and
 qemu boots with a small `-display wasm` backend (see below). Two TCG
-engines are built from the same patched tree: the interpreter (TCI,
-`site/dist/`, the page default) and the wasm64 TCG backend (patch 0017,
-`site/dist-jit/`, page switch `?dist=dist-jit`) — ~7.4× TCI on compute,
+engines are built from the same patched tree: the wasm64 TCG backend
+(patch 0017, `site/dist-jit/`, the page default) and the interpreter
+(TCI, `site/dist/`, page switch `?dist=dist`, and the default for the LG
+boards) — ~7.4× TCI on compute,
 but still ~27 % slower than TCI over the boot's translation-heavy
 first 0.5 G insns (user-visible: ~86 vs 78 s to the idle screen; see
 doc/optimization-playbook.md, 2026-09-11 benchmark audit). Both stay
@@ -380,8 +382,8 @@ green; the boot's early phase is still ~27 % behind TCI — the
   clock, stock rewind kept for flash-command accesses — see
   doc/early-crash-postmortem.md §9).
 - `site/dist-jit/` — the wasm64 TCG backend build (0017 + 0019 on top of
-  the shared series; `scripts/build-qemu-wasm64.sh`, page switch
-  `?dist=dist-jit`).  Boots in Firefox too (0019); `tools/ffboot.mjs`
+  the shared series; `scripts/build-qemu-wasm64.sh`), what the page runs
+  by default; `?dist=dist` switches back to the interpreter.  Boots in Firefox too (0019); `tools/ffboot.mjs`
   is the cross-browser smoke.
 - Fast iteration: `scripts/ninja-fast.sh` / `scripts/ninja-wasm64.sh`
   (incremental, correct env) + `node tools/tcgbench.mjs` (seconds-per-leg

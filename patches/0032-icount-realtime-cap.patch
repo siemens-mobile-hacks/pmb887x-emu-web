@@ -1,0 +1,293 @@
+From: perf session 2026-09-11
+Subject: [PATCH 0032] icount: optional real-time cap for sleep=off
+
+Under -icount shift=3,sleep=off the virtual clock is instruction-
+proportional and, at idle, is warped straight to the next timer deadline
+(0023 does this on the vCPU thread).  So a halted guest advances virtual
+time as fast as the host can process deadlines: on wasm the idle screen's
+clock and animations, paced by QEMU_CLOCK_VIRTUAL device timers, run well
+ahead of wall time (measured ~3.7x at t~45 s).  This regressed relative
+to native, where the warp is real-time paced.
+
+Add an opt-in real-time cap (QEMU_ICOUNT_RTCAP=off|banked|strict, wasm
+default banked): before a warp (rr_idle_advance) or after a budget round
+(rr_rtcap_throttle) the vCPU sleeps, kick-interruptibly, until wall time
+reaches the virtual target.  "banked" measures allowed time from VM start,
+so a slower-than-real-time phase (the whole boot: the guest is compute-
+bound, virtual runs *behind* wall) banks no debt and is never throttled;
+only once the guest idles and virtual would overrun wall is it paced.
+"strict" re-anchors on lag (never banks).  Virtual time stays exactly
+instruction-deterministic; only wall pacing changes, so the lockstep and
+op-suite gates are unaffected.  Needs a sub-ms kickable wait:
+qemu_cond_timedwait_ns / _bql_ns (ns-precision emscripten futex; native
+falls back to the ms timedwait).  The page maps ?rt=off|banked|strict to
+the env var (default banked); the benchmarks pass rt=off so a
+faster-than-real-time boot is timed at full speed.
+
+Measured (dist-jit, conlog, at t=45 s wall): virtual clock v=166 s
+(off) -> v=44.8 s (banked) ~= wall; boot-to-idle unchanged (banked does
+not throttle the compute-bound boot: insns@30 s 1.13 G vs 1.19 G off,
+within noise).  strict wrongly paces the boot (insns@30 s 0.80 G) — not
+the default.  Default-off on non-emscripten hosts (no behaviour change).
+
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+--- a/accel/tcg/icount-common.c	2026-09-11 16:21:53.988073171 +0000
++++ b/accel/tcg/icount-common.c	2026-09-11 16:21:23.829074642 +0000
+@@ -51,6 +51,50 @@
+ 
+ bool icount_align_option;
+ 
++/*
++ * Real-time cap (see exec/icount.h).  With sleep=off the virtual clock is
++ * instruction-proportional and never waits for the host: a halted guest
++ * warps to its next timer at once and a guest running faster than one insn
++ * per 2^shift ns runs its clocks ahead of wall time (idle-screen
++ * countdowns, animations).  The cap keeps QEMU_CLOCK_VIRTUAL within
++ * RTCAP_SLACK of "allowed" virtual time: the vCPU thread sleeps
++ * (kick-interruptible) before a warp or after a budget round that would
++ * overrun.  Virtual time itself stays deterministic, only wall pacing
++ * changes.  "banked": allowed = wall time since the VM started, so a guest
++ * that fell behind (a slow boot) may catch up as fast as it can and the
++ * boot is never slowed; "strict": the anchor is re-set whenever virtual
++ * time lags, so nothing is banked and the guest is always paced.
++ */
++bool icount_rtcap;
++static bool icount_rtcap_strict;
++static int64_t rtcap_v0, rtcap_r0;
++static bool rtcap_vcpu_waiting;
++#define RTCAP_SLACK_NS (2 * SCALE_MS)
++
++int64_t icount_rtcap_excess_ns(int64_t vtarget)
++{
++    int64_t r = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    int64_t allowed = rtcap_v0 + (r - rtcap_r0);
++
++    /*
++     * strict: lag is forgiven, not banked.  Test the target, not the
++     * current virtual time: while the vCPU sleeps for wall time to reach
++     * a warp target, the current time falls "behind" by design, and
++     * re-anchoring on it would restart the wait forever.
++     */
++    if (icount_rtcap_strict && vtarget < allowed - RTCAP_SLACK_NS) {
++        rtcap_v0 = vtarget;
++        rtcap_r0 = r;
++        allowed = vtarget;
++    }
++    return vtarget - (allowed + RTCAP_SLACK_NS);
++}
++
++void icount_rtcap_set_waiting(bool waiting)
++{
++    qatomic_set(&rtcap_vcpu_waiting, waiting);
++}
++
+ /* Do not count executed instructions */
+ ICountMode use_icount = ICOUNT_DISABLED;
+ 
+@@ -358,6 +402,18 @@
+              * It is useful when we want a deterministic execution time,
+              * isolated from host latencies.
+              */
++            if (icount_rtcap && !qemu_in_vcpu_thread()) {
++                /*
++                 * Under the real-time cap the vCPU thread paces its own
++                 * warps (rr_idle_advance).  It handles this deadline when
++                 * its timed wait ends; if it is parked in the untimed halt
++                 * wait instead, hand the deadline back to it.
++                 */
++                if (!qatomic_read(&rtcap_vcpu_waiting)) {
++                    qemu_cpu_kick(first_cpu);
++                }
++                return;
++            }
+             seqlock_write_lock(&timers_state.vm_clock_seqlock,
+                                &timers_state.vm_clock_lock);
+             qatomic_set(&timers_state.qemu_icount_bias,
+@@ -463,6 +519,18 @@
+     if (icount_sleep) {
+         timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
+                                          icount_timer_cb, NULL);
++    } else {
++        const char *e = getenv("QEMU_ICOUNT_RTCAP");
++#ifdef __EMSCRIPTEN__
++        const char *mode = e ? e : "banked";
++#else
++        const char *mode = e ? e : "off";
++#endif
++        icount_rtcap_strict = !strcmp(mode, "strict");
++        icount_rtcap = icount_rtcap_strict || !strcmp(mode, "banked")
++                       || !strcmp(mode, "1") || !strcmp(mode, "on");
++        rtcap_v0 = 0;
++        rtcap_r0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+     }
+ 
+     icount_align_option = align;
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c	2026-09-11 16:21:54.011271896 +0000
++++ b/accel/tcg/tcg-accel-ops-rr.c	2026-09-11 16:21:23.831074693 +0000
+@@ -133,6 +133,23 @@
+             return;
+         }
+         if (deadline > 0) {
++            if (icount_rtcap) {
++                /*
++                 * Real-time cap: the warp would put the virtual clock
++                 * ahead of wall time — sleep the difference first (a kick
++                 * ends the wait early; an interrupt then makes the guest
++                 * non-idle and we leave without warping).
++                 */
++                int64_t excess = icount_rtcap_excess_ns(
++                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + deadline);
++
++                if (excess > 0) {
++                    icount_rtcap_set_waiting(true);
++                    qemu_cond_timedwait_bql_ns(first_cpu->halt_cond, excess);
++                    icount_rtcap_set_waiting(false);
++                    continue;
++                }
++            }
+             icount_start_warp_timer();
+             if (qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                            ~QEMU_TIMER_ATTR_EXTERNAL) > 0) {
+@@ -148,6 +165,32 @@
+     }
+ }
+ 
++/*
++ * Real-time cap while the guest runs: after a budget round, sleep if the
++ * virtual clock got ahead of wall time.  The host-clock read is a JS
++ * import on wasm, so it is taken at most once per ms of virtual time.
++ * Called without the BQL; the wait is kick-interruptible and bounded so
++ * an interrupt is never delayed by more than a few ms.
++ */
++static void rr_rtcap_throttle(void)
++{
++    static int64_t last_v;
++    int64_t v = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    int64_t excess;
++
++    if (v - last_v < SCALE_MS) {
++        return;
++    }
++    last_v = v;
++    excess = icount_rtcap_excess_ns(v);
++    if (excess > 0) {
++        bql_lock();
++        qemu_cond_timedwait_bql_ns(first_cpu->halt_cond,
++                                   MIN(excess, 20 * SCALE_MS));
++        bql_unlock();
++    }
++}
++
+ static void rr_wait_io_event(void)
+ {
+     CPUState *cpu;
+@@ -332,6 +375,9 @@
+                 r = tcg_cpu_exec(cpu);
+                 if (icount_enabled()) {
+                     icount_process_data(cpu);
++                    if (icount_rtcap) {
++                        rr_rtcap_throttle();
++                    }
+                 }
+                 bql_lock();
+ 
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+--- a/include/exec/icount.h	2026-09-11 16:21:53.262529693 +0000
++++ b/include/exec/icount.h	2026-09-11 16:21:23.836214852 +0000
+@@ -73,4 +73,15 @@
+ void icount_account_warp_timer(void);
+ void icount_notify_exit(void);
+ 
++/*
++ * Real-time cap for sleep=off icount (QEMU_ICOUNT_RTCAP=off|banked|strict;
++ * wasm defaults to banked, other hosts to off): QEMU_CLOCK_VIRTUAL is not
++ * allowed to run ahead of wall time.  The vCPU thread asks how many host
++ * ns must pass before virtual time may reach @vtarget and sleeps for them
++ * (rr_idle_advance before a warp, the rr loop after a budget round).
++ */
++extern bool icount_rtcap;
++int64_t icount_rtcap_excess_ns(int64_t vtarget);
++void icount_rtcap_set_waiting(bool waiting);
++
+ #endif /* EXEC_ICOUNT_H */
+diff --git a/include/qemu/main-loop.h b/include/qemu/main-loop.h
+--- a/include/qemu/main-loop.h	2026-09-11 16:21:53.321829050 +0000
++++ b/include/qemu/main-loop.h	2026-09-11 16:21:23.839024666 +0000
+@@ -423,6 +423,7 @@
+  * qemu_cond_timedwait_bql: like the previous, but with timeout
+  */
+ void qemu_cond_timedwait_bql(QemuCond *cond, int ms);
++bool qemu_cond_timedwait_bql_ns(QemuCond *cond, int64_t ns);
+ 
+ /* internal interfaces */
+ 
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+--- a/include/qemu/thread.h	2026-09-11 16:21:53.324829128 +0000
++++ b/include/qemu/thread.h	2026-09-11 16:21:23.840494025 +0000
+@@ -192,6 +192,9 @@
+     return qemu_cond_timedwait(cond, mutex, ms);
+ }
+ 
++/* Sub-millisecond timed wait (host ns); same return as qemu_cond_timedwait */
++bool qemu_cond_timedwait_ns(QemuCond *cond, QemuMutex *mutex, int64_t ns);
++
+ void qemu_sem_init(QemuSemaphore *sem, int init);
+ void qemu_sem_post(QemuSemaphore *sem);
+ void qemu_sem_wait(QemuSemaphore *sem);
+diff --git a/system/cpus.c b/system/cpus.c
+--- a/system/cpus.c	2026-09-11 16:21:53.521123856 +0000
++++ b/system/cpus.c	2026-09-11 16:21:23.842089687 +0000
+@@ -597,6 +597,11 @@
+     qemu_cond_timedwait(cond, &bql, ms);
+ }
+ 
++bool qemu_cond_timedwait_bql_ns(QemuCond *cond, int64_t ns)
++{
++    return qemu_cond_timedwait_ns(cond, &bql, ns);
++}
++
+ /* signal CPU creation */
+ void cpu_thread_signal_created(CPUState *cpu)
+ {
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+--- a/util/qemu-thread-posix.c	2026-09-11 16:21:53.973411692 +0000
++++ b/util/qemu-thread-posix.c	2026-09-11 16:21:23.844594403 +0000
+@@ -262,6 +262,14 @@
+     return qemu_cond_wait_common(cond, mutex, ms, file, line);
+ }
+ 
++bool qemu_cond_timedwait_ns(QemuCond *cond, QemuMutex *mutex, int64_t ns)
++{
++    /* emscripten_futex_wait takes a double ms with sub-ms precision; 0 ms
++     * means "return at once", which is what a non-positive wait wants */
++    return qemu_cond_wait_common(cond, mutex, ns > 0 ? ns / 1e6 : 0,
++                                 __FILE__, __LINE__);
++}
++
+ static bool qemu_cond_timedwait_ts(QemuCond *cond, QemuMutex *mutex,
+                                    struct timespec *ts,
+                                    const char *file, const int line)
+@@ -368,6 +376,22 @@
+     compute_abs_deadline(&ts, ms);
+     return qemu_cond_timedwait_ts(cond, mutex, &ts, file, line);
+ }
++
++bool qemu_cond_timedwait_ns(QemuCond *cond, QemuMutex *mutex, int64_t ns)
++{
++    struct timespec ts;
++
++    clock_gettime(qemu_timedwait_clockid(), &ts);
++    if (ns > 0) {
++        ts.tv_nsec += ns % 1000000000;
++        ts.tv_sec += ns / 1000000000;
++        if (ts.tv_nsec >= 1000000000) {
++            ts.tv_sec++;
++            ts.tv_nsec -= 1000000000;
++        }
++    }
++    return qemu_cond_timedwait_ts(cond, mutex, &ts, __FILE__, __LINE__);
++}
+ #endif /* __EMSCRIPTEN__ */
+ 
+ void qemu_sem_init(QemuSemaphore *sem, int init)

@@ -1,0 +1,467 @@
+From: perf session 2026-09-11
+Subject: [PATCH 0031] wasm64: scope Asyncify instrumentation to a coroutine-stack allowlist
+
+The emscripten fiber coroutine backend unwinds the whole C stack at a
+switch, so every frame that can be live at a switch must be Asyncify-
+instrumented.  The build did this with -sASYNCIFY_REMOVE=tcg_qemu_tb_exec
+(instrument everything except the interpreter).  Because the invoke_*
+setjmp/longjmp wrappers and indirect calls pull almost everything into
+the reachability set, ~21000 functions (17 MB of the 45 MB wasm) ended up
+instrumented, and on the wasm64 backend that is ~25 % of the early-boot
+vCPU time (Module/Instance-adjacent C code, helpers, translation) plus a
+45 MB download.
+
+The wasm64 backend runs guest code as JIT'd per-TB modules (addFunction),
+not through tcg_qemu_tb_exec, so almost none of the instrumentation is on
+a real switch path.  Replace REMOVE with -sASYNCIFY_ONLY=@asyncify-only.txt:
+instrument ONLY the functions captured on an actual switch stack.  The
+list was built with QEMU_COSTACK=1 (added to util/coroutine-wasm.c: log
+each distinct JS/wasm stack at a switch) over a full pmb887x boot, rw
+flash writes and shutdown, plus name-pattern families (block layer, aio,
+coroutine, main loop, emscripten runtime).  Two prerequisites make the
+list closed:
+
+  - hw/arm/pmb887x/flash-blk.c: a writable-flash store ran blk_pwrite()
+    (a block coroutine) from the vCPU thread's MMIO write handler, whose
+    JIT'd TB frame + invoke_* wrapper can never be instrumented.  Defer
+    the write to a main-loop bottom half (coalescing adjacent ranges);
+    the storage array already holds the latest bytes, and a vm-state
+    change handler flushes on stop.
+  - util/coroutine-wasm.c: mark the vCPU thread (qemu_coroutine_forbid_
+    current_thread) so a switch there aborts loudly instead of derailing.
+
+wasm64-only (scripts/build-qemu-wasm64.sh overrides the shared cross
+file): the TCI dist's hot path IS tcg_qemu_tb_exec, and the onlylist
+regressed it +26 % (interleaved idlebench, both orders), so the TCI dist
+keeps ASYNCIFY_REMOVE.
+
+Measured (dist-jit, idlebench --runs 2 interleaved vs the session base):
+wasm 45.1 MB -> 27.8 MB; tIdle 40.3 -> 33.2 s (-18 %); t0.5G 29.6 -> 24.0
+(-19 %); early phase t0.1G 5.4 -> 3.3 (-39 %).  Gates: op-suite native
+JIT+TCI 1156/1156 byte-identical; wasm64 lockstep 250e6 serial+regs
+identical; boots to the idle screen (Chromium).
+
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c	2026-09-11 16:19:36.412076206 +0000
++++ b/accel/tcg/tcg-accel-ops-rr.c	2026-09-11 16:19:21.681976193 +0000
+@@ -230,6 +230,7 @@
+     force_rcu.notify = rr_force_rcu;
+     rcu_add_force_rcu_notifier(&force_rcu);
+     tcg_register_thread();
++    qemu_coroutine_forbid_current_thread();
+ 
+     bql_lock();
+     qemu_thread_get_self(cpu->thread);
+diff --git a/configs/meson/emscripten.txt b/configs/meson/emscripten.txt
+--- a/configs/meson/emscripten.txt	2026-09-11 16:19:36.383568132 +0000
++++ b/configs/meson/emscripten.txt	2026-09-11 16:14:42.813662944 +0000
+@@ -13,6 +13,8 @@
+ #                       from the asyncify import (libffi's ffi_call_js) and
+ #                       would run fully instrumented (2x slower); it never
+ #                       suspends itself, so drop it from instrumentation.
++#                       (The wasm64 backend build overrides this with
++#                       ASYNCIFY_ONLY — see scripts/build-qemu-wasm64.sh.)
+ c_link_args = ['-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
+   '-sASYNCIFY_REMOVE=tcg_qemu_tb_exec','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']
+ cpp_link_args = ['-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js',
+diff --git a/hw/arm/pmb887x/flash-blk.c b/hw/arm/pmb887x/flash-blk.c
+--- a/hw/arm/pmb887x/flash-blk.c	2026-09-11 16:19:35.322428854 +0000
++++ b/hw/arm/pmb887x/flash-blk.c	2026-09-11 15:06:17.667777180 +0000
+@@ -7,6 +7,8 @@
+ #include "block/block_int-common.h"
+ #include "hw/core/sysbus.h"
+ #include "system/block-backend.h"
++#include "system/runstate.h"
++#include "qemu/main-loop.h"
+ #include "hw/core/qdev-properties.h"
+ #include "hw/core/qdev-properties-system.h"
+ #include "hw/arm/pmb887x/trace.h"
+@@ -15,19 +17,83 @@
+ #define TYPE_PMB887X_FLASH_BLK	"pmb887x-flash-blk"
+ #define PMB887X_FLASH_BLK(obj)	OBJECT_CHECK(struct pmb887x_flash_blk_t, (obj), TYPE_PMB887X_FLASH_BLK)
+ 
++typedef struct {
++	int64_t offset;
++	int64_t size;
++	const uint8_t *src;
++} flash_blk_dirty_t;
++
+ struct pmb887x_flash_blk_t {
+ 	SysBusDevice parent_obj;
+ 	DeviceState *dev;
+ 	BlockBackend *blk;
++	/* write-behind (wasm): dirty ranges flushed by a main-loop BH */
++	GArray *dirty;
++	QEMUBH *flush_bh;
++	VMChangeStateEntry *vmstate;
+ };
+ 
+ int pmb887x_flash_blk_pread(pmb887x_flash_blk_t *flash, int64_t offset, int64_t size, void *storage) {
+ 	return blk_pread(flash->blk, offset, size, storage, 0);
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * A blk_pwrite() from the vCPU thread (the flash MMIO write handler) runs
++ * a block-layer coroutine there: on wasm the coroutine switch unwinds the
++ * stack with Asyncify, and the JIT'd TB frame plus the invoke_* wrapper
++ * under the helper cannot be instrumented, so the vCPU derailed at the
++ * first flash write in rw mode.  Record the range instead and write it
++ * from a main-loop bottom half (the coroutine-capable thread); the
++ * storage array always holds the latest data, so writing later is exact.
++ */
++static void flash_blk_flush(pmb887x_flash_blk_t *flash) {
++	GArray *dirty = flash->dirty;
++
++	if (!dirty->len)
++		return;
++	flash->dirty = g_array_new(false, false, sizeof(flash_blk_dirty_t));
++	for (guint i = 0; i < dirty->len; i++) {
++		flash_blk_dirty_t *d = &g_array_index(dirty, flash_blk_dirty_t, i);
++		int ret = blk_pwrite(flash->blk, d->offset, d->size, d->src, 0);
++		if (ret < 0) {
++			EPRINTF("Can't write to flash file: %d, %s", ret, strerror(-ret));
++			exit(1);
++		}
++	}
++	g_array_free(dirty, true);
++}
++
++static void flash_blk_flush_bh(void *opaque) {
++	flash_blk_flush(opaque);
++}
++
++static void flash_blk_vm_state(void *opaque, bool running, RunState state) {
++	if (!running)
++		flash_blk_flush(opaque);
++}
++
++int pmb887x_flash_blk_pwrite(pmb887x_flash_blk_t *flash, int64_t offset, int64_t size, void *value) {
++	flash_blk_dirty_t *last = flash->dirty->len ?
++		&g_array_index(flash->dirty, flash_blk_dirty_t, flash->dirty->len - 1) : NULL;
++
++	if (last && offset == last->offset + last->size && (const uint8_t *) value == last->src + last->size) {
++		last->size += size;
++	} else if (last && offset >= last->offset && offset + size <= last->offset + last->size &&
++			(const uint8_t *) value == last->src + (offset - last->offset)) {
++		/* rewrite inside the pending range: the storage already has it */
++	} else {
++		flash_blk_dirty_t d = { .offset = offset, .size = size, .src = value };
++		g_array_append_val(flash->dirty, d);
++	}
++	qemu_bh_schedule(flash->flush_bh);
++	return 0;
++}
++#else
+ int pmb887x_flash_blk_pwrite(pmb887x_flash_blk_t *flash, int64_t offset, int64_t size, void *value) {
+ 	return blk_pwrite(flash->blk, offset, size, value, 0);
+ }
++#endif
+ 
+ bool pmb887x_flash_blk_is_rw(pmb887x_flash_blk_t *flash) {
+ 	return blk_supports_write_perm(flash->blk);
+@@ -55,7 +121,13 @@
+ 	}
+ 	
+ 	DPRINTF("Drive size: %08"PRIX64"\n", blk_co_getlength(flash->blk));
+-	
++
++#ifdef __EMSCRIPTEN__
++	flash->dirty = g_array_new(false, false, sizeof(flash_blk_dirty_t));
++	flash->flush_bh = qemu_bh_new(flash_blk_flush_bh, flash);
++	flash->vmstate = qemu_add_vm_change_state_handler(flash_blk_vm_state, flash);
++#endif
++
+ 	if (pmb887x_flash_blk_is_rw(flash)) {
+ 		int ret = blk_set_perm(flash->blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE, BLK_PERM_ALL, errp);
+ 		if (ret < 0) {
+diff --git a/include/qemu/coroutine-core.h b/include/qemu/coroutine-core.h
+--- a/include/qemu/coroutine-core.h	2026-09-11 16:19:35.629327773 +0000
++++ b/include/qemu/coroutine-core.h	2026-09-11 15:06:38.977889800 +0000
+@@ -110,6 +110,17 @@
+  */
+ Coroutine *qemu_coroutine_self(void);
+ 
++/*
++ * wasm: mark the calling thread as one whose stack can never be unwound
++ * by a coroutine switch (Asyncify allowlist, see util/coroutine-wasm.c);
++ * a switch there aborts instead of derailing.  No-op elsewhere.
++ */
++#ifdef __EMSCRIPTEN__
++void qemu_coroutine_forbid_current_thread(void);
++#else
++static inline void qemu_coroutine_forbid_current_thread(void) {}
++#endif
++
+ /**
+  * Return whether or not currently inside a coroutine
+  *
+diff --git a/util/coroutine-wasm.c b/util/coroutine-wasm.c
+--- a/util/coroutine-wasm.c	2026-09-11 16:19:36.279344173 +0000
++++ b/util/coroutine-wasm.c	2026-09-11 15:06:23.914942496 +0000
+@@ -24,6 +24,35 @@
+ #include "qemu/coroutine-tls.h"
+ 
+ #include <emscripten/fiber.h>
++#include <emscripten/em_js.h>
++
++static __thread bool co_forbidden_thread;
++
++void qemu_coroutine_forbid_current_thread(void)
++{
++    co_forbidden_thread = true;
++}
++
++/*
++ * QEMU_COSTACK=1: log every distinct JS/wasm call stack at a coroutine
++ * switch (Asyncify must instrument exactly these frames; the set feeds
++ * -sASYNCIFY_ONLY).  Frames print as wasm-function[N], resolved with the
++ * .symbols sidecar.
++ */
++EM_JS(void, wasm_costack_trace, (void), {
++    var lim = Error.stackTraceLimit;
++    Error.stackTraceLimit = 400;
++    var s = new Error().stack;
++    Error.stackTraceLimit = lim;
++    var key = s.replace(/:0x[0-9a-f]+[\x29]?/g, "").replace(/https?:[\x2f][\x2f][^ \x29]*[\x2f]/g, "");
++    if (!globalThis.__costacks) globalThis.__costacks = new Set();
++    if (!globalThis.__costacks.has(key)) {
++        globalThis.__costacks.add(key);
++        console.log("[qemu] COSTACK " + key.split("\n").slice(1).map(function (l) {
++            return l.trim().replace(/^at /, "");
++        }).join(" | "));
++    }
++});
+ 
+ typedef struct {
+     Coroutine base;
+@@ -88,8 +117,21 @@
+     CoroutineEmscripten *from = DO_UPCAST(CoroutineEmscripten, base, from_);
+     CoroutineEmscripten *to = DO_UPCAST(CoroutineEmscripten, base, to_);
+ 
++    if (co_forbidden_thread) {
++        /*
++         * Only the frames in configs/meson/asyncify-only.txt can be
++         * unwound; a vCPU thread stack (JIT'd TB frames, invoke_*
++         * wrappers) never can, so fail loudly instead of derailing.
++         */
++        fprintf(stderr, "qemu: coroutine switch on the vCPU thread "
++                "(not Asyncify-instrumented) — aborting\n");
++        abort();
++    }
+     set_current(to_);
+     to->action = action;
++    if (getenv("QEMU_COSTACK")) {
++        wasm_costack_trace();
++    }
+     emscripten_fiber_swap(&from->fiber, &to->fiber);
+     return from->action;
+ }
+diff --git a/configs/meson/asyncify-only.txt b/configs/meson/asyncify-only.txt
+new file mode 100644
+--- /dev/null
++++ b/configs/meson/asyncify-only.txt
+@@ -0,0 +1,203 @@
++__emscripten_environ_constructor
++__main_void
++__pthread_cond_timedwait
++__pthread_create
++__pthread_detach
++__pthread_join
++__pthread_key_create
++__pthread_key_delete
++__pthread_mutex_lock
++__pthread_mutex_timedlock
++__pthread_once
++__pthread_once_full
++__pthread_rwlock_rdlock
++__pthread_rwlock_timedrdlock
++__pthread_rwlock_timedwrlock
++__pthread_rwlock_wrlock
++__pthread_timedjoin_np
++__pthread_tsd_run_dtors
++_emscripten_check_mailbox
++_emscripten_init_main_thread
++_emscripten_proxy_main
++_emscripten_run_on_main_thread_js
++_emscripten_thread_exit
++_emscripten_thread_free_data
++_emscripten_thread_init
++_emscripten_thread_mailbox_init
++_emscripten_thread_mailbox_shutdown
++_emscripten_thread_profiler_enable
++_emscripten_thread_profiler_init
++_emscripten_tls_init
++_emscripten_yield
++_main_thread
++aio_*
++aio_bh_poll
++aio_co_enter
++aio_co_wake
++aio_ctx_dispatch
++aio_dispatch
++aio_poll
++bdrv_*
++bdrv_aligned_preadv
++bdrv_aligned_pwritev
++bdrv_close_all
++bdrv_co_preadv
++bdrv_co_preadv_part
++bdrv_co_pwritev
++bdrv_co_pwritev_part
++bdrv_driver_preadv
++bdrv_driver_pwritev
++bdrv_flush
++bdrv_flush_all
++bdrv_getlength
++bdrv_graph_wrunlock
++bdrv_open
++bdrv_open_child_bs
++bdrv_open_driver
++bdrv_open_inherit
++bdrv_poll_co
++bdrv_refresh_total_sectors
++bdrv_schedule_unref_bh
++bdrv_unref
++blk_*
++blk_co_do_preadv_part
++blk_co_do_pwritev_part
++blk_co_pread
++blk_co_pread_entry
++blk_co_pwrite
++blk_co_pwrite_entry
++blk_new_open
++blk_pread
++blk_pwrite
++blk_remove_all_bs
++blk_remove_bs
++block_job_*
++blockdev_*
++blockdev_init
++co_*
++co_schedule_bh_cb
++coroutine_*
++coroutine_trampoline
++cpu_exec
++cpu_exec_loop
++cpu_exec_setjmp
++cpu_tb_exec
++device_set_realized
++do_ld_*
++do_st_*
++do_st_mmio_leN
++do_vm_stop
++drive_*
++drive_init_func
++drive_new
++dynCall_*
++dynCall_ijj
++dynCall_jj
++dynCall_vj
++emscripten_builtin_calloc
++emscripten_builtin_free
++emscripten_builtin_malloc
++emscripten_builtin_memalign
++emscripten_builtin_realloc
++emscripten_current_thread_process_queued_calls
++emscripten_futex_wait
++emscripten_main_thread_process_queued_calls
++emscripten_proxy_async
++emscripten_proxy_execute_queue
++emscripten_proxy_finish
++emscripten_proxy_sync
++emscripten_proxy_sync_with_ctx
++emscripten_thread_mailbox_send
++emscripten_thread_sleep
++flash_*
++flash_data_write
++flash_io_write
++flash_realize
++fsync
++g_main_context_*
++g_main_context_dispatch
++g_main_context_dispatch_unlocked
++handle_aiocb*
++helper_ld*_mmu
++helper_st*_mmu
++helper_stb_mmu
++int_ld_*
++int_st_*
++int_st_mmio_leN
++io_readx
++io_writex
++job_*
++machine_run_board_init
++main
++main_loop*
++main_loop_wait
++monitor_*
++monitor_cleanup
++monitor_qmp_dispatcher_co
++monitor_qmp_dispatcher_pop_any
++notifier_list_notify
++object_property_set
++object_property_set*
++object_property_set_bool
++object_property_set_qobject
++os_*
++pmb887x_board_*
++pmb887x_board_create_nor_flash
++pmb887x_board_init_devices
++pmb887x_flash*
++pmb887x_flash_blk_pread
++pmb887x_flash_blk_pwrite
++pmb887x_init
++property_set_bool
++pthread_attr_init
++pthread_cond_broadcast
++pthread_cond_destroy
++pthread_cond_signal
++pthread_cond_wait
++pthread_kill
++pthread_mutex_destroy
++pthread_sigmask
++qdev_machine_creation_done
++qdev_realize
++qdev_realize*
++qdev_realize_and_unref
++qemu_aio_*
++qemu_aio_coroutine_enter
++qemu_bh_*
++qemu_cleanup
++qemu_co*
++qemu_coroutine_switch
++qemu_coroutine_yield
++qemu_default_main
++qemu_fdatasync
++qemu_init
++qemu_machine_creation_done
++qemu_main*
++qemu_main_loop
++qemu_opts_foreach
++qemu_run_machine_init_done_notifiers
++qemu_system_*
++qemu_thread_start
++qmp_*
++qmp_x_exit_preconfig
++raw_*
++raw_apply_options
++raw_co_preadv
++raw_co_preadv_20784
++raw_co_prw
++raw_co_pwritev
++raw_co_pwritev_20786
++raw_open
++replay_*
++rr_cpu_thread_fn
++sysbus_realize*
++sysbus_realize_and_unref
++tcg_cpu_exec
++tcg_qemu_tb_exec
++thread_pool_*
++thread_pool_co_cb
++thread_pool_completion_bh
++thread_pool_submit_co
++vm_*
++vm_shutdown
++worker_thread

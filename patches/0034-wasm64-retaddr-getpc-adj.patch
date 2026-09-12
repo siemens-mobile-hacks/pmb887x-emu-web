@@ -1,0 +1,82 @@
+From: fix session 2026-09-12
+Subject: [PATCH 0034] wasm64: bias the helper retaddr by GETPC_ADJ (EL71 flash abort)
+
+The wasm64 backend has no host return addresses, so every helper call is
+preceded by a store of a synthetic retaddr into the thread-local
+w64_tb_ptr that GETPC() reads (tcg/wasm64/tcg-target.h).  The value was
+w64_pc(): the code-buffer offset *before* the call sequence is emitted.
+
+cpu_unwind_data_from_tb() resolves a retaddr by walking the per-insn end
+offsets for the first one strictly greater than (retaddr - GETPC_ADJ) —
+a real backend's GETPC() is a return address, which always lies after
+the call and therefore strictly inside the faulting insn's code range.
+The wasm64 marker is not: for any guest insn whose generated code
+*starts* with the helper call — every plain load/store whose address is
+already in a register — the raw offset equals that insn's start, i.e.
+the previous insn's end offset, and the unwind attributed the access to
+the preceding guest instruction.  (For a helper call at the very start
+of a TB the subtraction even underflowed past tb->tc.ptr, and
+cpu_unwind_data_from_tb returned -1: no state restore at all.)
+
+Everything that unwinds mid-TB then worked on the wrong insn.  The
+visible failure was cpu_io_recompile(): it rewound the vCPU to the
+*previous* guest insn and re-executed it, so an insn with a register
+writeback ran twice.  The EL71 boot writes its flash file system through
+a buffered program: `ldm r0!` before the first store to the flash
+command region was re-executed, r0 ran 16 bytes past the source buffer,
+the guest programmed the erased pattern into the write buffer and the
+firmware aborted with ">>EXIT<< ExitCode: 0x0506 FILE: flash
+ExitString: <line>:Prog:B3F78936:3" ~4 s into the boot.  S75/C81 do not
+program flash during boot and never hit it; the TCI dist was unaffected
+(tci_tb_ptr points at the current op, GETPC_ADJ bytes into the insn);
+-accel tcg,one-insn-per-tb=on hid it (nothing precedes the insn), which
+is why the lockstep gate — which forces one-insn-per-tb — stayed green.
+
+Bias the marker by GETPC_ADJ so the subtraction lands exactly on the
+insn's start offset, which the strict comparison attributes to that
+insn.  The call sequence emitted after it is always longer than the
+bias, so the marker never refers to the next insn either.
+
+No measurable cost (the constant is folded into the existing store).
+Verified: EL71 boots to the UI on dist-jit (flash trace now
+byte-identical to the TCI dist through the buffered program), S75 and
+KE800 unchanged, wasm64 lockstep clean.
+
+diff --git a/tcg/wasm64/tcg-target.c.inc b/tcg/wasm64/tcg-target.c.inc
+--- a/tcg/wasm64/tcg-target.c.inc
++++ b/tcg/wasm64/tcg-target.c.inc
+@@ -980,10 +980,32 @@
+ /* calls                                                               */
+ /* ------------------------------------------------------------------ */
+ 
+-/* current code offset, for retaddr values */
++/*
++ * Retaddr marker for GETPC()-using helpers.
++ *
++ * cpu_unwind_data_from_tb() resolves a retaddr by walking the per-insn
++ * end offsets for the first one *strictly greater* than
++ * (retaddr - GETPC_ADJ): a real backend's GETPC() is a return address,
++ * which always sits after the call, i.e. strictly inside the faulting
++ * insn's code range.  Here the marker is emitted before the call
++ * sequence, and for a guest insn whose code starts with that call (any
++ * plain load/store: the address is already in a register) the raw
++ * offset equals the insn's start = the previous insn's end, so the
++ * unwind resolved one guest insn too early.  cpu_io_recompile() then
++ * rewound to the previous insn and re-executed it — an EL71 boot
++ * re-ran an `ldm r0!` twice before a buffered flash program and wrote
++ * the erased pattern, aborting with ">>EXIT<< FILE: flash" (0x0506).
++ *
++ * Bias by GETPC_ADJ so the subtraction lands exactly on the insn start,
++ * which the strict comparison attributes to this insn.  The call
++ * sequence that follows is always longer than the bias, so the marker
++ * still refers to this insn and never to the next one.
++ */
++#define W64_GETPC_ADJ 2         /* GETPC_ADJ, accel/tcg/tb-internal.h */
+ static inline uintptr_t w64_pc(TCGContext *s)
+ {
+-    return (uintptr_t)s->code_buf + (s->code_ptr - s->code_buf);
++    return (uintptr_t)s->code_buf + (s->code_ptr - s->code_buf)
++           + W64_GETPC_ADJ;
+ }
+ 
+ /* typemask typecode -> wasm type (0 = i32, 1 = i64); 0xff invalid */

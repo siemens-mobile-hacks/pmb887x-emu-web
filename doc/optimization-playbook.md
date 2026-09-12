@@ -98,6 +98,11 @@ PORT=8080 node tools/idlebench.mjs dist-jit-base,dist-jit --runs 2
 node tests/run.mjs --label <name> --timeout 240
 bash scripts/capture-patch.sh <name>              # then add the measured header
 bash scripts/capture-patch.sh verify-tmp          # must print "nothing to do"
+
+# 6. FINAL GATE before the session's last commit (~6 min): all three
+#    fullflashes must boot, native AND in the browser.
+node tests/run.mjs --label <name>-final --timeout 240   # s75 el71 c81 ke800
+node tools/bootcheck.mjs --dist dist-jit --secs 150     # s75 el71 ke800
 ```
 
 Deploy hygiene: never plain-`cp` over a live-served wasm (a torn 45 MB
@@ -326,6 +331,44 @@ inline on wasm64 anyway).
   every TB starts with `tci_tbhdr` (icount) — chain jumps and
   `lookup_tb_ptr` targets all pass through it.  Anything that jumps
   into a TB must land on the header.
+
+## The three-fullflash final gate (added 2026-09-12)
+
+Run this before the session's last commit, not just `tests/run.mjs`:
+
+```
+node tests/run.mjs --label <name>-final --timeout 240
+node tools/bootcheck.mjs --dist dist-jit --secs 150
+```
+
+Why both, and why three devices:
+
+- **The native suite is blind to every wasm patch.**  S75 on the wasm
+  builds was the only browser boot anyone watched for the whole 0019-0032
+  run, and two board-specific breakages survived it: EL71 aborted with
+  `>>EXIT<< FILE: flash` ~4 s in on the wasm64 backend (patch 0034 — S75
+  and C81 never program flash during boot, so only EL71 reached the bug),
+  and KE800 never got past a device poll on either wasm engine (0035 /
+  0037).  Both were green natively the whole time.
+- **EL71** is the only fullflash that writes its flash file system while
+  booting, i.e. the only one that exercises the MMIO rewind / io-barrier
+  path on a ROM device.
+- **KE800** is the only board that boots *without* icount (site/app.js
+  turns it off for LG), so it is the only coverage of the non-icount
+  halt/idle/timer paths — the ones 0023-0032 rewrote.
+- Only native + dist-jit, by design: the two together cover the patch set
+  and cost ~6 min.  The interpreter dist rides along in the periodic
+  lockstep runs; add `--dist dist` when a patch is TCI-specific.
+
+`bootcheck.mjs` judges progress in executed instructions, not framebuffer
+updates: EL71 finishes at a "set time and date?" wizard that never
+redraws, and is healthy there.
+
+**Known open**: KE800 fails `bootcheck --dist dist-jit` — it stops
+executing early in the GSM L1 loop and sometimes trips translator_ld's
+page assertion.  site/app.js runs the LG boards on `dist` until that is
+fixed; treat an s75/el71 PASS + ke800 FAIL as the current baseline, not
+as a green gate.
 
 ## Gates added 2026-09-11
 

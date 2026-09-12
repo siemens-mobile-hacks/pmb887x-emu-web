@@ -1,0 +1,129 @@
+// wasm boot gate: boot every fullflash on one dist and check it gets
+// somewhere, the way tests/run.mjs does for the native build.
+//
+// The native suite (tests/run.mjs) is the correctness reference; this is
+// its browser twin, because most of the wasm patches (io barriers, the
+// wasm64 backend, the halt/idle paths) are invisible to it.  Three boards
+// is the useful set: S75 and EL71 are icount boards that exercise
+// different firmware paths (EL71 programs its flash file system during
+// boot — the 0034 retaddr bug only ever showed there), KE800 is the LG
+// board and the only one that boots without icount.
+//
+//   node tools/bootcheck.mjs [--dist dist-jit] [--secs 150] [--flash id,id]
+//
+// PASS for a board = no firmware ">>EXIT<<" on the serial log, no page
+// error / wasm abort, the LCD drew something, and the guest kept
+// executing.  Progress is measured in instructions, not framebuffer
+// updates: EL71 stops at a "set time and date?" wizard (a static screen
+// that never redraws) and is perfectly healthy there, while a KE800 stuck
+// on a device poll it can never satisfy stops executing altogether.
+// Exit 0 iff every board passed.
+import { chromium } from "playwright-core";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const argv = process.argv.slice(2);
+const opt = (n, d) => {
+  const i = argv.indexOf("--" + n);
+  return i >= 0 ? argv[i + 1] : d;
+};
+
+const DIST = opt("dist", "dist-jit");
+const SECS = Number(opt("secs", 150));
+const PORT = process.env.PORT || "8080";
+const ONLY = opt("flash", "").split(",").filter(Boolean);
+
+const BOARDS = [
+  { id: "s75", file: "s75_working20060710172101.bin" },
+  { id: "el71", file: "rr_ff_el71_stock.bin" },
+  { id: "ke800", file: "KE800-v11b.bin", efa: "KE800-v11b.bin.cfi-efa" },
+].filter((b) => (ONLY.length ? ONLY.includes(b.id) : true));
+
+// A guest that executes fewer than this many instructions over this
+// window has stopped making progress (KE800 used to sit on an I2C poll it
+// could never satisfy, halted, at ~0).  An idle phone still runs its
+// clock and network-search work, orders of magnitude above this.
+const STALL_S = 60;
+const STALL_INSNS = 2e6;
+
+const probe = () => {
+  const m = window.__qemu;
+  let ser = "";
+  try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch {}
+  return {
+    fb: m?._wasm_fb_updates ? Number(m._wasm_fb_updates()) : 0,
+    insns: m?._wasm_insns ? Number(m._wasm_insns()) : 0,
+    exit: (ser.match(/>>EXIT<<[^\x00]{0,120}/) || [""])[0],
+  };
+};
+
+const browser = await chromium.launch({ headless: true });
+const results = [];
+
+for (const board of BOARDS) {
+  const files = [path.join(ROOT, "fullflashes", board.file)];
+  if (board.efa) files.push(path.join(ROOT, "fullflashes", board.efa));
+  for (const f of files) {
+    if (!fs.existsSync(f)) throw new Error(`fullflash not found: ${f}`);
+  }
+
+  const page = await browser.newPage({ viewport: { width: 640, height: 900 } });
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
+  page.on("crash", () => errors.push("page crashed"));
+  page.on("console", (m) => {
+    const t = m.text();
+    if (/Aborted\(|Assertion failed|RuntimeError/.test(t)) errors.push(t.slice(0, 200));
+  });
+
+  await page.goto(`http://127.0.0.1:${PORT}/?dist=${DIST}`, { waitUntil: "domcontentloaded" });
+  await page.selectOption("#startup", "ONLINE");
+  await page.setInputFiles("#fullflash", files);
+  await page.click("#btn-start");
+
+  let last = { fb: 0, insns: 0, exit: "" };
+  let lastProgress = { t: Date.now(), insns: 0 };
+  const t0 = Date.now();
+  while ((Date.now() - t0) / 1000 < SECS && !last.exit && !errors.length) {
+    await new Promise((r) => setTimeout(r, 10000));
+    // A frozen page (the pre-0034 KE800 deadlocked the renderer) makes
+    // evaluate hang forever, so bound it and treat a timeout as a failure.
+    const mx = await Promise.race([
+      page.evaluate(probe).catch((e) => ({ err: String(e).slice(0, 120) })),
+      new Promise((r) => setTimeout(() => r({ err: "page unresponsive" }), 20000)),
+    ]);
+    if (mx.err) { errors.push(mx.err); break; }
+    if (mx.insns - lastProgress.insns >= STALL_INSNS) {
+      lastProgress = { t: Date.now(), insns: mx.insns };
+    }
+    last = mx;
+    console.log(`[${board.id}] t=${((Date.now() - t0) / 1000).toFixed(0)}s ` +
+                `insns=${(mx.insns / 1e6).toFixed(0)}M fb=${mx.fb}${mx.exit ? " *** EXIT ***" : ""}`);
+    if ((Date.now() - lastProgress.t) / 1000 > STALL_S) break;
+  }
+
+  const stalled = (Date.now() - lastProgress.t) / 1000 > STALL_S;
+  const blank = last.fb < 2;
+  const why = last.exit ? `firmware exit: ${last.exit.replace(/[\x00-\x1f\xfe\xff]/g, " ")}`
+    : errors.length ? errors[0]
+    : stalled ? `guest stopped executing (<${STALL_INSNS / 1e6}M insns in ${STALL_S}s)`
+    : blank ? "LCD never drew anything"
+    : "";
+  results.push({ id: board.id, pass: !why, why, fb: last.fb, insns: last.insns });
+
+  const shot = path.join(ROOT, "tests", "results", `bootcheck-${DIST}-${board.id}.png`);
+  const lcd = await page.$("#lcd");
+  if (lcd) await lcd.screenshot({ path: shot }).catch(() => {});
+  await page.close();
+}
+
+await browser.close();
+
+console.log(`\n| board | ${DIST} | fb | insns | note |`);
+console.log("| ----- | ------- | -- | ----- | ---- |");
+for (const r of results) {
+  console.log(`| ${r.id} | ${r.pass ? "PASS" : "FAIL"} | ${r.fb} | ${(r.insns / 1e6).toFixed(0)}M | ${r.why} |`);
+}
+process.exit(results.every((r) => r.pass) ? 0 : 1);

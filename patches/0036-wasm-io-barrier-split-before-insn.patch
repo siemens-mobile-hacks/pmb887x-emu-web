@@ -1,0 +1,64 @@
+From: fix session 2026-09-12
+Subject: [PATCH 0036] wasm io barriers: split before the barrier insn, not after counting it
+
+Patch 0014 keeps an io-barrier insn out of the middle of a TB by breaking
+out of translator_loop() when it reaches one.  The check sat after
+`*max_insns = ++db->num_insns` and `ops->insn_start()`, so the TB was
+closed carrying a phantom instruction: one it counted and emitted an
+insn_start op for but never translated.
+
+tb->icount is then one too high — under icount every split TB charges an
+extra instruction to the budget and to cpu->neg.icount_decr — and the
+unwind search data (encode_search) carries a duplicate row whose end
+offset equals the previous insn's.
+
+Move the check above the counting so the TB simply ends before the
+barrier, which is what it was meant to do.
+
+--- a/accel/tcg/translator.c
++++ b/accel/tcg/translator.c
+@@ -176,6 +176,24 @@
+     db->plugin_enabled = plugin_enabled;
+ 
+     while (true) {
++#ifdef __EMSCRIPTEN__
++        /*
++         * Keep an io-barrier insn out of the middle of a TB: stop before
++         * it so it starts a single-insn TB of its own (can_do_io is true
++         * there; see cpu_io_recompile in translate-all.c).  This has to
++         * happen before num_insns is bumped and insn_start emitted, or
++         * the TB carries a phantom instruction it never translates:
++         * tb->icount one too high (an extra insn charged to the icount
++         * budget per split TB) and a duplicate entry in the unwind
++         * search data.
++         */
++        bool io_barrier = wasm_is_io_barrier(db->pc_next);
++        if (unlikely(io_barrier) && db->num_insns > 0) {
++            db->is_jmp = DISAS_TOO_MANY;
++            break;
++        }
++#endif
++
+         *max_insns = ++db->num_insns;
+         ops->insn_start(db, cpu);
+         db->insn_start = tcg_last_op();
+@@ -188,19 +206,6 @@
+             plugin_gen_insn_start(cpu, db);
+         }
+ 
+-#ifdef __EMSCRIPTEN__
+-        bool io_barrier = wasm_is_io_barrier(db->pc_next);
+-        if (unlikely(io_barrier) && db->num_insns > 1) {
+-            /*
+-             * Keep a barrier insn out of the middle of a TB: stop here so
+-             * it starts a single-insn TB of its own (can_do_io is true
+-             * there; see cpu_io_recompile in translate-all.c).
+-             */
+-            db->is_jmp = DISAS_TOO_MANY;
+-            break;
+-        }
+-#endif
+-
+         /*
+          * Disassemble one instruction.  The translate_insn hook should
+          * update db->pc_next and db->is_jmp to indicate what should be

@@ -1007,3 +1007,62 @@ the cheap way to tell (it now is pristine again; the patched-tree native
 binary is `build/qemu-native-jit`).  (3) A memory note that says "do not
 re-touch X" needs the measurement that justified it; the previous
 session's raw-seconds attempt was reverted without one.
+
+## 2026-09-12 — EL71 and KE800 on the wasm builds (0034-0037)
+
+**Symptom.**  S75 booted; EL71 and KE800 did not.  Both looked like
+regressions from the 0023-0033 work and neither was: the native suite
+passed 4/4 the whole time, and EL71 failed identically on `dist-jit-0022`
+(before the perf session started).  S75 was simply the only fullflash
+anyone ever booted in a browser.
+
+**EL71 — patch 0034, one guest insn of skew.**  `>>EXIT<< ExitCode:
+0x0506 FILE: flash ... Prog:B3F78936:3` ~4 s in, only on the wasm64
+backend, and gone with `one-insn-per-tb=on` (which is why the lockstep
+gate, which forces it, never saw it).  A flash trace diffed against the
+TCI dist pinned it exactly: at the buffered program the JIT wrote
+`FFFFFFFF` where TCI wrote the real data, with `r0` 16 bytes past the
+source buffer.  An `[iorec]` trace showed why — the JIT rewound
+`cpu_io_recompile` to `a8fae738`, one instruction *before* the faulting
+store at `a8fae73c`, and re-executed an `ldm r0!` that had already
+committed its writeback.  `w64_pc()` recorded the retaddr *before*
+emitting the call, so for any insn whose code starts with a helper call
+(every register-addressed load/store) `retaddr - GETPC_ADJ` equalled the
+previous insn's end offset and `cpu_unwind_data_from_tb()` resolved one
+insn too early.  Bias by `GETPC_ADJ`.  Every mid-TB unwind on the wasm64
+backend was off by one insn; the flash program was just the one place a
+guest noticed.
+
+**KE800 — patches 0035/0037, virtual timers with icount off.**  The LG
+boards are the only ones that boot without icount, and both wasm engines
+left QEMU_CLOCK_VIRTUAL unserviced there: the main loop deliberately
+leaves that clock out of its poll timeout (the vCPU owns it *under
+icount*), and 0023's vCPU-side idle work was icount-only.  KE800 polled
+`I2C_PIRQSS` forever for a completion timer that never came due.  0035
+restores the stock main-loop timing when `!icount_enabled()`; 0037 gives
+the non-icount idle path the same vCPU-side timer run 0023 gave icount
+(it was a main-loop wake + kick per interrupt, and KE800's GSM L1 loop
+takes thousands per second — ~0.8 MIPS vs 150 native).  KE800 now boots
+and renders on `dist`.
+
+**0036** is a drive-by found while reading 0014: the io-barrier split
+broke out of `translator_loop()` *after* counting the insn and emitting
+its `insn_start`, so every split TB carried a phantom instruction —
+`tb->icount` one too high (an extra insn on the icount budget) and a
+duplicate unwind row.
+
+**Still open.**  KE800 does not boot on `dist-jit`: it stops executing
+early in the GSM L1 loop and sometimes trips `translator_ld`'s page
+assertion (`(base ^ pc) & TARGET_PAGE_MASK`), in both icount modes, with
+or without speculation (`W64_SPEC_N=0`) and regardless of
+`W64_LIVE_MAX`.  `site/app.js` runs the LG boards on `dist` until this is
+fixed.
+
+**Lessons.**  (1) A gate that forces `one-insn-per-tb` cannot see
+multi-insn-TB bugs — the lockstep run was green through all of this;
+`tools/bootcheck.mjs` (three fullflashes, in the browser) is now part of
+the final gate.  (2) Boot one fullflash per *class*, not one fullflash:
+EL71 is the only one that programs flash while booting, KE800 the only
+one without icount, and each hid a distinct bug for the whole session.
+(3) The TCI dist is an oracle: any JIT-only failure can be bisected by
+diffing the same device trace between the two engines.
