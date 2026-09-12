@@ -1,5 +1,5 @@
 // Memory-path diagnostics: boots the S75 flash and samples the cold-path
-// memory counters (wasm_memstat, see build/qemu include/qemu/wasm-diag.h)
+// memory counters (wasm_memstat, see pmb887x-emu/qemu include/qemu/wasm-diag.h)
 // every N seconds alongside v/insns.  The interpreter fast paths carry no
 // counters (hot path); these count the slow-path entries:
 //   ldHelp/stHelp  tci_qemu_ld/st fell through to helper_ld/stXX_mmu
