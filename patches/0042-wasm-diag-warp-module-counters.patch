@@ -1,0 +1,205 @@
+wasm diag: idle-warp, module-economy and range-flush counters; compaction knobs
+
+Measurement infrastructure for the 2026-09-12 profile session, plus two
+env knobs so the benchmark can reach settings that were compile-time
+constants (the playbook's rule: if the page has a knob, the benchmark
+must be able to set it).
+
+Counters (all cold - at most ~90k increments per boot, no hot path):
+  PHYS_CALL/SCAN/DROP   tlb_flush_phys_ranges calls / entries walked /
+                        entries invalidated (used to size 0043)
+  MOD_BYTES/MOD_COUNT   bytes handed to WebAssembly.Module, modules made
+  TB_BYTES              sum of emitted TB body sizes
+  CLOSE/COMPACT/ENSURE  those bytes split by assemble source
+  WARP_NS + 7 buckets   ns the idle warp jumped, bucketed by size
+
+Knobs: W64_COMPACT_BATCHES / W64_COMPACT_MEMBERS (were #defines).
+
+What they measured on a S75v40lg1 boot (dist-jit, rt=off):
+  - 197 MB of wasm compiled per boot over 35k modules, of which 94 MB is
+    unique TB bodies: 563 B of wasm per 4.85-insn TB, compiled 2.1x.
+  - the second compile is compaction: 96 MB in 198 modules, i.e. ~49 % of
+    all bytes the browser compiles.  Turning compaction off halves the
+    bytes and measured NEUTRAL (see the playbook's REJECTED table).
+  - the boot's virtual timeline is ~42 s, 31.5 s of it idle warp, almost
+    all of it produced after t0.5G (the display-DMA stretch warps ~18 s of
+    virtual time in ~4 s of wall).  Under the shipping rt=banked cap that
+    warp is paid as real sleep: t1.3G 38.9 s vs 29.3 s at rt=off (+33 %).
+
+diff --git a/include/qemu/wasm-diag.h b/include/qemu/wasm-diag.h
+--- a/include/qemu/wasm-diag.h	2026-09-12 17:47:25.096291694 +0000
++++ b/include/qemu/wasm-diag.h	2026-09-12 17:23:01.386733565 +0000
+@@ -40,6 +40,27 @@
+     WASM_DIAG_TLB_SIZE0,     /* current entries of the mmu_idx 0 table (gauge) */
+     WASM_DIAG_TLB_USED0,     /* used entries of the mmu_idx 0 table (gauge) */
+     WASM_DIAG_HALT,          /* vCPU idle entries (rr_idle_advance: all halted) */
++    WASM_DIAG_PHYS_CALL,     /* tlb_flush_phys_ranges calls (topology commits) */
++    WASM_DIAG_PHYS_SCAN,     /* ...entries walked by those calls */
++    WASM_DIAG_PHYS_DROP,     /* ...entries actually invalidated */
++    WASM_DIAG_MOD_BYTES,     /* wasm bytes handed to WebAssembly.Module */
++    WASM_DIAG_MOD_COUNT,     /* modules created */
++    WASM_DIAG_TB_BYTES,      /* sum of emitted TB body sizes */
++    WASM_DIAG_WARP_NS,       /* total ns the idle warp jumped */
++    WASM_DIAG_WARP_B0,       /* warp size buckets: <1us,<10us,<100us, */
++    WASM_DIAG_WARP_B1,       /*  <1ms,<10ms,<100ms,>=100ms */
++    WASM_DIAG_WARP_B2,
++    WASM_DIAG_WARP_B3,
++    WASM_DIAG_WARP_B4,
++    WASM_DIAG_WARP_B5,
++    WASM_DIAG_WARP_B6,
++    WASM_DIAG_MOD_SRC,       /* assemble source: 1=close 2=compact 3=ensure */
++    WASM_DIAG_CLOSE_BYTES,   /* bytes from first batch close */
++    WASM_DIAG_COMPACT_BYTES, /* bytes from compaction */
++    WASM_DIAG_ENSURE_BYTES,  /* bytes from re-ensure after eviction */
++    WASM_DIAG_CLOSE_N,
++    WASM_DIAG_COMPACT_N,
++    WASM_DIAG_ENSURE_N,
+     WASM_DIAG_N
+ };
+ 
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c	2026-09-12 17:47:25.096252243 +0000
++++ b/accel/tcg/tcg-accel-ops-rr.c	2026-09-12 17:23:01.386970951 +0000
+@@ -154,6 +154,16 @@
+                     continue;
+                 }
+             }
++#ifdef __EMSCRIPTEN__
++            {
++                int b = deadline < 1000 ? 0 : deadline < 10000 ? 1
++                      : deadline < 100000 ? 2 : deadline < 1000000 ? 3
++                      : deadline < 10000000 ? 4
++                      : deadline < 100000000 ? 5 : 6;
++                wasm_diag_stat[WASM_DIAG_WARP_NS] += deadline;
++                wasm_diag_stat[WASM_DIAG_WARP_B0 + b]++;
++            }
++#endif
+             icount_start_warp_timer();
+             if (qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                            ~QEMU_TIMER_ATTR_EXTERNAL) > 0) {
+diff --git a/tcg/wasm64/tcg-target.c.inc b/tcg/wasm64/tcg-target.c.inc
+--- a/tcg/wasm64/tcg-target.c.inc	2026-09-12 17:47:25.070341173 +0000
++++ b/tcg/wasm64/tcg-target.c.inc	2026-09-12 16:57:03.942099099 +0000
+@@ -15,6 +15,7 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#include "qemu/wasm-diag.h"
+ #include "wasm64.h"
+ #include "system/cpu-timers.h"      /* icount2_enabled() */
+ 
+@@ -2472,6 +2473,7 @@
+ 
+     body_total = s->code_ptr - (s->code_buf + W64_BODY_OFF);
+     body_size = body_total - 5;
++    wasm_diag_stat[WASM_DIAG_TB_BYTES] += body_size;
+ 
+     /* every forward branch must have been resolved by now */
+     tcg_debug_assert(W.n_fixup == 0);
+diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
+--- a/tcg/wasm64/wasm64.c	2026-09-12 17:47:25.058646514 +0000
++++ b/tcg/wasm64/wasm64.c	2026-09-12 17:47:24.045095978 +0000
+@@ -25,6 +25,7 @@
+ #include "exec/gdbstub.h"
+ #include "hw/core/cpu.h"
+ #include <emscripten.h>
++#include "qemu/wasm-diag.h"
+ #include "wasm64.h"
+ 
+ /* icount2.c: addresses of the fields emitted TB prologues touch
+@@ -609,6 +610,30 @@
+ #define W64_COMPACT_BATCHES 256
+ #define W64_COMPACT_MEMBERS 1024
+ 
++/* Compaction thresholds, env-tunable so a benchmark can A/B them
++ * (W64_COMPACT_BATCHES / W64_COMPACT_MEMBERS; a huge value = off). */
++static unsigned w64_compact_batches(void)
++{
++    static int v = -1;
++    if (v < 0) {
++        const char *e = getenv("W64_COMPACT_BATCHES");
++        v = e ? atoi(e) : W64_COMPACT_BATCHES;
++        v = MAX(v, 2);
++    }
++    return v;
++}
++
++static unsigned w64_compact_members(void)
++{
++    static int v = -1;
++    if (v < 0) {
++        const char *e = getenv("W64_COMPACT_MEMBERS");
++        v = e ? atoi(e) : W64_COMPACT_MEMBERS;
++        v = MAX(v, 2);
++    }
++    return v;
++}
++
+ static unsigned w64_live_max(void)
+ {
+     static int v = -1;
+@@ -1257,6 +1282,13 @@
+         ip[i] = src->uimp[i].fptr;
+     }
+ 
++    wasm_diag_stat[WASM_DIAG_MOD_BYTES] += mod.n;
++    wasm_diag_stat[WASM_DIAG_MOD_COUNT]++;
++    {
++        int k = wasm_diag_stat[WASM_DIAG_MOD_SRC];
++        wasm_diag_stat[WASM_DIAG_CLOSE_BYTES + (k ? k - 1 : 0)] += mod.n;
++        wasm_diag_stat[WASM_DIAG_CLOSE_N + (k ? k - 1 : 0)]++;
++    }
+     thunk = w64_batch_instantiate((uintptr_t)mod.b, mod.n, (uintptr_t)ip,
+                                   src->n_uimp, maxtidx);
+     tcg_debug_assert(thunk != 0);
+@@ -1352,8 +1384,8 @@
+     if (l->small) {
+         w64_small_n++;
+         w64_small_members += l->src.n_member;
+-        if (w64_small_n >= W64_COMPACT_BATCHES ||
+-            w64_small_members >= W64_COMPACT_MEMBERS) {
++        if (w64_small_n >= w64_compact_batches() ||
++            w64_small_members >= w64_compact_members()) {
+             w64_compact();
+         }
+     }
+@@ -1385,7 +1417,9 @@
+     if (l->thunk) {
+         return true;
+     }
++    wasm_diag_stat[WASM_DIAG_MOD_SRC] = 3;
+     l->thunk = w64_assemble_instantiate(&l->src, &l->maxtidx);
++    wasm_diag_stat[WASM_DIAG_MOD_SRC] = 0;
+     if (!l->thunk) {
+         return false;
+     }
+@@ -1561,7 +1595,9 @@
+     merged->tidx = tidx;
+     merged->small = false;
+ 
++    wasm_diag_stat[WASM_DIAG_MOD_SRC] = 2;
+     thunk = w64_assemble_instantiate(&merged->src, &merged->maxtidx);
++    wasm_diag_stat[WASM_DIAG_MOD_SRC] = 0;
+     if (!thunk) {
+         fprintf(stderr, "W64COMPACT id=%u FAILED (%u batches, %u members)\n",
+                 merged->src.id, n_smalls, n_member);
+@@ -1661,7 +1697,9 @@
+     }
+ 
+     w64_bsrc_of_open();
++    wasm_diag_stat[WASM_DIAG_MOD_SRC] = 1;
+     thunk = w64_assemble_instantiate(&B_src, &maxtidx);
++    wasm_diag_stat[WASM_DIAG_MOD_SRC] = 0;
+     if (!thunk) {
+         fprintf(stderr, "W64BATCHSKIP id=%u members=%u "
+                 "(members stay on temp modules)\n", B.id, B.n_member);
+@@ -1881,6 +1919,9 @@
+             } else if (w64_batch_close_pending(tb)) {
+                 fidx = desc[W64_DESC_FIDX / 4];
+             } else {
++                wasm_diag_stat[WASM_DIAG_MOD_BYTES] +=
++                    desc[W64_DESC_MODLEN / 4];
++                wasm_diag_stat[WASM_DIAG_MOD_COUNT]++;
+                 fidx = w64_instantiate(tb);
+                 tcg_debug_assert(fidx != 0);
+                 desc[W64_DESC_FIDX / 4] = fidx;

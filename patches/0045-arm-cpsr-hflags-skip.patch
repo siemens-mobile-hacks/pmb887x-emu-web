@@ -1,0 +1,52 @@
+target/arm: rebuild hflags on a CPSR write only when it can change them
+
+HELPER(cpsr_write) rebuilds hflags unconditionally, with an upstream TODO
+saying not all cpsr bits are relevant.  They are not, and the ones this
+firmware writes are the irrelevant ones: 0027 turned `msr CPSR_*` in the
+critical sections into the most frequent TB exit of the boot, and those
+writes set the I/F interrupt masks and the condition flags.
+
+Every CPSR field hflags reads (mode -> EL/mmu_idx/sctlr, E, IL, PAN)
+lives in uncached_cpsr; the bits listed by CACHED_CPSR_BITS - T, A/I/F,
+GE, IT, Q, NZCV - are held in dedicated env fields and are not hflags
+inputs (verified against rebuild_hflags_a32/_common/_common_32).  So an
+unchanged uncached_cpsr means unchanged hflags.
+
+Verified empirically before landing: a temporary build recomputed
+rebuild_hflags_internal() on every skip and compared.  Over a full
+S75v40lg1 boot, 2,125,612 skips, 0 mismatches.  Gates: op-suite 1156/1156
+byte-identical, native suite 4/4, lockstep 250e6 identical.
+
+Measured as part of the 0043-0045 stack (see 0044); on its own it is
+below this benchmark's resolution (~2.1 M rebuilds saved, ~0.2-0.4 s of
+a 29 s boot).
+
+diff --git a/target/arm/tcg/op_helper.c b/target/arm/tcg/op_helper.c
+--- a/target/arm/tcg/op_helper.c	2026-09-12 17:47:25.047450470 +0000
++++ b/target/arm/tcg/op_helper.c	2026-09-12 17:00:18.550171460 +0000
+@@ -819,9 +819,23 @@
+ 
+ void HELPER(cpsr_write)(CPUARMState *env, uint32_t val, uint32_t mask)
+ {
++    uint32_t before = env->uncached_cpsr;
++
+     cpsr_write(env, val, mask, CPSRWriteByInstr);
+-    /* TODO: Not all cpsr bits are relevant to hflags.  */
+-    arm_rebuild_hflags(env);
++    /*
++     * Upstream rebuilds hflags unconditionally here, with a TODO saying
++     * not all cpsr bits are relevant.  They are not: every field hflags
++     * reads out of the CPSR (mode -> EL/mmu_idx/sctlr, E, IL, PAN) lives
++     * in uncached_cpsr, while the bits this firmware writes hundreds of
++     * thousands of times a second - the I/F interrupt masks of its
++     * critical sections, and the condition flags - are held in the
++     * dedicated env fields listed by CACHED_CPSR_BITS and are not hflags
++     * inputs.  So an unchanged uncached_cpsr means unchanged hflags, and
++     * the ~76 ns full rebuild can be skipped.
++     */
++    if (unlikely(before != env->uncached_cpsr)) {
++        arm_rebuild_hflags(env);
++    }
+     cpsr_write_check_irq(env);
+ }
+ 

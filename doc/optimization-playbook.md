@@ -203,6 +203,10 @@ mmiopoll only) makes a whole-run profile pure — see the sessions doc,
 | 0039 pmb887x: display path per-word costs | a redrawing J2ME app (the stopwatch, ~57 fps) pushes every LCD word through DIF FIFO → DMAC request → VIC; that chain was 44 % of the vCPU: `vic_update_state` scanned all 170 lines on every level change (now an asserted bitmap + unchanged-level no-op), the DIF re-drove 6 GPIO pins per FIFO word and 8 DMAC request lines per event (level caches; every consumer is level-idempotent), `dif_mux` was a 32-iteration bit loop per word (byte-lane tables), DMAC read a memory source word by word (burst read once), `srb_set_isr` tested 32 bits.  Plus `-Dqom_cast_debug=false` for the wasm64 build (`OBJECT_CHECK` asserted per FIFO word) | `tools/stopwatch.mjs` vratio **0.19 → 0.33** (25 → 41 MIPS); QOM casts off: boot −3..−5 % every milestone, both orders; op-suite 1156/1156, native 4/4, bootcheck s75/el71/ke800, lockstep 250e6 |
 | 0040 cputlb: fill-time TLB growth | QEMU's dynamic TLB resizes only at flush time; a phase with no flushes (the JVM: ARMv5 1 KB pages, ~6.2k-page working set) sat at 256 entries at 83k fills/s.  `tlb_set_page_full` doubles the table when fills since the last flush exceed 2× its size (cap 2^14); trap: index `f[]` through `cpu_tlb_fast()` (mmuidx_to_fast_index), not by mmu_idx | fills 83k/s → 35/s, table → 16384; boot (both orders, with 0039): t0.1G −18..−20 %, t0.5G −2..−3 %, t1.3G −1..−3 % |
 | 0041 wasm diag: lookup / fill / flush / halt counters | cold counters behind `wasm_memstat`: tb_lookup calls, jump-cache/qht hits, jump-cache flushes, table clears, fill classification, halts — read by `tools/memstat.mjs` / `tools/stopwatch.mjs` | zero hot-path cost; decided 0039/0040 (78 M lookups per boot at 92 % jc hits; 83k fills/s with 0 flushes; halts/s = 0 in the stopwatch) |
+| 0042 wasm diag: warp / module-economy / range-flush counters + compaction knobs | cold counters for the idle warp (ns + 7 size buckets), bytes handed to `WebAssembly.Module` split by assemble source (first close / compaction / re-ensure), emitted TB body bytes, and `tlb_flush_phys_ranges` calls/entries/drops; `W64_COMPACT_BATCHES`/`W64_COMPACT_MEMBERS` promoted from `#define` to env knobs | zero hot-path cost; decided 0043 and produced the module-economy and virtual-time numbers below |
+| 0043 cputlb: physical-address summary for the range flush | 0016's topology-commit flush finds its victims by walking every entry of every mmu_idx; 0040 grew the table 256 → 16384, so each romd flip streamed 512 KB of table.  Per mmu_idx keep a 64-bit mask of the 32 MB physical blocks its entries translate into, one per 64-entry group plus an OR over groups and the victim table; a commit ANDs the requested blocks against it and skips whole tables and groups.  Masks are conservative (added on fill and victim promotion) and rewritten exactly by any commit that walks the group, so staleness self-heals.  Block size must divide the reported ranges — 64 MB blocks lumped the two 32 MB flash banks together and only got 280M → 107M | entries walked per boot **280,759,680 → 1,179,712 (237×)**, 1.16 groups walked per commit, entries dropped **22,007 → 22,007 (identical)**; boot effect on its own **FLAT** (t1.3G 29.7 vs 29.8, both orders) — the walk is a predictable streaming scan at ~0.3 ns/entry.  Kept for the scaling property and as part of the 0043–0045 stack |
+| 0044 accel/tcg: devirtualise the TB-lookup helper on wasm | `helper_lookup_tb_ptr` runs per indirect jump (78 M/boot, 2.9 M/s, ~10 % of the vCPU) and reached `get_tb_cpu_state` through `cpu->cc->tcg_ops` — a wasm `call_indirect` — and `curr_cflags()` through a cross-TU call whose four debug-only conditions cannot be true in a browser build.  Both folded away under `__EMSCRIPTEN__`.  NOT the rejected per-TB inline cache: the key is still computed once, in the helper | stack 0043–0045, interleaved `--runs 4`: window 14.2 → 13.7 s (−4 %), t0.5G 21.8 → 21.4 (−2 %), t0.75G 27.1 → 26.4 (−3 %), t1G −2 %, t1.3G −1 %; −2 % on t0.5G in both orders of two `--quick` pairs; helper self time 7.3 % → 6.5 % |
+| 0045 target/arm: hflags rebuild on a CPSR write only when it can change them | upstream rebuilds unconditionally with a TODO saying not all cpsr bits matter; they do not, and 0027 made `msr CPSR_*` the boot's most frequent TB exit — those writes set I/F and the condition flags.  Every CPSR field hflags reads (mode → EL/mmu_idx/sctlr, E, IL, PAN) lives in `uncached_cpsr`; everything in `CACHED_CPSR_BITS` lives in dedicated env fields and is not an hflags input, so an unchanged `uncached_cpsr` means unchanged hflags | verified with a temporary build that recomputed and compared on every skip: **2,125,612 skips, 0 mismatches** over a full boot; ~2.1 M rebuilds saved (~0.2–0.4 s); measured as part of the 0043–0045 stack |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
@@ -235,6 +239,9 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
 | icount2_advance thread-local batching (single-writer mirror, publish every 256 calls) | no measurable change (±noise) | the per-TB atomics are cheap on wasm; reverted |
 | TCI store-immediate ops (`tci_st32_ri`/`st8_ri`, incl. the `tcg_out_sti` constant-spill hook) | window 42.9→50.6–50.7 s, final insns −20 % — consistent regression across runs | not root-caused; suspected interaction with allocator behavior/stream size; documented in 0008's header |
 | QemuCond-based main-loop wait (instead of the raw futex) | same early-window numbers but only ~half the end-to-end gain | qemu condvar waits truncate to whole milliseconds on wasm; the firmware's ~100 µs WFI windows each pay +1 ms |
+| **Turning wasm64 batch compaction off** (2026-09-12; `W64_COMPACT_*` huge, `W64_LIVE_MAX=200000`) | bytes compiled per boot **197 MB → 100 MB** and re-ensures stay 0, but interleaved `--quick`: −3 % in one invocation and **0 %** in the next, at **RSS 1837 → 2179 MB (+18 %)**.  With the live cap left at its 6144 default it is **+8 % SLOWER** (t1.3G 31.3 vs 28.8) — eviction then re-ensure just recompiles the same bodies on demand | compaction is ~49 % of everything the browser compiles (96 MB in 198 modules), and halving the compile bytes buys nothing: merging ~1000 TB functions into one module buys back in execution locality what it costs in compile time.  Do not reopen without a way to compact *without* recompiling — e.g. compiling the merged module off the vCPU thread, which needs the vCPU to reach a JS event loop and so is blocked by the same constraint as everything else that waits |
+| **Compaction threshold sweep, take 2** (`W64_COMPACT_MEMBERS` 4096 / 16384 vs the 1024 default, interleaved 3-leg) | 4096: t1.3G −2 %; 16384: 0 %; the baseline leg of that invocation was itself an outlier (t0.1G 3.4 vs the usual 2.5) | inside the noise of a 3-leg run; 1024/256 kept.  Second time this knob has failed to move — stop sweeping it |
+| **Widening the TB jump-cache entry** to hold flags/cs_base/cflags/tc_ptr so a hit never dereferences the TB (2026-09-12, rejected by inspection, not built) | `TranslationBlock` has pc@0, cs_base@8, flags@16, cflags@20 and `tc.ptr`@32 — a jump-cache hit already touches exactly **one** 64-byte TB cache line | there is no second miss to remove; widening the entry would only move the same line into a 2–3× larger jump cache, and enlarging that cache was already measured worse (32k entries row above) |
 | `-sSUPPORT_LONGJMP=wasm` (native unwinding for the SVC-exception longjmps) | binaryen's Asyncify pass crashes on it (verified with a standalone emcc test) | wasm-EH longjmp and `-sASYNCIFY` are incompatible in emsdk 4.0.10; ASYNCIFY is required (coroutine backend/condvar sleeps) |
 
 ## Remaining opportunities (ranked; the plan lives in performance-handoff.md)
@@ -258,6 +265,24 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
    build reads **0.12× (15.1 MIPS)** vs 0.29–0.33× now — the earlier
    build was 2.4× *slower* at this, so whatever ran correctly before was
    not that build (native, paced by the RT cap, is the other candidate).
+
+0b. **Emitted code volume — OPEN, now measured, the biggest lever left.**
+   The browser compiles **197 MB of wasm per boot** across 35k modules
+   (0042 counters), which is essentially all of the `compile-Module`
+   10 % of the vCPU; 94 MB of that is unique TB bodies, i.e. **563 bytes
+   of wasm per 4.85-insn TB**, and the other half is compaction
+   recompiling the same bodies (turning that off is a wash — see
+   § REJECTED).  Cold execution of that code, not its compilation, is the
+   dominant cost: the first 0.5 G instructions run at ~20 MIPS and take
+   21 s of a 29 s boot while the last 0.55 G run at ~220 MIPS.  Where the
+   bytes go, per TCG opcode (temporary histogram in `tcg_gen_code`, first
+   1.5 M ops): **`qemu_ld` 83.9 B/op and `qemu_st` 86.9 B/op = 37 % of all
+   emitted bytes** (the inline TLB probe), `add` 12.0 B × 4.2/TB,
+   `goto_tb` 57 B, `goto_ptr` 65 B, `mov` 5.0 B × 6.3/TB, `brcond` 18.9 B.
+   Candidates: shrink the inline probe (hoisting `env + fast_ofs` into a
+   per-TB local saves ~8 B per access for ~8 B per TB); the AOT cache (#5),
+   which removes the whole 197 MB on a second boot.  Meter: the 0042
+   counters + `idlebench --quick` t0.25G/t0.5G.
 
 1. **wasm64 early-boot deficit — REDUCED by 0019, still open.**  Was
    ~27 % behind TCI on the first 0.75 G insns (per-TB module compile =
@@ -405,6 +430,13 @@ under the cap could not have been caught by any of them.
 
 Now an env knob: `RT=banked node tools/idlebench.mjs …` (default stays
 `off`; an `RT!=off` run is a knob run and never becomes a baseline).
+`EXTRA_Q`/`RT` still apply to every dist of an invocation, so they can only
+compare *across* invocations — the comparison rule 3 forbids.  A dist may
+therefore be written **`<dir>@<query>`**
+(`idlebench "dist-jit@rt=off,dist-jit@rt=banked"`, or
+`"dist-jit@env=W64_COMPACT_MEMBERS=4096"`) to give one leg its own query and
+interleave a *knob* A/B the way a two-build A/B is interleaved.  Such a run
+never becomes a baseline either.
 **Run it whenever a patch touches icount, the halt path or timers.**
 
 Measured cost of the cap itself (same wasm, S75v40lg1, quiet host):
@@ -417,6 +449,55 @@ claim.
 Generally: **if the page has a knob, the benchmark must be able to set
 it.**  A hardcoded query parameter in a measurement tool is a permanent
 blind spot, not a default.
+
+## The shipping boot is virtual-time-bound after t0.75G (2026-09-12)
+
+The `RT=banked` price in the section above ("+9…13 % on every milestone")
+is stale, and it was stale in a way that matters: it was measured when the
+engine was slower.  Interleaved, same invocation, current build:
+
+| | t0.5G | t0.75G | t1G | t1.2G | t1.3G |
+|---|---|---|---|---|---|
+| `rt=off` | 22.0 | 27.2 | 28.1 | 28.8 | 29.3 |
+| `rt=banked` (shipping) | 21.1 | 26.7 | **32.3** | **36.8** | **38.9** |
+
+The two are **identical through t0.75G and then diverge completely**: the
+last 0.55 G instructions take 2.1 s at `rt=off` and 12.2 s under the cap.
+Nothing about the engine changed between those columns — the cap is paying
+out virtual time the guest already banked.
+
+Where that virtual time comes from (warp counters + the idlebench `samples`
+series, `rt=off`): the boot reaches idle having consumed **~42 s of virtual
+time, ~31.5 s of it idle warp**.  Up to t≈22 s of wall there is essentially
+none (0.28 s of warp, 291 halts, virtual time *is* instruction time); then
+the display-DMA stretch warps **~18 s of virtual time in ~4 s of wall**
+(9.2k halts, 36k warps, ~3.2k of them in the 1–10 ms bucket), and the phase
+after it adds ~13 s more.  The guest is genuinely halted across those warps
+— it is waiting on millisecond-scale device timers, which is what a real
+phone's boot does too, so `sleep=off` + the cap is reproducing stock QEMU's
+`sleep=on` pacing without giving up a deterministic instruction stream.
+
+Two consequences for this workstream:
+
+1. **Engine work can only move the first ~0.75 G instructions of the
+   shipping boot** — about 27 s of the 39 s.  The remaining 12 s is the
+   guest's own timeline and no amount of MIPS will shorten it.  Quote boot
+   improvements against `rt=banked` as well as `rt=off`, or they read as
+   larger than a user will see.
+2. The only lever on the other 12 s is the *model*: whether ~31.5 s of idle
+   warp is the right amount.  That is a fidelity question (does a real
+   S75v40lg1 take ~42 s of its own clock to boot?), not a performance one,
+   and it needs a reference measurement against hardware before anyone
+   touches a device's timer periods.
+
+Note also that **native does not have the cap** (0032 defaults it off on
+non-emscripten), so native runs `sleep=off` unpaced and fast-forwards the
+phone's clock exactly as `rt=off` does.  Native and the web build therefore
+disagree about wall-clock pacing while agreeing about the timing model
+(`-icount shift=3,sleep=off` on both, `scripts/run-native.sh` and
+`site/app.js`).  Aligning them means defaulting `QEMU_ICOUNT_RTCAP=banked`
+natively too — which would take a native S75 boot from ~15 s to ~40 s and
+needs `tests/run.mjs` timeouts revisited first.
 
 ## Gates added 2026-09-11
 

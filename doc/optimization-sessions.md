@@ -1269,3 +1269,196 @@ candidate).  The fills column is 0040 working: 16k/s → tens.
 Run-to-run spread of `vratio` tracks host load (0.287 at loadavg 3.6,
 0.321 at 2.8, 0.303 at 5.6), so quote it with the load line the tool
 prints, and compare builds only back to back.
+
+## 2026-09-12 (second session) — profile pass 0042–0045, and two things the meters had been hiding
+
+Quiet host (loadavg ~1, 32 cores).  Session-start `/dist-jit`, rt=off:
+t0.1G 2.5, t0.25G 10.2, t0.5G 21.8, t1.3G 29.2, window 14.2, tIdle 30.3.
+Closing stack, interleaved `--runs 4` against the saved session-start
+dist: window −4 %, t0.5G −2 %, t0.75G −3 %, t1G −2 %, t1.3G −1 %, and the
+candidate's spread collapsed (window 13.7–13.8 vs 14.1–15.3).
+
+**A profiler trap first.**  `tools/wprof2.mjs` resolves symbols from the
+first `.symbols` sidecar it finds, and its search list starts at
+`site/dist/` — the *interpreter* dist.  Profiling dist-jit without
+`PROF_DIST=dist-jit` therefore produces a full, plausible, entirely
+fictional table (`fiprintf` 8 %, `qsp_mutex_trylock` 99 % inclusive).
+Second trap in the same tool: it profiles the page's *default* rt mode,
+i.e. `rt=banked`, while idlebench measures `rt=off` — so the first clean
+profile still had 19 % "futex wait" that does not exist in the
+configuration being optimised.  Profile with `rt=off` to attribute a
+benchmark number, and with `rt=banked` to attribute a user's wait.
+
+Categorised vCPU profile of the boot (rt=off, `tools/profcat.mjs`):
+jit-guest 48.8 %, tb-lookup 11.7 %, compile-Module 9.8 %,
+cpu-loop+devices 7.6 %, memory 5.1 %, translate 4.4 %, locks-waits 3.9 %.
+
+### `tlb_flush_phys_ranges`: 280 M entries walked to drop 22 k (0043)
+
+The profile showed a symbol that had never appeared before —
+`tlb_flush_phys_ranges` at 2 % — and counters explained it immediately:
+0016's range-scoped commit flush finds its victims by walking every entry
+of every mmu_idx, and 0040 had grown the table from 256 to 16384 entries.
+Per boot: **16,019 commits, 280,759,680 entries walked, 22,214 dropped**
+— 12,600 entries touched per entry dropped, and 512 KB of table streamed
+through the cache on every romd flip.
+
+The fix is a per-mmu_idx summary of which physical blocks the entries
+translate into (one 64-bit mask per 64-entry group, plus an OR over the
+groups and the victim table), conservative on fill and rewritten exactly
+by any commit that walks the group so staleness self-heals.
+
+**The block size is the whole trick, and the first version got it
+wrong.**  With 64 MB blocks the result was only 280M → 107M, because the
+two 32 MB flash banks (0xa0000000 and 0xa2000000) land in the same block:
+a commit against bank 1 then matched every group holding bank 0 *code*
+pages, and 104 of 256 groups stayed unskippable.  Reading the actual
+ranges out of a gauge (`lo=0xa2000000 hi=0xa4000000`, 2 ranges per call)
+is what showed it.  At 32 MB blocks with a fold: **280,759,680 →
+1,179,712 (237×)**, 1.16 groups walked per commit, and `physDrop`
+**22,007 → 22,007**, byte-identical — the filter provably changes only
+the search.
+
+**And it measured flat.**  t1.3G 29.7 vs 29.8 in both orders.  279 M
+removed loop iterations are worth ~0.3 ns each: it is a well-predicted
+streaming scan over mostly-empty memory, and the profiler's 2 % was
+over-attribution.  Kept anyway — it makes the commit cost independent of
+TLB size, and it is the most plausible source of the variance collapse in
+the closing stack — but *nobody should expect a profile percentage to
+become wall-clock*.  This is the third time in this file that counters
+have overruled a profile; the novelty is that this time the counters
+agreed with the profile and the *stopwatch* still said no.
+
+### The TB-lookup path (0044) and the CPSR hflags rebuild (0045)
+
+`helper_lookup_tb_ptr` is 78 M calls per boot (2.9 M/s) and ~10 % of the
+vCPU at ~39 ns each.  Two of those nanoseconds-per-call are pure dispatch
+in a single-target build: `get_tb_cpu_state` goes through
+`cpu->cc->tcg_ops` (a wasm `call_indirect`) and `curr_cflags()` is a
+cross-TU call whose four conditions cannot be true in a browser.  Folding
+both away: −2 % on t0.5G in both orders.
+
+`HELPER(cpsr_write)` rebuilds hflags unconditionally, with an upstream
+TODO admitting not all cpsr bits matter.  0027 made `msr CPSR_*` the
+boot's most frequent TB exit, and those writes set I/F and the condition
+flags — none of which is an hflags input.  The clean test turned out to
+be structural rather than a hand-derived bit mask: every CPSR field
+hflags reads lives in `uncached_cpsr`, and everything in
+`CACHED_CPSR_BITS` lives in a dedicated env field, so *"`uncached_cpsr`
+unchanged"* is exactly the right predicate.  Verified before landing by a
+build that recomputed `rebuild_hflags_internal()` on every skip and
+counted mismatches: **2,125,612 skips, 0 mismatches** over a full boot.
+
+Rejected by inspection, without building it: widening the TB jump-cache
+entry to hold flags/cs_base/cflags/tc_ptr so a hit need not dereference
+the TB.  `TranslationBlock` has pc@0, cs_base@8, flags@16, cflags@20 and
+`tc.ptr`@32 — a hit already touches exactly one cache line.
+
+### The module economy, measured properly at last
+
+New counters (0042) put numbers on what 0019/0020 had only been able to
+describe.  Per boot: **197 MB of wasm handed to `WebAssembly.Module`
+across 35,241 modules**, of which **94 MB is unique TB bodies** —
+**563 bytes of wasm per 4.85-instruction TB** — and **zero** single-TB
+temp modules (every module comes from a batch close).  Splitting the
+bytes by assemble source: first close 100.5 MB in 34,486 modules,
+**compaction 96.4 MB in 198 modules**, re-ensure 0.  So compaction is
+~49 % of everything the browser compiles, and essentially every TB body
+is compiled twice.
+
+Turning it off (env knobs added for exactly this) halves the bytes — and
+measures **neutral**: −3 % in one interleaved invocation, 0 % in the
+next, at +18 % RSS.  With the live FIFO cap left at its 6144 default it
+is **+8 % slower**, because eviction then re-ensure recompiles the same
+bodies on demand.  Merging ~1000 TB functions into one module buys back
+in execution locality what it costs in compile time.  A second threshold
+sweep (4096/16384 members) was inside the noise.  The only version of
+this idea still worth anything is compacting *without* recompiling on the
+vCPU thread — i.e. compiling the merged module in another worker and
+posting the `WebAssembly.Module` back.  That needs the vCPU worker to
+reach a JS event loop to receive the message, which it never does; it is
+blocked by the same constraint as every other "just do it asynchronously"
+idea in this project.
+
+Where the 563 bytes go, by TCG opcode (temporary histogram around the
+`tcg_gen_code` dispatch loop, first 1.5 M ops): **`qemu_ld` 83.9 B/op and
+`qemu_st` 86.9 B/op — 37 % of all emitted bytes**, i.e. the inline TLB
+probe; then `add` 12.0 B × 4.2/TB, `goto_tb` 57 B, `goto_ptr` 65 B,
+`mov` 5.0 B × 6.3/TB, `brcond` 18.9 B, `st8` 13.3 B × 1.7/TB.  Cold
+execution of that code, not its compilation, is the dominant cost: the
+first 0.5 G instructions run at ~20 MIPS and take 21 s of a 29 s boot
+while the last 0.55 G run at ~220 MIPS.
+
+Settled while chasing this: **`tcg_qemu_tb_exec`'s 15–18 % profile
+self-time is misattribution.**  Counters say the dispatcher is entered
+**1,214,122 times per boot, one loop iteration each** — 4.1 s over
+1.2 M calls would be 3.4 µs per call.  It is JIT'd guest code charged to
+its caller frame.  The playbook has carried "verify with counters before
+chasing" on this row since 0027; it is now closed.
+
+### The benchmark and the user are measuring different boots
+
+`site/app.js` ships `rt=banked`; every rung of the ladder measures
+`rt=off`.  The playbook already knew that and recorded the price as
+"+9…13 % on every milestone" — a number that had gone stale in the worst
+direction, because the engine got faster while the guest's timeline did
+not.  Interleaved in one invocation (using a new idlebench feature, see
+below), current build:
+
+| | t0.5G | t0.75G | t1G | t1.2G | t1.3G |
+|---|---|---|---|---|---|
+| `rt=off` | 22.0 | 27.2 | 28.1 | 28.8 | 29.3 |
+| `rt=banked` | 21.1 | 26.7 | **32.3** | **36.8** | **38.9** |
+
+Identical through t0.75G, then +33 %.  The warp counters explain it: the
+boot consumes **~42 s of virtual time, ~31.5 s of it idle warp**.  There
+is essentially none before t≈22 s of wall (0.28 s of warp, 291 halts —
+virtual time *is* instruction time through the whole compile-bound early
+phase); then the display-DMA stretch produces **~18 s of virtual time in
+~4 s of wall** (9.2k halts, 36k warps, ~3.2k of them in the 1–10 ms
+bucket), and the phase after it adds ~13 s more.  Under the cap that warp
+is paid as real sleep.
+
+The guest is genuinely halted across those warps — it is waiting on
+millisecond-scale device timers — so `sleep=off` + the cap is reproducing
+stock QEMU's `sleep=on` pacing without giving up a deterministic
+instruction stream, and the DMAC completion timer is already armed at
+`now + 1 ns` (0024), so it is not the one being waited on.  Two
+consequences: engine work can only move the first ~0.75 G instructions,
+about 27 s of the 39 s a user actually waits; and the other 12 s is a
+*fidelity* question — whether ~31.5 s of idle warp is the right amount
+for this firmware — which needs a reference measurement against hardware
+before anyone edits a device's timer periods.
+
+Related and unresolved: **native has no cap at all** (0032 defaults
+`QEMU_ICOUNT_RTCAP` off on non-emscripten) while using the same
+`-icount shift=3,sleep=off` as the page, so native fast-forwards the
+phone's clock exactly as `rt=off` does.  Native and web agree on the
+timing model and disagree on pacing.  Aligning them is a one-line default
+change that would take a native S75 boot from ~15 s to ~40 s and needs
+`tests/run.mjs` timeouts revisited first.
+
+### Tooling
+
+- `tools/diagprobe.mjs` — boot and dump any `wasm_memstat` counters by
+  index (`name=idx`, `xname=idx` for hex), so a counter added during a
+  session is readable without editing a tool.  Trap it cost twice: the
+  indices are positional, so **re-derive them from the header after every
+  edit to the enum** (`grep WASM_DIAG_ | nl`) — two measurements were read
+  against a stale mapping and looked like zeroes and nonsense.
+- `tools/idlebench.mjs` now accepts **`<dir>@<query>`** as a dist
+  (`"dist-jit@rt=off,dist-jit@rt=banked"`,
+  `"dist-jit@env=W64_COMPACT_MEMBERS=4096"`).  `EXTRA_Q`/`RT`/`JS_FLAGS`
+  apply to every leg of an invocation and so could only ever compare
+  *across* invocations — precisely the comparison rule 3 forbids on this
+  host.  Every knob result in this entry was measured with it.  Such runs
+  never become a baseline.
+
+### Resolution, and what it cost
+
+Most of this session's candidates live at 1–3 %, which is at or below
+what `--quick` single pairs can resolve.  Two `--quick` pairs in both
+orders said −2 %; a `--runs 2` said +1 %; `--runs 4 --max 34 --noref`
+(≈10 min) said −4 %/−2 %/−3 % with a clean separation and a visibly
+tighter candidate spread.  **Below ~3 %, go straight to n=4** — the
+intermediate answers are not just noisy, they change sign.

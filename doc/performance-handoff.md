@@ -1,5 +1,58 @@
 # Performance hand-off: the qemu-core device-path workstream
 
+Status (2026-09-12, profile session — patches 0042–0045):
+`/dist-jit` boot on a quiet host (rt=off, interleaved `--runs 4` vs the
+session-start build): window 14.2 → **13.7 s (−4 %)**, t0.5G 21.8 →
+**21.4 (−2 %)**, t0.75G 27.1 → **26.4 (−3 %)**, t1G −2 %, t1.3G
+29.3 → **29.0 (−1 %)**; run-to-run spread also collapsed (window
+13.7–13.8 vs 14.1–15.3).  Three mechanisms, all small and all measured as
+a stack: **0044** devirtualises `helper_lookup_tb_ptr`'s
+`get_tb_cpu_state` `call_indirect` and folds `curr_cflags`' debug-only
+conditions (78 M calls/boot, helper self time 7.3 → 6.5 % of the vCPU);
+**0045** skips the `arm_rebuild_hflags` a `msr CPSR_*` cannot affect
+(2.1 M skips/boot, **0 mismatches** against a recompute-and-compare
+build); **0043** gives the topology-commit TLB flush a physical-address
+summary — entries walked per boot **280,759,680 → 1,179,712 (237×)**,
+entries dropped unchanged at 22,007, boot effect on its own flat.
+**0042** is the measurement infrastructure the rest was chosen with, plus
+env knobs for the compaction thresholds.
+
+**The two findings that should drive the next session are not the −3 %.**
+
+1. **The shipping configuration is virtual-time-bound after t0.75G.**
+`rt=banked` (what `site/app.js` ships) and `rt=off` (what every rung of
+the ladder measures) are *identical through t0.75G* and then diverge
+completely: t1.3G **38.9 s vs 29.3 s, +33 %**, because the boot consumes
+~42 s of virtual time of which **~31.5 s is idle warp** — almost none of
+it before t≈22 s of wall, then ~18 s of it inside the display-DMA stretch
+(~4 s of wall).  The guest is genuinely halted across those warps, so the
+cap is reproducing stock QEMU's `sleep=on` pacing.  Consequence: engine
+work can only move the first ~0.75 G instructions, ~27 s of the 39 s a
+user waits; the other 12 s is the guest's own timeline.  See the
+playbook's "The shipping boot is virtual-time-bound after t0.75G".
+Note native currently has **no** cap (0032 is emscripten-only), so native
+fast-forwards the phone's clock exactly as `rt=off` does.
+
+2. **Emitted code volume is the biggest remaining engine lever, and it is
+now measured.**  The browser compiles **197 MB of wasm per boot** over
+35k modules — 94 MB of unique TB bodies (**563 B per 4.85-insn TB**) plus
+a second compile of nearly all of it by compaction (49 % of all bytes;
+turning compaction off halves the bytes and measures *neutral*, see
+§ REJECTED).  Per TCG opcode, **`qemu_ld`/`qemu_st` are 37 % of emitted
+bytes at ~85 B each** (the inline TLB probe).  Cold execution of that
+code dominates: the first 0.5 G instructions run at ~20 MIPS and take 21 s
+of a 29 s boot.  Settled on the way: `tcg_qemu_tb_exec`'s 15–18 % profile
+self-time is **misattribution** — the dispatcher is entered 1.2 M times
+per boot, one iteration each.
+
+Gates green: op-suite 1156/1156 byte-identical, native suite 4/4,
+lockstep 250e6 serial+regs identical.  **Not run this session: the
+three-fullflash browser gate** (`tools/bootcheck.mjs --dist dist-jit`) —
+run it before trusting these patches on EL71/KE800.
+New tooling: `tools/diagprobe.mjs` (read any `wasm_memstat` counter by
+index over a boot) and idlebench's `<dist>@<query>` per-leg query, which
+makes a *knob* A/B interleavable instead of cross-invocation.
+
 Status (2026-09-12, display-path / TLB session — patches 0039–0041):
 `/dist-jit` boot on a load-7 host: t0.5G ~22.5 s, t1.3G ~30 s (rt=off,
 `--quick`; the stack measured −2..−3 % at t0.5G/t1.3G and −18..−20 % at

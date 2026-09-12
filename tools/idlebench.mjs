@@ -94,6 +94,17 @@ const opt = (name, dflt) => {
   return dflt;
 };
 const dists = (argv.find((a) => !a.startsWith("--")) || "dist,dist-jit").split(",");
+// A dist may be written "<dir>@<query>" to append per-dist query parameters
+// (e.g. "dist-jit@env=W64_COMPACT_MEMBERS=100000000").  That makes a KNOB
+// A/B interleavable the way a two-build A/B is: EXTRA_Q applies to every
+// dist of the invocation and so can only compare across invocations, which
+// on a shared host is exactly the comparison the playbook forbids.  Like
+// EXTRA_Q, such a run never becomes a baseline.
+const distDir = (spec) => spec.split("@")[0];
+const distQuery = (spec) => {
+  const i = spec.indexOf("@");
+  return i < 0 ? "" : spec.slice(i + 1);
+};
 const quick = argv.includes("--quick");
 const runs = Number(opt("runs", quick ? 1 : 3));
 const maxSecs = Number(opt("max", quick ? 60 : 1500));
@@ -283,7 +294,7 @@ async function runOne(dist, hashes, r) {
     try {
       // rt=off by default: the real-time cap would pace a
       // faster-than-realtime boot (RT=banked measures what users get)
-      await p.goto(`http://127.0.0.1:${port}/?dist=${dist}&rt=${rtMode}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+      await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(dist)}${distQuery(dist) ? "&" + distQuery(dist) : ""}&rt=${rtMode}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
       await p.selectOption("#startup", "ONLINE");
       await p.setInputFiles("#fullflash", FLASH);
     } catch (e) {
@@ -407,15 +418,15 @@ async function runOne(dist, hashes, r) {
 
 async function runDist(dist) {
   const hashes = {
-    wasm: sha256(here + `../site/${dist}/qemu-system-arm.wasm`),
-    js: sha256(here + `../site/${dist}/qemu-system-arm.js`),
+    wasm: sha256(here + `../site/${distDir(dist)}/qemu-system-arm.wasm`),
+    js: sha256(here + `../site/${distDir(dist)}/qemu-system-arm.js`),
   };
   for (let r = 1; r <= runs; r++) results.push(await runOne(dist, hashes, r));
 }
 
 const hashesOf = (dist) => ({
-  wasm: sha256(here + `../site/${dist}/qemu-system-arm.wasm`),
-  js: sha256(here + `../site/${dist}/qemu-system-arm.js`),
+  wasm: sha256(here + `../site/${distDir(dist)}/qemu-system-arm.wasm`),
+  js: sha256(here + `../site/${distDir(dist)}/qemu-system-arm.js`),
 });
 if (parallel) {
   // all dists at once (runs within a dist sequential) — smoke only, the
@@ -458,7 +469,8 @@ const out = {
 // idlebench-quick-latest.json (different caps, keep the baselines apart).
 // Knob runs (JS_FLAGS / EXTRA_Q / RT set) never become a baseline.
 const latestPath = here + `../tests/results/idlebench-${quick ? "quick-" : ""}latest.json`;
-const knobRun = !!(jsFlags || extraQ || rtMode !== "off");
+const knobRun = !!(jsFlags || extraQ || rtMode !== "off" ||
+                   dists.some((d) => d.includes("@")));
 const baselinePath = opt("baseline", latestPath);
 let baseline = null;
 try { baseline = JSON.parse(readFileSync(baselinePath, "utf8")); } catch {}
