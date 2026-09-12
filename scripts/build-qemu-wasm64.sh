@@ -70,6 +70,9 @@ done
 for f in "$BUILD"/qemu-system-arm.js.symbols; do
   [ -f "$f" ] && cp "$f" "site/dist-jit/" && break
 done
+# board configs (site/dist/boards.tar, what the page always fetches) are not
+# part of this build's ninja graph — refresh them with the deploy
+bash scripts/pack-boards.sh
 # The lockstep fold reads the insn budget + grid from the URL (ls-* params).
 ls -la site/dist-jit/qemu-system-arm.{js,wasm}
 echo "== done. Serve: node scripts/serve.mjs 8094   Run: cd tools && node lockstep-wasm.mjs --runs 3"

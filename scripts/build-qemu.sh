@@ -5,8 +5,8 @@
 # upstream + patches/*.patch), then builds:
 #   default: the wasm64 TCG backend -> site/dist-jit/ (the page default)
 #   TCI=1 : additionally the TCG-interpreter dist -> site/dist/ (the
-#           fallback for boards that don't boot on the wasm64 backend —
-#           currently the LG boards — and the comparison baseline)
+#           comparison baseline, reachable as ?dist=dist; every board
+#           including the LG ones now boots on the wasm64 backend)
 # Either way it produces site/dist/boards.tar (board configs from bsp;
 # the page always fetches it from dist/).
 # site/ is served directly by serve.mjs — nothing is copied for it.
@@ -62,7 +62,7 @@ done
 
 # --- board configs from bsp (pinned rev + patches/bsp workarounds) ---
 bash "$WEB_DIR/scripts/sync-bsp.sh"
-tar -cf "$DIST/boards.tar" -C "$BUILD/bsp/lib/data/board" .
+bash "$WEB_DIR/scripts/pack-boards.sh"
 
 # --- build: wasm64 TCG backend (site/dist-jit/, the page default) ---
 bash "$WEB_DIR/scripts/build-qemu-wasm64.sh"

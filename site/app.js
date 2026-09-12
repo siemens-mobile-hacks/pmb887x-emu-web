@@ -280,22 +280,10 @@ fileInput.addEventListener("change", (e) => {
 /* ?dist=<dir>: which build output to run.  The default is the wasm64 TCG
  * backend build (dist-jit/): it is ~1.6x faster to the idle screen and
  * about half the download of the TCG-interpreter build, which stays
- * available as ?dist=dist (and is still what boards.tar is served from).
- *
- * Exception, see distFor() below: the LG boards do not boot on the
- * wasm64 backend yet. */
+ * available as ?dist=dist (and is still what boards.tar is served from). */
 const DIST = new URLSearchParams(location.search).get("dist") ||
              (new URLSearchParams(location.search).has("dist") ? "dist" : null);
 const DIST_DEFAULT = "dist-jit";
-
-/* The LG boards are the only ones that boot without icount, and on the
- * wasm64 backend they stop executing early in the GSM L1 loop (sometimes
- * instead tripping translator_ld's page assertion) — a backend bug that
- * is still open.  Run them on the interpreter build, which boots them,
- * until it is fixed.  An explicit ?dist= always wins. */
-function distFor(device) {
-  return DIST || (device.startsWith("lg-") ? "dist" : DIST_DEFAULT);
-}
 
 async function bootSuite(url) {
   setStatus("booting", "loading suite…");
@@ -450,7 +438,7 @@ async function boot() {
 
     // Compile the factory fresh per boot (the emscripten ES6 factory is
     // single-use once main() has run through exit()).
-    const factory = (await import(`./${distFor(device)}/qemu-system-arm.js`)).default;
+    const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
 
     const flashBytes = new Uint8Array(await file.arrayBuffer());
     for (const sc of sidecars) {
