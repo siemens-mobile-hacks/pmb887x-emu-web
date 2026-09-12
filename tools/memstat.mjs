@@ -33,6 +33,7 @@ await p.addScriptTag({ content: `
       " ldHelp=" + f(g(0)) + " stHelp=" + f(g(1)) +
       " ioLd=" + f(g(2)) + " ioSt=" + f(g(3)) + " fill=" + f(g(4)) +
       " romdFlip=" + f(g(10)) + " topC=" + f(g(11)) + " topoReuse=" + f(g(12)) +
+      " tbGen=" + f(g(7)) + " tbGenCnt=" + f(g(17)) + " lookup=" + f(g(13)) + " jcHit=" + f(g(14)) + " qhtHit=" + f(g(15)) + " jcFlush=" + f(g(16)) +
       " exit=" + (ser.includes(">>EXIT<<") ? "YES" : "no"));
   }, ${iv * 1000});
 ` });

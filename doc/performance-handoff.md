@@ -1,5 +1,33 @@
 # Performance hand-off: the qemu-core device-path workstream
 
+Status (2026-09-12, display-path / TLB session — patches 0039–0041):
+`/dist-jit` boot on a load-7 host: t0.5G ~22.5 s, t1.3G ~30 s (rt=off,
+`--quick`; the stack measured −2..−3 % at t0.5G/t1.3G and −18..−20 % at
+t0.1G vs the session-start build, plus −3..−5 % from
+`-Dqom_cast_debug=false`, all both orders).  **The J2ME stopwatch
+("Java timers at 0.1×") is a throughput problem with a meter, not a
+pacing bug**: while it runs the guest never halts (halts/s = 0, warp
+share 0 — counters, 0041), so virtual time is instruction time and the
+displayed rate is guest MIPS / 125; native does 150+ MIPS and is paced by
+the RT cap, wasm did 25.  `node tools/stopwatch.mjs` boots S75v40lg1
+(the same flash idlebench measures), walks the keypad to Extras →
+Stopwatch (verified screen states, retries) and prints
+`vratio`: 0.19 at session start → **0.29–0.33** after the display-path fixes
+(0039: VIC bitmap, DIF pin/request caches, mux tables, DMAC burst reads,
+QOM casts off) and fill-time TLB growth (0040: 83k fills/s → 35/s; QEMU
+only resized the TLB at flush time and this phase never flushes).  Left
+in that state: devices 33 %, guest code 33 %, `helper_lookup_tb_ptr`
+12 % (2.9 M lookups/s), MMIO 6 % — 1.0× needs ~3× on this workload.  The
+old-build check is done and says this is **not a regression**: the saved
+`dist-jit-0022` build reads **0.12× (15.1 MIPS)** on the same flash and
+meter, 2.4× slower than the current build.
+Early-boot attribution (profcat): guest 50 % spread over ~5.4k cold TB
+functions, lookups 12 %, module compile 13 %, translation ~6 %; V8 flag
+bounds say code quality is not the lever (eager TurboFan 2.5× slower).
+Tooling: `tools/stopwatch.mjs`, `tools/profcat.mjs`/`profjit.mjs`,
+`wprof2` `PROF_ATTACH`/inclusive table, `tools/slowhost.sh` (phone-shaped
+CPU throttling), idlebench idle floor 15 s / 1.2 G insns.
+
 Status (2026-09-11, RTC session — patch 0033): **the displayed clock and
 the initial date are fixed; both were one bug, and it was never a wasm
 or warp-patch regression.**  The pinned rev's "fix RTC date/time

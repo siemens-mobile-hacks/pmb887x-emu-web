@@ -1,0 +1,389 @@
+From: perf session 2026-09-12
+Subject: [PATCH 0039] pmb887x display path: per-word costs of the DIF/DMAC/VIC chain
+
+A redrawing J2ME app (the built-in stopwatch, ~57 framebuffer updates/s)
+pushes every LCD word through DIF TX FIFO -> DMAC request -> VIC, and
+that chain was 44 % of the vCPU on the wasm64 build (the guest never
+halts in that state, so its clock runs at guest-MIPS/125 - the user's
+"Java timers at 0.1x").  Per word/burst the models did:
+
+  - vic_update_state: scanned all 170 lines (twice: irq + fiq) on every
+    level change, including changes to the same level - 10 % of the vCPU.
+    Now an asserted-line bitmap is walked, and an unchanged level is a
+    no-op (the pending state cannot have changed).
+  - dif_update_gpio_state re-drove CS1..3/CD/RD/WR through the GPIO
+    block (and on to the LCD/SSI handlers, each a QOM cast) for every
+    FIFO word; dif_trigger_dma re-drove all eight DMAC request lines per
+    event - qemu_set_irq 10 %.  Every consumer (GPIO proxy, lcd_handle_cd/
+    rd/wr, ssi_cs_default, dmac_handle_signal) is level-idempotent, so an
+    unchanged level is skipped (caches reset to "unknown" on device reset).
+  - dif_mux ran a 32-iteration bit loop per word: now four byte-lane
+    table lookups (rebuilt in dif_update_mux; bit-for-bit the same value).
+  - dmac_transfer_memory read a memory source one word per
+    address_space_read; a memory->peripheral burst with an incrementing
+    source now reads the burst once (the FIFO still sees each word).
+  - pmb887x_srb_set_isr tested all 32 bits; it walks the set bits.
+
+Measured (tools/stopwatch.mjs, virtual s per wall s while the stopwatch
+runs): 0.19 -> 0.33 (25 -> 41 MIPS) for the VIC + pin/request caches; the
+mux tables / burst read / set_isr are inside the run-to-run noise on top
+(0.32 +- 0.02).  Boot (idlebench --quick, both orders, with 0040):
+t0.5G -2..-3 %, t1.3G -1..-3 %.  Gates: op-suite 1156/1156 identical,
+native suite 4/4, dist-jit bootcheck s75/el71/ke800, lockstep 250e6.
+The wasm64 build additionally sets -Dqom_cast_debug=false
+(scripts/build-qemu-wasm64.sh): -3..-5 % on every boot milestone.
+
+diff --git a/hw/arm/pmb887x/dif_v2.c b/hw/arm/pmb887x/dif_v2.c
+--- a/hw/arm/pmb887x/dif_v2.c	2026-09-12 08:50:13.190922626 +0000
++++ b/hw/arm/pmb887x/dif_v2.c	2026-09-12 08:06:22.022881992 +0000
+@@ -68,6 +68,13 @@
+ 	qemu_irq gpio_data[8];
+ 	qemu_irq gpio_cs[3];
+ 	qemu_irq gpio_cd;
++	/* last level driven on CS1..3/CD/RD/WR (-1 = never): the pins are
++	 * re-driven on every FIFO word and every consumer (GPIO proxy, LCD
++	 * CD/RD, SSI CS) is level-idempotent, so an unchanged level is skipped */
++	int8_t gpio_pin_level[6];
++	/* same for the eight DMAC request lines (dmac_handle_signal ignores an
++	 * unchanged level anyway) */
++	int8_t dmac_req_level[8];
+ 	qemu_irq gpio_wr;
+ 	qemu_irq gpio_rd;
+ 
+@@ -91,6 +98,12 @@
+ 	uint8_t bit_invert[32];
+ 	uint8_t bit_bcreg[32];
+ 	uint8_t bit_bcsel[32];
++	/* dif_mux() as four byte-lane lookups: mux_tab[cd][lane][byte] ORed
++	 * together, plus the constant bits (bcsel == 1) and the invert mask —
++	 * rebuilt by dif_update_mux, exactly the bit-per-bit result */
++	uint32_t mux_tab[2][4][256];
++	uint32_t mux_const[2];
++	uint32_t mux_invert;
+ 
+ 	uint32_t con;
+ 	uint32_t perreg;
+@@ -230,16 +243,22 @@
+ 	for (int i = 0; i < ARRAY_SIZE(cs_pins); i++) {
+ 		bool polarity = (p->perreg & cs_pins[i].perreg) != 0;
+ 		bool value = cs_pins[i].value;
+-		if (polarity) {
+-			// DPRINTF("%s=%d set %s\n", cs_pins[i].name, value, value ? "HIGH" : "LOW");
+-			qemu_set_irq(cs_pins[i].pin, value ? 1 : 0);
+-		} else {
+-			// DPRINTF("%s=%d set %s\n", cs_pins[i].name, value, value ? "LOW" : "HIGH");
+-			qemu_set_irq(cs_pins[i].pin, value ? 0 : 1);
+-		}
++		int level = polarity ? (value ? 1 : 0) : (value ? 0 : 1);
++		if (p->gpio_pin_level[i] == level)
++			continue;
++		p->gpio_pin_level[i] = level;
++		// DPRINTF("%s=%d set %s\n", cs_pins[i].name, value, level ? "HIGH" : "LOW");
++		qemu_set_irq(cs_pins[i].pin, level);
+ 	}
+ }
+ 
++static inline void dif_set_dmac_req(pmb887x_dif_t *p, int i, qemu_irq req, int level) {
++	if (p->dmac_req_level[i] == level)
++		return;
++	p->dmac_req_level[i] = level;
++	qemu_set_irq(req, level);
++}
++
+ static void dif_schedule(pmb887x_dif_t *p) {
+ 	p->transfer_pending = true;
+ 	if (p->in_schedule)
+@@ -258,27 +277,27 @@
+ static void dif_trigger_dma(pmb887x_dif_t *p) {
+ 	uint32_t ris = pmb887x_srb_get_ris_dma(&p->srb);
+ 	if (p->dmac_tx_clr) {
+-		qemu_set_irq(p->dmac_tx_sreq, 0);
+-		qemu_set_irq(p->dmac_tx_breq, 0);
+-		qemu_set_irq(p->dmac_tx_lsreq, 0);
+-		qemu_set_irq(p->dmac_tx_lbreq, 0);
++		dif_set_dmac_req(p, 0, p->dmac_tx_sreq, 0);
++		dif_set_dmac_req(p, 1, p->dmac_tx_breq, 0);
++		dif_set_dmac_req(p, 2, p->dmac_tx_lsreq, 0);
++		dif_set_dmac_req(p, 3, p->dmac_tx_lbreq, 0);
+ 	} else {
+-		qemu_set_irq(p->dmac_tx_sreq, (ris & DIFv2_RIS_TXSREQ) != 0);
+-		qemu_set_irq(p->dmac_tx_breq, (ris & DIFv2_RIS_TXBREQ) != 0);
+-		qemu_set_irq(p->dmac_tx_lsreq, (ris & DIFv2_RIS_TXLSREQ) != 0);
+-		qemu_set_irq(p->dmac_tx_lbreq, (ris & DIFv2_RIS_TXLBREQ) != 0);
++		dif_set_dmac_req(p, 0, p->dmac_tx_sreq, (ris & DIFv2_RIS_TXSREQ) != 0);
++		dif_set_dmac_req(p, 1, p->dmac_tx_breq, (ris & DIFv2_RIS_TXBREQ) != 0);
++		dif_set_dmac_req(p, 2, p->dmac_tx_lsreq, (ris & DIFv2_RIS_TXLSREQ) != 0);
++		dif_set_dmac_req(p, 3, p->dmac_tx_lbreq, (ris & DIFv2_RIS_TXLBREQ) != 0);
+ 	}
+ 
+ 	if (p->dmac_rx_clr) {
+-		qemu_set_irq(p->dmac_rx_sreq, 0);
+-		qemu_set_irq(p->dmac_rx_breq, 0);
+-		qemu_set_irq(p->dmac_rx_lsreq, 0);
+-		qemu_set_irq(p->dmac_rx_lbreq, 0);
++		dif_set_dmac_req(p, 4, p->dmac_rx_sreq, 0);
++		dif_set_dmac_req(p, 5, p->dmac_rx_breq, 0);
++		dif_set_dmac_req(p, 6, p->dmac_rx_lsreq, 0);
++		dif_set_dmac_req(p, 7, p->dmac_rx_lbreq, 0);
+ 	} else {
+-		qemu_set_irq(p->dmac_rx_sreq, (ris & DIFv2_RIS_RXSREQ) != 0);
+-		qemu_set_irq(p->dmac_rx_breq, (ris & DIFv2_RIS_RXBREQ) != 0);
+-		qemu_set_irq(p->dmac_rx_lsreq, (ris & DIFv2_RIS_RXLSREQ) != 0);
+-		qemu_set_irq(p->dmac_rx_lbreq, (ris & DIFv2_RIS_RXLBREQ) != 0);
++		dif_set_dmac_req(p, 4, p->dmac_rx_sreq, (ris & DIFv2_RIS_RXSREQ) != 0);
++		dif_set_dmac_req(p, 5, p->dmac_rx_breq, (ris & DIFv2_RIS_RXBREQ) != 0);
++		dif_set_dmac_req(p, 6, p->dmac_rx_lsreq, (ris & DIFv2_RIS_RXLSREQ) != 0);
++		dif_set_dmac_req(p, 7, p->dmac_rx_lbreq, (ris & DIFv2_RIS_RXLBREQ) != 0);
+ 	}
+ }
+ 
+@@ -405,13 +424,21 @@
+ }
+ 
+ static inline uint32_t dif_mux(pmb887x_dif_t *p, uint32_t value) {
+-	uint32_t csreg = dif_get_transfer_csreg(p);
++	int cd = (dif_get_transfer_csreg(p) & DIFv2_CSREG_CD) != 0;
++	const uint32_t (*t)[256] = p->mux_tab[cd];
++	return (t[0][value & 0xFF] | t[1][(value >> 8) & 0xFF] |
++	        t[2][(value >> 16) & 0xFF] | t[3][value >> 24] |
++	        p->mux_const[cd]) ^ p->mux_invert;
++}
++
++/* the bit-per-bit definition dif_mux() used to evaluate per word */
++static uint32_t dif_mux_slow(pmb887x_dif_t *p, bool cd, uint32_t value) {
+ 	uint32_t new_value = 0;
+ 	for (uint32_t output_bit = 0; output_bit < 32; output_bit++) {
+ 		uint32_t bit = 0;
+ 
+ 		if (p->bit_bcsel[output_bit] == 0) {
+-			uint32_t input_bit = (csreg & DIFv2_CSREG_CD) ? output_bit : p->bit_mux[output_bit];
++			uint32_t input_bit = cd ? output_bit : p->bit_mux[output_bit];
+ 			bit = (value >> input_bit) & 1;
+ 		} else if (p->bit_bcsel[output_bit] == 1) {
+ 			bit = p->bit_bcreg[output_bit];
+@@ -423,6 +450,24 @@
+ 	return new_value;
+ }
+ 
++static void dif_build_mux_tables(pmb887x_dif_t *p) {
++	p->mux_invert = 0;
++	for (uint32_t o = 0; o < 32; o++) {
++		if (p->bit_invert[o])
++			p->mux_invert |= 1U << o;
++	}
++	for (int cd = 0; cd < 2; cd++) {
++		/* constant / invert part = the mux of zero, before inversion */
++		p->mux_const[cd] = dif_mux_slow(p, cd, 0) ^ p->mux_invert;
++		for (uint32_t lane = 0; lane < 4; lane++) {
++			for (uint32_t b = 0; b < 256; b++) {
++				uint32_t v = dif_mux_slow(p, cd, b << (8 * lane)) ^ p->mux_invert;
++				p->mux_tab[cd][lane][b] = v & ~p->mux_const[cd];
++			}
++		}
++	}
++}
++
+ static uint32_t dif_convert_color(pmb887x_dif_t *p, uint32_t value) {
+ 	int32_t input[3] = {
+ 		value & 0xFF,
+@@ -816,6 +861,7 @@
+ 		// DIF_INVERT_BIT
+ 		p->bit_invert[i] = p->invert_bit & (1 << i) ? 1 : 0;
+ 	}
++	dif_build_mux_tables(p);
+ 
+ #if PMB887X_DIF_DUMP_BIT_MUX
+ 	g_autoptr(GString) mux_str = g_string_new("");
+@@ -1338,6 +1384,8 @@
+ 	pmb887x_dif_t *p = PMB887X_DIF(dev);
+ 
+ 	timer_del(p->timer);
++	memset(p->gpio_pin_level, -1, sizeof(p->gpio_pin_level));
++	memset(p->dmac_req_level, -1, sizeof(p->dmac_req_level));
+ 
+ 	pmb887x_clc_init(&p->clc);
+ 	pmb887x_clc_set(&p->clc, MOD_CLC_DISR);
+diff --git a/hw/arm/pmb887x/dmac.c b/hw/arm/pmb887x/dmac.c
+--- a/hw/arm/pmb887x/dmac.c	2026-09-12 08:50:13.190971627 +0000
++++ b/hw/arm/pmb887x/dmac.c	2026-09-12 08:05:16.850250716 +0000
+@@ -293,6 +293,21 @@
+ 		address_space_write(&p->downstream_as, ch->dst_addr, MEMTXATTRS_UNSPECIFIED, buffer, dst_width * burst_size);
+ 		ch->src_addr += src_width * burst_size;
+ 		ch->dst_addr += dst_width * burst_size;
++	} else if (dst_width == src_width && is_src_memory && (ch->control & DMAC_CH_CONTROL_SI)) {
++		/* memory source with an incrementing address (the display path:
++		 * RAM -> DIF FIFO): one address_space_read for the whole burst
++		 * instead of one dispatch per word; the destination is written
++		 * per word as before (a FIFO register sees each word) */
++		dmac_read(p, ch->src_addr, buffer, src_width, burst_size, src_endian);
++		ch->src_addr += src_width * burst_size;
++		for (uint32_t i = 0; i < burst_size; i++) {
++			uint8_t *w = buffer + i * src_width;
++			if (src_endian != dst_endian && src_width > 1)
++				dmac_swap_byte_order(w, dst_width, 1);
++			dmac_write(p, ch->dst_addr, w, dst_width);
++			if ((ch->control & DMAC_CH_CONTROL_DI))
++				ch->dst_addr += dst_width;
++		}
+ 	} else if (dst_width == src_width) {
+ 		uint32_t transferred = 0;
+ 		while (transferred < burst_size) {
+diff --git a/hw/arm/pmb887x/mod.c b/hw/arm/pmb887x/mod.c
+--- a/hw/arm/pmb887x/mod.c	2026-09-12 08:50:12.137624826 +0000
++++ b/hw/arm/pmb887x/mod.c	2026-09-12 08:05:51.393112296 +0000
+@@ -5,6 +5,7 @@
+ #define PMB887X_TRACE_PREFIX	"pmb887x-mod"
+ 
+ #include "hw/arm/pmb887x/mod.h"
++#include "qemu/host-utils.h"
+ #include "hw/arm/pmb887x/gen/cpu_regs.h"
+ #include "hw/core/hw-error.h"
+ #include "hw/arm/pmb887x/trace.h"
+@@ -224,10 +225,10 @@
+ }
+ 
+ void pmb887x_srb_set_isr(pmb887x_srb_reg_t *reg, uint32_t value) {
+-	for (int i = 0; i < 32; i++) {
+-		uint32_t mask = 1U << i;
+-		if ((value & mask))
+-			pmb887x_srb_set_event(reg, i, 1);
++	while (value) {
++		int i = ctz32(value);
++		value &= value - 1;
++		pmb887x_srb_set_event(reg, i, 1);
+ 	}
+ }
+ 
+diff --git a/hw/arm/pmb887x/vic.c b/hw/arm/pmb887x/vic.c
+--- a/hw/arm/pmb887x/vic.c	2026-09-12 08:50:12.143116845 +0000
++++ b/hw/arm/pmb887x/vic.c	2026-09-12 07:16:42.366352339 +0000
+@@ -45,7 +45,11 @@
+ 	uint32_t revision;
+ 	
+ 	pmb887x_vic_irq_t irq_state[IRQS_COUNT];
+-	
++	/* bit i set = irq_state[i].level != 0: the pending scan walks only
++	 * these (a handful of the 170 lines are ever asserted; the scan runs
++	 * on every line change — thousands per second on the display path) */
++	uint64_t asserted[(IRQS_COUNT + 63) / 64];
++
+ 	uint32_t fiq_con;
+ 	uint32_t irq_con;
+ 
+@@ -79,46 +83,47 @@
+ 	return (p->fiq_con & VIC_FIQ_CON_MASK_PRIORITY) >> VIC_FIQ_CON_MASK_PRIORITY_SHIFT;
+ }
+ 
+-static int vic_pending_irq(pmb887x_vic_t *p) {
++static void vic_set_level(pmb887x_vic_t *p, int irq, int level) {
++	p->irq_state[irq].level = level;
++	if (level)
++		p->asserted[irq / 64] |= 1ULL << (irq % 64);
++	else
++		p->asserted[irq / 64] &= ~(1ULL << (irq % 64));
++}
++
++/* highest-priority asserted line of one class (fiq or irq) above the
++ * mask; only the asserted bitmap is walked */
++static int vic_pending(pmb887x_vic_t *p, bool fiq, uint32_t mask_priority) {
+ 	int irq_n = -1;
+ 	uint32_t max_priority = 0;
+-	uint32_t mask_priority = vic_get_irq_mask_priority(p);
+ 
+-	for (int i = 0; i < IRQS_COUNT; ++i) {
+-		pmb887x_vic_irq_t *line = &p->irq_state[i];
+-		
+-		if (line->fiq || !line->level || line->priority <= mask_priority)
+-			continue;
+-		
+-		uint32_t priority = vic_get_nested_priority(line);
+-		if (max_priority < priority) {
+-			irq_n = i;
+-			max_priority = priority;
++	for (unsigned w = 0; w < ARRAY_SIZE(p->asserted); w++) {
++		uint64_t bits = p->asserted[w];
++		while (bits) {
++			int i = w * 64 + ctz64(bits);
++			pmb887x_vic_irq_t *line = &p->irq_state[i];
++			bits &= bits - 1;
++
++			if (line->fiq != fiq || line->priority <= mask_priority)
++				continue;
++
++			uint32_t priority = vic_get_nested_priority(line);
++			if (max_priority < priority) {
++				irq_n = i;
++				max_priority = priority;
++			}
+ 		}
+ 	}
+-	
++
+ 	return irq_n;
+ }
+ 
+-static int vic_pending_fiq(pmb887x_vic_t *p) {
+-	int irq_n = -1;
+-	uint32_t max_priority = 0;
+-	uint32_t mask_priority = vic_get_fiq_mask_priority(p);
+-
+-	for (int i = 0; i < IRQS_COUNT; ++i) {
+-		pmb887x_vic_irq_t *line = &p->irq_state[i];
+-
+-		if (!line->fiq || !line->level || line->priority <= mask_priority)
+-			continue;
++static int vic_pending_irq(pmb887x_vic_t *p) {
++	return vic_pending(p, false, vic_get_irq_mask_priority(p));
++}
+ 
+-		uint32_t priority = vic_get_nested_priority(line);
+-		if (max_priority < priority) {
+-			irq_n = i;
+-			max_priority = priority;
+-		}
+-	}
+-	
+-	return irq_n;
++static int vic_pending_fiq(pmb887x_vic_t *p) {
++	return vic_pending(p, true, vic_get_fiq_mask_priority(p));
+ }
+ 
+ static void vic_update_state(pmb887x_vic_t *p) {
+@@ -130,15 +135,17 @@
+ 
+ static void vic_irq_handler(void *opaque, int irq, int level) {
+ 	pmb887x_vic_t *p = (pmb887x_vic_t *) opaque;
+-	
++
+ 	#if PMB887X_IO_BRIDGE
+ 	if (level == 100000) {
+ 		p->irq_state[irq].bridge = true;
+ 		level = 1;
+ 	}
+ 	#endif
+-	
+-	p->irq_state[irq].level = level;
++
++	if (p->irq_state[irq].level == level)
++		return;         /* nothing changed: the pending state cannot have */
++	vic_set_level(p, irq, level);
+ 	vic_update_state(p);
+ }
+ 
+@@ -251,7 +258,7 @@
+ 		case VIC_IRQ_ACK:
+ 			#if PMB887X_IO_BRIDGE
+ 			if (p->irq_depth && p->irq_state[p->irq_frames[p->irq_depth - 1].irq].bridge) {
+-				p->irq_state[p->irq_frames[p->irq_depth - 1].irq].level = 0;
++				vic_set_level(p, p->irq_frames[p->irq_depth - 1].irq, 0);
+ 				pmb8876_io_bridge_write(haddr + p->mmio.addr, size, value);
+ 			}
+ 			#endif
+@@ -331,6 +338,7 @@
+ 		p->irq_state[i].level = 0;
+ 		p->irq_state[i].bridge = false;
+ 	}
++	memset(p->asserted, 0, sizeof(p->asserted));
+ 
+ 	p->fiq_con = 0;
+ 	p->irq_con = 0;

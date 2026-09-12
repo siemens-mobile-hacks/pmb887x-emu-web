@@ -11,7 +11,7 @@ import path from "node:path";
 // wasm-function[N] -> C symbol map (emcc --emit-symbol-map sidecar; the
 // wasm binary carries no name section). Looked up next to the wasm being
 // served (site/dist/ or site/dist-jit/) and in the build dirs.
-const qDist = (/(?:^|&)dist=([^&]+)/.exec(process.argv[3] || "") || [])[1];
+const qDist = (/(?:^|&)dist=([^&]+)/.exec(process.argv[3] || "") || [])[1] || process.env.PROF_DIST;
 const symPaths = [
   ...(qDist ? [`../site/${qDist}/qemu-system-arm.js.symbols`] : []),
   "../site/dist/qemu-system-arm.js.symbols",
@@ -40,10 +40,18 @@ const query = process.argv[3] || "";
 const sampleUs = Number(process.argv[4] || 100);
 const delayS = Number(process.env.PROF_DELAY || 0);   // wait before Profiler.start (boot phase selection)
 
-const server = await chromium.launch({ headless: true, args: ["--remote-debugging-port=9555"] });
+// PROF_ATTACH=<devtools port>: profile an already-running page (e.g. the
+// tools/session.mjs daemon started with SESSION_DEVTOOLS=<port>) instead
+// of booting a fresh one — for states that take keypad navigation to
+// reach (a running J2ME app).  [seconds] and [sampleUs] still apply.
+const attachPort = Number(process.env.PROF_ATTACH || 0);
+const devtoolsPort = attachPort || 9555;
+const server = attachPort ? null : await chromium.launch({ headless: true, args: ["--remote-debugging-port=9555"] });
 try {
   const browser = server;
-  const page = await browser.newPage();
+  const page = attachPort ? null : await browser.newPage();
+  if (attachPort) console.log("attaching to devtools port " + attachPort);
+  else {
   page.on("console", (m) => { const t = m.text(); if (t.startsWith("WATCH") || t.includes("EXIT")) console.log("[page]", t.slice(0, 160)); });
   page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)));
   await page.goto("http://127.0.0.1:" + (process.env.PORT || "8080") + "/" + (query ? "?" + query : ""), { waitUntil: "networkidle" });
@@ -61,9 +69,10 @@ try {
     await page.setInputFiles("#fullflash", fullflash);
     await page.click("#btn-start");
   }
+  }
 
   // raw CDP on the devtools endpoint
-  const devtools = await (await fetch("http://127.0.0.1:9555/json/version")).json();
+  const devtools = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/version`)).json();
   const ws = new WebSocket(devtools.webSocketDebuggerUrl, { perMessageDeflate: false });
   await new Promise((r, j) => { ws.on("open", r); ws.on("error", j); });
   let nextId = 1;
@@ -88,7 +97,7 @@ try {
   const pageT = targets.find((t) => t.type === "page" && t.url.includes("127.0.0.1"));
   const pageSession = ((await send("Target.attachToTarget", { targetId: pageT.targetId, flatten: true })).result || {}).sessionId;
   await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, pageSession);
-  await new Promise((r) => setTimeout(r, 8000)); // workers spawn during boot
+  await new Promise((r) => setTimeout(r, attachPort ? 1500 : 8000)); // workers spawn during boot
 
   const workers = attached.filter((a) => a.targetInfo.type === "worker");
   console.log("attached workers:", workers.map((w) => w.targetInfo.url.slice(-46)).join(" | "));
@@ -157,13 +166,56 @@ try {
     for (const [k, v] of wtotals) totals.set(k, (totals.get(k) || 0) + v);
     perWorker.push({ idx: i++, sum: wsum, totals: wtotals });
   }
+  const topN = Number(process.env.PROF_TOP || 40);
   for (const w of perWorker) {
     const label = w.idx === 0 ? "page main thread" : "worker #" + (w.idx - 1);
     console.log("\n=== " + label + " self-time (total " + (w.sum / 1000).toFixed(0) + "ms) ===");
-    for (const [k, v] of [...w.totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40)) {
+    for (const [k, v] of [...w.totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN)) {
       console.log((v / 1000).toFixed(0).padStart(8) + "ms", (100 * v / w.sum).toFixed(1).padStart(5) + "%", k);
     }
   }
+  // inclusive time (self + everything called from it) per function, for
+  // the busiest worker: answers "how much of the vCPU is translation /
+  // module compile / lookup" without hunting through the self-time tail.
+  // PROF_INCL=0 disables; PROF_WORKER selects the worker as above.
+  if (process.env.PROF_INCL !== "0") {
+    let pick = 1;
+    if (process.env.PROF_WORKER !== undefined) pick = process.env.PROF_WORKER === "main" ? 0 : Number(process.env.PROF_WORKER) + 1;
+    else {
+      let best = 0;
+      for (const w of perWorker) {
+        const busy = w.sum - (w.totals.get("emscripten_futex_wait jit/qemu-system-arm.wasm") || 0) - (w.totals.get("(idle) ") || 0);
+        if (busy > best) { best = busy; pick = w.idx; }
+      }
+    }
+    const profile = profiles[pick];
+    if (profile) {
+      const byId = new Map(profile.nodes.map((n) => [n.id, n]));
+      const parent = new Map();
+      for (const n of profile.nodes) for (const c of n.children || []) parent.set(c, n.id);
+      const incl = new Map();
+      let sum = 0;
+      for (let j = 0; j < profile.samples.length; j++) {
+        const dt = profile.timeDeltas[j] || 0;
+        sum += dt;
+        const seen = new Set();
+        let cur = profile.samples[j];
+        while (cur !== undefined) {
+          const n = byId.get(cur);
+          if (!n) break;
+          const name = symOf(n.callFrame.functionName) || "?";
+          if (!seen.has(name)) { seen.add(name); incl.set(name, (incl.get(name) || 0) + dt); }
+          cur = parent.get(cur);
+        }
+      }
+      const label = pick === 0 ? "page main thread" : "worker #" + (pick - 1);
+      console.log("\n=== " + label + " INCLUSIVE time (total " + (sum / 1000).toFixed(0) + "ms) ===");
+      for (const [k, v] of [...incl.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN)) {
+        console.log((v / 1000).toFixed(0).padStart(8) + "ms", (100 * v / sum).toFixed(1).padStart(5) + "%", k);
+      }
+    }
+  }
+  if (process.env.PROF_SAVE) fs.writeFileSync(process.env.PROF_SAVE, JSON.stringify(profiles));
   console.log("\n=== caller stacks for a target fn (env PROF_FN) ===");
   const want = process.env.PROF_FN || "throw_longjmp";
   const tstacks = new Map();
@@ -191,7 +243,7 @@ try {
     console.log((v / 1000).toFixed(0).padStart(8) + "ms", k);
   }
   ws.close();
-  await browser.close();
+  if (browser) await browser.close();
 } finally {
-  try { await server.close(); } catch {}
+  try { if (server) await server.close(); } catch {}
 }

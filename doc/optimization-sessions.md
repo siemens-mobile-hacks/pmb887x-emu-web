@@ -1132,3 +1132,140 @@ histogram around the event.
 **Frequency note for whoever picks this up.**  One occurrence in 285 s on
 KE800; not seen in the S75/EL71 runs of the same session, which are also
 the shorter ones.  Do not assume it is LG-specific on that evidence.
+
+## 2026-09-12 — dist-jit profile pass, the J2ME stopwatch, the display path, fill-time TLB growth
+
+Start of day (rt=off, host load 7): dist-jit t0.5G 25.7 s, t1.3G 35.1 s,
+window 16.7 s.  A first quick run read +17 % against yesterday's saved
+numbers — host load was 19; an interleaved pair against a build without
+0036 (the translator barrier fix, the only perf-relevant candidate) was
++1 %.  Load, not a regression.  `tools/slowhost.sh` (pin + spinner
+throttling, `CORES=0-3 SPIN=1`) was added for phone-shaped runs; cgroups
+are read-only in the container.
+
+**Where the early phase goes (wprof2 4–26 s, categorised by
+`tools/profcat.mjs`)**: JIT'd guest code 50 %, TB lookup
+(`helper_lookup_tb_ptr` + qht) 12 %, module compile 13 %, translation
+~6 %, MMIO/TLB 6 %, devices 5.5 %.  The guest share is spread thin — 90 %
+of it over ~5,400 TB functions, top function 130 ms of 7 s — so it is
+cold-code volume, not hot loops; V8 flag bounds confirm it:
+`--no-liftoff` (TurboFan-only) 2.5× slower (compile-bound),
+`--wasm-lazy-compilation` +3 %, `--wasm-tiering-budget=100000` −6 % (one
+pair each, not shippable).  Cold counters (new `WASM_DIAG_LOOKUP*`):
+78 M lookups per boot, 92 % jump-cache hits, 7 % qht hits, ~0 misses, no
+jump-cache flushes, no count-limited retranslations — the 12 % is the
+helper's own ~35 ns × 1.75 M/s, not misses.  Rejected with numbers:
+declaring only the wasm locals a TB uses (Liftoff zero-fills ~70 per
+entry): flat in both orders (0 % / ±1 %), reverted — the header bytes
+cost more than the fill.
+
+**The J2ME stopwatch (user report: "Java timers at 0.1×").**  Reproduced
+with the keypad (`tools/session.mjs`; main menu → `*` = Прочее → 5× down
+→ Секундомер): over 31 s wall the stopwatch advanced 5.75 s and so did
+the *virtual clock* (0.19×); 726 M insns ran at 23 MIPS with ~57
+framebuffer updates/s.  Measured with the new counters: **halts/s = 0,
+warp share = 0** — the guest never sleeps while the stopwatch runs, so
+virtual time is purely instruction time (8 ns/insn) and the shown rate
+is MIPS/125.  Native does 150+ MIPS here and is paced by the RT cap;
+wasm did 25.  The stopwatch app is a continuous redraw loop over the
+DIF/DMAC display path, and that path was the cost: profile of the state
+(`node tools/stopwatch.mjs --devtools 9557 --hold 70` + `PROF_ATTACH=9557
+node tools/wprof2.mjs 12`) had devices at 44 % of the vCPU —
+`vic_update_state` 10 % (a scan of all 170 lines on every level change),
+`qemu_set_irq` 10 % (the DIF re-driving 6 GPIO pins per FIFO word and 8
+DMAC request lines per event), `dif_*`/`dmac_*` handlers, QOM cast
+asserts.  The user reports it correct less than a day earlier; the
+old-build comparison was completed in the follow-up below (it is **not**
+a regression — `dist-jit-0022` is 2.4× slower at this).
+
+Landed (each measured with `tools/stopwatch.mjs`, vratio = virtual s per
+wall s, and `idlebench --quick` both orders):
+
+- **VIC asserted-line bitmap + level-unchanged early-out; DIF pin/request
+  level caches** (every consumer — GPIO proxy, LCD CD/RD/WR, SSI CS,
+  `dmac_handle_signal` — is level-idempotent): vratio **0.19 → 0.33**,
+  MIPS 25 → 41.
+- **Fill-time TLB growth** (`tlb_set_page_full`): 83k TLB fills/s in
+  the stopwatch, all inside large pages, zero flushes of any kind —
+  QEMU's dynamic TLB resizes only at flush time, so a phase that never
+  flushes sits at the 256-entry default whatever it misses (ARMv5 1 KB
+  pages; the working set here is ~6.2k pages).  Double the table when
+  fills since the last flush exceed 2× its size (cap 2^14): fills
+  **83k/s → 35/s**, table 256 → 16384.  Boot: t0.1G −18..−20 %, t0.5G
+  −2..−3 %, t1.3G −1..−3 % (both orders).  Trap on the way: `cpu->neg.tlb.f[]`
+  is indexed via `mmuidx_to_fast_index()`, not by mmu_idx — the first
+  version read `tlb->f[mmu_idx]`, measured a different table, and cleared
+  the real one 357 times/s (fills went *up* to 130k/s).  Always
+  `cpu_tlb_fast(cpu, mmu_idx)`.
+- **`-Dqom_cast_debug=false` for the wasm64 build** (`OBJECT_CHECK` asserted
+  the QOM type per FIFO word in `lcd_transfer` and the pin handlers):
+  boot −3..−5 % on every milestone, both orders.  Bundled in the same
+  build: DIF bit-mux as four byte-lane tables (was a 32-iteration loop
+  per word), DMAC memory→peripheral bursts read the source once per burst,
+  `pmb887x_srb_set_isr` walks set bits — individually inside noise on the
+  stopwatch (0.32 ± 0.02).
+
+Method notes: `tools/stopwatch.mjs` is the LLM-free version of the
+navigation (verified screen states from `tools/test_targets/s75_*.png`,
+retries from idle, `--idlewait`/`--keyscale` for slow builds); it prints
+one `STOPWATCH` line and writes `tests/results/stopwatch-*.json`.
+Keypad facts it encodes: the first key press after boot is swallowed;
+`down` at idle opens Contacts and `right_soft` opens My files; a *held*
+on-screen key is a long-press (a 120 ms `*` = silent mode = a flash-FS
+write that panics the firmware with `>>EXIT<< ffs_main … LIGHT_AL` on the
+read-only flash).  `tools/wprof2.mjs` gained `PROF_ATTACH=<port>` (profile
+a running page), `PROF_TOP`, `PROF_SAVE`, an inclusive-time table;
+`tools/profcat.mjs` (category split, `FN=` caller stacks) and
+`tools/profjit.mjs` (JIT-time concentration) read the saved profile.
+`tools/idlebench.mjs` starts idle detection at 15 s or 1.2 G insns
+instead of a 30 s floor (boots are ~30 s now) and records TB entries per
+sample.
+
+### Follow-up: the stopwatch meter on S75v40lg1, and the old-build check
+
+`tools/stopwatch.mjs` now boots **S75v40lg1.bin** — the fullflash
+idlebench and bootbench measure — instead of the configured
+`testflash.local.json` one, so a pacing number and a boot number describe
+the same guest.  That flash's firmware is English (Extras → Stopwatch,
+the same 6th entry as Прочее → Секундомер) and has **no keypad lock**,
+which is what made the old-build comparison possible.  Its two references
+live in `tools/test_targets/s75v40lg1_*.png`; `--flash` with
+`--listref`/`--runref` points the tool at any other fullflash.
+
+Navigation facts this firmware forced into the script (all measured, each
+cost a failed run):
+
+- the **first key press after boot is swallowed** (verified by pressing
+  centre twice from idle: no change, then the menu);
+- a stray asterisk at idle lands in the **dialer**, and the red key does
+  *not* clear it — the right soft key is `<C` there.  Attempts that began
+  with `end` therefore looped forever typing `*`;
+- so the navigation is anchored to a **runtime idle reference**: the idle
+  screen is grabbed before any key, and only its bottom 28 rows (the
+  soft-key labels, `Info | Menu` vs `Options | <C` vs `Options | Back`)
+  are compared — the body has a clock and a network-search banner that
+  change on their own;
+- after a swallowed asterisk the retry must *not* press Back (from the
+  grid that drops to idle, and the next asterisk types into the dialer):
+  if the screen is idle again the whole attempt restarts;
+- "did the stopwatch start" is read off the LCD (the digits redraw between
+  two grabs), not from the instruction rate — centre toggles run/stop, so
+  a rate threshold that misfires under host load would make the retry
+  *stop* the app.
+
+**The old-build check (what the user asked for).**  Same meter, same
+flash, `--dist dist-jit-0022`:
+
+| build | vratio | MIPS | fps | halts/s | TLB fills/s |
+|---|---|---|---|---|---|
+| dist-jit-0022 (saved) | **0.121** | 15.1 | 44 | 0 | 16,482 |
+| dist-jit (this session) | **0.287–0.33** | 36–41 | 57–60 | 0 | 13–35 |
+
+So the earlier build ran the stopwatch **2.4× slower**, and its guest did
+not halt either — the "it worked yesterday" report cannot be a regression
+in these wasm builds (native, which the RT cap paces, is the other
+candidate).  The fills column is 0040 working: 16k/s → tens.
+
+Run-to-run spread of `vratio` tracks host load (0.287 at loadavg 3.6,
+0.321 at 2.8, 0.303 at 5.6), so quote it with the load line the tool
+prints, and compare builds only back to back.

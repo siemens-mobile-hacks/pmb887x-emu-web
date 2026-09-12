@@ -397,4 +397,11 @@ green; the boot's early phase is still ~27 % behind TCI — the
   window + guest-work milestones, A/B ratios, regression verdict);
   full `tools/idlebench.mjs` runs are the end-to-end gate (bootbench.mjs
   is deprecated);
-  profiling: `tools/wprof2.mjs` (per-worker CDP CPU profiles).
+  `node tools/stopwatch.mjs` is the in-guest pacing gate — it boots
+  S75v40lg1 (the idlebench flash), walks the keypad to Extras → Stopwatch
+  and prints `vratio`, virtual seconds per wall second while a J2ME app
+  redraws (1.0 = real time; the guest never halts there, so it is also
+  guest MIPS ÷ 125);
+  profiling: `tools/wprof2.mjs` (per-worker CDP CPU profiles, `PROF_ATTACH=`
+  to profile a page another tool drove), `tools/profcat.mjs` /
+  `tools/profjit.mjs` (cost-class split, JIT-time concentration).

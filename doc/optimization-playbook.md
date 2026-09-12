@@ -34,7 +34,7 @@ rejects it.  Costs are wall-clock on this host (32 cores, quiet).
 
 | rung | command | cost | detects | cannot see |
 |---|---|---|---|---|
-| 0 build | `scripts/ninja-fast.sh` (TCI) / `scripts/ninja-wasm64.sh qemu-system-arm.js` + deploy via `scripts/build-qemu-wasm64.sh` | ~8 s each | compile errors | — |
+| 0 build | `scripts/ninja-fast.sh` (**wasm64 → site/dist-jit by default**; `TCI=1 scripts/ninja-fast.sh` for the interpreter → site/dist) | ~8 s wasm64, ~70 s TCI | compile errors | — |
 | 1 tcgbench | `node tools/tcgbench.mjs` (native-jit + dist-jit); `LEGS=dist,dist-jit` for qemu-core; `ICOUNTS=0,1` for icount; `SUITE=quick` = ÷4 iterations smoke image | ~15 s per wasm64 leg, TCI leg 100 s (`SUITE=quick`: ~3 s / ~25 s) | per-op-class compute + MMIO/RAM dispatch tax (ns/access), value bugs (checksum) | **boot regressions** — hot loops amortize translation |
 | 2 quick boot | `node tools/idlebench.mjs <base>,<cand> --quick` | ~1 min per dist | window v=2..7, t0.1G/t0.25G/t0.5G, A/B ratios, REGRESSION verdict vs previous run | late-phase and idle (cap 60 s) |
 | 3 op-suite | `scripts/run-tcg-isa.sh` | ~30 s | any TCG/memory/exec value divergence, 3 backends byte-identical | perf |
@@ -81,8 +81,8 @@ node tools/tcgbench.mjs
 PORT=8080 node tools/idlebench.mjs dist,dist-jit --quick
 
 # 1. edit build/qemu (patches 0001..N applied) → 2. rebuild + deploy (~8 s)
-bash scripts/ninja-wasm64.sh qemu-system-arm.js && bash scripts/build-qemu-wasm64.sh
-bash scripts/ninja-fast.sh                        # TCI, qemu-core changes only
+bash scripts/ninja-fast.sh                        # wasm64 -> site/dist-jit
+TCI=1 bash scripts/ninja-fast.sh                  # interpreter -> site/dist (qemu-core changes)
 
 # 3. rung 1–2: ~1.5 min total
 node tools/tcgbench.mjs
@@ -200,6 +200,9 @@ mmiopoll only) makes a whole-run profile pure — see the sessions doc,
 | 0031 wasm64: Asyncify instrumentation allowlist (`-sASYNCIFY_ONLY`) | the emscripten fiber backend unwinds the whole C stack at a switch, so the old `-sASYNCIFY_REMOVE=tcg_qemu_tb_exec` instrumented ~everything the `invoke_*` longjmp wrappers reach (~21k fns / 17 MB / ~25 % of early-boot vCPU).  The wasm64 backend runs guest code as JIT'd modules, not `tcg_qemu_tb_exec`, so instrument ONLY the functions seen on a real switch stack (`configs/meson/asyncify-only.txt`, captured with `QEMU_COSTACK=1` over boot/rw-flash/shutdown + name families).  Prereqs: flash `blk_pwrite` deferred to a main-loop BH (a vCPU-thread block coroutine can't unwind a JIT frame); vCPU thread marked `qemu_coroutine_forbid_current_thread` (abort, not derail).  **wasm64-only** (`build-qemu-wasm64.sh` overrides the shared cross file): the TCI dist's hot path IS the interpreter, onlylist **regressed dist +26 %** | dist-jit wasm **45.1→27.8 MB**; idlebench `--runs 2`: **tIdle 40.3→33.2 s (−18 %)**, t0.5G 29.6→24.0 (−19 %), t0.1G 5.4→3.3 (−39 %); op-suite native JIT+TCI 1156/1156 identical, lockstep 250e6 serial+regs identical, Chromium idle |
 | 0032 icount: real-time cap for sleep=off (`QEMU_ICOUNT_RTCAP`, wasm default banked) | sleep=off warps the virtual clock straight to the next deadline (0023, on the vCPU), so a halted guest advances virtual time as fast as the host runs deadlines → the idle clock/animations run ahead of wall (~3.7× at t≈45 s; a regression vs native's RT-paced warp).  The vCPU sleeps (kick-interruptible, sub-ms `qemu_cond_timedwait_ns`) before a warp / after a budget round until wall reaches the virtual target.  "banked" measures allowed time from VM start, so the compute-bound boot (virtual *behind* wall) is never throttled and only idle overrun is paced; "strict" re-anchors on lag (paces the boot too — not the default).  Virtual time stays instruction-deterministic (lockstep/op-suite unaffected) | at t=45 s: virtual v=166 s (off) → **44.8 s (banked) ≈ wall**; boot-to-idle unchanged (insns@30 s 1.13 G banked vs 1.19 G off); default off on non-emscripten.  **Residual:** the phone's displayed digital clock still advances too fast per virtual second — an RTC/timer decode issue separate from the virtual-time rate, resolved by 0033 |
 | 0033 pmb887x: RTC `CNT` seed layout per board (`cnt-format`) | the pinned rev seeds `CNT` as a packed calendar (sec/min/hour/yday fields, 964/4/40 reloads); LG firmware reads those fields, Siemens firmware treats `CNT` as one linear Unix-seconds counter (+ its own time-zone setting), so the packed value decoded to "Wed 02 May 2091" and each minute wrap (0x3FF → 0x7C4 = +965) jumped the shown clock +16 min.  Not wasm- or warp-related: identical on the pristine native build.  Board config `[rtc] format` (default unix; the LG configs set calendar via `patches/bsp/0002`); both honour `-rtc base=` | native S75 "Пт 11 Сен 21:22" / C81 "11.09.2026 20:22" / KE800 unchanged "17:20 11/9"; wasm dist-jit 21:23 → 21:24 over 60 s, dist 21:26 → 21:27 over 40 s (was 15:39 → 15:55 over 40 s); no perf change |
+| 0039 pmb887x: display path per-word costs | a redrawing J2ME app (the stopwatch, ~57 fps) pushes every LCD word through DIF FIFO → DMAC request → VIC; that chain was 44 % of the vCPU: `vic_update_state` scanned all 170 lines on every level change (now an asserted bitmap + unchanged-level no-op), the DIF re-drove 6 GPIO pins per FIFO word and 8 DMAC request lines per event (level caches; every consumer is level-idempotent), `dif_mux` was a 32-iteration bit loop per word (byte-lane tables), DMAC read a memory source word by word (burst read once), `srb_set_isr` tested 32 bits.  Plus `-Dqom_cast_debug=false` for the wasm64 build (`OBJECT_CHECK` asserted per FIFO word) | `tools/stopwatch.mjs` vratio **0.19 → 0.33** (25 → 41 MIPS); QOM casts off: boot −3..−5 % every milestone, both orders; op-suite 1156/1156, native 4/4, bootcheck s75/el71/ke800, lockstep 250e6 |
+| 0040 cputlb: fill-time TLB growth | QEMU's dynamic TLB resizes only at flush time; a phase with no flushes (the JVM: ARMv5 1 KB pages, ~6.2k-page working set) sat at 256 entries at 83k fills/s.  `tlb_set_page_full` doubles the table when fills since the last flush exceed 2× its size (cap 2^14); trap: index `f[]` through `cpu_tlb_fast()` (mmuidx_to_fast_index), not by mmu_idx | fills 83k/s → 35/s, table → 16384; boot (both orders, with 0039): t0.1G −18..−20 %, t0.5G −2..−3 %, t1.3G −1..−3 % |
+| 0041 wasm diag: lookup / fill / flush / halt counters | cold counters behind `wasm_memstat`: tb_lookup calls, jump-cache/qht hits, jump-cache flushes, table clears, fill classification, halts — read by `tools/memstat.mjs` / `tools/stopwatch.mjs` | zero hot-path cost; decided 0039/0040 (78 M lookups per boot at 92 % jc hits; 83k fills/s with 0 flushes; halts/s = 0 in the stopwatch) |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
@@ -226,6 +229,8 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
 | **wasm64 goto_ptr per-TB inline cache** (`patches/attic/goto-ptr-inline-cache.diff`, 2026-09-11) | 80 % hit rate (57.8M/72.7M lookups per boot) but `--quick` both orders: t1.3G ratios 0.824/0.864 with, 0.823/0.844 without — flat | the inline ARM key computation (pc, hflags, flags2 + 5 deposited fields, ~10 loads + 4 compares) costs what `helper_lookup_tb_ptr`'s jump-cache hit path saves; the helper is ~40–50 ns, not the 150 ns assumed.  Only a cheaper key (e.g. a hflags generation counter maintained by the target) would change this |
 | **TB jump cache 4k → 32k entries on wasm** (`TB_JMP_CACHE_BITS` 15, 2026-09-11) | quick A/B vs 0022: +4..+9 % slower / flat (pairs disagree) | `qht_lookup` behind indirect jumps is 2.5 % of vCPU, but the 512 KB clears and cache footprint cost as much; reverted |
 | **Compaction threshold sweep** (`W64_COMPACT_BATCHES` 16/32/64/256/1024, 2026-09-11) | single quick runs suggested 16 (t1.3G 52.2 vs 56.9 s) but the interleaved pairs vs 0022 said +3 % slower in both orders; 1024 is +19 % at t0.5G | single-run sweeps on this host are noise at the ±5 % level — only interleaved pairs decide; 256 kept |
+| **wasm64: declare only the wasm locals a TB uses** (2026-09-12; every TB function declared 2×32 register locals + 5, and Liftoff zero-fills them per entry at ~4–6 M entries/s; layout with the register pairs last, trailing runs set to count 0) | `--quick` both orders: 0 % / ±1 % on every milestone — flat | Liftoff's zero-fill is not a measurable cost and the 129 extra header bytes per module are; reverted (hash-identical rebuild verified) |
+| **V8 wasm flags as bounds** (`JS_FLAGS`, 2026-09-12, one quick run each — not shippable) | `--no-liftoff` (TurboFan-only): t0.25G 12 → 31.8 s (2.5× slower); `--wasm-lazy-compilation` +3 %; `--no-wasm-lazy-compilation` +1 %; `--wasm-tiering-budget=100000` −6 % | the early phase is compile-bound cold code (90 % of JIT time over ~5,400 TB functions), not code quality: eager TurboFan is far worse, faster tier-up buys ≤6 %.  Do not chase Liftoff code quality |
 | Lazy flash romd restore (flip back to array mode on first array read, not eagerly on every `0xFF`) | 7.4× fewer topology flips but **32 % slower** in the flash-heavy window | keeping romd off during bursts turns array reads (incl. fetches) into MMIO dispatches, which costs more than the flips save |
 | icount2_advance thread-local batching (single-writer mirror, publish every 256 calls) | no measurable change (±noise) | the per-TB atomics are cheap on wasm; reverted |
 | TCI store-immediate ops (`tci_st32_ri`/`st8_ri`, incl. the `tcg_out_sti` constant-spill hook) | window 42.9→50.6–50.7 s, final insns −20 % — consistent regression across runs | not root-caused; suspected interaction with allocator behavior/stream size; documented in 0008's header |
@@ -234,19 +239,25 @@ without rebasing 0004/0007/0009.  Harness: `scripts/switch-test.sh`
 
 ## Remaining opportunities (ranked; the plan lives in performance-handoff.md)
 
-0. **The displayed digital clock ticks too fast — OPEN (user-reported,
-   correctness not speed).**  With the 0032 real-time cap the virtual
-   clock is pinned to wall (measured 1.0×), yet the phone's shown time
-   still advances ~22× per virtual second (screenshots 90 s apart:
-   21:27 → 22:01).  Every counter model (RTC/STM/GPTU/TPU) is
-   `QEMU_CLOCK_VIRTUAL`-paced, so this is a *decode*/epoch bug in how the
-   firmware derives wall time from the RTC `CNT`, not a virtual-rate
-   problem — and the user reports it absent in native main, i.e. a
-   regression from an earlier session's warp patches (0023/0024).  Next:
-   a timestamped RTC `CNT`-vs-`vclock` idle trace (an idle `CNT` trace
-   this session was inconclusive — irregular polled jumps), and bisect
-   0023/0024 against native main.  The J2ME stopwatch at ~0.1× is the
-   opposite (compute-bound guest) and not a pacing bug.
+0. **The displayed digital clock — CLOSED by 0033** (RTC `CNT` seed
+   layout; native seconds clock and idle clock verified 1.0×).
+   **The J2ME stopwatch pacing — OPEN, a throughput target with a
+   meter.**  `node tools/stopwatch.mjs` boots, walks the keypad to
+   Секундомер, starts it and prints `vratio` (virtual s per wall s;
+   1.0 = real time).  While it runs the guest never halts (halts/s = 0,
+   warp share 0 — 2026-09-12 counters), so the shown rate is exactly
+   guest MIPS / 125 (icount shift=3).  Native: 150+ MIPS, paced by the
+   RT cap.  wasm: 0.19× at session start → **0.33×** after the display
+   path fixes (VIC bitmap, DIF pin/request caches, mux tables, DMAC
+   burst reads, QOM casts off) and fill-time TLB growth.  What is left
+   in that state (profile, `PROF_ATTACH`): devices 33 % (DIF FIFO
+   word loop, DMAC per-word MMIO writes, SRB events), guest code 33 %,
+   `helper_lookup_tb_ptr` 12 % (2.9 M lookups/s — the JVM's indirect
+   dispatch), MMIO 6 %.  Reaching 1.0× needs ~3× on this workload.
+   **Not a regression**: the same meter on the saved `dist-jit-0022`
+   build reads **0.12× (15.1 MIPS)** vs 0.29–0.33× now — the earlier
+   build was 2.4× *slower* at this, so whatever ran correctly before was
+   not that build (native, paced by the RT cap, is the other candidate).
 
 1. **wasm64 early-boot deficit — REDUCED by 0019, still open.**  Was
    ~27 % behind TCI on the first 0.75 G insns (per-TB module compile =

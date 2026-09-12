@@ -14,10 +14,11 @@
 //     (2026-09-11: parallel dist/dist-jit pairs finished their 1.3G
 //     insns within 0.1 s of each other in 3/3 invocations while their
 //     per-phase curves differed by 30 %); use it for smoke only.
-//   - idle = FIRST LCD match at/after --floor (30) s after Start;
-//     tIdle is that sample. Pixel comparison doesn't even start until
-//     floorSecs (reaching idle earlier is unlikely) to keep the sampler
-//     cheap; sampling is 1 s before the floor and 0.5 s after it, so
+//   - idle = FIRST LCD match once comparison is on; comparison turns on
+//     at --floor (15) s after Start OR when insns >= --cmpinsns (1.2e9,
+//     the boot's fixed work is ~1.345e9), whichever comes first — a
+//     fixed 30 s floor used to clamp tIdle from below once boots got
+//     close to 30 s.  Sampling is 1 s before that and 0.5 s after it, so
 //     tIdle resolves to 0.5 s (it used to sit on a 2 s grid, which is
 //     how a 30 % early-phase gap between /dist and /dist-jit read as
 //     "median 76.4 s both"). Per-pixel rule follows compare-lcd.mjs: a
@@ -99,7 +100,11 @@ const maxSecs = Number(opt("max", quick ? 60 : 1500));
 const parallel = argv.includes("--parallel");
 const regressPct = Number(opt("regress", 5));
 const stallSecs = Number(opt("stall", 300));
-const floorSecs = Number(opt("floor", 30));
+// idle detection starts at the floor OR once the deterministic boot work
+// is nearly done (insns >= --cmpinsns), whichever is first: boots are now
+// close to 30 s, so a fixed 30 s floor would clamp tIdle from below.
+const floorSecs = Number(opt("floor", 15));
+const cmpInsns = Number(opt("cmpinsns", 1.2e9));
 const [winLo, winHi] = String(opt("window", "2:7")).split(":").map(Number);
 const rows = Number(opt("rows", 139));
 const pctMax = Number(opt("pct", 0.5));
@@ -304,15 +309,17 @@ async function runOne(dist, hashes, r) {
 
     rec.vAt = {}; rec.vHitAt = {}; rec.samples = [];
     let lastSample = null, rssPeak = 0;
+    let cmpOn = false;
 
     while (true) {
       const t = (Date.now() - t0) / 1000;
       if (t >= maxSecs) { rec.cls = "NOIDLE"; break; }
       let s = null;
+      cmpOn = cmpOn || (!noref && (t >= floorSecs || (lastSample && lastSample.insns >= cmpInsns)));
       try {
         s = await p.evaluate(SAMPLER, {
           refB64, rowsCmp: rows, pctMax,
-          cmp: !noref && t >= floorSecs,
+          cmp: cmpOn,
         });
       } catch (e) { crashed = "evaluate: " + String(e).slice(0, 120); }
       if (crashed) { rec.cls = "CRASH"; rec.why = crashed; break; }
@@ -321,7 +328,9 @@ async function runOne(dist, hashes, r) {
           s.stallSince = lastSample.stallSince ?? t;
         }
         lastSample = s;
-        rec.samples.push([+t.toFixed(1), +s.v.toFixed(2), s.insns]);
+        // [t, v, insns, tbEntries]: insns/tb per interval = how much
+        // each TB entry (prologue, chain hop) is amortised over
+        rec.samples.push([+t.toFixed(1), +s.v.toFixed(2), s.insns, s.tbs]);
         for (const tv of T_MILESTONES) {
           if (rec.vAt[tv] === undefined && t >= tv) rec.vAt[tv] = +s.v.toFixed(1);
         }
@@ -330,7 +339,7 @@ async function runOne(dist, hashes, r) {
         }
         // first LCD match at/after floorSecs = idle (s.match stays false
         // until the comparison starts at floorSecs, or with --noref)
-        if (s.match && t >= floorSecs) {
+        if (s.match && cmpOn) {
           rec.cls = "IDLE";
           rec.tIdle = +t.toFixed(1);
           rec.at = { v: +s.v.toFixed(1), pct: +s.pct.toFixed(3), insns: s.insns, tbs: s.tbs };
@@ -343,7 +352,7 @@ async function runOne(dist, hashes, r) {
         }
       }
       rssPeak = Math.max(rssPeak, rssMB(procTag) || 0);
-      await new Promise((r2) => setTimeout(r2, (!noref && t >= floorSecs) ? SAMPLE_MS_IDLE : SAMPLE_MS));
+      await new Promise((r2) => setTimeout(r2, cmpOn ? SAMPLE_MS_IDLE : SAMPLE_MS));
     }
     rec.wall = +((Date.now() - t0) / 1000).toFixed(1);
     rec.rssPeakMB = rssPeak;

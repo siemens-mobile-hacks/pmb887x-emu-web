@@ -53,7 +53,11 @@ fi
 # meson's compile probes (run from temp dirs on a reconfigure) find the list.
 ONLY="$ROOT/build/qemu/configs/meson/asyncify-only.txt"
 LA="['-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']"
-( cd "$BUILD" && meson configure -Dc_link_args="$LA" -Dcpp_link_args="$LA" >/dev/null )
+# qom_cast_debug: OBJECT_CHECK() casts assert the QOM type on every call —
+# the display path (lcd_transfer, the LCD/SSI pin handlers) does that per
+# FIFO word (~1.6 % of the vCPU in a redrawing J2ME app); a release build
+# does not need it
+( cd "$BUILD" && meson configure -Dc_link_args="$LA" -Dcpp_link_args="$LA" -Dqom_cast_debug=false >/dev/null )
 
 echo "== ninja qemu-system-arm.js"
 ninja -C "$BUILD" qemu-system-arm.js

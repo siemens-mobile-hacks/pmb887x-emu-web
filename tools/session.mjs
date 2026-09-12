@@ -78,7 +78,10 @@ async function ensureServer() {
 
 async function ensureBrowser() {
   if (!browser || !browser.isConnected()) {
-    browser = await chromium.launch({ headless: true });
+    // SESSION_DEVTOOLS=<port>: expose CDP so tools/wprof2.mjs can attach
+    // (PROF_ATTACH=<port>) and profile whatever state the keypad reached
+    const dt = process.env.SESSION_DEVTOOLS;
+    browser = await chromium.launch({ headless: true, args: dt ? [`--remote-debugging-port=${dt}`] : [] });
     log("browser launched");
   }
 }
@@ -196,11 +199,17 @@ const commands = {
     if (!page) throw new Error("no page");
     const btn = await page.$(`[data-key="${args[0]}"]`);
     if (!btn) throw new Error(`no key '${args[0]}' (see #keypad button[data-key] in site/index.html)`);
-    await btn.click();
+    // hold the button: an instant down/up is dropped by the firmware's
+    // keypad scan often enough to derail a scripted navigation
+    // key <name> [holdMs]: a hold >~100 ms is a long-press to the firmware
+    await btn.click({ delay: Number(args[1] ?? process.env.KEY_HOLD_MS ?? 0) });
     return `pressed ${args[0]}`;
   },
   keys: async (args) => {
-    for (const k of (args[0] || "").split(",").filter(Boolean)) await commands.key([k.trim()]);
+    for (const k of (args[0] || "").split(",").filter(Boolean)) {
+      await commands.key([k.trim()]);
+      await new Promise((r) => setTimeout(r, Number(process.env.KEY_GAP_MS || 400)));
+    }
     return `pressed ${args[0]}`;
   },
   eval: async (args) => {

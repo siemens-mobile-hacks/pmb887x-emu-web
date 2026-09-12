@@ -1,0 +1,92 @@
+From: perf session 2026-09-12
+Subject: [PATCH 0040] cputlb: grow the TLB from the fill path
+
+tlb_mmu_resize_locked runs only at flush time, so a guest phase that
+never flushes its TLB keeps whatever size the last flush chose - the
+256-entry default - however hard it misses.  The Siemens J2ME VM is
+such a phase: ARMv5 1 KB target pages, a ~6.2k-page working set, zero
+flushes of any kind, 83k tlb_fill calls per second (each a page-table
+walk; all inside 1 MB sections, none same-page or tiny-page refills).
+
+Count fills since the last flush/resize per mmu_idx; when they exceed
+twice the table size, double it through tlb_flush_one_mmuidx_locked
+(window_max_entries = size makes the existing policy pick 2x; the
+flush of that mmu_idx is the price, paid once per doubling), capped at
+2^TLB_FILL_GROW_MAX_BITS (16k entries) so a streaming working set cannot
+grow it without bound.  Go through cpu_tlb_fast(): f[] is indexed by
+mmuidx_to_fast_index(), not mmu_idx - the first version read
+tlb->f[mmu_idx], sized a different table, and cleared the real one 357
+times per second.
+
+Measured: stopwatch fills 83k/s -> 35/s, table 256 -> 16384 (6.2k used);
+boot (idlebench --quick, both orders, on top of 0039): t0.1G -18..-20 %,
+t0.5G -2..-3 %, t1.3G -1..-3 %.  Generic (all backends); gates as 0039.
+
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+--- a/accel/tcg/cputlb.c	2026-09-12 08:50:38.355940092 +0000
++++ b/accel/tcg/cputlb.c	2026-09-12 08:50:36.075260836 +0000
+@@ -295,6 +295,7 @@
+ static void tlb_mmu_flush_locked(CPUTLBDesc *desc, CPUTLBDescFast *fast)
+ {
+     desc->n_used_entries = 0;
++    desc->n_fills = 0;
+     desc->large_page_addr = -1;
+     desc->large_page_mask = -1;
+     desc->vindex = 0;
+@@ -1290,6 +1291,31 @@
+      */
+     qemu_spin_lock(&tlb->c.lock);
+ 
++    /*
++     * Grow the TLB from the fill path.  The resize policy in
++     * tlb_mmu_resize_locked only runs at flush time, so a guest that
++     * never flushes its TLB (or a phase that runs long between flushes)
++     * is stuck with the current size however hard it misses: a J2ME app
++     * on an ARMv5 board with 1 KB pages refilled a 256-entry table 83k
++     * times per second, no flush in sight.  Once the fills since the
++     * last flush/resize exceed twice the table, double it (the resize
++     * flushes this mmu_idx, so the refill is paid once per doubling);
++     * capped well below CPU_TLB_DYN_MAX_BITS so a streaming working set
++     * cannot grow the table without bound.
++     */
++    desc->n_fills++;
++    {
++        size_t n = tlb_n_entries(cpu_tlb_fast(cpu, mmu_idx));
++
++        if (unlikely(desc->n_fills > 2 * n) &&
++            n < ((size_t)1 << TLB_FILL_GROW_MAX_BITS)) {
++            desc->window_max_entries = n;    /* rate 100 %: doubles */
++            tlb_flush_one_mmuidx_locked(cpu, mmu_idx, get_clock_realtime());
++            index = tlb_index(cpu, mmu_idx, addr_page);
++            te = tlb_entry(cpu, mmu_idx, addr_page);
++        }
++    }
++
+     /* Note that the tlb is no longer clean.  */
+     tlb->c.dirty |= 1 << mmu_idx;
+ 
+diff --git a/accel/tcg/tlb-bounds.h b/accel/tcg/tlb-bounds.h
+--- a/accel/tcg/tlb-bounds.h	2026-09-12 08:50:37.274292698 +0000
++++ b/accel/tcg/tlb-bounds.h	2026-09-12 08:50:24.602213000 +0000
+@@ -9,5 +9,7 @@
+ #define CPU_TLB_DYN_MIN_BITS 6
+ #define CPU_TLB_DYN_MAX_BITS (32 - TARGET_PAGE_BITS)
+ #define CPU_TLB_DYN_DEFAULT_BITS 8
++/* cap for the fill-driven growth in tlb_set_page_full */
++#define TLB_FILL_GROW_MAX_BITS 14
+ 
+ #endif /* ACCEL_TCG_TLB_BOUNDS_H */
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+--- a/include/hw/core/cpu.h	2026-09-12 08:50:38.355940092 +0000
++++ b/include/hw/core/cpu.h	2026-09-12 08:50:24.600548704 +0000
+@@ -311,6 +311,10 @@
+     /* maximum number of entries observed in the window */
+     size_t window_max_entries;
+     size_t n_used_entries;
++    /* fills since the last flush/resize (tlb_set_page_full grows the
++     * table when this exceeds twice its size — a guest that never flushes
++     * its TLB never reached the flush-time resize policy) */
++    size_t n_fills;
+     /* The next index to use in the tlb victim table.  */
+     size_t vindex;
+     /* The tlb victim table, in two parts.  */
