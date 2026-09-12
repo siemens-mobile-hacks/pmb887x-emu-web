@@ -10,12 +10,8 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
                                             see upstream-branch.md for the commit list
   pmb887x-emu/                              submodule: the meta-repo whose qemu pin matches (reference)
   build.sh, versions.env, scripts/          build pipeline (WASM + native modes)
-  patches/0001..0045-*.patch                frozen patch-file mirror of the series commits (not
-                                            read by any build step; 0033 lives only as a commit)
-  patches/attic/                            dropped patches (the original 0004 io-recompile
-                                            skip, 0005 wasm32 JIT draft, 0006 fixed-104 MHz
-                                            clock, 0015 diag counters, goto_ptr inline cache)
-  patches/bsp/                              bsp board-config workaround (hd155153np → pmb6272)
+  bsp-patches/                              bsp board-config workaround (hd155153np → pmb6272),
+                                            applied by scripts/sync-bsp.sh
   site/                                     served web root (index.html / app.js /
                                             keyboards.js / fullflashes.js); dist-jit/ = wasm64
                                             backend build (page default), dist/ = TCI build
@@ -41,8 +37,7 @@ engines are served side by side, built from the same tree:
   default for every board (LG included since 0034–0038). ~7.4× TCI on
   compute (tcgbench), ~1.6× faster to the idle screen, ~28 MB wasm
   (Asyncify onlylist, 0031). Design + history:
-  [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) /
-  [wasm-tcg-backend-progress.md](wasm-tcg-backend-progress.md).
+  [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md).
 - `site/dist/` — the **TCI interpreter** build (`TCI=1` at build time,
   `?dist=dist` on the page). The reference/fallback tier and the oracle
   for bisecting JIT-only failures (diff the same device trace between
@@ -59,7 +54,7 @@ engines are served side by side, built from the same tree:
    `versions.env`).
 2. `scripts/build-qemu.sh` initialises the `qemu/` submodule at the
    pinned rev (`scripts/fetch-qemu.sh`), checks out the bsp at its pin
-   with `patches/bsp/` applied (`scripts/sync-bsp.sh`), packs the board
+   with `bsp-patches/` applied (`scripts/sync-bsp.sh`), packs the board
    configs into `site/dist/boards.tar` (`scripts/pack-boards.sh`), then
    runs `scripts/build-qemu-wasm64.sh`: configure like qemu's CI wasm64
    job (`--static --cpu=wasm64 --target-list=arm-softmmu
@@ -105,7 +100,7 @@ The structural ones:
   exports the page needs (`ENV`, `HEAPU8/32`, `EXIT_RUNTIME`).
 
 `0002 wasm: Asyncify-safe futex/condvar`
-(see [livelock-postmortem.md](livelock-postmortem.md) for the reasoning)
+(see [lessons.md](lessons.md) § Emscripten runtime for the reasoning)
 - `include/qemu/futex.h`: emscripten futex wrappers (`emscripten_futex_*`);
   `HAVE_FUTEX` becomes defined on emscripten, switching QemuEvent/LockCnt to
   their futex fast paths.
@@ -117,14 +112,13 @@ The structural ones:
 - `system/icount2.c`: frequency floor 1 kHz instead of 1 MHz on emscripten
   (only used with `?icount=precise-clocks=on` — the default timing model
   is stock icount `shift=3,sleep=off` and does not involve icount2 at all;
-  see [livelock-postmortem.md](livelock-postmortem.md) §4).
+  see [lessons.md](lessons.md) § Timing model).
 
 `0003` (TCI inline TLB probe + direct helper dispatch) is **generic TCI**,
-not emscripten-gated — native TCI measurably benefits (see
-[upstream-analysis.md](upstream-analysis.md)). `0004` keeps the stock
-io-recompile rewind for ROM-device (flash command) accesses and accounts
-mid-TB MMIO at the io boundary on emscripten (design + dead ends:
-[early-crash-postmortem.md](early-crash-postmortem.md) §9; `0010` extends
+not emscripten-gated — native TCI measurably benefits. `0004` keeps the
+stock io-recompile rewind for ROM-device (flash command) accesses and
+accounts mid-TB MMIO at the io boundary on emscripten (design + dead
+ends: [lessons.md](lessons.md) § Mid-TB MMIO; `0010` extends
 the skip to the stock-icount model; `0014`/`0036` keep barrier insns in
 single-insn TBs so the rewind stops recurring).
 
@@ -138,9 +132,8 @@ exit, io barriers, romd FlatView variants). Numbers:
 0020, 0022, 0026, 0029, 0030, 0034, 0038 are its follow-ups
 (speculative batching, successor hints, goto_ptr handoff/tail call, no
 icount2 prologue, explored flag, retaddr fix, narrowed speculation).
-Its own docs are authoritative:
-[wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) (design + gates) and
-[wasm-tcg-backend-progress.md](wasm-tcg-backend-progress.md) (session log).
+Its design doc is authoritative:
+[wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) (design + gates).
 
 Generic qemu-core commits (help every backend including native): `0016`
 (romd FlatView variants + range-scoped flush), `0018` (fill-time MMIO
@@ -155,13 +148,6 @@ Timing/halt path: `0023` (idle warp on the vCPU thread), `0024`
 icount is off — the LG boards). `0033` selects the RTC `CNT` layout
 from the board config (`[rtc] format`: Siemens linear Unix seconds, LG
 packed calendar).
-
-`0006-wasm-icount2-fixed-104MHz-virtual-clock.patch` — **dropped
-2026-09-08, superseded** (see [livelock-postmortem.md](livelock-postmortem.md)
-§4): it ran icount2 at a hard-coded 104 MHz on emscripten. The stock
-configuration `-icount shift=3,sleep=off` (site default; LG boards boot
-without any `-icount`) does the same job with zero fork-specific
-clock code. The patch lives in `patches/attic/`.
 
 ### Page (site/)
 
@@ -184,11 +170,6 @@ clock code. The patch lives in `patches/attic/`.
 
 ### Engine history
 
-- **wasm32 runtime JIT (ktock port, the old 0005 draft) — CLOSED
-  2026-09-09, discarded** (~1.3–2.3× TCI ceiling, deterministic boot hang,
-  ~4200-line surface). Record:
-  [wasm32-port-status.md](wasm32-port-status.md) +
-  `patches/attic/wasm32-rebase/`.
 - **wasm64 TCG backend (0017) — landed 2026-09-10/11**, compute 7.4× TCI,
   every gate green (op-suite ×3 byte-identical, full 2.5e9 lockstep,
   native suite ×4); the module economy, halt path, Asyncify onlylist and

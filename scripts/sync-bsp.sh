@@ -1,9 +1,9 @@
 #!/bin/bash
 # Check out the pinned pmb887x-dev (BSP) revision into build/bsp and apply
-# the board-config patches from patches/bsp/.
+# the board-config patches from bsp-patches/.
 #
 # Workaround (see versions.env): the BSP main branch references devices
-# that the emulator does not define; patches/bsp re-points them at the
+# that the emulator does not define; bsp-patches/ re-points them at the
 # closest defined stubs. Patches that do not apply (e.g. on older BSP
 # revisions that lack the affected sections) are skipped with a notice.
 set -euo pipefail
@@ -24,7 +24,7 @@ fi
 )
 
 shopt -s nullglob
-for p in "$ROOT"/patches/bsp/*.patch; do
+for p in "$ROOT"/bsp-patches/*.patch; do
   if (cd "$BSP" && git apply --check "$p" 2>/dev/null); then
     echo "bsp: applying $(basename "$p")"
     (cd "$BSP" && git apply "$p")

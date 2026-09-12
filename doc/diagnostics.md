@@ -35,8 +35,6 @@ controls, not params.
 counters of `include/qemu/wasm-diag.h` — indices are positional, re-derive
 them from the header after every edit: `grep WASM_DIAG_ | nl`),
 `_wasm_send_key(lnx, down)`, `_wasm_quit()`, `FS`, `ENV`.
-(`_wasm_exits`, `_wasm_irq_bits`, `_wasm_cpu_halted` were trimmed during
-the 2026-09-08 upstream review; tools that used them degrade gracefully.)
 
 ## Scripts that matter
 
@@ -53,13 +51,12 @@ Benchmarks and gates:
 | `ffboot.mjs` | boot a dist in Playwright's Firefox (cross-browser smoke; `BROWSER=chromium` too) |
 | `ab.mjs` | parallel boot-survival A/B of query variants against the deployed dist (`scripts/iterate.sh` uses it) |
 | `loadbench.mjs` | startup-path benchmark (download, compile, instantiate) |
-| `bootbench.mjs` | DEPRECATED — idlebench reports the same window metric |
 
 Profiling and counters:
 
 | Script | Purpose |
 |---|---|
-| `wprof2.mjs` | per-worker CDP profiler with `wasm-function[N]` → symbol resolution via the `.symbols` sidecar; `PROF_DELAY=<s>` picks the boot phase, `PROF_FN=<substr>` prints caller stacks, `PROF_ATTACH=` profiles a page another tool drove, `PROF_SAVE=<json>` keeps the raw profile (`wprof.mjs` is the superseded first attempt) |
+| `wprof2.mjs` | per-worker CDP profiler with `wasm-function[N]` → symbol resolution via the `.symbols` sidecar; `PROF_DELAY=<s>` picks the boot phase, `PROF_FN=<substr>` prints caller stacks, `PROF_ATTACH=` profiles a page another tool drove, `PROF_SAVE=<json>` keeps the raw profile |
 | `profcat.mjs`, `profjit.mjs` | categorize a saved profile by cost class; distribution of JIT-guest self time over TB functions |
 | `memstat.mjs`, `diagprobe.mjs` | sample the cold-path `wasm_memstat` counters over a boot (memstat: the memory-path set; diagprobe: any counter by index, `name=idx`) |
 | `threadmap.mjs`, `syscallprobe.mjs` | thread census / syscall CPU attribution (see wasm-threads-audit.md) |

@@ -47,9 +47,8 @@ device-bound phone boot sits at TCI parity on a ~10× compute reserve it
 cannot spend.  icount shift=3 measured FREE on short-TB workloads now
 that TB accounting is inline.  Phone-firmware boots are final gates
 only from here on.
-Note: the "JIT ~1.3–2.3x" numbers in
-[optimization-playbook.md](optimization-playbook.md) belong to the
-discarded wasm32/ktock port, not this backend.)
+Note: the "JIT ~1.3–2.3x" numbers in the playbook's REJECTED table
+belong to the discarded wasm32/ktock port, not this backend.)
 
 Question on the table: *stop micro-optimizing TCI ("qemu for JS through
 hacks") and instead add a proper TCG backend that emits WASM — wasm bytecode
@@ -58,9 +57,8 @@ is conceptually just another machine code, so this should be solvable.*
 **Verdict: yes, solvable and worth doing — but only as a redesigned backend,
 not as a re-adopt of ktock/qemu-wasm.** This repo already ran that design:
 the wasm32 runtime-JIT port (old 0005, rebased 2026-09-09) measured a
-**~1.3–2.3x ceiling** over TCI and was discarded
-([wasm32-port-status.md](wasm32-port-status.md),
-[patches/attic/wasm32-rebase/](../patches/attic/wasm32-rebase/)). The failure
+**~1.3–2.3x ceiling** over TCI and was discarded (§1 below is what it
+proved; [lessons.md](lessons.md) § TCG / backend design). The failure
 was architectural, not fundamental: every identified cause has a known fix,
 and the wasm platform has since shipped the features the fix needs. Realistic
 expectation for the redesign: **compute 3–10x TCI, end-to-end ~2–4x
@@ -91,7 +89,7 @@ structural to the ktock architecture:
 3. **One `WebAssembly.Module`+`Instance` per TB**, compiled through the JS
    boundary on first execution — a per-TB floor cost plus a whole instance
    lifecycle failure domain (15000-alive cap, FIFO eviction,
-   FinalizationRegistry GC pressure — see `wasm32.c` in the attic).
+   FinalizationRegistry GC pressure).
 4. **No value-level correctness harness.** The killer bug was a *data*
    divergence (USART RIS poll loop read a wrong value; PC flow identical for
    470k+ TBs). PC tracing cannot see this class of bug; it took the whole
@@ -140,7 +138,7 @@ take: the dispatch/instance design (measured ceiling above).
 | wasm-EH longjmp across module frames | emscripten `-sSUPPORT_LONGJMP=wasm` unwinds through foreign (TB-module) frames; TB code never catches |
 | emscripten link flags | `-sALLOW_TABLE_GROWTH` already in our link flags; main module exports table+memory, TB modules import them |
 
-Trap list to carry over from the attic (all bit us once):
+Trap list from the discarded attempt (all bit us once):
 `tcg_insn_unit` truncation (don't reuse TCI emitters — emit raw bytes from
 the new backend), tci.c interpreter-split aliasing regression (−60%), the
 Firefox `HEAP8.slice` copy requirement for module bytes, emscripten TLS with
@@ -201,7 +199,7 @@ before/after metric the day it is.
 
 ## 5. Plan — phases, gates, effort
 
-Tooling: `tools/bootbench.mjs` (A/B windows), `tools/rawspeed.mjs`,
+Tooling: `tools/idlebench.mjs` (boot windows + milestones), `tools/rawspeed.mjs`,
 `tools/wprof2.mjs` (CPU profiles), `tools/tracediff.mjs` (PC traces),
 the op-suite runner (`tools/tcgisa.mjs` + `scripts/run-tcg-isa.sh`,
 below), the lockstep harness, and **`tests/tcgbench` +

@@ -40,7 +40,7 @@ if grep -q 'subprojects/teakra' "$QEMU_SRC/.gitmodules" 2>/dev/null; then
     && (cd subprojects/teakra && git checkout -q -f HEAD))
 fi
 
-# --- board configs from bsp (pinned rev + patches/bsp workarounds) ---
+# --- board configs from bsp (pinned rev + bsp-patches/ workarounds) ---
 bash "$WEB_DIR/scripts/sync-bsp.sh"
 bash "$WEB_DIR/scripts/pack-boards.sh"
 

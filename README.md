@@ -9,8 +9,7 @@ slower). Two engines ship: the wasm64 TCG JIT backend (`site/dist-jit/`,
 the page default for every board — guest TBs compiled to wasm at
 runtime, ~7.4× TCI on compute, ~28 MB download) and the TCI interpreter
 (`site/dist/`, `?dist=dist`, the reference/fallback tier, ~45 MB; built
-only with `TCI=1`). See
-[doc/livelock-postmortem.md](doc/livelock-postmortem.md) +
+only with `TCI=1`). See [doc/lessons.md](doc/lessons.md) +
 [doc/performance-handoff.md](doc/performance-handoff.md).
 
 The page has a fullflash file picker (multi-select: LG fullflashes can be
@@ -77,8 +76,8 @@ guest's clock and animations run at wall speed instead of racing ahead.
 **LG firmware needs no icount at all** — it boots fine on the plain
 realtime clock — so the page omits `-icount` for `lg-*` devices by
 default. Override either default with `?icount=<spec>`
-(`precise-clocks=on`, `shift=N`, `none`, …). History: the interim
-hard-coded 104 MHz icount2 patch (0006) lives in `patches/attic/`.
+(`precise-clocks=on`, `shift=N`, `none`, …). Why this model and not
+another: [doc/lessons.md](doc/lessons.md).
 
 **Where the time goes:** on the wasm64 backend an S75 boot to the idle
 screen is ~29 s of wall with the real-time cap off and ~39 s with it on
@@ -88,12 +87,10 @@ The first ~0.75 G instructions are compile-bound cold code (~197 MB of
 wasm compiled per boot). Full analysis: [doc/](doc/) — in particular
 [doc/optimization-playbook.md](doc/optimization-playbook.md) (the
 measurement method + what landed/rejected),
-[doc/performance-handoff.md](doc/performance-handoff.md) (status per
-session, targets, next steps),
-[doc/livelock-postmortem.md](doc/livelock-postmortem.md) (the
-Asyncify-condvar fix, the wild-TB crash, the icount timing model) and
-[doc/early-crash-postmortem.md](doc/early-crash-postmortem.md) (the 0004
-io-recompile saga: dropped, then reworked correctly). Also
+[doc/performance-handoff.md](doc/performance-handoff.md) (current
+status, open items, constraints) and [doc/lessons.md](doc/lessons.md)
+(the conclusions behind the timing model, the io-recompile accounting,
+the emscripten runtime traps and the measurement rules). Also
 [doc/wasm-threads-audit.md](doc/wasm-threads-audit.md): the runtime
 threading audit — the build really is multi-threaded in the browser (5
 pthread workers; one vCPU thread executing guest code, the rest parked in
@@ -157,7 +154,7 @@ and the lockstep gate cover.
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
     fetch-qemu.sh       initialise the qemu (+ pmb887x-emu) submodules and
                         check qemu out at the pinned rev
-    sync-bsp.sh         bsp checkout @ pin + patches/bsp workarounds → build/bsp
+    sync-bsp.sh         bsp checkout @ pin + bsp-patches/ workarounds → build/bsp
     pack-boards.sh      build/bsp board configs → site/dist/boards.tar (run by
                         every deploy path)
     build-qemu.sh       submodule → wasm64 TCG backend build → site/dist-jit/
@@ -175,24 +172,8 @@ and the lockstep gate cover.
     iterate.sh          one-command edit→rebuild→browser-verdict loop
     run-tcg-isa.sh      guest op-suite gate (3 backends, byte-compared)
     run-lockstep.sh     native cross-backend lockstep gate
-    build-deps32.sh     wasm32 dependency stack (the attic 0005 experiment;
-                        historical, kept for reference — doc/wasm32-port-status.md)
-    capture-patch.sh, switch-test.sh
-                        patch-file-era tools (capture working-tree edits as
-                        patches/NNNN, rebuild minus/revert a patch). NOT
-                        functional against the submodule tree — the pinned
-                        rev already contains every patch. Kept for the
-                        history in doc/optimization-sessions.md.
-  patches/
-    0001..0045-*.patch  the series as patch files — a frozen mirror of the
-                        commits on the qemu branch (0033 is missing: it
-                        was folded into the pinned rev as the top commit).
-                        No build step reads them; the commit list in
-                        doc/upstream-branch.md is the authoritative index
-    bsp/0001            board-config workaround applied by sync-bsp.sh
+  bsp-patches/0001      board-config workaround applied by sync-bsp.sh
                         (hd155153np RF → the defined pmb6272 stub)
-    attic/              dropped patches + the wasm32 rebase record
-                        (see attic/README.md)
   tests/
     tcg-isa/            guest op-suite (bare-metal ARM926 versatilepb image
                         asserting (value, NZCV) per op class; runs on native
@@ -205,8 +186,8 @@ and the lockstep gate cover.
     tcgbench/ (+ tools/tcgbench.mjs)
                         fast-iteration perf bench on versatilepb: per-phase
                         backend A/B + the device/icount-tax mirrors
-    run.mjs (+ RESULTS-switch.md)  native boot suite (s75/el71/c81/ke800) and
-                        the A/B harness for qemu/bsp bumps
+    run.mjs             native boot suite (s75/el71/c81/ke800) and the A/B
+                        harness for qemu/bsp bumps
   site/                 the served web root — editable static page (index.html /
                         app.js / style.css / keyboards.js; fullflashes.js holds
                         the preset-fullflash inventory + Cache API handling)
@@ -251,24 +232,21 @@ Select with `-display wasm` — the same way `-display none` works.
 - bsp (pmb887x-dev) `e6e73d1` — carries the LG `[rtc] format =
   "calendar"` the LG firmware needs. The bsp main branch also defines
   `[peripheral.RF] type = "hd155153np"`, a device the emulator does not
-  define (only the `pmb6272` stub); `patches/bsp/0001` re-points the two
+  define (only the `pmb6272` stub); `bsp-patches/0001` re-points the two
   affected includes until upstream grows the device.
 - emsdk 4.0.10, glib 2.84.0, pixman 0.44.2, zlib 1.3.2, libffi v3.5.2
   (mirrors qemu's `emsdk-wasm64-cross.docker`).
 
 Bumping: change the pin, `scripts/fetch-qemu.sh`, rebuild; `tests/run.mjs`
-(+ `tests/RESULTS-switch.md`) is the A/B harness — it boots
+is the A/B harness — it boots
 s75/el71/c81/ke800 natively and benchmarks before/after, and
 `node tools/bootcheck.mjs --dist dist-jit` is the browser-side gate.
 
 ## Performance work (see doc/performance-handoff.md + doc/optimization-playbook.md)
 
-The wasm32 runtime-JIT backend (the old 0005 draft, ktock design) was
-fully rebased, benchmarked (~1.3–2.3× TCI ceiling, boot hangs) and
-**discarded** on 2026-09-09 — see doc/wasm32-port-status.md and
-patches/attic/wasm32-rebase/. Its redesigned successor landed as the
-wasm64 TCG backend (0017: tail-call chaining, regs-as-locals, batched
-modules; doc/wasm-tcg-backend-plan.md + -progress.md), then the
+The wasm64 TCG backend landed as 0017 (tail-call chaining,
+regs-as-locals, batched modules; design and gates in
+doc/wasm-tcg-backend-plan.md), then the
 qemu-core device path (0018), the module economy (0019–0022), the halt
 path (0023–0030), the Asyncify onlylist + real-time cap (0031/0032),
 the RTC seed layout (0033), the EL71/KE800 fixes that made every board

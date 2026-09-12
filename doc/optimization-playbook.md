@@ -5,9 +5,9 @@ The working method of the optimization sessions since 2026-09-07:
 document**, tuned for the shortest loop that can still reject a bad
 change.  Read with [performance-handoff.md](performance-handoff.md)
 (current targets/plan) and [tests/tcgbench/README.md](../tests/tcgbench/README.md)
-(tool ladder).  Per-session narratives, measurement forensics and the
-patch-isolation study live in [optimization-sessions.md](optimization-sessions.md)
-— consult them when a table row here says "see sessions".
+(tool ladder).  The conclusions behind these rules — timing model,
+io-recompile accounting, emscripten traps, measurement traps — are in
+[lessons.md](lessons.md).
 
 **Workstream history**: TCI patches 0007–0016 (~4× guest throughput) →
 wasm64 TCG backend 0017 (compute 7.4× TCI; boot early phase still ~27 %
@@ -163,7 +163,7 @@ garbage.
   in the optimized function.  Counters beat profiles: ≥1 % leaf
   self-time with implausible callers is symbol-map garbage until a cold
   counter confirms it (`include/qemu/wasm-diag.h`; the ghost catalogue
-  is in the sessions doc).  Remove measurement scaffolding before the
+  is in [lessons.md](lessons.md) § Measuring).  Remove measurement scaffolding before the
   final A/B (a per-commit clock read once cost 0.4 s per boot).
 - **Signature-check both ends of an A/B** (hash lines in the summary;
   a counter such as topoReuse for behavioral patches) — two full
@@ -181,8 +181,7 @@ early phase, 50+ = compute).  wasm functions resolve via the
 `build/qemu-wasm*/build.ninja` LINK_ARGS; a fresh reconfigure drops it).
 `PROF_FN=<substr>` prints caller stacks.  Suite mode (`?suite=`) skips
 the fullflash upload automatically.  A one-purpose bench image (e.g.
-mmiopoll only) makes a whole-run profile pure — see the sessions doc,
-2026-09-11 device-path.
+mmiopoll only) makes a whole-run profile pure.
 
 ## What landed (with numbers)
 
@@ -194,9 +193,8 @@ mmiopoll only) makes a whole-run profile pure — see the sessions doc,
 | 0012 tci size-specialized ldst | eight appended opcodes (tci_qemu_ld8..st32) for the exact mop family MO_ALIGN\|MO_ATOM_NONE\|size\|sign — every plain pmb887x data access: the generic probe reduces to `(addr & (page_mask\|size-1)) == tlb_addr`, baked in as constants, no mask math/atom branch/size switch, mmu_idx-only stream word; tci_qemu_ld/st dead re-probe removed (0 hits in >1M calls); cold-path diag counters (wasm-diag.h + tools/memstat.mjs) | window wins all 4 interleaved pairs (34.1/33.9/34.0/34.0 vs 40.6/34.4/34.9/34.5; −1.4…−16 %, bigger under host load); boot progress @110 s v 91–102 → 114–121 (+18–25 %); native suite PASS ×4 |
 | 0013 wasm: SVC inline exception exit | ARM frontend stores exception_index/syndrome/target_el + `exit_tb(0)` instead of the `helper_exception_with_syndrome` call (its `cpu_loop_exit` longjmp = ~15 µs JS-exception unwind × ~9.4k SWIs/s); new early-return in `cpu_handle_interrupt` delivers a pending exception_index before running/chaining any other TB — exactly the longjmp outcome, incl. IRQ-vs-exception ordering. Gated `__EMSCRIPTEN__` + !EL2/EL3/!M/!AA64 (target_el fixed 1, no TGE redirect); ss_active keeps the helper | window 34→25 s (−26 % quiet, −39 % loaded; 3/3 interleaved pairs); finalV@110 s +30…77 % (92–126 → 164); insns@110 s +6–10 %; `__emscripten_throw_longjmp` 18.5 %→2.6 % of vCPU; idle screen v=245 in ~185 s; native suite PASS ×4 |
 | 0014 wasm: io barriers | recurring ROM-device io_recompile (0010 kept the stock rewind for flash-command accesses; the unsplit cached TB re-paid the ~17 µs unwind on every status-poll iteration, 1.67k/s) — on rewind, record the faulting insn pc (64-entry direct-mapped set) + `tb_phys_invalidate` the TB; the translator keeps barrier insns in single-insn TBs (stop before mid-TB / after at TB start), so `can_do_io` is true and the access completes with stock 1-insn-clock precision — no further unwinding | ioRewind 1.67k/s → ~0; window wins 3/3 pairs (25.2–24.8 vs 25.3–27.5); insns@110 s +3–5 % on all pairs; soak v=373 @330 s, keypad works; native suite PASS ×4 |
-| 0016 memory: romd FlatView variants + range-scoped tlb flush | romd toggle per flash command = full FlatView re-render of every root (~200 µs, 16k radix page inserts over the flash) + full tlb_flush + ~33-entry refill storm, ~18k flips per boot — (a) FlatViews tagged (topo_gen, romd_sig), romd-only commits adopt the recycled variant from a 16-slot stash (roots whose tag already matches are skipped); (b) tcg listener records region_add/del phys ranges, flush drops only entries translating into them (evicted-variant latch falls back to full flush; entries never dereference a dead view) | topo-commit time 3857→421 ms (−89 %), 30894 variant reuses; v-window 25.1–28.3 → 22.5–25.1 s (8/8 interleaved pairs, every candidate run beats every baseline); insns@110 s +4–9 %; idle screen ~160 s; run-to-run variance collapsed; native suite PASS ×4 (measurement traps in [optimization-sessions.md](optimization-sessions.md), 2026-09-10) |
-| 0015 wasm: diagnostics counters | txnF/tbGen/tbFlush/ioRewind/lookupTB cold-path counters (killed two wprof2 ghost theories — sessions doc) | zero hot-path cost; measurement infra — **dropped 2026-09-09**: isolation testing measured it neutral, no tool consumed its counters (see patches/attic/README.md and § Patch-isolation study) |
-| 0017 wasm64 TCG backend | full backend: per-TB wasm modules → chaining → batching (128/B module) → inline TLB probe → inline TB accounting; `tcg/wasm64/` + small hooks | compute 7.4× TCI on tcgbench; boot: early phase (first 0.75 G insns) ~27 % SLOWER than TCI, last 0.55 G 2.7× faster — tIdle equal by cancellation only (2026-09-11 benchmark audit in [optimization-sessions.md](optimization-sessions.md)) (562 vs 53 MIPS; per-phase 7–18×); all gates green incl. full 2.5e9 lockstep — numbers and history in [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) |
+| 0016 memory: romd FlatView variants + range-scoped tlb flush | romd toggle per flash command = full FlatView re-render of every root (~200 µs, 16k radix page inserts over the flash) + full tlb_flush + ~33-entry refill storm, ~18k flips per boot — (a) FlatViews tagged (topo_gen, romd_sig), romd-only commits adopt the recycled variant from a 16-slot stash (roots whose tag already matches are skipped); (b) tcg listener records region_add/del phys ranges, flush drops only entries translating into them (evicted-variant latch falls back to full flush; entries never dereference a dead view) | topo-commit time 3857→421 ms (−89 %), 30894 variant reuses; v-window 25.1–28.3 → 22.5–25.1 s (8/8 interleaved pairs, every candidate run beats every baseline); insns@110 s +4–9 %; idle screen ~160 s; run-to-run variance collapsed; native suite PASS ×4 |
+| 0017 wasm64 TCG backend | full backend: per-TB wasm modules → chaining → batching (128/B module) → inline TLB probe → inline TB accounting; `tcg/wasm64/` + small hooks | compute 7.4× TCI on tcgbench; boot: early phase (first 0.75 G insns) ~27 % SLOWER than TCI, last 0.55 G 2.7× faster — tIdle equal by cancellation only (562 vs 53 MIPS; per-phase 7–18×); all gates green incl. full 2.5e9 lockstep — numbers and history in [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) |
 | 0019 wasm64: speculative successor translation + compile-once batching + compaction | goto_tb destinations recorded per TB; on a lookup miss the successors are translated breadth-first into the open batch (non-faulting probes before any lookup — the faulting `get_page_addr_code` delivered a spurious prefetch abort for a blx Thumb target); the batch is compiled when its first member runs (no per-TB temp module); landed batches keep re-assemblable records, live FIFO cap + on-demand re-ensure, and every 256 small batches are compacted into one module; a 32 MB throwaway allocation per 256 instantiations keeps Firefox's worker GC collecting dropped modules (Firefox: ~16.3k live modules max, code memory is not GC pressure) | idlebench `--runs 2` interleaved: tIdle 76.2/71.5 → 65.0/64.9 s (−15 %), window 30.4/28.7 → 26.0/25.7, t0.25G −13 %, t0.5G −14 %, t1.3G −15 %, RSS −4..−12 %; vCPU `Module` self-time 21 % → ~3 % early boot; Firefox boots to idle (was OOM at 10 s); op-suite 1156/1156 ×4, lockstep 20e6+250e6 clean, native suite 4/4 |
 | 0020 wasm64: call-return + `ldr pc,[pc,#-4]` trampoline successors, W64_SPEC_N 32 | ARM `bl`/`blx` record the return address via `translator_note_succ`; a TB ending in the firmware's `ldr pc,[pc,#-4]` thunk contributes its literal | batches 29.5k → 11.3k per 25 s, 3.1 → 12.7 members, misses −60 %; idlebench `--quick` vs 0019, both orders: t0.5G −8 %/−5 %, window −5 %/−5 %; gates green (op-suite, lockstep 250e6, Firefox idle, native 4/4) |
 | 0021 wasm: untimed cond waits + atomic event notifiers | `qemu_cond_wait_impl` passed 0 ms to `emscripten_futex_wait` = immediate "timeout" → every untimed wait (vCPU halt, RCU, io-dump threads) was a BQL lock/unlock spin; `event_notifier_set/test_and_clear` did proxied eventfd `write`/`read` (~1 ms sync round trip to the main thread, per icount deadline via `qemu_clock_notify`) → atomic flag | idlebench both orders: dist-jit tIdle 66→62.6 / 68→58.9 s, dist 76→73 / 73.5→64.7 s; gain from t0.75G on (the display-DMA stretch); op-suite ×4, lockstep 250e6, Firefox idle |
@@ -227,25 +225,21 @@ its compute numbers; its boot numbers are idlebench's.)
 ## Patch-isolation study (2026-09-09, summary)
 
 Every TCI/longjmp patch in 0001–0014 is empirically load-bearing
-(removal costs 15–40 % of the window or collapses the boot); 0015
-(diagnostics counters) was the only removable surface and was dropped;
-0002's condvar half is redundant since 0009 but cannot be split out
-without rebasing 0004/0007/0009.  Harness at the time:
-`scripts/switch-test.sh` (`MINUS:NNNN` / `REVERT:N1,N2`; patch-file
-era — today the equivalent is `git -C qemu revert` of the commit, then
-`ninja-fast.sh`).  Table and dependency structure in
-[optimization-sessions.md](optimization-sessions.md).
+(removal costs 15–40 % of the window or collapses the boot); 0002's
+condvar half is redundant since 0009 but cannot be split out without
+rebasing 0004/0007/0009.  Method today: `git -C qemu revert` of the
+commit, then `ninja-fast.sh` and the ladder.
 
 ## What was tried and REJECTED (do not retry without new ideas)
 
 | Experiment | Result | Why |
 |---|---|---|
-| **wasm32 runtime-JIT TCG backend (0005, ktock port fully rebased)** (2026-09-09 session; see [wasm32-port-status.md](wasm32-port-status.md) + `patches/attic/wasm32-rebase/`) | v-window 2→7: JIT 18.7–20.1 s vs TCI 24.8–28.3 quiet / 45–46 loaded — **~1.3–2.3x ceiling**, and the boot deterministically hangs at v≈6 (BROM USART-RIS poll data divergence → watchdog reset → recovery loop forever; LG/no-icount boot fully dead) | per-TB dispatch protocol (instance return → C dispatcher → indirect instance call per chained TB) + per-new-TB JS `WebAssembly.Module` compile eat the codegen gains on this 3–4 insn/TB branchy firmware; ~4200-line surface; discarded — the draft and the full rebase live in `patches/attic/` |
-| **tci.c interpreter stack as a parameter** (during the 0005 rebase: split `tcg_qemu_tb_exec` into a core + wrapper taking `uint64_t *call_stack`) | TCI v-window 25→45 s (**−60%**, 4/4 interleaved runs) | the pointer-select makes the interpreter stack alias every local array in LLVM's analysis; the TCI stack is per-TB scratch anyway — keep a single function with a local array |
+| **wasm32 runtime-JIT TCG backend (0005, ktock port fully rebased)** (2026-09-09) | v-window 2→7: JIT 18.7–20.1 s vs TCI 24.8–28.3 quiet / 45–46 loaded — **~1.3–2.3x ceiling**, and the boot deterministically hangs at v≈6 (BROM USART-RIS poll data divergence → watchdog reset → recovery loop forever; LG/no-icount boot fully dead) | per-TB dispatch protocol (instance return → C dispatcher → indirect instance call per chained TB) + per-new-TB JS `WebAssembly.Module` compile eat the codegen gains on this 3–4 insn/TB branchy firmware; ~4200-line surface; discarded |
+| **tci.c interpreter stack as a parameter** (split `tcg_qemu_tb_exec` into a core + wrapper taking `uint64_t *call_stack`) | TCI v-window 25→45 s (**−60%**, 4/4 interleaved runs) | the pointer-select makes the interpreter stack alias every local array in LLVM's analysis; the TCI stack is per-TB scratch anyway — keep a single function with a local array |
 | **MMIO dispatch fast path** (memory.c: direct `ops->read/write` call for exact-size aligned accesses, skipping valid-check + access_with_adjusted_size + accessor layers; reentrancy guard replicated; `__EMSCRIPTEN__`-gated) | window 24.9–25.2 → 25.1–25.3 s (**consistently 0.1–0.7 s WORSE on a quiet host**, 4/4 pairs); finalV ±noise; insns@110 s +0.1–5.8 % inconsistent; a late-window A/B (LO=30 HI=60) was flat too | the pre-dispatch condition chain (accepts/align/size/trace/ioeventfd checks) costs as much as the ~3 non-inlined calls it saves at ~90k dispatches/s; V8 already keeps the dispatch path hot. Reverted; don't retry a *runtime* cache without cross-TU inlining (LTO). **NOT the same as the current workstream's fill-time precompute** (store `(fn, opaque, attrs)` in the iotlb entry when it is filled — zero added per-access checks): that one is the plan in [performance-handoff.md](performance-handoff.md) slice 1 |
 | **TLB table-base caching in the TCI interpreter** (cache `(fast->table, fast->mask)` per mmu_idx across ops, dropped after helper calls and ldst fallbacks — the only paths that can resize/flush the tlb on this single-cpu machine) | window 25.9/25.2/25.2/25.2 → 24.5/25.3/25.1/25.1 (flat, ±0.1); late-window LO=30 HI=60: 19.7/20.3 → 19.6/20.0 (flat); finalInsns won 4/4 (+1…5.7 %) but finalV-at-200 s varies ±45 v run-to-run — no reproducible win | the two saved loads are L1-hot; the memory-op path is at its practical floor for micro-tweaks (0011+0012 already removed the real work). Reverted; only a big lever (64-bit TCI encoding, wasm32 JIT) can move the interpreter now |
 | **Device completion timers on QEMU_CLOCK_VIRTUAL** (dmac/dif_v1/dif_v2/ssc `timer_new_ns(QEMU_CLOCK_REALTIME, …)` → VIRTUAL, 2026-09-11) — **SUPERSEDED, landed as 0024** | tIdle 66 → 65 (dist-jit) / 70.5 → 71.9 (dist): flat *before 0023* | the hop chain was the same for both clocks then; once the vCPU thread warps and runs VIRTUAL timers itself (0023) the virtual-clock completion is hop-free: display stretch −2..−3 s |
-| **wasm64 goto_ptr per-TB inline cache** (`patches/attic/goto-ptr-inline-cache.diff`, 2026-09-11) | 80 % hit rate (57.8M/72.7M lookups per boot) but `--quick` both orders: t1.3G ratios 0.824/0.864 with, 0.823/0.844 without — flat | the inline ARM key computation (pc, hflags, flags2 + 5 deposited fields, ~10 loads + 4 compares) costs what `helper_lookup_tb_ptr`'s jump-cache hit path saves; the helper is ~40–50 ns, not the 150 ns assumed.  Only a cheaper key (e.g. a hflags generation counter maintained by the target) would change this |
+| **wasm64 goto_ptr per-TB inline cache** (2026-09-11) | 80 % hit rate (57.8M/72.7M lookups per boot) but `--quick` both orders: t1.3G ratios 0.824/0.864 with, 0.823/0.844 without — flat | the inline ARM key computation (pc, hflags, flags2 + 5 deposited fields, ~10 loads + 4 compares) costs what `helper_lookup_tb_ptr`'s jump-cache hit path saves; the helper is ~40–50 ns, not the 150 ns assumed.  Only a cheaper key (e.g. a hflags generation counter maintained by the target) would change this |
 | **TB jump cache 4k → 32k entries on wasm** (`TB_JMP_CACHE_BITS` 15, 2026-09-11) | quick A/B vs 0022: +4..+9 % slower / flat (pairs disagree) | `qht_lookup` behind indirect jumps is 2.5 % of vCPU, but the 512 KB clears and cache footprint cost as much; reverted |
 | **Compaction threshold sweep** (`W64_COMPACT_BATCHES` 16/32/64/256/1024, 2026-09-11) | single quick runs suggested 16 (t1.3G 52.2 vs 56.9 s) but the interleaved pairs vs 0022 said +3 % slower in both orders; 1024 is +19 % at t0.5G | single-run sweeps on this host are noise at the ±5 % level — only interleaved pairs decide; 256 kept |
 | **wasm64: declare only the wasm locals a TB uses** (2026-09-12; every TB function declared 2×32 register locals + 5, and Liftoff zero-fills them per entry at ~4–6 M entries/s; layout with the register pairs last, trailing runs set to count 0) | `--quick` both orders: 0 % / ±1 % on every milestone — flat | Liftoff's zero-fill is not a measurable cost and the 129 extra header bytes per module are; reverted (hash-identical rebuild verified) |
@@ -338,9 +332,13 @@ era — today the equivalent is `git -C qemu revert` of the commit, then
    end-of-codegen patch, so the leading hypothesis is a code-buffer
    position handed out twice, most likely around `w64_speculate()`'s
    `tb_gen_code()` calls into an open batch.  The forensic dump
-   (`/w64bad-<n>.bin`) must be pulled out of MEMFS by the driver to get
-   further — full write-up in [optimization-sessions.md](optimization-sessions.md),
-   2026-09-12.
+   (`/w64bad-<n>.bin`) must be pulled out of MEMFS by the driver
+   (`m.FS.readFile`, as `tools/conlog.mjs SAVE_FS=` does) and compared
+   against the staged record: a valid, different TB body there confirms
+   the double hand-out, and the question becomes which path advanced
+   `code_gen_ptr` twice.  Add `W64_DEBUG=1` for the batch histogram.
+   One occurrence in 285 s on KE800, none in the shorter S75/EL71 runs —
+   do not assume it is LG-specific.
 5. **AOT cache — OPEN, orthogonal** (backend plan phase 5): persist
    translated batches (Cache API/IndexedDB, keyed by flash hash) —
    zero-translation second boots; would also attack #1.
@@ -355,8 +353,7 @@ era — today the equivalent is `git -C qemu revert` of the commit, then
    counters before chasing).  The per-TB inline cache for the lookup
    was tried and is flat (§ REJECTED): `helper_lookup_tb_ptr` is ~40–50
    ns per call at 1.75M calls/s, and the inline key costs the same.
-   Meter: temporary exit-kind counters in `tcg_qemu_tb_exec` (sessions
-   doc, 2026-09-11 0027 entry).
+   Meter: temporary exit-kind counters in `tcg_qemu_tb_exec`.
 
 Landed/closed since the last ranking: MMIO dispatch path (0018 —
 mmiopoll 534→202 ns, native parity; re-measure before reopening).
@@ -390,8 +387,7 @@ inline on wasm64 anyway).
 - **fetch-qemu.sh resets the submodule checkout to the pin** whenever
   HEAD differs from `QEMU_PMB887X_REV` — `build-qemu.sh` runs it, so
   commit *and pin* before a full rebuild (`ninja-fast.sh` never touches
-  the tree). `capture-patch.sh` / `switch-test.sh` are patch-file-era
-  tools and do not work against the submodule tree.
+  the tree).
 - **The TCI TB layout (`/dist`)**: `tb->tc.ptr` points at the TCI stream;
   every TB starts with `tci_tbhdr` (icount) — chain jumps and
   `lookup_tb_ptr` targets all pass through it.  Anything that jumps
@@ -537,6 +533,6 @@ needs `tests/run.mjs` timeouts revisited first.
    § REJECTED first.
 4. Patch → rungs 0–2 → keep/revert → gates → commit on the qemu branch
    with the measured numbers, push, bump the pin.
-5. Update the tables here (landed/rejected/remaining) and the commit
-   list in upstream-branch.md; put the narrative in
-   optimization-sessions.md.
+5. Update the tables here (landed/rejected/remaining), the commit
+   list in upstream-branch.md, and lessons.md when something was
+   learned the hard way.

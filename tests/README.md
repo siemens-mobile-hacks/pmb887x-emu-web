@@ -15,7 +15,7 @@ lockstep harness is documented below.
 
 ```bash
 scripts/build-native.sh          # build/qemu-native-build/qemu-system-arm
-bash scripts/sync-bsp.sh         # build/bsp @ pinned rev + patches/bsp/*
+bash scripts/sync-bsp.sh         # build/bsp @ pinned rev + bsp-patches/*
 
 node tests/run.mjs               # ~1 min (see defaults below)
 node tests/run.mjs --label after --timeout 150 --bench-secs 45

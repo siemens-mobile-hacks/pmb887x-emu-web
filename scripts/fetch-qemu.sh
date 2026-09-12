@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ensure the qemu source tree is ready. qemu lives as a root submodule
-# (branch wasm-browser-port — all former patches/*.patch committed on top
+# (branch wasm-browser-port — the whole wasm/TCI/perf series committed on top
 # of qemu-pmb887x master, plus the AFE + RTC-seed commits cherry-picked
 # from the perk11/alula fork line, see versions.env). The pmb887x-emu
 # meta-repo is kept at master alongside it; its own qemu submodule is

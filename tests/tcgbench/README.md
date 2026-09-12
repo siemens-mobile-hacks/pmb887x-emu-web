@@ -27,8 +27,7 @@ the whole workload runs with/without `-icount shift=3,sleep=off`
 
 Iteration loop for backend work: **tcgbench A/B → idlebench --quick →
 op-suite → (if emitter changed) lockstep 20M/250M → full idlebench +
-2.5e9 gate at slice close.**  (`bootbench.mjs` is deprecated; idlebench
-reports its window.)
+2.5e9 gate at slice close.**
 
 ## Phases
 

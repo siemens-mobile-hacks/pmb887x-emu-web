@@ -17,10 +17,6 @@ companion:  pmb887x-emu/          the meta-repo, branch wasm-patches, whose
                                   qemu submodule pin is the same revision
 ```
 
-`origin/wasm-browser-port` (e0bcfe04b6) on the same remote is the older
-14-commit series from the patch-file era; it is superseded by
-`origin/wasm-patches` and kept only as history.
-
 ## Working on the tree
 
 ```bash
@@ -46,9 +42,8 @@ target/arm/tcg, hw/arm/pmb887x, ui/, configs/meson/).
 
 ## Series contents (43 commits on master, in order)
 
-Patch numbers are the ones the docs use (the `patches/NNNN-*.patch`
-mirror keeps the same numbering; 0005/0006/0015 are attic'd and 0033
-was folded into the pinned rev as its top commit).
+Patch numbers are the ones the docs use (the numbering has gaps where
+patches were dropped; 0033 sits at the top of the series).
 
 | # | Commit | Scope |
 |---|---|---|
@@ -99,8 +94,7 @@ was folded into the pinned rev as its top commit).
 The commits from 0001 to 0016 and 0018 carry the full rationale plus
 measured effect in their messages; the later ones carry the patch title
 only — their rationale and numbers live in
-[optimization-playbook.md](optimization-playbook.md) § What landed and
-in [optimization-sessions.md](optimization-sessions.md).
+[optimization-playbook.md](optimization-playbook.md) § What landed.
 
 ## Safety properties (why a merge is low-risk for native users)
 
