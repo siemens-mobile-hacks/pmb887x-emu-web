@@ -2,3 +2,7 @@
 	path = pmb887x-emu
 	url = https://github.com/siemens-mobile-hacks/pmb887x-emu
 	branch = wasm-patches
+[submodule "qemu"]
+	path = qemu
+	url = https://github.com/Azq2/qemu-pmb887x
+	branch = wasm-browser-port

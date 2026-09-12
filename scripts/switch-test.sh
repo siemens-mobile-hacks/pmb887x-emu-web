@@ -1,5 +1,5 @@
 #!/bin/bash
-# Switch pmb887x-emu/qemu to a given patch-set configuration and rebuild+deploy.
+# Switch qemu to a given patch-set configuration and rebuild+deploy.
 #   switch-test.sh PRISTINE            reset to pinned rev, no patches
 #   switch-test.sh FULL                apply patches/*.patch
 #   switch-test.sh MINUS:NNNN          apply all patches except NNNN
@@ -10,7 +10,7 @@
 set -euo pipefail
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$WEB_DIR/versions.env"
-QEMU="$WEB_DIR/pmb887x-emu/qemu"
+QEMU="$WEB_DIR/qemu"
 MODE="${1:?PRISTINE|FULL|MINUS:NNNN|REVERT:NNNN}"
 
 cd "$QEMU"

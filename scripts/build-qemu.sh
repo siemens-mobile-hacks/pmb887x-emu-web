@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build qemu-system-arm (pmb887x) as WebAssembly + assemble dist.
 #
-# Uses the pmb887x-emu/qemu submodule at the pinned rev (the
+# Uses the qemu submodule at the pinned rev (the
 # wasm-patches branch — all patches committed there; previously a
 # pristine clone + patches/*.patch), then builds:
 #   default: the wasm64 TCG backend -> site/dist-jit/ (the page default)
@@ -28,9 +28,9 @@ export CPATH="$TARGET/include"
 export PKG_CONFIG_PATH="$TARGET/lib/pkgconfig"
 export EM_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
 
-# --- qemu source: pmb887x-emu/qemu submodule (patches committed on the
+# --- qemu source: qemu submodule (patches committed on the
 # wasm-patches branch, see versions.env) ---
-QEMU_SRC="$WEB_DIR/pmb887x-emu/qemu"
+QEMU_SRC="$WEB_DIR/qemu"
 bash "$WEB_DIR/scripts/fetch-qemu.sh"
 # optional teakra submodule (used by older qemu-pmb887x trees; the current
 # tree has its own native DSP). HTTPS rewrite like the sie-mcp Dockerfile.

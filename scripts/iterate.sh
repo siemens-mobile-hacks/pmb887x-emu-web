@@ -1,7 +1,7 @@
 #!/bin/bash
 # One-command C-iteration loop for the default wasm build (wasm64 TCG
 # backend, site/dist-jit; TCI=1 for the interpreter dist):
-#   edit pmb887x-emu/qemu/**.c  ->  scripts/iterate.sh  ->  verdict
+#   edit qemu/**.c  ->  scripts/iterate.sh  ->  verdict
 #
 # Steps: incremental ninja rebuild + deploy to site/dist-jit/ (scripts/ninja-fast.sh),
 # then the parallel boot-survival A/B check (tools/ab.mjs) against the fresh
