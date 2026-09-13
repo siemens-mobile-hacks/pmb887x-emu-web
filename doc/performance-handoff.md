@@ -6,6 +6,26 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-13, third perf session: 0047)
+
+**Open item 2 (J2ME throughput) moved 0.35 → 0.48–0.53×** from the
+device side, with no boot change.  The method that found it: profile the
+*running app*, not the boot (`tools/stopwatch.mjs --devtools 9560 --hold
+120`, then `PROF_ATTACH=9560 node tools/wprof2.mjs 30`).  That profile
+said devices 46 % of the vCPU, guest code 30 %, and its top symbol was
+`dif_update_mux` at 12.7 %: the DIF v2 rebuilt its mux tables on every
+mux-register write, and the firmware writes those per LCD command.
+0047 makes the rebuild lazy and the builder linear in the 32 output
+bits, stops the DMAC re-arming its timer from inside its own callback
+on every burst acknowledgement, and clears only the raised request bit
+per acknowledgement (each no-op clear re-ran the DIF event handler).
+Gates green including lockstep against the pre-change native oracle.
+
+What is left on that path is the per-word chain itself — the display
+DMA is one 4-byte word per request, ~500 k/s — written up as the
+playbook's § Remaining 7 with the candidate trims.  The counters that
+size it are on the stopwatch's new `per-s` line.
+
 ## Update (2026-09-13, second perf session: 0046)
 
 **Open item 1 is built and landed** as 0046: a per-TB inline next-TB
@@ -148,8 +168,12 @@ ns/access on `/dist-jit`, 252 on `/dist`, 223 native).
    executed ops, +3..+10 % slower).  The AOT cache is still open but is
    now costed at ~21 % of the early-phase vCPU, not "the whole 197 MB" —
    see the playbook's § Remaining 5 before committing to it.
-2. **J2ME throughput** (stopwatch ~0.35× → 1.0× needs ~3× on that
-   workload): the DIF/DMAC per-word path and the TB-lookup path.
+2. **J2ME throughput** (stopwatch ~0.5× after 0047 → 1.0× needs ~2× on
+   that workload): the DIF/DMAC per-word path (playbook § Remaining 7)
+   and the guest's own ~30 %.
+   2026-09-13 (third session): **0.35 → 0.48–0.53× (60–67 MIPS)** from
+   0047 — the DIF mux-table rebuild per register write, the DMAC timer
+   re-arm per burst and the four-bit DMA acknowledgement clears.
    2026-09-13 (second session): **0.33 → 0.35× (43.7–44.7 MIPS)** from
    0046, the inline lookup cache; the helper share of that profile
    (12 %) is now mostly gone.  Earlier that day: still ~0.30× (37–39 MIPS). The wide jump-cache entry was

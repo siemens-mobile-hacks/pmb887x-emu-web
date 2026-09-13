@@ -101,7 +101,8 @@ async function snap() {
       tbs: Number(m._wasm_tbs()), fb: Number(m._wasm_fb_updates()),
       ioLd: g(2), ioSt: g(3), fill: g(4), lookup: g(13), qhtHit: g(15), tlbFlush: g(18), tlbFlushRange: g(19),
       fillFetch: g(20), fillProbe: g(21), fillSame: g(22), fillInvalid: g(23), fillLarge: g(24), fillIdx: g(25),
-      fillEvict: g(26), tlbSize0: g(27), tlbUsed0: g(28), romdFlip: g(10), topC: g(11), topoReuse: g(12), halts: g(29) };
+      fillEvict: g(26), tlbSize0: g(27), tlbUsed0: g(28), romdFlip: g(10), topC: g(11), topoReuse: g(12), halts: g(29),
+      lcCall: g(55), difMuxRebuild: g(59), difTxWord: g(60), dmacBurst: g(61), dmacSchedTimer: g(62) };
   });
 }
 async function shoot(tag) {
@@ -242,11 +243,16 @@ const rec = {
   fillKinds: { fetch: d.fillFetch, probe: d.fillProbe, samePage: d.fillSame, invalid: d.fillInvalid, large: d.fillLarge, avgMmuIdx: +(d.fillIdx / (d.fill || 1)).toFixed(2), evict: d.fillEvict, total: d.fill, tlbSize0: c.tlbSize0, tlbUsed0: c.tlbUsed0, romdFlip: d.romdFlip, topC: d.topC, topoReuse: d.topoReuse },
   loadavg: readFileSync("/proc/loadavg", "ascii").split(" ").slice(0, 3).join(" "),
   extraQ, wasmSha: null,
+  // the display path per second (0047): DIF words, DMAC bursts, mux rebuilds,
+  // DMAC timer arms; lcCall = 0046 inline-cache misses (helper calls)
+  perS: { lcCall: Math.round(d.lcCall / wall), difMuxRebuild: Math.round(d.difMuxRebuild / wall), difTxWord: Math.round(d.difTxWord / wall),
+    dmacBurst: Math.round(d.dmacBurst / wall), dmacSchedTimer: Math.round(d.dmacSchedTimer / wall) },
 };
 await shoot("end");
 writeFileSync(`${outBase}.json`, JSON.stringify(rec, null, 1));
 console.log(`STOPWATCH ${dist} vratio=${rec.vratio} MIPS=${rec.mips} fps=${rec.fps} halts/s=${rec.haltsPerS} warpShare=${rec.warpShare} insns/tb=${rec.insnsPerTb} lookups/s=${rec.lookupsPerS} ioLd/s=${rec.ioLdPerS} ioSt/s=${rec.ioStPerS} fills/s=${rec.fillsPerS} tlbFlush/s=${rec.tlbFlushPerS} tlbFlushRange/s=${rec.tlbFlushRangePerS} wall=${rec.wall} load=${rec.loadavg}`);
 console.log(`fills: ${JSON.stringify(rec.fillKinds)}`);
+console.log(`per-s: ${JSON.stringify(rec.perS)}`);
 for (const l of dbgLines) console.log("[console] " + l);
 console.log(`results: ${outBase}.json (+ -start.png/-end.png)`);
 if (holdS) { console.log(`[stopwatch] holding ${holdS}s (devtools ${devtools || "off"})`); await sleep(holdS * 1000); }

@@ -265,6 +265,19 @@ file is the "why" behind them and behind the timing model.
   collapses the boot when removed; the only removable surface was the
   diagnostics-counter patch, which was dropped. Removal testing is
   worth the day.
+- **Profile the workload the meter measures, in the state it measures**
+  (2026-09-13, 0047): the boot profile ranked the lookup path first and
+  it moved the stopwatch +8 %; a profile of the *running stopwatch*
+  (`stopwatch.mjs --devtools --hold` + `wprof2.mjs PROF_ATTACH=`) put
+  a device table rebuild first at 12.7 % and that batch moved it
+  +34..+60 %.  On a device path, look for work redone on every register
+  write before work done per word — a per-write rebuild the firmware
+  triggers per LCD command out-costs the whole per-word chain.
+- **Counter indices come from the enum with its `= 0` first entry**:
+  a `grep -c` of trailing-comma entries undercounts by one and the
+  first readings then carry the wrong labels (a "500 k mux rebuilds/s"
+  that was really the DMA burst count).  Cross-check a new counter's
+  rate against something already known before believing it.
 
 ## Gates
 

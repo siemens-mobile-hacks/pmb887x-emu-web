@@ -284,6 +284,7 @@ mmiopoll only) makes a whole-run profile pure.
 | 2026-09-13 W-12 BLX speculation fix (`58f6f9c5`) | `trans_BLX_i`'s `gen_jmp` recorded the mode-switching target as a speculation successor; the wasm64 backend translated it with the caller's flags and the ARM translator emitted a PC-alignment-abort TB that a chained jump then ran → EL71 `Prefetch_Abort` in ~45 % of second-page boots.  `translator_unnote_succ()` withdraws the hint | correctness: 8/8 reproducer passes with the abort dump armed (`QEMU_LOG_PABT=1`) vs 5/11 failures before; no perf change expected (fewer dead speculated TBs) |
 | 2026-09-13 batcher SOURCE-CORRUPT fix (`bf0b67d4`) | § Remaining 4, root-caused from the forensic dump: `encode_search()` overflowing the region highwater does `goto buffer_overflow` **without advancing `code_gen_ptr`**, after `tcg_gen_code()` already staged the module body in the open batch, so the next `tcg_tb_alloc()` carves `TranslationBlock`s out of the staged bytes (the dump showed seven, at the 192-byte `sizeof(TranslationBlock)` stride).  `w64_batch_unstage()` withdraws the member; the staged-source check is now shared with `w64_batch_ensure()`, which re-assembled evicted batches with no validation at all | positive control (`-accel tcg,tb-size=8` forces region overflows): **5 dropped batches per 60 s → 0**, same guest progress.  Stock rate was 1–2 per 60 s boot, not the "once in 285 s" the hand-off recorded.  Correctness only; no perf claim |
 | 0046 wasm64: inline next-TB lookup cache on goto_ptr exits (+ 0044 actually switched on) | every `bx lr` / `pop {pc}` / `ldr pc` / `msr CPSR` ends in `helper_lookup_tb_ptr` (~130 M per boot, 2.75 M/s in the J2ME stopwatch).  The ARM translator now gives each TB's goto_ptr exit a slot in the TB (`w64_lc`: pc, generation, hflags/thumb/condexec words, target descriptor) and emits a test of only the words that can differ at that exit: pc, `cpu->neg.tb_key_gen` and thumb after a `gen_bx` — hflags cannot change without ending the TB, so they and condexec are **stamped statically by the translator** and checked once at fill time by `helper_lookup_tb_ptr_lc`; only an exit after a CPSR write compares all three.  The generation moves on every jump-cache invalidation (flush, page clear, TB invalidate) and on the rare key inputs nobody compares (hflags.flags2, FPSCR.Len/Stride, FPEXC.EN).  `W64_LC_VERIFY=1` routes every exit through the helper and cross-checks each would-be hit against the real lookup; `W64_NOLC=1` is the knob A/B.  **Found on the way**: 0044's `#if defined(CONFIG_TARGET_ARM)` guarded a macro no build defines (accel/tcg is target-independent, `TARGET_ARM` is poisoned there) — the devirtualised lookup was never compiled in until this patch keyed it on `CONFIG_TCG_WASM64` | verify: **101.3 M would-hits of 124.1 M helper calls (82 %), 0 mismatches** over a 40 s boot; normal: helper calls 26.1 M of ~126 M lookups, `keyGen` 1458 (= the jump-cache flushes).  **J2ME stopwatch vratio 0.328/0.329 → 0.350/0.358 (+7..+9 %, 40.9/41.1 → 43.7/44.7 MIPS), 4 alternating samples**, helper lookups 2.75 M/s → 0.43 M/s.  **Boot milestones flat**: `--quick --runs 2` both orders, the second-listed leg reads +3..+5 % slower whichever build it is (pair A jit second: t0.5G +5, t1.3G +4; pair B base second: every milestone −5 % for jit); three-leg runs with the `W64_NOLC=1` leg say the same, and the devirtualisation on its own is −1..+2 % (flat).  Emitted TB bytes 106.5 → 101.5 MB.  Gates: op-suite 1156/1156 ×2 identical, native 4/4, lockstep 250e6, bootcheck s75/el71/ke800 |
+| 0047 pmb887x: DIF v2 lazy mux tables, DMAC in-callback re-arm, one-bit DMA acks | the J2ME stopwatch profile after 0046 (`tools/wprof2.mjs` attached to `stopwatch.mjs --devtools`): devices 46 % of the vCPU, guest code 30 %, top symbol `dif_update_mux` **12.7 %** — the DIF v2 rebuilt its byte-lane mux tables (0039's, 2 × 4 × 256 evaluations of the 32-bit mux) on every BMREG/BCSEL/BCREG/INVERT_BIT write, and the firmware writes those per LCD command.  Now a write that changes the register only marks the tables dirty, `dif_mux()` rebuilds on the next word (370 rebuilds/s), and the builder walks the 32 output bits once.  Same path, per word (the display DMA is one 4-byte word per request, ~500 k/s): `dmac_schedule` re-armed the DMAC timer from inside its own callback on every acknowledgement (`timer_mod` → deadline → `icount_get`, ~3 %) — a request raised while the loop runs now only sets the flag; the DIF's DMA-clear handler cleared all four request bits per ack and each already-clear bit re-ran the event handler — only the raised bits are cleared; `srb_set_icr` walks set bits like `set_isr` | `tools/stopwatch.mjs` alternating: vratio **0.360/0.333 → 0.482/0.533 (+34..+60 %)**, 45/41.6 → 60/66.6 MIPS; boot flat (`--quick --runs 2` both orders: one order −1..−4 %, the other +4..+8 % with one outlier run; the four t1.3G readings overlap the baseline's); op-suite 1156/1156, native 4/4, lockstep 250e6 clean against the *pre-change* native oracle, bootcheck s75/el71/ke800 |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
@@ -356,6 +357,13 @@ commit, then `ninja-fast.sh` and the ladder.
    went 1.97 → 2.77, which on its own read as a 4 % regression.
    Alternate the builds and require both orders, exactly as for
    idlebench.
+   **2026-09-13 (later)**: 0046 → 0.35, then **0047 → 0.48–0.53** (60–67
+   MIPS) from the device side — the profile of the running app (attach
+   `wprof2.mjs` to `stopwatch.mjs --devtools <port> --hold <s>`) is the
+   map here, not the boot profile: devices were 46 % of the vCPU, and
+   the top symbol was a table rebuild on a register write, not a
+   per-word cost.  What is left is the per-word chain itself
+   (§ Remaining 7).
 
 0b. **Emitted code volume — CLOSED as a lever (2026-09-13).**  Three
    independent measurements now say the emitted-byte count is not what
@@ -473,6 +481,26 @@ commit, then `ninja-fast.sh` and the ladder.
      ~52 M per boot, <0.5 %); `LC_CALL` is a third.  Not worth a commit.
    - Resizing the jump cache is closed: 8k and 32k both measured worse
      (§ REJECTED).  The misses are not a capacity problem.
+7. **The display DMA per-word chain — OPEN, the stopwatch's top item
+   after 0047.**  The firmware programs the display channel as 4095-word
+   transfers moved **one 4-byte word per request** (`[4x1] -> [4x1]` in
+   the `PMB887X_TRACE_LOG=dmac` trace; ~500 k requests/s at 60 fps), so
+   every word runs the whole chain: `dmac_timer_reset` → 8 × channel run
+   → `address_space_read` (RAM word) → `address_space_write` → flatview
+   → dispatch → `dif_io_write` → FIFO push → `dif_schedule` → `dif_work`
+   → `dif_tx_from_fifo` (2 × `dif_update_gpio_state`, mux, 4 ×
+   `ssi_transfer` → `lcd_transfer` with three QOM casts each) → ack →
+   CLR/BREQ level dance (`srb_set_icr` → event → `dif_schedule` again →
+   `dif_tx_fifo_req` → `set_isr` → `dif_trigger_dma` → `qemu_set_irq`
+   ×2 → `dmac_handle_signal` ×2).  Do not change what a request moves
+   (device semantics); what can move is per-word overhead: a per-channel
+   translation cache keyed on the memory topology generation (the memory
+   API layers were ~6 % of the vCPU), the `cs_pins[]` struct with a
+   `char name[32]` per pin built twice per word, the three casts per LCD
+   byte (`OBJECT_CHECK` still calls `object_dynamic_cast_assert` for
+   its trace point with `qom_cast_debug=false`), and the no-op passes of
+   the level dance.  Meter: `tools/stopwatch.mjs` (`per-s` line:
+   `difTxWord`, `dmacBurst`, `dmacSchedTimer`, `difMuxRebuild`).
 
 Landed/closed since the last ranking: MMIO dispatch path (0018 —
 mmiopoll 534→202 ns, native parity; re-measure before reopening).

@@ -38,7 +38,7 @@ const NAMES = [
   "modSrc", "closeBytes", "compactBytes", "ensureBytes",
   "closeN", "compactN", "ensureN",
   "lcFill", "lcVhit", "lcVbad", "keyGen",
-  "lcCall", "keyGenFlush", "keyGenInval", "keyGenPage",
+  "lcCall", "keyGenFlush", "keyGenInval", "keyGenPage","difMuxRebuild","difTxWord","dmacBurst","dmacSchedTimer",
 ];
 
 const b = await chromium.launch({ headless: true });
