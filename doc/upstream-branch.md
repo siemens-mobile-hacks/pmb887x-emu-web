@@ -40,7 +40,7 @@ Once that lands upstream, rebase onto master; expect only trivial
 conflicts (the series touches tcg/tci, tcg/wasm64, accel/tcg, util/,
 target/arm/tcg, hw/arm/pmb887x, ui/, configs/meson/).
 
-## Series contents (49 commits on master, in order)
+## Series contents (50 commits on master, in order)
 
 Patch numbers are the ones the docs use (the numbering has gaps where
 patches were dropped; 0033 sits at the top of the series).
@@ -94,6 +94,7 @@ patches were dropped; 0033 sits at the top of the series).
 | 0049 | pmb887x: GPTU T0/T1 timer armed for observable overflows only | pmb887x GPTU model, all backends |
 | 0050 | pmb887x: no 16 KB zero-fill per DMA word (`QEMU_UNINITIALIZED`), no checked QOM casts per LCD byte | pmb887x DMAC + LCD models, `hw/ssi/ssi.c` (`ssi_transfer`), all backends |
 | 0051 | pmb887x: DIF pin rebuild skipped on unchanged inputs, FIFO index without modulo, no checked bus cast per SSI transfer | pmb887x DIF v2 + `fifo.h`, `hw/ssi/ssi.c`, all backends |
+| 0052 | tcg/wasm64: labels as nested blocks instead of the dispatch loop | `tcg/wasm64/tcg-target.c.inc`, wasm64 backend only |
 | — | pmb887x: hacky AFE (LLE+HLE) implementation | cherry-pick from alula/dsp-stuff |
 | 0033 | pmb887x: seed the RTC counter in the layout the firmware expects | pmb887x RTC, per-board `[rtc] format` |
 

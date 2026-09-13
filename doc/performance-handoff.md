@@ -6,6 +6,33 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-13, round six: 0052 — guest per-TB overhead, and the Pixel's own numbers)
+
+**The Pixel 8 Pro reading exists now** (two `?hud=1` screenshots from
+the device, Chrome 153, 9 cores, 8 GB, cross-origin isolated): a J2ME
+game at **13.9 MIPS, v/wall 0.71, 29 fps, 416 halts/s**, and the
+stopwatch at **10.6–17.8 MIPS, v/wall 1.15 over a 10 s window** while
+paying back 8.6 s of lag (0.14 lifetime).  The desktop Chrome that
+every A/B here runs on does the same stopwatch at ~73 MIPS / 0.58, so
+the phone is ~5× slower per instruction, not the ~35 % the Liftoff-only
+experiment suggested.  Every percent measured here is worth the same
+percent on the phone, but real time on the phone needs roughly 1.4×
+on the game and more on the stopwatch — a structural cut, not a
+sequence of 3 % ones.
+
+**0052** (playbook row): the per-TB structure sized (17 M TB entries/s,
+4.2 insns/TB, 1.5 labels/TB, no backward branch in the firmware) and
+its dispatch loop replaced by nested forward blocks — the first
+JIT-side change since 0046 that moved the meter: stopwatch +3.5 % with
+every new leg above every old one, JIT share of the profile down and
+the device share flat, boot flat (bootcheck; idlebench both orders −5 % / +3 %, the order bias).
+Gates: lockstep 250e6 identical, op-suite 1156/1156.  Left on the
+per-TB path: the chain jump's table call (a direct `return_call` for
+same-batch targets is the next small one) and the icount decrement
+(the timing model).  The recipe: `EXTRA_Q="env=W64_TBSTATS=1"` makes
+the stopwatch's `insns/tb` real; native `-d op_opt -D file` gives the
+label/branch shape per TB.
+
 ## Update (2026-09-13, round five: 0051 — "keep looking")
 
 Fresh stopwatch profile of 0050, three small cuts on the per-word

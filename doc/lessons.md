@@ -331,6 +331,17 @@ file is the "why" behind them and behind the timing model.
   function.  The stopwatch meter cannot resolve a 1–2 % change (±5 %
   drift); a 20 s profile can — compare the touched symbols' self time
   and the category totals.
+- **On the JIT side the shape of the control flow moved the meter where
+  byte counts never did** (2026-09-13, 0052).  Three earlier backend
+  experiments that removed emitted bytes or memory ops per TB (prologue
+  counters, the `$tlb` hoist, compaction) were flat or regressed.
+  Replacing the per-TB dispatch `loop` + sibling-`if` label regions with
+  nested forward blocks (no `$bp`, no per-label compare, no loop phis or
+  loop stack check for V8) read +3.5 % on the stopwatch with the JIT
+  share of the profile down and the device share flat.  Before changing
+  what a TB emits, dump the ops (`-d op_opt` on the native build) and
+  count: the S75 firmware is 4.0 insns / 26 ops / 1.5 labels per TB with
+  no backward branch, which is what made the nested scheme possible.
 - **Counter indices come from the enum with its `= 0` first entry**:
   a `grep -c` of trailing-comma entries undercounts by one and the
   first readings then carry the wrong labels (a "500 k mux rebuilds/s"
