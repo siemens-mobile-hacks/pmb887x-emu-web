@@ -5,7 +5,7 @@
 //
 //   node tools/tcgbench.mjs                       # native-jit + dist-jit
 //   LEGS=native-jit,native-tci,dist-jit,dist node tools/tcgbench.mjs
-//   EXTRA_Q="env=W64_NOACCTINLINE=1" node tools/tcgbench.mjs   # wasm knob
+//   EXTRA_Q="env=W64_TBSTATS=1" node tools/tcgbench.mjs   # wasm knob
 //   SUITE=quick node tools/tcgbench.mjs           # ÷4-iteration smoke image
 //     (tcgbench-quick.bin, `make -C tests/tcgbench quick install`): ~3 s per
 //     wasm64 leg, TCI leg ~25 s; serial poll 40 ms (POLL_MS) so the 0.3–1.2 s

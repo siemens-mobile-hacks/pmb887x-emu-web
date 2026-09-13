@@ -17,8 +17,9 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
 | `?debug=1` | print every stderr line to console (no dedup) |
 | `?qargs=<args>` | append raw qemu arguments (e.g. `qargs=-d exec -D /exec.log`) |
-| `?env=NAME=VAL` | extra environment for the build (repeatable) — wasm64 knobs such as `W64_SPEC_N`, `W64_LIVE_MAX`, `W64_COMPACT_BATCHES`/`W64_COMPACT_MEMBERS`, `W64_NOTLB=1`, `W64_NOACCTINLINE=1`, `W64_DEBUG=1` |
+| `?env=NAME=VAL` | extra environment for the build (repeatable) — wasm64 knobs such as `W64_SPEC_N`, `W64_LIVE_MAX`, `W64_COMPACT_BATCHES`/`W64_COMPACT_MEMBERS`, `W64_NOTLB=1`, `W64_TBSTATS=1` (per-TB-entry counters under icount, so `wasm_tbs` reads non-zero), `W64_DEBUG=1` |
 | `?w64debug=1` | wasm64 backend console diagnostics (batch histogram, module events) |
+| `?env=QEMU_LOG_PABT=1` | one stderr line per guest prefetch abort / BKPT (IFSR, IFAR, pc, lr, sp, cpsr) — the tool that pinned the W-12 panic; combine with `tracebuf=1`, never with `-d int` (its per-IRQ volume shifts timing enough to hide a race) |
 | `?suite=<url>` | boot a bare-metal versatilepb image instead of a phone (`dist/tcgisa.bin`, `dist/tcgbench.bin`); with `?icount=1` the suite runs under the phones' stock timing model (the tcgbench icount-tax leg) |
 | `?lockstep=1` (+ `ls-*`) | built-in guest-state fold on the wasm64 backend — the b-side of `tools/lockstep-wasm.mjs`; `ls-*` params set the insn budget and grid |
 | `?iorewind=1` | force the stock io-recompile everywhere (0004's A/B escape hatch) |
@@ -44,7 +45,7 @@ Benchmarks and gates:
 |---|---|
 | `idlebench.mjs` | the end-to-end boot benchmark: fresh headless browser per run, S75v40lg1 to the idle screen (LCD bottom-139-rows vs a committed reference), guest-work milestones `t0.1G…t1.3G`, the v=2..7 window, A/B ratios between dists in one invocation, regression verdict vs `tests/results/idlebench-latest.json`; `--quick` (~1 min/dist), `--runs N`, `RT=banked`, a dist may be `<dir>@<query>` for knob A/Bs |
 | `tcgbench.mjs` | fast-iteration perf bench on versatilepb (`tests/tcgbench`): per-phase backend A/B + the device/icount-tax mirrors (`mmiopoll`/`rampoll`/`mmiow` ns/access, `ICOUNTS=0,1`, `SUITE=quick`) |
-| `bootcheck.mjs` | the three-fullflash browser gate: boots s75/el71/ke800 on one dist and judges progress in executed instructions |
+| `bootcheck.mjs` | the three-fullflash browser gate: boots s75/el71/ke800 on one dist and judges progress in executed instructions; on a firmware `>>EXIT<<` it waits for the panic text and saves the serial tail (`tests/results/bootcheck-<dist>-<board>-serial.txt`); `--query "trace=dsp,scu&tracebuf=1"` adds page parameters to every board and saves the buffered stderr/device trace per board (`…-trace.txt`); `--flash s75,el71` boots the boards in that order as consecutive pages of one browser |
 | `stopwatch.mjs` | J2ME pacing meter: boots S75v40lg1, walks the keypad to Extras → Stopwatch and prints `vratio` (virtual s per wall s) |
 | `lockstep.mjs`, `lockstep-wasm.mjs` | cross-backend value-equality drivers — native JIT vs native TCI (plugin) / native JIT vs the wasm page (built-in fold); `scripts/run-lockstep.sh` is the native gate |
 | `tcgisa.mjs`, `tcgisa64.mjs` | drive the guest op-suite page leg (`scripts/run-tcg-isa.sh` is the gate; `tcgisa64.mjs` takes a dist + `--env` knobs) |

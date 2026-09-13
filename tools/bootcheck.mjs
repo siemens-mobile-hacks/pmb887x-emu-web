@@ -34,6 +34,12 @@ const DIST = opt("dist", "dist-jit");
 const SECS = Number(opt("secs", 150));
 const PORT = process.env.PORT || "8080";
 const ONLY = opt("flash", "").split(",").filter(Boolean);
+// --query "trace=dsp&tracebuf=1": extra page parameters for every board;
+// with tracebuf=1 the page keeps qemu's stderr in window.__qemulog and
+// each board's tail is saved next to the screenshot (device-trace diffs
+// between dists / page orders are how timing-sensitive boot failures get
+// pinned down).
+const QUERY = opt("query", "");
 
 const BOARDS = [
   { id: "s75", file: "s75_working20060710172101.bin" },
@@ -80,7 +86,8 @@ for (const board of BOARDS) {
     if (/Aborted\(|Assertion failed|RuntimeError/.test(t)) errors.push(t.slice(0, 200));
   });
 
-  await page.goto(`http://127.0.0.1:${PORT}/?dist=${DIST}`, { waitUntil: "domcontentloaded" });
+  await page.goto(`http://127.0.0.1:${PORT}/?dist=${DIST}${QUERY ? "&" + QUERY : ""}`,
+                  { waitUntil: "domcontentloaded" });
   await page.selectOption("#startup", "ONLINE");
   await page.setInputFiles("#fullflash", files);
   await page.click("#btn-start");
@@ -104,6 +111,32 @@ for (const board of BOARDS) {
     console.log(`[${board.id}] t=${((Date.now() - t0) / 1000).toFixed(0)}s ` +
                 `insns=${(mx.insns / 1e6).toFixed(0)}M fb=${mx.fb}${mx.exit ? " *** EXIT ***" : ""}`);
     if ((Date.now() - lastProgress.t) / 1000 > STALL_S) break;
+  }
+
+  if (last.exit) {
+    // The firmware's panic text trails the marker and is usually still
+    // in the guest's UART FIFO when the marker is first seen: wait, then
+    // keep the serial tail next to the screenshot for the post-mortem.
+    await new Promise((r) => setTimeout(r, 3000));
+    const tail = await page.evaluate(() => {
+      try {
+        const s = new TextDecoder("latin1").decode(window.__qemu.FS.readFile("/serial.log"));
+        return s.slice(-4096);
+      } catch { return ""; }
+    }).catch(() => "");
+    const serPath = path.join(ROOT, "tests", "results", `bootcheck-${DIST}-${board.id}-serial.txt`);
+    fs.writeFileSync(serPath, tail);
+    const printable = tail.replace(/[\x00-\x09\x0b-\x1f\x7f-\xff]/g, " ");
+    console.log(`[${board.id}] serial tail (${serPath}):`);
+    for (const l of printable.split("\n").filter((l) => l.trim()).slice(-6)) console.log(`   | ${l.slice(0, 160)}`);
+    last.exit = (printable.match(/>>EXIT<<[^\n]{0,120}/) || [last.exit])[0];
+  }
+
+  if (/(^|&)tracebuf=1/.test(QUERY)) {
+    const lines = await page.evaluate(() => (window.__qemulog || []).slice(-30000)).catch(() => []);
+    const tracePath = path.join(ROOT, "tests", "results", `bootcheck-${DIST}-${board.id}-trace.txt`);
+    fs.writeFileSync(tracePath, lines.join("\n") + "\n");
+    console.log(`[${board.id}] trace: ${lines.length} lines -> ${tracePath}`);
   }
 
   const stalled = (Date.now() - lastProgress.t) / 1000 > STALL_S;

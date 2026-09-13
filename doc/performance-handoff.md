@@ -6,6 +6,17 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-13)
+
+The review-fix batch landed (`doc/wasm-port-review.md` §1 status), plus
+the W-12 speculation fix (EL71 second-page `Prefetch_Abort`, a real
+firmware-visible bug) and the prologue cleanup, which measured **flat**
+(quick pairs −2..−7 %, full pair +1..+3 %, inside spread). Lesson for
+open item 1 below: emitted-byte counts overstate what the per-TB
+scaffolding cost at run time; the compile-bound early phase is not
+moved by ~12 % fewer bytes per TB. Boot numbers are unchanged: t0.5G
+21.1–21.8 s, t1.3G 28.4–28.8 s, tIdle 29.5 s (`rt=off`, quiet host).
+
 ## Status (2026-09-12, after patches 0042–0045)
 
 Every board, LG included, runs on the wasm64 backend (`dist-jit`) by

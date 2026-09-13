@@ -50,6 +50,34 @@ survives all of it.
 
 Recommended order: §9.
 
+### Status (2026-09-13)
+
+Committed on the submodule branch (`f193e849`…`61409e1d` in five
+thematic commits, then `bac39d4b`): **fixed** R-01, R-02, R-03,
+R-04, R-05, R-06, R-07, R-08, R-09, R-11(b)(c), R-12, R-13, R-15, R-16,
+R-17, R-33 (costack cache, `inline`), R-34, R-35, W-01, W-02, W-03,
+W-04 (as a "TB too large" retry), W-05, W-06, W-08, W-13, W-16, W-17,
+W-22, W-23.2/.3, W-25 (R30), W-27 (`w64_out_desc_u32`, NULL memcpy).
+Gates after the batch: op-suite 1156/1156 byte-identical (native JIT
+and TCI), native suite 4/4, lockstep native JIT vs TCI 2.5e9 clean,
+wasm64 vs native 300e6 clean, `validate-emitter-seqs.cjs` all valid.
+
+**An EL71 race surfaced after the batch**: the EL71 firmware sometimes
+panics (`Prefetch_Abort! At address 0xA068C7A8`, ~450 M insns) when it
+boots as the *second* page of a browser (bootcheck's s75→el71 order).
+It is probabilistic: on the fixed tree 4 failures in 9 samples; with
+only the R-01 futex line reverted 0 in 3; EL71 booted alone 0 in 5.
+The failing device trace shows the ARM's periodic DSP-mailbox writes
+stopping for ~260 DSP-RAM polling iterations before the panic, and the
+abort address is the return of a `blx` to a 7-insn Thumb leaf on the
+page that had just executed. Root cause: **W-12** (re-graded BUG-HIGH, see its entry) — the
+speculatively translated wrong-mode BLX target raising a PC-alignment
+abort; R-01 only shifted the timing that exposed it. Fixed by
+`translator_unnote_succ()` from `trans_BLX_i`: 8/8 passes of the
+reproducer with the abort dump armed (0 abort records) against ~45 %
+failures before. Still open: R-10 (product decision), R-14, R-18,
+W-07, W-09…W-12, W-14, W-15, W-18…W-21, W-24, W-26, W-28.
+
 ## 2. Method
 
 Two independent reviewers (Claude Fable 5.1) read every hunk of the
@@ -216,11 +244,11 @@ reachable in principle on the pmb887x firmware.
 - **Evidence:** a TB entered and immediately exited with `TB_EXIT_REQUESTED` has already added `tb->icount` to `icount2_ticks` and `wasm_tb_stats`; it is re-entered and counted again after the interrupt. Under interrupt storms icount2 runs ahead of executed instructions.
 - **Fix:** not needed for the shipped timing model; if icount2 accuracy matters, emit the accounting after `gen_tb_start`'s check (needs a frontend hook).
 
-### W-12 — Speculation records `BLX <imm>` targets with the caller's Thumb bit; such TBs are dead weight
-- **Severity:** BUG-LOW (perf only: the wrong-`flags` TB is inserted into the QHT but never matches a lookup; it costs a translation, a batch slot and compile bytes).
-- **Location:** `accel/tcg/translator.c:111-141` (`translator_note_succ` records `dest` only), `target/arm/tcg/translate.c` (`trans_BLX_i` → `gen_goto_tb`), `accel/tcg/cpu-exec.c:747` (`TCGTBCPUState t = s;`). 0020, 0019.
-- **Evidence:** `arm_get_tb_cpu_state` stores `env->thumb` in `flags`; `w64_speculate` copies the root's `flags` into every successor. The playbook's own note ("blx: a Thumb target recorded while in ARM mode → alignment fault") shows the case was defended against faulting, not against the waste. The `ldr pc,[pc,#-4]` literal path correctly skips `target & 1`.
-- **Fix:** pass the successor's Thumb bit (a 1-bit `flags` delta in `w64_succ[]`), or drop the hint from `trans_BLX_i`. Measure with `W64_DEBUG=1`'s `W64SPEC made=` counter.
+### W-12 — Speculation records `BLX <imm>` targets with the caller's Thumb bit; the wrong-mode TB raises a spurious prefetch abort
+- **Severity:** **BUG-HIGH** (shipped path; re-graded 2026-09-13 — the original "dead weight, never matches a lookup" reading was wrong). The EL71 firmware dies with `>>EXIT<< … Prefetch_Abort! At address: 0xA068C7A8` ~450 M insns into ~45 % of the boots in which it is the second page of a browser (`tools/bootcheck.mjs --flash s75,el71 --secs 60`); the review batch's R-01 (a real futex sleep instead of a spin) shifted timing enough to expose it (pre-fix tree and R-01-reverted: 0 failures in 5+ samples each).
+- **Location:** `accel/tcg/translator.c` (`translator_note_succ` records `dest` only), `target/arm/tcg/translate.c` (`trans_BLX_i` → `gen_jmp` → `translator_use_goto_tb` notes the *target*), `accel/tcg/cpu-exec.c` `w64_speculate` (`TCGTBCPUState t = s;`). 0020, 0019.
+- **Evidence:** `w64_speculate` translates every recorded successor with the root's `flags`; for an ARM-mode TB calling Thumb code the Thumb entry is translated as ARM, `arm_tr_translate_insn` sees `pc & 3` and emits `gen_helper_exception_pc_alignment` — a TB that raises a prefetch abort when it runs. The abort record of a failing boot (`QEMU_LOG_PABT=1`, added to `arm_cpu_do_interrupt_aarch32` for wasm builds): `excp=3 ifsr=0x1 (alignment) ifar=0xa0ac6262 pc=lr=0xa068c7a8 cpsr=0x20000110 thumb=0` — IFAR is the Thumb target of the `blx` at `0xa068c7c4`, and the guest's pc is stale (the TB start), i.e. the wrong-mode TB was entered through a chained jump, which never stores the pc. The playbook's note ("blx: a Thumb target recorded while in ARM mode → alignment fault") defended the *probe*, not the translation. `-d int` and the DSP-side diagnostics both hid the race (timing), which cost a day of wrong theories.
+- **Fix (applied):** `translator_unnote_succ()` (`CONFIG_TCG_WASM64`, inline no-op elsewhere) withdraws a recorded successor; `trans_BLX_i` calls it for the target after `gen_jmp` (its own return-address hint stays). Validation: see §1 status.
 
 ### W-13 — Debug-only bounds asserts guard fixed-size emitter tables (release = silent overflow)
 - **Severity:** BUG-LOW (each individually unlikely; together they are the only guard on `W`'s layout).
