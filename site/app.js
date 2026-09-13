@@ -588,6 +588,7 @@ async function boot() {
   window.__qemu = qemuModule; // debugging hook
   startPainting();
   startSerialPoll();
+  startHud();
   setStatus("running", `running — ${device}` + (noEfa ? " (no EFA block — firmware may factory-reset)" : ""));
 }
 
@@ -650,6 +651,7 @@ function startPainting() {
       canvas.width = w; canvas.height = h;
     }
     const addr = m._wasm_fb_ptr();
+    const tPaint = performance.now();
     // staging is XRGB8888; wasm64 HEAPU8 offsets can exceed 32 bits, so go
     // through BigUint64Array addressing via DataView on the shared heap.
     const img = ctx.createImageData(w, h);
@@ -666,6 +668,7 @@ function startPainting() {
       }
     }
     ctx.putImageData(img, 0, 0);
+    paintMs += performance.now() - tPaint;
   };
   rafHandle = requestAnimationFrame(step);
 }
@@ -673,6 +676,58 @@ function startPainting() {
 function stopPainting() {
   cancelAnimationFrame(rafHandle);
   clearInterval(serialTimer);
+  clearInterval(hudTimer);
+}
+
+/* ------------------------------------------------------------------ */
+/* Stats HUD (?hud=1): what "realtime" is on this device                */
+/* ------------------------------------------------------------------ */
+
+// Per-second guest rates, on the page itself so a phone can report them
+// without a debugger: MIPS (guest insns/s; 125 = real time under the stock
+// icount shift=3), v/wall (virtual seconds per wall second while the guest
+// is busy — 1.0 = real time), lag (wall − virtual since start: what the
+// real-time cap still owes), fps, halts/s and the page's own paint cost.
+// Tap the HUD to copy the last 60 s of samples as JSON.
+let hudTimer = 0;
+let paintMs = 0;
+const HUD_HALT_INDEX = 29;   // WASM_DIAG_HALT in include/qemu/wasm-diag.h
+function startHud() {
+  if (new URLSearchParams(location.search).get("hud") !== "1") return;
+  const el = $("hud");
+  el.hidden = false;
+  clearInterval(hudTimer);
+  const t0 = performance.now();
+  const samples = [];
+  let last = null;
+  el.onclick = () => navigator.clipboard?.writeText(JSON.stringify({ ua: navigator.userAgent,
+    cores: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory ?? null,
+    isolated: crossOriginIsolated, samples }));
+  hudTimer = setInterval(() => {
+    const m = qemuModule;
+    if (!m?._wasm_insns) return;
+    const s = { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
+      fb: Number(m._wasm_fb_updates()), halts: Number(m._wasm_memstat(HUD_HALT_INDEX)), paint: paintMs };
+    if (last) {
+      const dt = (s.t - last.t) / 1000;
+      const r = { wall: +((s.t - t0) / 1000).toFixed(1), mips: +((s.insns - last.insns) / 1e6 / dt).toFixed(1),
+        vratio: +((s.v - last.v) / 1e9 / dt).toFixed(3), fps: +((s.fb - last.fb) / dt).toFixed(1),
+        halts: Math.round((s.halts - last.halts) / dt), paintMsPerS: +((s.paint - last.paint) / dt).toFixed(1),
+        insns: s.insns, v: +(s.v / 1e9).toFixed(2) };
+      samples.push(r);
+      if (samples.length > 60) samples.shift();
+      const win = samples.slice(-10);
+      const avg = (k) => (win.reduce((a, x) => a + x[k], 0) / win.length).toFixed(k === "vratio" ? 2 : 1);
+      const lag = ((s.t - t0) / 1000 - s.v / 1e9).toFixed(1);
+      el.textContent =
+        `MIPS ${r.mips} (10s ${avg("mips")})  v/wall ${r.vratio.toFixed(2)} (10s ${avg("vratio")})  ` +
+        `fps ${r.fps}  halts/s ${r.halts}  paint ${r.paintMsPerS} ms/s\n` +
+        `insns ${(s.insns / 1e9).toFixed(2)} G  v ${(s.v / 1e9).toFixed(1)} s  wall ${r.wall} s  lag ${lag} s  ` +
+        `cores ${navigator.hardwareConcurrency}  mem ${navigator.deviceMemory ?? "?"} GB  isolated ${crossOriginIsolated}\n` +
+        navigator.userAgent;
+    }
+    last = s;
+  }, 1000);
 }
 
 function startSerialPoll() {

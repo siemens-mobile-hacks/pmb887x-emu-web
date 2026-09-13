@@ -55,7 +55,10 @@ const outBase = path.join(here, `../tests/results/stopwatch-${stamp}-${dist}`);
 // measurement so a profile can be taken of exactly this state
 const devtools = Number(opt("devtools", 0));
 const holdS = Number(opt("hold", 0));
-const b = await chromium.launch({ headless: true, args: devtools ? [`--remote-debugging-port=${devtools}`] : [] });
+// CHROME_ARGS="--js-flags=--no-wasm-tier-up": extra browser switches, e.g. to
+// pin the wasm tier (Liftoff-only / TurboFan-only) when simulating a phone
+const chromeArgs = (process.env.CHROME_ARGS || "").split(/\s+/).filter(Boolean);
+const b = await chromium.launch({ headless: true, args: [...(devtools ? [`--remote-debugging-port=${devtools}`] : []), ...chromeArgs] });
 const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
 let pageErr = null;
 p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });

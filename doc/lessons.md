@@ -300,6 +300,20 @@ file is the "why" behind them and behind the timing model.
   model whose deadline is "the next hardware tick" rather than "the next
   event somebody can observe" needs the lazy-stepping treatment
   (`gptu.c`, `gptu_t01_ticks_to_boundary`).
+- **A trivial function with a big self time: read the compile line before
+  the code** (2026-09-13, 0050): `dmac_transfer_memory` read 7.5 % of
+  the vCPU in the J2ME profile for moving one 4-byte word.  QEMU's
+  meson adds `-ftrivial-auto-var-init=zero`, so its 16 KB stack buffer
+  was zeroed on every call — ~480 k × 16 KB per second, all of that self
+  time.  `QEMU_UNINITIALIZED` exists for exactly this; any large local
+  array in a per-word or per-access path needs it (grep the device
+  models for `[N * 1024]`-sized locals when a function's self time does
+  not match its source).  Native pays the same memset, only faster.
+  Second lesson from the same profile: `OBJECT_CHECK` casts still call
+  `object_dynamic_cast_assert` for their trace point with
+  `qom_cast_debug=false`, so a checked cast per transferred byte
+  (`ssi_transfer`, `lcd_transfer`) is a real call — a plain cast where
+  the type is guaranteed by construction.
 - **Counter indices come from the enum with its `= 0` first entry**:
   a `grep -c` of trailing-comma entries undercounts by one and the
   first readings then carry the wrong labels (a "500 k mux rebuilds/s"

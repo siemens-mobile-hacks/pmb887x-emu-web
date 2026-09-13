@@ -185,3 +185,10 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   color: #9fe3a8; white-space: pre-wrap; word-break: break-all;
 }
 .hint { color: var(--muted); font-size: 0.78rem; line-height: 1.5; }
+
+.hud {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; margin: 0;
+  padding: 0.3rem 0.6rem; background: rgba(0, 0, 0, 0.8); color: #9fe3a8;
+  font: 0.7rem/1.35 ui-monospace, "Cascadia Mono", monospace;
+  white-space: pre-wrap; word-break: break-all;
+}

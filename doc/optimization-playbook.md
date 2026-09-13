@@ -293,6 +293,8 @@ mmiopoll only) makes a whole-run profile pure.
 
 | 0049 pmb887x: GPTU T0/T1 QEMU timer armed for observable overflows only | the ke800 first-page "stall" (§ Remaining 8): the LG firmware chains GPTU T1A..T1D into one 32-bit timer clocked at 26 MHz (T1A bypass, B/C/D concatenated, reload from the top byte, SR10 on the T1D overflow) and the model armed its QEMU timer at every **8-bit overflow of the free-running byte** — ~100 k main-loop callbacks per second on wall time (no icount), each ~10 µs of `emscripten_get_now` and friends in wasm and each under the BQL.  Profile of the stalled page: main-loop worker 100 % busy (`_emscripten_get_now` 37 %, `futex_wake` 9 %, `gptu_t2_sync_timer`, `gptu_t01_add_ticks`, `timer_mod_ns`), vCPU worker 94 % `futex_wait`, guest ~40 k insns/s.  Now `gptu_sync_timer` walks the carry tree of each free-running timer (`gptu_t01_ticks_to_boundary`): the sync steps to each overflow that *reloads other timers* (the interval after it counts from the reloaded values — everything else `gptu_t01_add_ticks` reproduces exactly from an overflow count, output toggles included, by parity) and the QEMU timer is armed only for the next overflow somebody can *observe* — a service request, or a T2 trigger that T2 is actually listening to (reload/capture mode or a masked RLCP event).  Counter `gptuTimer` (QEMU-timer callbacks, T01 + T2) | **ke800 booted alone: idle screen at tIdle 64–77 s** (cold page, host load 2–8; native 31 s), insns@idle 1.8–2.0 G, where 0048 crawled: `idlebench --board ke800 dist-jit-0048` NOIDLE at 420 s, t1G 255.6 s / t1.5G 377.5 s (0049: 44.5 / 64.4 s), and the plain bootcheck page sat at 590 M for 300 s.  Native ke800 timeline unchanged (logo 18 s, idle 31 s).  **S75 boot −4..−5 % in both orders** (`--quick --runs 2`: pair A t0.5G 22.5→21.7, t1.3G 29.6→28.3; pair B 0049 listed first, t1.3G 33→31.3, every milestone in the same direction) — the storm taxed the icount boot too.  Gates: native 4/4, op-suite 1156/1156 JIT + TCI identical, lockstep 250e6 clean vs the 0049 native oracle, bootcheck s75 1717 M / el71 1608 M / ke800 1945 M (≥ 1.5 G) |
 
+| 0050 pmb887x: no 16 KB zero-fill per DMA word, no checked casts per LCD byte | the J2ME stopwatch profile on 0049 (`prof-stopwatch-0049`, 20 s): guest code 46 %, devices 34 %, other 8 %, lookup 4 %, memory 3.5 %; top device symbol `dmac_transfer_memory` **7.5 % self time for moving one 4-byte word** — QEMU's meson adds `-ftrivial-auto-var-init=zero` and the function's `uint8_t buffer[16 * 1024]` was cleared on every call (`memory.fill 16384` in the wasm asm, ~480 k × 16 KB per second, ~150 ns per word on this host).  `QEMU_UNINITIALIZED` on the buffer (every path writes the bytes it reads).  Second: `object_dynamic_cast_assert` 1.7 % — `SSI_PERIPHERAL()` in `ssi_transfer` and `PMB887X_LCD()` in `lcd_transfer` run per LCD byte and still call the assert for its trace point with `qom_cast_debug=false`; both are plain casts now (the bus type and the class guarantee the type) | `tools/stopwatch.mjs`, four pairs both orders: **0.542/0.545/0.541/0.547 vs 0.483/0.533/0.509/0.458** (new build ahead in every pair, +2..+19 %, means 0.544 vs 0.496 = **+10 %**; the profile share predicted ~+7 %; note the old build's spread is 5× wider — a 16 KB memset per word is sensitive to whatever else the host runs, which is also why this meter drifted with load in earlier rounds).  **Boot flat**: `--quick --runs 2` both orders read the *second-listed* leg 2–4 % faster whichever build it is (pair A 0049 first: t1.3G 29.5 → 28.3; pair B 0050 first: 29.6 vs 28.3) — the boot moves few display words, so nothing was expected.  Gates: native 4/4, lockstep 250e6 clean vs the 0050 native oracle, bootcheck s75 1718 M / el71 1608 M / ke800 1988 M.  **The phone question, answered on the desktop** (no `/dev/kvm` in the container, so no Android emulator): the running app is one busy thread (vCPU worker 98 %, page thread 3.5 %, main-loop worker 2.3 %; the S75 boot reaches idle at 40–41 s whether Chrome has 32 cores or is pinned to one), so a Pixel's single big core is the whole budget; V8's tier is not the gap (`--no-liftoff` = TurboFan only: stopwatch +3 %, boot 75 s instead of 40; `--liftoff-only` = baseline only: boot 54 s, +35 %, and the keypad navigation then drops presses — `--no-wasm-tier-up` is a no-op in Chrome 153); `?hud=1` puts MIPS / v/wall / lag on the page so the device can report its own number |
+
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
 
@@ -513,6 +515,23 @@ commit, then `ninja-fast.sh` and the ladder.
    ×2 per word), `qemu_set_irq` fan-out, and — the largest — the guest's
    own ~40 %.  Meter: `tools/stopwatch.mjs` (`per-s` line: `difTxWord`,
    `dmacBurst`, `dmacSchedTimer`, `dmacXlatFill`, `difMuxRebuild`).
+   **0050 took two more**: the 16 KB zero-fill `-ftrivial-auto-var-init`
+   put into `dmac_transfer_memory` per word (7.5 % of the vCPU — the
+   function's whole self time) and the two checked casts per LCD byte.
+   Still open after 0050 (profile `prof-stopwatch-0049`, per word):
+   `dif_tx_from_fifo` 4 % self, `pmb887x_srb_set_event` 2.3 % (two
+   events per word — the TXBREQ set from `dif_tx_fifo_req` and its clear
+   from the DMA acknowledgement, each through the `irq_router` and
+   `event_handler` indirect calls), `dmac_write` 2.1 %, `qemu_set_irq`
+   1.8 % (~8 calls per word), `dif_trigger_dma` 1.7 % (5 passes per
+   word), `dmac_timer_reset` 1.4 % (8 channel passes per word),
+   `ssi_transfer_raw_default` 1.3 % and `lcd_transfer` 1 % (two indirect
+   calls per byte), `access_with_adjusted_size` 1.1 %.  Each is small;
+   the sum is the ~30 % that is left of the chain.  A structural cut
+   would have to collapse the per-word request/acknowledge dance into
+   one pass per burst without changing what the guest can observe
+   between words (the request bits in `RIS`, the VIC line, the FIFO
+   level) — not attempted.
 8. **ke800 stalls at the LG logo when booted as the first page of a
    browser — CLOSED by 0049 (2026-09-13).**  It was not a guest wait:
    the profile of the stalled page (`ke800probe` + `wprof2.mjs

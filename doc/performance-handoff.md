@@ -6,6 +6,49 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-13, round four: 0050 — "still below real time on a Pixel 8 Pro")
+
+What the phone is short of was measured on the desktop, because the
+container has no `/dev/kvm` and an unaccelerated Android emulator says
+nothing about speed.  Findings (details in the playbook row 0050):
+
+- **One thread is the whole budget.**  With the J2ME stopwatch running,
+  the vCPU worker is at 98 % and every other thread under 4 %; the S75
+  boot reaches idle at 40–41 s with Chrome on 32 cores or pinned to
+  one.  A Pixel 8 Pro therefore runs this on its single Cortex-X3 at
+  whatever clock it sustains, and any number it reads is the desktop's
+  single-thread number scaled by that core.  Thread placement, core
+  count and contention are not the problem; per-instruction cost is.
+- **V8's tier is not the gap.**  TurboFan-only (`--no-liftoff`) gains
+  3 % on the stopwatch and doubles the boot (75 s); Liftoff-only
+  (`--liftoff-only`, the baseline tier a phone's slower background
+  compile would leave more code in) costs +35 % on the boot (54 s) and
+  breaks the stopwatch's keypad navigation (dropped presses).  So the
+  worst case for a phone that tiers up late is ~1.35×, not the 2–3× the
+  user sees.  (`--no-wasm-tier-up` does nothing in Chrome 153; verify a
+  V8 flag with `%IsLiftoffFunction` under `--allow-natives-syntax`
+  before trusting an A/B — the first "Liftoff" sample of this round was
+  the default tier.)
+- **The device can now report its own number**: `?hud=1` shows MIPS,
+  `v/wall` (1.0 = real time), the real-time-cap lag, fps, halts/s, the
+  page's paint cost and the core/memory/UA facts; a tap copies the last
+  60 s as JSON.  The next step for the phone is that reading on the
+  Pixel, in the idle screen, in a menu and in the stopwatch — it says
+  whether the phone sits at the expected ~0.6–0.8× of this host (per-
+  core speed, thermal throttling) or far below it (something
+  Android-specific: memory64 bounds checks without a trap handler,
+  a wasm memory limit, background-tab throttling).
+- **0050 itself** came from the fresh stopwatch profile: the 16 KB
+  stack buffer `-ftrivial-auto-var-init=zero` cleared on every one-word
+  DMA transfer (7.5 % of the vCPU) and two checked QOM casts per LCD
+  byte (1.7 %).  Stopwatch, four pairs both orders: 0.541–0.547 vs
+  0.458–0.533, ahead in every pair, means 0.544 vs 0.496 (**+10 %**),
+  and the new build's readings are five times tighter; boot flat (the second-listed leg reads 2–4 % faster whichever
+  build it is); gates green.  The remaining chain is ~30 % in ten small pieces (playbook
+  § Remaining 7); the guest's own 46 % is spread over thousands of TBs
+  (half the JIT time in the top 367 of 4498 functions), so it is per-TB
+  overhead, not any TB's code quality.
+
 ## Update (2026-09-13, third perf session, round three: 0049 — the ke800 stall)
 
 The "pre-existing ke800 first-page stall" below was a **GPTU timer storm
