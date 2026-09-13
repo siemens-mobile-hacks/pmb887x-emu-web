@@ -102,7 +102,7 @@ async function snap() {
       ioLd: g(2), ioSt: g(3), fill: g(4), lookup: g(13), qhtHit: g(15), tlbFlush: g(18), tlbFlushRange: g(19),
       fillFetch: g(20), fillProbe: g(21), fillSame: g(22), fillInvalid: g(23), fillLarge: g(24), fillIdx: g(25),
       fillEvict: g(26), tlbSize0: g(27), tlbUsed0: g(28), romdFlip: g(10), topC: g(11), topoReuse: g(12), halts: g(29),
-      lcCall: g(55), difMuxRebuild: g(59), difTxWord: g(60), dmacBurst: g(61), dmacSchedTimer: g(62) };
+      lcCall: g(55), difMuxRebuild: g(59), difTxWord: g(60), dmacBurst: g(61), dmacSchedTimer: g(62), dmacXlatFill: g(63) };
   });
 }
 async function shoot(tag) {
@@ -246,7 +246,7 @@ const rec = {
   // the display path per second (0047): DIF words, DMAC bursts, mux rebuilds,
   // DMAC timer arms; lcCall = 0046 inline-cache misses (helper calls)
   perS: { lcCall: Math.round(d.lcCall / wall), difMuxRebuild: Math.round(d.difMuxRebuild / wall), difTxWord: Math.round(d.difTxWord / wall),
-    dmacBurst: Math.round(d.dmacBurst / wall), dmacSchedTimer: Math.round(d.dmacSchedTimer / wall) },
+    dmacBurst: Math.round(d.dmacBurst / wall), dmacSchedTimer: Math.round(d.dmacSchedTimer / wall), dmacXlatFill: Math.round(d.dmacXlatFill / wall) },
 };
 await shoot("end");
 writeFileSync(`${outBase}.json`, JSON.stringify(rec, null, 1));

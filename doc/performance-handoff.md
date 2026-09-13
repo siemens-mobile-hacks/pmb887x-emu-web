@@ -6,6 +6,38 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-13, third perf session, round two: 0048)
+
+The profile after 0047 (guest 39 %, devices 33 %, memory API 10 %) put
+the DMAC's per-word memory-API walk first — one 4-byte word per request,
+each translated twice through the flatview — and the VIC second: the
+DIF's TX request line is masked at the VIC but toggles twice per word,
+and every toggle re-drove the CPU's IRQ line, which is a `cpu_interrupt`
+that forces the TB loop out.  0048 gives each DMAC channel a translated
+window keyed on a new `memory_region_topology_gen()` (the window is the
+flat range, because the firmware walks the DIF's 16 KB FIFO window with
+an incrementing destination — the first cut sized it to one access and
+refilled on every word, which the `dmacXlatFill` counter showed at once),
+and the VIC drives the CPU lines only on a level change (0027's
+`cpsr_write_check_irq` re-checks a pending interrupt on unmask, so
+nothing depended on the repeats).  Stopwatch **0.46 → 0.50** over two
+alternating pairs (+5..+10 %, host load moving during the runs); boot:
+see the playbook row.  Gates green, lockstep against the pre-0047 native
+oracle.
+
+**A pre-existing stall found on the way, not caused by this session's
+changes:** `bootcheck --flash ke800` (the LG board booted as the *first*
+page of a browser) stops at the KE800 logo at ~570–590 M instructions
+with 4 framebuffer updates and never moves, on 0046, 0047 and 0048 alike
+(3 of 3 single-board runs); as the third page of the s75/el71/ke800
+sequence the same build reaches ~1.9 G (2 of 3 today).  The LG boards
+run `icount=none`, so the firmware sees real time, and a cold first page
+compiles slower — a timing-dependent stall that the gate's progress
+threshold does not catch (it reports PASS at 590 M).  Open: reproduce
+on the deployed page from a cold cache, tighten the ke800 threshold, and
+find what the firmware waits for (the buffered stderr shows only the
+ONLINE key sequence).
+
 ## Update (2026-09-13, third perf session: 0047)
 
 **Open item 2 (J2ME throughput) moved 0.35 → 0.48–0.53×** from the
@@ -173,7 +205,8 @@ ns/access on `/dist-jit`, 252 on `/dist`, 223 native).
    and the guest's own ~30 %.
    2026-09-13 (third session): **0.35 → 0.48–0.53× (60–67 MIPS)** from
    0047 — the DIF mux-table rebuild per register write, the DMAC timer
-   re-arm per burst and the four-bit DMA acknowledgement clears.
+   re-arm per burst and the four-bit DMA acknowledgement clears; then
+   **→ ~0.50×** from 0048 (DMAC translation windows, VIC line cache).
    2026-09-13 (second session): **0.33 → 0.35× (43.7–44.7 MIPS)** from
    0046, the inline lookup cache; the helper share of that profile
    (12 %) is now mostly gone.  Earlier that day: still ~0.30× (37–39 MIPS). The wide jump-cache entry was

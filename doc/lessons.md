@@ -273,6 +273,19 @@ file is the "why" behind them and behind the timing model.
   +34..+60 %.  On a device path, look for work redone on every register
   write before work done per word — a per-write rebuild the firmware
   triggers per LCD command out-costs the whole per-word chain.
+- **Check `uptime` and swap before every A/B, and again after** (2026-09-13,
+  0048): a both-orders boot pair read the new build 2..9 % slower while
+  the host's load average sat at 6–7 with 19 GB in swap from other
+  sessions; the 40 s counter samples taken minutes later showed the same
+  build doing 13 % *more* guest work than the baseline in the same wall
+  time.  Both-orders agreement cancels position, not a load that moves
+  during the pair.  Also: `ps` %CPU of a zombie is its lifetime average —
+  six "busy" headless Chromes were all state Z; use `top`/STAT before
+  blaming leaked browsers.
+- **A gate that reports PASS at a fraction of the usual progress is not
+  a gate**: ke800 passed bootcheck at 590 M instructions where the same
+  build normally reaches 1.9 G.  Read the numbers in the table, not the
+  verdict column.
 - **Counter indices come from the enum with its `= 0` first entry**:
   a `grep -c` of trailing-comma entries undercounts by one and the
   first readings then carry the wrong labels (a "500 k mux rebuilds/s"
