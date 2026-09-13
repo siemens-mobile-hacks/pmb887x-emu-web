@@ -143,6 +143,10 @@ PORT=8080 node tools/idlebench.mjs dist-pristine-old,dist-pristine-new --quick -
 #    fullflashes must boot, native AND in the browser.
 node tests/run.mjs --label <name>-final --timeout 240   # s75 el71 c81 ke800
 node tools/bootcheck.mjs --dist dist-jit --secs 150     # s75 el71 ke800
+
+# 7. the LG boot benchmark (no icount: tIdle is the number, ~2.5 min/run;
+#    a change to timers, the main loop or the halt path needs it)
+PORT=8080 node tools/idlebench.mjs dist-jit-base,dist-jit --board ke800 --runs 2 --max 240
 ```
 
 Deploy hygiene: never plain-`cp` over a live-served wasm (a torn file
@@ -286,6 +290,8 @@ mmiopoll only) makes a whole-run profile pure.
 | 0046 wasm64: inline next-TB lookup cache on goto_ptr exits (+ 0044 actually switched on) | every `bx lr` / `pop {pc}` / `ldr pc` / `msr CPSR` ends in `helper_lookup_tb_ptr` (~130 M per boot, 2.75 M/s in the J2ME stopwatch).  The ARM translator now gives each TB's goto_ptr exit a slot in the TB (`w64_lc`: pc, generation, hflags/thumb/condexec words, target descriptor) and emits a test of only the words that can differ at that exit: pc, `cpu->neg.tb_key_gen` and thumb after a `gen_bx` — hflags cannot change without ending the TB, so they and condexec are **stamped statically by the translator** and checked once at fill time by `helper_lookup_tb_ptr_lc`; only an exit after a CPSR write compares all three.  The generation moves on every jump-cache invalidation (flush, page clear, TB invalidate) and on the rare key inputs nobody compares (hflags.flags2, FPSCR.Len/Stride, FPEXC.EN).  `W64_LC_VERIFY=1` routes every exit through the helper and cross-checks each would-be hit against the real lookup; `W64_NOLC=1` is the knob A/B.  **Found on the way**: 0044's `#if defined(CONFIG_TARGET_ARM)` guarded a macro no build defines (accel/tcg is target-independent, `TARGET_ARM` is poisoned there) — the devirtualised lookup was never compiled in until this patch keyed it on `CONFIG_TCG_WASM64` | verify: **101.3 M would-hits of 124.1 M helper calls (82 %), 0 mismatches** over a 40 s boot; normal: helper calls 26.1 M of ~126 M lookups, `keyGen` 1458 (= the jump-cache flushes).  **J2ME stopwatch vratio 0.328/0.329 → 0.350/0.358 (+7..+9 %, 40.9/41.1 → 43.7/44.7 MIPS), 4 alternating samples**, helper lookups 2.75 M/s → 0.43 M/s.  **Boot milestones flat**: `--quick --runs 2` both orders, the second-listed leg reads +3..+5 % slower whichever build it is (pair A jit second: t0.5G +5, t1.3G +4; pair B base second: every milestone −5 % for jit); three-leg runs with the `W64_NOLC=1` leg say the same, and the devirtualisation on its own is −1..+2 % (flat).  Emitted TB bytes 106.5 → 101.5 MB.  Gates: op-suite 1156/1156 ×2 identical, native 4/4, lockstep 250e6, bootcheck s75/el71/ke800 |
 | 0047 pmb887x: DIF v2 lazy mux tables, DMAC in-callback re-arm, one-bit DMA acks | the J2ME stopwatch profile after 0046 (`tools/wprof2.mjs` attached to `stopwatch.mjs --devtools`): devices 46 % of the vCPU, guest code 30 %, top symbol `dif_update_mux` **12.7 %** — the DIF v2 rebuilt its byte-lane mux tables (0039's, 2 × 4 × 256 evaluations of the 32-bit mux) on every BMREG/BCSEL/BCREG/INVERT_BIT write, and the firmware writes those per LCD command.  Now a write that changes the register only marks the tables dirty, `dif_mux()` rebuilds on the next word (370 rebuilds/s), and the builder walks the 32 output bits once.  Same path, per word (the display DMA is one 4-byte word per request, ~500 k/s): `dmac_schedule` re-armed the DMAC timer from inside its own callback on every acknowledgement (`timer_mod` → deadline → `icount_get`, ~3 %) — a request raised while the loop runs now only sets the flag; the DIF's DMA-clear handler cleared all four request bits per ack and each already-clear bit re-ran the event handler — only the raised bits are cleared; `srb_set_icr` walks set bits like `set_isr` | `tools/stopwatch.mjs` alternating: vratio **0.360/0.333 → 0.482/0.533 (+34..+60 %)**, 45/41.6 → 60/66.6 MIPS; boot flat (`--quick --runs 2` both orders: one order −1..−4 %, the other +4..+8 % with one outlier run; the four t1.3G readings overlap the baseline's); op-suite 1156/1156, native 4/4, lockstep 250e6 clean against the *pre-change* native oracle, bootcheck s75/el71/ke800 |
 | 0048 pmb887x: DMAC translation windows, VIC parent-line cache, `memory_region_topology_gen()` | after 0047 the stopwatch profile read guest 39 %, devices 33 %, memory API 10 %, top symbol `dmac_transfer_memory` — the display DMA is one 4-byte word per request (~475 k/s) and each word walked the flatview twice (`address_space_read` of its RAM source word, `address_space_write` to the FIFO).  Each channel now keeps a translated window for source and destination, keyed on a new memory-core counter that bumps on every committed transaction that installed flatviews (romd-only ones included); a RAM window is read through the host pointer, an MMIO window dispatches with the same `memory_access_size`/`prepare_mmio_access`/`memory_region_dispatch_write` step the API takes, RAM destinations keep the API for dirty tracking.  The window is the flat range (`memory_region_find`), not one access: the firmware walks the DIF's 16 KB FIFO window with an incrementing destination, and the first cut refilled on every word (`dmacXlatFill` = burst rate).  Second item: the DIF's TX request line is masked at the VIC but toggled twice per word, and every toggle re-drove the CPU line — `arm_cpu_set_irq` → `cpu_interrupt` forces the TB loop out per call; the VIC now drives the CPU lines only on a level change (0027's `cpsr_write_check_irq` re-checks on unmask, so nothing relied on the repeats).  Plus the DIF pin table's dead `name[32]` | `tools/stopwatch.mjs`, two alternating pairs: **0.503/0.514 & 0.489/0.498 vs 0.497/0.457 & 0.453/0.424** (≈ +9 %, host load moving between runs); `dmacXlatFill` 0/s in steady state (306 per boot).  Boot: **flat within a loaded host** — two both-order `--quick --runs 2` pairs under load 6–13 from other sessions (19 GB swapped) disagree in sign (+2..+9 % slower, then −4..−5 % faster / +2..+4 % slower), while 40 s counter samples show the new build warping 13 % more virtual time and moving 6 % more DMA words in the same wall time with identical per-work ratios.  Gates: op-suite 1156/1156 native JIT + TCI identical, native 4/4, lockstep 250e6 clean vs the pre-0047 oracle, bootcheck s75/el71 PASS (ke800: the pre-existing first-page stall, § Remaining 8) |
+
+| 0049 pmb887x: GPTU T0/T1 QEMU timer armed for observable overflows only | the ke800 first-page "stall" (§ Remaining 8): the LG firmware chains GPTU T1A..T1D into one 32-bit timer clocked at 26 MHz (T1A bypass, B/C/D concatenated, reload from the top byte, SR10 on the T1D overflow) and the model armed its QEMU timer at every **8-bit overflow of the free-running byte** — ~100 k main-loop callbacks per second on wall time (no icount), each ~10 µs of `emscripten_get_now` and friends in wasm and each under the BQL.  Profile of the stalled page: main-loop worker 100 % busy (`_emscripten_get_now` 37 %, `futex_wake` 9 %, `gptu_t2_sync_timer`, `gptu_t01_add_ticks`, `timer_mod_ns`), vCPU worker 94 % `futex_wait`, guest ~40 k insns/s.  Now `gptu_sync_timer` walks the carry tree of each free-running timer (`gptu_t01_ticks_to_boundary`): the sync steps to each overflow that *reloads other timers* (the interval after it counts from the reloaded values — everything else `gptu_t01_add_ticks` reproduces exactly from an overflow count, output toggles included, by parity) and the QEMU timer is armed only for the next overflow somebody can *observe* — a service request, or a T2 trigger that T2 is actually listening to (reload/capture mode or a masked RLCP event).  Counter `gptuTimer` (QEMU-timer callbacks, T01 + T2) | **ke800 booted alone: idle screen at tIdle 64–77 s** (cold page, host load 2–8; native 31 s), insns@idle 1.8–2.0 G, where 0048 crawled: `idlebench --board ke800 dist-jit-0048` NOIDLE at 420 s, t1G 255.6 s / t1.5G 377.5 s (0049: 44.5 / 64.4 s), and the plain bootcheck page sat at 590 M for 300 s.  Native ke800 timeline unchanged (logo 18 s, idle 31 s).  **S75 boot −4..−5 % in both orders** (`--quick --runs 2`: pair A t0.5G 22.5→21.7, t1.3G 29.6→28.3; pair B 0049 listed first, t1.3G 33→31.3, every milestone in the same direction) — the storm taxed the icount boot too.  Gates: native 4/4, op-suite 1156/1156 JIT + TCI identical, lockstep 250e6 clean vs the 0049 native oracle, bootcheck s75 1717 M / el71 1608 M / ke800 1945 M (≥ 1.5 G) |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
@@ -508,18 +514,24 @@ commit, then `ninja-fast.sh` and the ladder.
    own ~40 %.  Meter: `tools/stopwatch.mjs` (`per-s` line: `difTxWord`,
    `dmacBurst`, `dmacSchedTimer`, `dmacXlatFill`, `difMuxRebuild`).
 8. **ke800 stalls at the LG logo when booted as the first page of a
-   browser — OPEN, pre-existing, correctness.**  `bootcheck --flash
-   ke800` stops at ~570–590 M instructions with 4 framebuffer updates and
-   never moves (3 of 3 runs, on 0046, 0047 and 0048 alike); as the third
-   page of the s75/el71/ke800 sequence the same build reaches ~1.9 G
-   (2 of 3 today — the third full run stalled too).  The LG boards run
-   `icount=none`, so the firmware sees real time and a cold first page
-   compiles slower; the buffered stderr shows nothing after the ONLINE
-   key sequence.  bootcheck reports PASS at 590 M, so the gate has not
-   been seeing it.  Next: reproduce on the deployed page from a cold
-   cache, raise the ke800 progress threshold, then find what the
-   firmware waits for (`?trace=` the DSP/SCU/keypad, or a `-d int` diff
-   between a first-page and a third-page boot).
+   browser — CLOSED by 0049 (2026-09-13).**  It was not a guest wait:
+   the profile of the stalled page (`ke800probe` + `wprof2.mjs
+   PROF_ATTACH`) showed the vCPU thread 94 % in `futex_wait` and the
+   main-loop thread 100 % busy in `gptu_t2_sync_timer` /
+   `gptu_t01_add_ticks` / `timer_mod` / `emscripten_get_now`.  The LG
+   firmware chains GPTU T1A..T1D into one 32-bit timer clocked at 26 MHz
+   and the GPTU model armed its QEMU timer at every 8-bit overflow of the
+   free-running byte — ~100 k main-loop callbacks per second, each ~10 µs
+   of JS clock imports, each holding the BQL.  Natively that is a few
+   percent of one core; in wasm it saturates the main-loop worker and the
+   vCPU starves (~40 k guest insns/s).  Why a warm third page usually
+   survived the same storm is not established (a warm JIT needs fewer
+   vCPU cycles per phase, and host load moved between runs); what is
+   measured is the storm itself and that 0049 removes it (`gptuTimer`
+   counter).  0049 steps the chain lazily and arms the
+   timer for the next *observable* overflow only (§ What landed).
+   `bootcheck` now requires ke800 to reach 1.5 G, and `idlebench --board
+   ke800` measures its boot to the idle screen.
 
 Landed/closed since the last ranking: MMIO dispatch path (0018 —
 mmiopoll 534→202 ns, native parity; re-measure before reopening).
@@ -589,7 +601,14 @@ Why both, and why three devices:
 
 `bootcheck.mjs` judges progress in executed instructions, not framebuffer
 updates: EL71 finishes at a "set time and date?" wizard that never
-redraws, and is healthy there.
+redraws, and is healthy there.  KE800 additionally has to reach 1.5 G
+instructions by the deadline (added 2026-09-13): a guest parked at the
+LG logo by the pre-0049 GPTU timer storm still executed ~10 k
+instructions per second, which the "no progress" rule read as progress,
+and the gate said PASS at 590 M for a whole session.  The LG logo is a
+~15 s real-time wait (the firmware busy-polls the system timer), so the
+count at the logo scales with engine speed — ~0.6 G on a cold wasm page,
+2.5 G natively — and the idle screen follows ~1.3 G later.
 
 Post-mortem material (added 2026-09-13): a firmware `>>EXIT<<` now leaves
 the serial tail in `tests/results/bootcheck-<dist>-<board>-serial.txt`

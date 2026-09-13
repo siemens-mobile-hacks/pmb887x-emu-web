@@ -41,10 +41,15 @@ const ONLY = opt("flash", "").split(",").filter(Boolean);
 // pinned down).
 const QUERY = opt("query", "");
 
+// minInsns: instructions the board must have executed by --secs.  KE800
+// runs without icount and its firmware waits ~15 s of real time at the
+// LG logo (~0.6 G on a cold page), then needs ~1.3 G more to reach the
+// idle screen; a guest parked at the logo (the pre-0049 GPTU timer storm
+// starved the vCPU there) still "made progress" at ~10 k insns/s.
 const BOARDS = [
   { id: "s75", file: "s75_working20060710172101.bin" },
   { id: "el71", file: "rr_ff_el71_stock.bin" },
-  { id: "ke800", file: "KE800-v11b.bin", efa: "KE800-v11b.bin.cfi-efa" },
+  { id: "ke800", file: "KE800-v11b.bin", efa: "KE800-v11b.bin.cfi-efa", minInsns: 1.5e9 },
 ].filter((b) => (ONLY.length ? ONLY.includes(b.id) : true));
 
 // Progress = executed instructions or a framebuffer update.  A board is
@@ -145,6 +150,7 @@ for (const board of BOARDS) {
     : errors.length ? errors[0]
     : stalled ? `no progress for ${STALL_S}s (<${STALL_INSNS / 1e6}M insns, no fb update)`
     : blank ? "LCD never drew anything"
+    : board.minInsns && last.insns < board.minInsns ? `only ${(last.insns / 1e6).toFixed(0)}M insns (need ${board.minInsns / 1e6}M)`
     : "";
   results.push({ id: board.id, pass: !why, why, fb: last.fb, insns: last.insns });
 

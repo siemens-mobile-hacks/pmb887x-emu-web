@@ -6,6 +6,28 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-13, third perf session, round three: 0049 — the ke800 stall)
+
+The "pre-existing ke800 first-page stall" below was a **GPTU timer storm
+starving the vCPU**, not a firmware wait.  The LG firmware chains T1A..D
+into one 32-bit timer at 26 MHz and the model re-armed its QEMU timer at
+every 8-bit overflow of the free-running byte: ~100 k main-loop
+callbacks per second, each holding the BQL and each ~10 µs in wasm (JS
+clock imports).  The main-loop worker read 100 % busy, the vCPU worker
+94 % in `futex_wait`, ~40 k guest instructions per second.  0049 steps
+the T0/T1 chains lazily (`gptu_t01_add_ticks` already carries overflow
+counts; the sync stops only at overflows that reload other timers) and
+arms the QEMU timer for the next *observable* overflow — a service
+request or a T2 trigger.  ke800 booted alone now reaches its idle
+screen (`idlebench --board ke800`: tIdle ~65–77 s cold, insns@idle
+~1.8–2.0 G; native 31 s; on 0048 the same run crawled to 1.5 G in
+377 s and never idled), the **S75 boot is 4–5 % faster in both orders**
+(the storm taxed the icount boot as well), the native four-board suite,
+op-suite, lockstep and bootcheck are green, and the LG board is now in
+the boot benchmark with its own reference image and baseline file.  See the playbook row and
+§ Remaining 8 (closed), and lessons.md ("a stalled guest may be a
+starved one").
+
 ## Update (2026-09-13, third perf session, round two: 0048)
 
 The profile after 0047 (guest 39 %, devices 33 %, memory API 10 %) put
@@ -243,7 +265,13 @@ ns/access on `/dist-jit`, 252 on `/dist`, 223 native).
    `qemu_clock_deadline_ns_all` 0.3 %, `cpus_get_virtual_clock` 0.4 %)
    at ~37k `timer_mod` per second. Halving it is below the ±3 % noise
    floor of a single pair, so it only lands bundled with something
-   measurable.
+   measurable.  **Except on the LG board** (2026-09-13, 0049): without
+   icount the main loop runs every device timer on wall time, and the
+   GPTU's per-byte-overflow deadline was a 100 kHz storm that starved
+   the vCPU outright.  The `gptuTimer` counter (`diagall.mjs`,
+   stopwatch `per-s`) is the meter for the GPTU; the TPU/CAPCOM/STM
+   models have not been audited for the same "deadline = next hardware
+   tick" pattern.
 
 ## Constraints (what still binds)
 

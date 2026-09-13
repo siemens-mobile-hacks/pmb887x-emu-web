@@ -2,11 +2,24 @@
 // screen. This is the number a human observes with a stopwatch.
 //
 // Deterministic protocol (keep it this way for future sessions):
-//   - fullflash: fullflashes/S75v40lg1.bin (override --flash=)
-//   - reference: tools/test_targets/S75v40lg1_idle.png (committed;
-//     override --ref=). Compare ONLY the bottom --rows (default 139)
-//     rows: everything above that is animated at idle (network-search
-//     spinner, clock), the bottom 139 are pixel-stable across boots.
+//   - board: --board s75 (default) or ke800 — picks the fullflash, its
+//     sidecars, the reference image, the compared rows and the milestone
+//     set (BOARDS below); --flash= / --ref= / --rows= override one piece.
+//   - s75: fullflashes/S75v40lg1.bin, reference
+//     tools/test_targets/S75v40lg1_idle.png (committed). Compare ONLY the
+//     bottom --rows (139) rows: everything above that is animated at idle
+//     (network-search spinner, clock), the bottom 139 are pixel-stable
+//     across boots.
+//   - ke800: fullflashes/KE800-v11b.bin + its .cfi-efa sidecar (LG EEPROM
+//     block), reference tools/test_targets/KE800-v11b_idle.png, bottom
+//     --rows (150) rows (the widget bar and the soft keys; the clock,
+//     date and "No network" line above them change).  The LG board runs
+//     WITHOUT icount (site/app.js), so virtual time is wall time: the
+//     v-window is not reported, the instruction milestones are NOT a
+//     deterministic amount of work (the firmware busy-polls the system
+//     timer for ~15 s before the logo, so the count at the logo scales
+//     with engine speed — 0.6 G on a cold wasm page, 2.5 G natively) and
+//     tIdle is the number.  Progress/stall is judged in instructions.
 //   - startup=ONLINE, fresh browser per run, SEQUENTIAL: one browser at
 //     a time, dists interleaved (d1 r1, d2 r1, d1 r2, ...) so host-load
 //     drift hits both sides equally.  --parallel runs all dists at once
@@ -58,16 +71,20 @@
 //   - everything that can identify the run is pinned in the JSON:
 //     sha256 of flash/ref/wasm/js, chrome version, host load, config.
 //   - results: tests/results/idlebench-<ts>.json and the stable alias
-//     tests/results/idlebench-latest.json (diff across sessions).
+//     tests/results/idlebench-latest.json (diff across sessions); other
+//     boards get their own aliases (idlebench-ke800-latest.json,
+//     idlebench-ke800-quick-latest.json).
 //   - screenshots: end-state page + LCD crop per run, next to the JSON
-//     (tests/results/idlebench-<ts>-<dist>-r<N>[-lcd].png).
+//     (tests/results/idlebench-<ts>-<dist>-r<N>[-lcd].png; other boards
+//     idlebench-<ts>-<board>-<dist>-r<N>).
 //
 // Run classification:
 //   IDLE     reached the idle screen (tIdle = the metric; also reports
 //            tModule = Start click -> module instantiated, the 45 MB
 //            fetch+compile the user's reload pays before boot begins)
 //   NOIDLE   cap reached while still making forward progress
-//   STALL    v frozen for --stall secs (10x-slowdown / crash-loop
+//   STALL    v frozen, or fewer than 1 M instructions executed, for
+//            --stall secs (10x-slowdown / crash-loop / starved-vCPU
 //            class — the automatic salvage tells which)
 //   CRASH    page error / worker death before idle
 //
@@ -78,6 +95,7 @@
 //   PORT=8094 node tools/idlebench.mjs dist --runs 3
 //   PORT=8094 node tools/idlebench.mjs dist-jit --runs 3 --max 1800
 //   PORT=8094 node tools/idlebench.mjs --baseline tests/results/idlebench-<ts>.json
+//   PORT=8094 node tools/idlebench.mjs dist-jit --board ke800 --max 240
 import { chromium } from "playwright-core";
 import { createHash } from "node:crypto";
 import { execSync } from "node:child_process";
@@ -105,19 +123,38 @@ const distQuery = (spec) => {
   const i = spec.indexOf("@");
   return i < 0 ? "" : spec.slice(i + 1);
 };
+// Per-board protocol.  insnMilestones: "wall s until N insns"; cmpInsns:
+// the LCD comparison starts there at the latest; icount: the board runs
+// the icount timing model (v is guest time, the v-window is meaningful).
+const BOARDS = {
+  s75: {
+    flash: "S75v40lg1.bin", sidecars: [], ref: "S75v40lg1_idle.png", rows: 139,
+    insnMilestones: [0.1e9, 0.25e9, 0.5e9, 0.75e9, 1.0e9, 1.2e9, 1.3e9],
+    cmpInsns: 1.2e9, icount: true,
+  },
+  ke800: {
+    flash: "KE800-v11b.bin", sidecars: ["KE800-v11b.bin.cfi-efa"], ref: "KE800-v11b_idle.png", rows: 150,
+    insnMilestones: [0.5e9, 1.0e9, 1.5e9, 1.8e9],
+    cmpInsns: 1.6e9, icount: false,
+  },
+};
+const boardId = opt("board", "s75");
+const board = BOARDS[boardId];
+if (!board) { console.error(`unknown --board ${boardId} (${Object.keys(BOARDS).join(", ")})`); process.exit(2); }
 const quick = argv.includes("--quick");
 const runs = Number(opt("runs", quick ? 1 : 3));
 const maxSecs = Number(opt("max", quick ? 60 : 1500));
 const parallel = argv.includes("--parallel");
 const regressPct = Number(opt("regress", 5));
 const stallSecs = Number(opt("stall", 300));
+const STALL_INSNS = 1e6;
 // idle detection starts at the floor OR once the deterministic boot work
 // is nearly done (insns >= --cmpinsns), whichever is first: boots are now
 // close to 30 s, so a fixed 30 s floor would clamp tIdle from below.
 const floorSecs = Number(opt("floor", 15));
-const cmpInsns = Number(opt("cmpinsns", 1.2e9));
+const cmpInsns = Number(opt("cmpinsns", board.cmpInsns));
 const [winLo, winHi] = String(opt("window", "2:7")).split(":").map(Number);
-const rows = Number(opt("rows", 139));
+const rows = Number(opt("rows", board.rows));
 const pctMax = Number(opt("pct", 0.5));
 const port = process.env.PORT || "8080";
 const noref = argv.includes("--noref") || quick;
@@ -132,14 +169,19 @@ const extraQ = process.env.EXTRA_Q || "";
 const rtMode = process.env.RT || "off";
 const SAMPLE_MS = 1000;        // before the floor (v/insns curve)
 const SAMPLE_MS_IDLE = 500;    // at/after the floor (tIdle resolution)
-const INSN_MILESTONES = [0.1e9, 0.25e9, 0.5e9, 0.75e9, 1.0e9, 1.2e9, 1.3e9];
+const INSN_MILESTONES = board.insnMilestones;
 const V_MILESTONES = [2, 5, 10, 20, 40, 80, 120, 160, 200, 245];
 const T_MILESTONES = [30, 60, 90, 110, 150, 240, 360, 600, 900];
 
 const here = fileURLToPath(new URL(".", import.meta.url));
-const FLASH = opt("flash", here + "../fullflashes/S75v40lg1.bin");
-const REF = opt("ref", here + "test_targets/S75v40lg1_idle.png");
-const refB64 = readFileSync(REF).toString("base64");
+const FLASH = opt("flash", here + "../fullflashes/" + board.flash);
+const SIDECARS = opt("flash") ? [] : board.sidecars.map((f) => here + "../fullflashes/" + f);
+const REF = opt("ref", here + "test_targets/" + board.ref);
+// --noref runs (the reference capture itself) work without the image
+const refB64 = (() => { try { return readFileSync(REF).toString("base64"); } catch (e) {
+  if (noref) return "";
+  throw e;
+} })();
 
 const sha256 = (p) => {
   try { return createHash("sha256").update(readFileSync(p)).digest("hex").slice(0, 16); }
@@ -249,31 +291,31 @@ const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.lengt
 // same stamp as the JSON below, so screenshots sort next to their run
 const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
 
-// end-state screenshot -> tests/results (page + LCD crop). Never fatal:
-// a wedged/crashed page just means no shot.
+// end-state screenshot -> tests/results (page + LCD). Never fatal: a
+// wedged/crashed page just means no shot.  The LCD is the canvas at its
+// own resolution (not a scaled element screenshot), so an idle run's
+// -lcd.png is directly usable as a board's reference image.
 async function shoot(p, tag) {
   const base = path.join(here, `../tests/results/idlebench-${stamp}-${tag}`);
   try { await p.screenshot({ path: `${base}.png` }); } catch { return null; }
   const shots = { page: `${base}.png` };
   try {
-    const lcd = await p.$("#lcd");
-    if (lcd) {
-      await lcd.screenshot({ path: `${base}-lcd.png` });
-      shots.lcd = `${base}-lcd.png`;
-    }
+    const url = await p.evaluate(() => document.getElementById("lcd").toDataURL("image/png"));
+    writeFileSync(`${base}-lcd.png`, Buffer.from(url.split(",")[1], "base64"));
+    shots.lcd = `${base}-lcd.png`;
   } catch {}
   return shots;
 }
 
 // one run of one dist -> rec (never throws; failures are classified)
 async function runOne(dist, hashes, r) {
-    const tag = `${dist}-r${r}`;
+    const tag = `${boardId === "s75" ? "" : boardId + "-"}${dist}-r${r}`;
     console.log(`\n=== ${tag} (max ${maxSecs}s) ===`);
     const procTag = `idlebench-proc-${process.pid}-${dist}-r${r}`;
     const b = await chromium.launch({ headless: true, args: ["--" + procTag, ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])] });
     const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
     const rec = {
-      dist, run: r, hashes, chromeVer, started: new Date().toISOString(),
+      board: boardId, dist, run: r, hashes, chromeVer, started: new Date().toISOString(),
       loadavg: (execSync("cat /proc/loadavg", { encoding: "ascii" }).split(" ").slice(0, 3).join(" ")),
     };
     const w64lines = [];
@@ -296,7 +338,7 @@ async function runOne(dist, hashes, r) {
       // faster-than-realtime boot (RT=banked measures what users get)
       await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(dist)}${distQuery(dist) ? "&" + distQuery(dist) : ""}&rt=${rtMode}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
       await p.selectOption("#startup", "ONLINE");
-      await p.setInputFiles("#fullflash", FLASH);
+      await p.setInputFiles("#fullflash", [FLASH, ...SIDECARS]);
     } catch (e) {
       rec.cls = "CRASH"; rec.why = "setup: " + String(e).slice(0, 120);
       console.log(`  [${tag}] CRASH ${rec.why}`);
@@ -321,6 +363,7 @@ async function runOne(dist, hashes, r) {
     rec.vAt = {}; rec.vHitAt = {}; rec.samples = [];
     let lastSample = null, rssPeak = 0;
     let cmpOn = false;
+    let lastProgress = { t: 0, insns: 0 };
 
     while (true) {
       const t = (Date.now() - t0) / 1000;
@@ -338,6 +381,7 @@ async function runOne(dist, hashes, r) {
         if (lastSample && s.v === lastSample.v) {
           s.stallSince = lastSample.stallSince ?? t;
         }
+        if (s.insns - lastProgress.insns >= STALL_INSNS) lastProgress = { t, insns: s.insns };
         lastSample = s;
         // [t, v, insns, tbEntries]: insns/tb per interval = how much
         // each TB entry (prologue, chain hop) is amortised over
@@ -361,6 +405,11 @@ async function runOne(dist, hashes, r) {
           rec.why = `v frozen at ${s.v.toFixed(1)} for ${Math.round(t - s.stallSince)}s`;
           break;
         }
+        if (t - lastProgress.t >= stallSecs) {
+          rec.cls = "STALL";
+          rec.why = `<${STALL_INSNS / 1e6}M insns in ${Math.round(t - lastProgress.t)}s (at ${(s.insns / 1e6).toFixed(0)}M)`;
+          break;
+        }
       }
       rssPeak = Math.max(rssPeak, rssMB(procTag) || 0);
       await new Promise((r2) => setTimeout(r2, cmpOn ? SAMPLE_MS_IDLE : SAMPLE_MS));
@@ -376,7 +425,7 @@ async function runOne(dist, hashes, r) {
     // A/B window metric (ex-bootbench): wall secs of guest work between
     // v=winLo and v=winHi, interpolated over the sample series
     const wLo = crossAt(rec.samples, winLo), wHi = crossAt(rec.samples, winHi);
-    if (wLo !== null && wHi !== null) rec.window = +(wHi - wLo).toFixed(1);
+    if (board.icount && wLo !== null && wHi !== null) rec.window = +(wHi - wLo).toFixed(1);
     // guest-work milestones: wall s until N insns executed (deterministic
     // work -> pure speed; no LCD, no grid, immune to idle real-time gating)
     rec.tInsns = {};
@@ -459,16 +508,17 @@ for (const dist of dists) {
   };
 }
 const out = {
-  ts: new Date().toISOString(), chromeVer,
+  ts: new Date().toISOString(), chromeVer, board: boardId,
   flash: FLASH.split("/").pop(), flashSha: sha256(FLASH),
   ref: REF.split("/").pop(), refSha: sha256(REF),
   config: { maxSecs, stallSecs, floorSecs, rows, pctMax, sampleMs: SAMPLE_MS, sampleMsIdle: SAMPLE_MS_IDLE, startup: "ONLINE", noref, parallel, window: `${winLo}:${winHi}`, jsFlags, extraQ },
   summary, results,
 };
 // "latest" aliases: full runs -> idlebench-latest.json, --quick runs ->
-// idlebench-quick-latest.json (different caps, keep the baselines apart).
+// idlebench-quick-latest.json (different caps, keep the baselines apart);
+// boards other than s75 get idlebench-<board>-[quick-]latest.json.
 // Knob runs (JS_FLAGS / EXTRA_Q / RT set) never become a baseline.
-const latestPath = here + `../tests/results/idlebench-${quick ? "quick-" : ""}latest.json`;
+const latestPath = here + `../tests/results/idlebench-${boardId === "s75" ? "" : boardId + "-"}${quick ? "quick-" : ""}latest.json`;
 const knobRun = !!(jsFlags || extraQ || rtMode !== "off" ||
                    dists.some((d) => d.includes("@")));
 const baselinePath = opt("baseline", latestPath);

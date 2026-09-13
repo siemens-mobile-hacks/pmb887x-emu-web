@@ -285,7 +285,21 @@ file is the "why" behind them and behind the timing model.
 - **A gate that reports PASS at a fraction of the usual progress is not
   a gate**: ke800 passed bootcheck at 590 M instructions where the same
   build normally reaches 1.9 G.  Read the numbers in the table, not the
-  verdict column.
+  verdict column.  (Fixed 2026-09-13: the gate now needs 1.5 G from
+  ke800, and `idlebench --board ke800` measures that boot.)
+- **A "stalled" guest may be a starved one — profile every thread, not
+  the vCPU** (2026-09-13, 0049): the ke800 first-page stall looked like
+  a firmware wait (pc cycling through a small loop, ~40 k insns/s, no
+  serial), and every guest-side theory (keys, DSP, a real-time timeout)
+  was wrong.  The attached profile showed the vCPU worker 94 % in
+  `futex_wait` and the *main-loop* worker 100 % busy running one device's
+  timer at ~100 kHz under the BQL.  A device model that is cheap natively
+  (a QEMU timer per 8-bit counter overflow) can be a denial of service in
+  wasm, where a timer callback costs ~10 µs of JS clock imports; the
+  price of one QEMU timer firing is ~200× higher than native, so any
+  model whose deadline is "the next hardware tick" rather than "the next
+  event somebody can observe" needs the lazy-stepping treatment
+  (`gptu.c`, `gptu_t01_ticks_to_boundary`).
 - **Counter indices come from the enum with its `= 0` first entry**:
   a `grep -c` of trailing-comma entries undercounts by one and the
   first readings then carry the wrong labels (a "500 k mux rebuilds/s"
