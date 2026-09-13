@@ -13,7 +13,10 @@ await page.exposeFunction("__suiteReport", (text, code) => { bridge = { text, co
 const qemuLog = [];
 page.on("console", (m) => { const t = m.text(); if (t.startsWith("[qemu]")) qemuLog.push(t); });
 page.on("pageerror", (e) => console.error("[pageerror]", String(e).slice(0, 800)));
-await page.goto(`http://127.0.0.1:${port}/?suite=dist/tcgisa.bin&dist=${dist}${envQ}`,
+// EXTRA_Q: extra page query (e.g. "icount=1") — the suite boots without
+// icount by default, which is a different wasm64 prologue path.
+const extraQ = process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : "";
+await page.goto(`http://127.0.0.1:${port}/?suite=dist/tcgisa.bin&dist=${dist}${envQ}${extraQ}`,
                 { waitUntil: "networkidle", timeout: 120000 });
 let serial = "";
 const t0 = Date.now();

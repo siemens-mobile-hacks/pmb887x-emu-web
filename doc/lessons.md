@@ -172,6 +172,41 @@ file is the "why" behind them and behind the timing model.
   yesterday's absolute numbers on a shared host; ratios inside ±10 %
   need the pair repeated with the order swapped; below ~3 % go straight
   to n=4 — intermediate answers change sign.
+- **Spend the first invocation on a null A/B** (the same bytes in both
+  legs).  On 2026-09-13 it showed the leg listed *second* reading
+  +2..+3 % slower on every milestone with identical wasm, and the same
+  bytes moving 14 % between two invocations an hour apart as the host
+  quietened.  A candidate at ±3 % in one position is indistinguishable
+  from that bias; knowing its size is what makes the swapped-order
+  repeat conclusive instead of another coin flip.
+- **Rebuild both sides of an A/B the same way, or the baseline lies.**
+  2026-09-13: the session baseline was built by `ninja-fast.sh` on a
+  clean tree at the pinned rev — but over a `build/qemu-wasm64/` left
+  mid-state by the previous session.  That binary ran ~5 % slower than
+  any clean build of the same source, and a candidate measured −4 %,
+  −2 %, −6 %, −6 % against it across four invocations **in both
+  orders**.  It was flat against a clean baseline.  Swapping the order
+  cancels position, not a bad baseline; nothing in the ladder catches
+  this except building both sides symmetrically.  For a keep/revert
+  that matters, build each revision in a pristine `git worktree` with
+  its own build dir and run `--runs 4`.  Hashes will differ between
+  build dirs for identical source (absolute paths are embedded), so
+  confirm *which code* a dist contains from behaviour — a known
+  signature like the `-accel tcg,tb-size=8` SOURCE-CORRUPT control —
+  not from the hash.
+- **An inspection-only rejection is a hypothesis** — but it can also be
+  right.  "Widening the TB jump-cache entry" was rejected by inspection
+  in 2026-09-12, looked wrong (the argument counted cache *lines* and
+  ignored *residency*), was built in 2026-09-13 — and measured flat, as
+  originally claimed.  Re-opening it was still correct; the cost of
+  being wrong was one patch, and the run is what found the phantom-win
+  trap above.  Mark inspection-only rejections as such, and re-measure
+  rather than argue.
+- **Beware a cost model built from per-unit costs × counts.**  "176k
+  TBs × 38 µs translation" put translation at ~20 % of a boot and drove
+  the whole "emitted code volume" workstream; the profiler says 3–4 %.
+  Per-unit microbenchmarks do not compose with counts when the work
+  overlaps other work or the counts came from a different build.
 - **Counters over profiles.** The profiler attributed 30 % to a halt
   wait the counters showed was reached <1k times; `tcg_qemu_tb_exec`
   self time is misattributed guest code; `io_failed ← cpu_io_recompile`

@@ -29,9 +29,16 @@ the page default for all of them) → display path + fill-time TLB growth
 0039–0041 (stopwatch vratio 0.19 → 0.33) → TB lookup / hflags /
 range-flush 0042–0045 (−2..−4 % on the milestones; the counters that
 showed the shipping boot is virtual-time-bound after t0.75G and that
-197 MB of wasm is compiled per boot) → **open now**: emitted code volume
-(§ Remaining 0b), the J2ME throughput target (§ Remaining 0), the
-batcher's rare SOURCE-CORRUPT (§ Remaining 4), the AOT cache.
+197 MB of wasm is compiled per boot) → 2026-09-13 (no perf change
+landed: four candidates measured flat or worse; the batcher
+SOURCE-CORRUPT root-caused and fixed; a wprof2 profile that **replaced
+the cost model this workstream was ranked on** — translation is 3–4 %
+of the vCPU, not ~20 %, and emitted code volume is closed as a lever;
+and the **phantom-win** baseline trap in § Measuring, which is the
+session's most reusable result) → **open now**: the
+TB lookup path's remaining 12.6 % via an hflags-generation inline cache
+(§ Remaining 6), the J2ME throughput target (§ Remaining 0), the AOT
+cache now that it is costed (§ Remaining 5).
 
 Since 2026-09-12 the qemu tree is the `qemu/` submodule: a "patch" is
 a commit on its branch (numbering continues as before), and
@@ -49,6 +56,7 @@ rejects it.  Costs are wall-clock on this host (32 cores, quiet).
 | 2 quick boot | `node tools/idlebench.mjs <base>,<cand> --quick` | ~1 min per dist | window v=2..7, t0.1G/t0.25G/t0.5G, A/B ratios, REGRESSION verdict vs previous run | late-phase and idle (cap 60 s) |
 | 3 op-suite | `scripts/run-tcg-isa.sh` | ~30 s | any TCG/memory/exec value divergence, 3 backends byte-identical | perf |
 | 4 full boot | `node tools/idlebench.mjs --runs 2` | ~2.5 min per dist | tIdle, t1.3G, LCD idle screen, crash/stall classes | — |
+| — counters | `node tools/diagall.mjs [secs] [interval]` | ~1 min | every `wasm_memstat` index by name + a per-second DELTA block (tbGen/tbFlush, module bytes by assemble source, lookups and jump-cache hits, MMIO, fills, warp buckets) | attribution to a function |
 | 5 native suite | `node tests/run.mjs --label <patch> --timeout 240` | ~65 s | native boots of 4 phones | wasm-only paths |
 | 6 lockstep | `tools/lockstep-wasm.mjs --insns 20e6\|250e6\|700e6`; full `2.5e9` at slice close | 1–15 min | cross-backend state equality over a boot | — |
 
@@ -86,10 +94,16 @@ Rules that keep the ladder honest:
 # 0. serve the dists (keep running)
 PORT=8080 HTTPS_PORT=6808 node serve.mjs &
 
-# baseline once per session: save the dists, get today's numbers
+# baseline once per session.  REBUILD IT FIRST — build/qemu-wasm64 may
+# have been left mid-state by the previous session, and an incremental
+# build over that produced a 5 %-slow "baseline" on 2026-09-13 that
+# faked a win for four invocations (§ Measuring, "phantom win").
+bash scripts/ninja-fast.sh
 cp -a site/dist-jit site/dist-jit-base            # + dist -> dist-base for qemu-core
 node tools/tcgbench.mjs
 PORT=8080 node tools/idlebench.mjs dist,dist-jit --quick
+PORT=8080 node tools/idlebench.mjs dist-jit-base,dist-jit --quick   # null A/B:
+                                                  # today's noise floor + position bias
 
 # 1. edit qemu/ (the submodule, all patches committed) → 2. rebuild + deploy (~8 s)
 bash scripts/ninja-fast.sh                        # wasm64 -> site/dist-jit
@@ -111,6 +125,17 @@ git -C qemu commit -a                             # measured numbers in the mess
 git -C qemu push origin wasm-browser-port:wasm-patches
 # then set QEMU_PMB887X_REV in versions.env to the new tip (fetch-qemu.sh
 # resets the checkout to the pin on the next full build)
+
+# 5b. BEFORE believing a keep verdict: build both revisions pristinely
+#     (own worktree, own build dir — no inherited objects) and re-A/B.
+#     Hashes differ between build dirs for identical source (absolute
+#     paths are embedded), so identify a dist by behaviour, not hash.
+git -C qemu worktree add --detach build/wt-<rev> <rev>
+#   configure that worktree into build/qemu-wasm64-<rev> exactly as
+#   scripts/build-qemu-wasm64.sh does (it needs EM_PKG_CONFIG_PATH set
+#   as well as PKG_CONFIG_PATH — the script only sets the latter and its
+#   configure branch is untested), deploy to site/dist-pristine-<rev>
+PORT=8080 node tools/idlebench.mjs dist-pristine-old,dist-pristine-new --quick --runs 4
 
 # 6. FINAL GATE before the session's last commit (~6 min): all three
 #    fullflashes must boot, native AND in the browser.
@@ -153,8 +178,42 @@ garbage.
   whose hash changed with no runs since is unmeasured — measure before
   quoting a number for it.  Knob runs (`JS_FLAGS`/`EXTRA_Q`) never
   become a baseline.
+- **The baseline dist must be built the same way as the candidate — the
+  "phantom win" of 2026-09-13.**  That session's baseline was made the
+  usual way: `ninja-fast.sh` on a clean tree at the pinned rev, then
+  `cp -a site/dist-jit site/dist-jit-base`.  But `build/qemu-wasm64/`
+  had been left mid-state by the *previous* session, so that
+  incremental build produced a binary (`61f5d0ad`) roughly **5 %
+  slower** than any clean build of the identical source.  Every A/B
+  against it inherited the gap: a candidate measured −4 %, −2 %, −6 %,
+  −6 % across four invocations **in both orders**, survived a swapped
+  repeat, and was committed — and was flat when finally measured
+  against a clean baseline.  Both-orders agreement does not detect a
+  bad baseline; it only cancels position.
+  So: before trusting any keep/revert, rebuild **both** sides the same
+  way.  The cheap version is to rebuild the baseline source in the same
+  build dir right before the candidate (the incremental build is ~10 s
+  and is then symmetrical).  The authoritative version, and what
+  decided this one, is a pristine build of each revision:
+  `git -C qemu worktree add --detach build/wt-<rev> <rev>` plus its own
+  fresh build dir, then `idlebench old,new --quick --runs 4`.  Note the
+  hashes then differ between build dirs for the *same* source (the
+  build embeds absolute paths), so compare behaviour, not hashes —
+  e.g. a known behavioural signature such as the `-accel tcg,tb-size=8`
+  SOURCE-CORRUPT control.
+- **Run a null A/B first** (`idlebench <base>,<base-copy> --quick`, the
+  same bytes in both legs).  It costs one invocation and calibrates two
+  things at once: the day's noise floor, and the **positional bias** —
+  on 2026-09-13 the leg listed *second* read +2..+3 % slower on every
+  milestone with identical bytes.  Without that number, a candidate
+  listed second that comes in at −3 % looks like a win and a candidate
+  listed second at +3 % looks like a regression, and both are noise.
+  This is why rule 5's swapped-order repeat exists; the null run tells
+  you how big the swap has to beat.
 - **Host load**: loadavg is not namespaced — interleave, never trust
-  absolutes across time; a "flat" result on a noisy host can mean the
+  absolutes across time; on 2026-09-13 the *same bytes* moved 14 %
+  between two invocations an hour apart as the host quietened from
+  loadavg 5 to 2; a "flat" result on a noisy host can mean the
   candidate removed the work that made the baseline *unstable* (look
   at spread, not just medians).  Parallel dists (`--parallel`) pace
   each other — smoke only.
@@ -221,6 +280,7 @@ mmiopoll only) makes a whole-run profile pure.
 
 | 2026-09-13 prologue cleanup (`58bb2742`) | the shipped TB prologue carried two RMWs of the `wasm_tb_stats` diagnostic counters and a lockstep-armed test per TB entry (~5 M/s) plus a `w64_chain_stop` load per chained jump — ~70 of ~560 bytes per TB module.  Under icount `wasm_insns()` now derives the count from the icount state (exact), the counters are emitted only on non-icount boards or with `W64_TBSTATS=1`, and the lockstep probes only in a `W64_LOCKSTEP` process; `W64_NOACCTINLINE` is gone | **flat**: quick pairs −6 %/−1 % window, −7 %/−2 % t0.5G; full `--runs 2` pair +0 % tIdle, +3 % window, +3 % t0.5G, +1 % t1.3G; rt=banked quick −3 %/0 %.  Landed as a simplification (W-19), not as a win — the per-TB counters were cheaper than their byte count suggested |
 | 2026-09-13 W-12 BLX speculation fix (`58f6f9c5`) | `trans_BLX_i`'s `gen_jmp` recorded the mode-switching target as a speculation successor; the wasm64 backend translated it with the caller's flags and the ARM translator emitted a PC-alignment-abort TB that a chained jump then ran → EL71 `Prefetch_Abort` in ~45 % of second-page boots.  `translator_unnote_succ()` withdraws the hint | correctness: 8/8 reproducer passes with the abort dump armed (`QEMU_LOG_PABT=1`) vs 5/11 failures before; no perf change expected (fewer dead speculated TBs) |
+| 2026-09-13 batcher SOURCE-CORRUPT fix (`bf0b67d4`) | § Remaining 4, root-caused from the forensic dump: `encode_search()` overflowing the region highwater does `goto buffer_overflow` **without advancing `code_gen_ptr`**, after `tcg_gen_code()` already staged the module body in the open batch, so the next `tcg_tb_alloc()` carves `TranslationBlock`s out of the staged bytes (the dump showed seven, at the 192-byte `sizeof(TranslationBlock)` stride).  `w64_batch_unstage()` withdraws the member; the staged-source check is now shared with `w64_batch_ensure()`, which re-assembled evicted batches with no validation at all | positive control (`-accel tcg,tb-size=8` forces region overflows): **5 dropped batches per 60 s → 0**, same guest progress.  Stock rate was 1–2 per 60 s boot, not the "once in 285 s" the hand-off recorded.  Correctness only; no perf claim |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
@@ -253,7 +313,10 @@ commit, then `ninja-fast.sh` and the ladder.
 | QemuCond-based main-loop wait (instead of the raw futex) | same early-window numbers but only ~half the end-to-end gain | qemu condvar waits truncate to whole milliseconds on wasm; the firmware's ~100 µs WFI windows each pay +1 ms |
 | **Turning wasm64 batch compaction off** (2026-09-12; `W64_COMPACT_*` huge, `W64_LIVE_MAX=200000`) | bytes compiled per boot **197 MB → 100 MB** and re-ensures stay 0, but interleaved `--quick`: −3 % in one invocation and **0 %** in the next, at **RSS 1837 → 2179 MB (+18 %)**.  With the live cap left at its 6144 default it is **+8 % SLOWER** (t1.3G 31.3 vs 28.8) — eviction then re-ensure just recompiles the same bodies on demand | compaction is ~49 % of everything the browser compiles (96 MB in 198 modules), and halving the compile bytes buys nothing: merging ~1000 TB functions into one module buys back in execution locality what it costs in compile time.  Do not reopen without a way to compact *without* recompiling — e.g. compiling the merged module off the vCPU thread, which needs the vCPU to reach a JS event loop and so is blocked by the same constraint as everything else that waits |
 | **Compaction threshold sweep, take 2** (`W64_COMPACT_MEMBERS` 4096 / 16384 vs the 1024 default, interleaved 3-leg) | 4096: t1.3G −2 %; 16384: 0 %; the baseline leg of that invocation was itself an outlier (t0.1G 3.4 vs the usual 2.5) | inside the noise of a 3-leg run; 1024/256 kept.  Second time this knob has failed to move — stop sweeping it |
-| **Widening the TB jump-cache entry** to hold flags/cs_base/cflags/tc_ptr so a hit never dereferences the TB (2026-09-12, rejected by inspection, not built) | `TranslationBlock` has pc@0, cs_base@8, flags@16, cflags@20 and `tc.ptr`@32 — a jump-cache hit already touches exactly **one** 64-byte TB cache line | there is no second miss to remove; widening the entry would only move the same line into a 2–3× larger jump cache, and enlarging that cache was already measured worse (32k entries row above) |
+| **Widening the TB jump-cache entry** to hold cs_base/flags/cflags/tc_ptr so a hit never dereferences the TB (2026-09-12 rejected by inspection; **built and measured 2026-09-13 — still rejected**) | **flat.** Ground truth was two *pristine* builds (git worktrees at the two revisions, each in its own fresh build dir), interleaved `--quick --runs 4` on a quiet host: t0.5G 21.2 vs 21.3, t0.75G 26.2 vs 26.4, t1.3G 28.7 vs 28.7 — **−0..−1 %**.  The J2ME stopwatch agrees (8 alternating samples, means 0.3005 vs 0.3005) | the 2026-09-12 inspection ("a hit already touches exactly one TB cache line") was right, for the reason it gave.  The theory that the *residency* of that line differs — one of ~175k TB structs over ~100 MB against a 160 KB jump cache — predicts a win that does not appear: the hot TB set is small enough to stay resident.  **Read the four-pairs-in-both-orders −4..−6 % that this change appeared to win in the § "phantom win" note below before re-opening it — that number was a stale baseline, not this patch.**  Implementation kept in the reflog if anyone wants it: the copies must come from the TB, not the requested `TCGTBCPUState`, because `tb_gen_code()` can return a one-shot `CF_COUNT_MASK=1` TB |
+| **wasm64: hoist `env + fast_ofs` into a per-TB local** (2026-09-13; `$tlb` set once per label region instead of once per memory op, invalidated at each `tcg_out_set_label` because regions are sibling `if (bp <= k)` blocks a branch can enter directly — the hand-off's own § Remaining 0b candidate) | `--quick --runs 2` in **both** orders: **+3 % and +10 % slower** on t0.5G..t1.3G; reverting it recovered −6..−10 % in a third pair | it removes ~8 emitted bytes *and* a load+add+store per memory access and is still a clear regression — a local kept live across a whole label region evidently costs more in Liftoff's register allocation than the arithmetic it saves.  Third independent measurement (after the prologue cleanup and compaction-off) that **emitted-byte count is not the early-phase lever** |
+| **TB jump cache 4k → 8k entries** (`TB_JMP_CACHE_BITS` 13, 2026-09-13, on top of the wide entry) | `--quick --runs 2`: +1..+4 % — no gain, and the entry is now 40 B so the cache would be 320 KB | 7.2 % of lookups miss and `qht_lookup_custom` is 3 % of the vCPU, but more slots do not convert those misses.  Second size that fails (15 bits was +4..9 % in 2026-09-11) — **stop resizing this cache; attack the key instead** |
+| **`W64_NOCLOSEEXEC=1`** — stop closing the open batch when its first member executes, let it fill to `W64_BATCH_N` (2026-09-13, knob A/B: same wasm both legs) | **12–17 % slower on every milestone** (t0.5G 26.7 vs 22.5, t1.3G 35.1 vs 30.8) | the batch close is what makes speculation pay: one module covers the executing TB *and* its ~5 staged successors.  Deferring it needs a temp module per first execution — the pre-0019 design — and there are ~32k such executions per boot either way, so nothing is saved and the free successors are lost.  Module count is bounded by "how often a not-yet-compiled TB runs", not by `W64_BATCH_N` |
 | `-sSUPPORT_LONGJMP=wasm` (native unwinding for the SVC-exception longjmps) | binaryen's Asyncify pass crashes on it (verified with a standalone emcc test) | wasm-EH longjmp and `-sASYNCIFY` are incompatible in emsdk 4.0.10; ASYNCIFY is required (coroutine backend/condvar sleeps) |
 
 ## Remaining opportunities (ranked; the plan lives in performance-handoff.md)
@@ -277,24 +340,63 @@ commit, then `ninja-fast.sh` and the ladder.
    build reads **0.12× (15.1 MIPS)** vs 0.29–0.33× now — the earlier
    build was 2.4× *slower* at this, so whatever ran correctly before was
    not that build (native, paced by the RT cap, is the other candidate).
+   **2026-09-13**: still ~0.30 (37–39 MIPS, 2.5 M lookups/s).  The wide
+   jump-cache entry measured **exactly flat here** — 8 samples
+   alternating the builds in both orders, means 0.3005 vs 0.3005 — at a
+   time when the boot ladder was (wrongly) showing it at −4..−6 %.  This
+   meter was right and the boot ladder's baseline was bad; when two
+   meters disagree, suspect the baseline before believing the flattering
+   one.  **This meter drifts** — the
+   first four samples fell monotonically 0.313 → 0.281 as host loadavg
+   went 1.97 → 2.77, which on its own read as a 4 % regression.
+   Alternate the builds and require both orders, exactly as for
+   idlebench.
 
-0b. **Emitted code volume — OPEN, now measured, the biggest lever left.**
-   The browser compiles **197 MB of wasm per boot** across 35k modules
-   (0042 counters), which is essentially all of the `compile-Module`
-   10 % of the vCPU; 94 MB of that is unique TB bodies, i.e. **563 bytes
-   of wasm per 4.85-insn TB**, and the other half is compaction
-   recompiling the same bodies (turning that off is a wash — see
-   § REJECTED).  Cold execution of that code, not its compilation, is the
-   dominant cost: the first 0.5 G instructions run at ~20 MIPS and take
-   21 s of a 29 s boot while the last 0.55 G run at ~220 MIPS.  Where the
-   bytes go, per TCG opcode (temporary histogram in `tcg_gen_code`, first
-   1.5 M ops): **`qemu_ld` 83.9 B/op and `qemu_st` 86.9 B/op = 37 % of all
-   emitted bytes** (the inline TLB probe), `add` 12.0 B × 4.2/TB,
+0b. **Emitted code volume — CLOSED as a lever (2026-09-13).**  Three
+   independent measurements now say the emitted-byte count is not what
+   the early phase is bound by: the prologue cleanup (−12 % bytes/TB,
+   flat), compaction off (−49 % compiled bytes, a wash), and the inline
+   TLB-probe hoist (fewer bytes *and* fewer executed ops per access,
+   **+3..+10 % slower**, § REJECTED).  Do not spend more here; the
+   byte histogram below is kept only as reference.
+   Per TCG opcode (temporary histogram in `tcg_gen_code`, first 1.5 M
+   ops): `qemu_ld` 83.9 B/op and `qemu_st` 86.9 B/op = 37 % of all
+   emitted bytes (the inline TLB probe), `add` 12.0 B × 4.2/TB,
    `goto_tb` 57 B, `goto_ptr` 65 B, `mov` 5.0 B × 6.3/TB, `brcond` 18.9 B.
-   Candidates: shrink the inline probe (hoisting `env + fast_ofs` into a
-   per-TB local saves ~8 B per access for ~8 B per TB); the AOT cache (#5),
-   which removes the whole 197 MB on a second boot.  Meter: the 0042
-   counters + `idlebench --quick` t0.25G/t0.5G.
+
+0c. **Where the vCPU actually goes (2026-09-13 wprof2, the measurement
+   that replaced the estimate above).**  The hand-off's cost model —
+   "~176k TBs × 38 µs translation ≈ 6.7 s of a boot" — is wrong by a
+   large factor.  Self-time of the vCPU worker, `rt=off` (the profiled
+   build carried the jump-cache patch that was later measured flat and
+   dropped, which does not move these shares):
+
+   | | early (insns 0.24 G →, 8 s) | mid (0.28 G → 1.6 G, 16 s) |
+   |---|---|---|
+   | guest code (`tcg_qemu_tb_exec` + JIT-module frames) | 23.4 % | ~17.5 % |
+   | `Module` (browser wasm compile) | **14.1 %** | 7.7 % |
+   | TB lookup (`helper_lookup_tb_ptr` + qht + `arm_get_tb_cpu_state`) | 8.4 % | **12.6 %** |
+   | instantiate (`w64_batch_instantiate` + `Instance`) | 2.8 % | 1.5 % |
+   | translate (`tcg_gen_code` + liveness + optimize) | **3.9 %** | 2.9 % |
+   | clock/timers (`icount_get`, `tpu_update_timer`, `timer_mod_ns`) | ~1 % | ~2.5 % |
+
+   So translation is ~3–4 %, not ~20 %, and the two real cost centres
+   are the **TB lookup path** and **`Module`**.  `tcg_qemu_tb_exec`'s
+   self time is guest code: 0026's `return_call_indirect` reuses the
+   caller's frame, so V8 attributes every chained TB to the dispatcher
+   frame that started the chain (and JIT-module frames resolve to
+   nonsense names — `input_barrier_get_name`, `hmp_object_del` — because
+   the `.symbols` sidecar maps the *main* module's indices).
+
+   Counters for the same boot (`tools/diagall.mjs`, new this session —
+   prints every `wasm_memstat` index by name): tbGen 175,158 with
+   **tbFlush 0** (every translation is unique; no flush cycles to
+   remove), tbBytes 86.1 MB, modCount 41,437 / modBytes 180.2 MB
+   (closeN 32,085 / 89.4 MB, compactN 191 / 85.7 MB, ensureN 0),
+   lookup 153.4 M at 92.8 % jump-cache hits, ioLd+ioSt 12.7 M,
+   tlbFill 128,812, halt 73,045.  **Batches average 5.5 members, not
+   the 128 of `W64_BATCH_N`** — `w64_batch_close_pending()` closes on
+   first execution, and that is right (§ REJECTED `W64_NOCLOSEEXEC`).
 
 1. **wasm64 early-boot deficit — REDUCED by 0019, still open.**  Was
    ~27 % behind TCI on the first 0.75 G insns (per-TB module compile =
@@ -325,38 +427,46 @@ commit, then `ninja-fast.sh` and the ladder.
    remaining dispatcher exits are `TB_EXIT_REQUESTED` (~25k/s early —
    icount budget ends at every virtual deadline) and goto_tb first
    links (~3k/s).
-4. **wasm64 batcher: `SOURCE-CORRUPT` on an open batch — OPEN, rare,
-   diagnostic.**  Seen once in a 285 s KE800 boot (2026-09-12): a staged
-   member's body-size LEB differed at `w64_batch_close()`, so the batch
-   was abandoned and its members stayed on temp modules (correctness is
-   safe — the detector exists for exactly this — but those members never
-   merge or compact).  `tb_flush` teardown and `w64_instantiate` are
-   ruled out; the only writer of that LEB is the emitter's
-   end-of-codegen patch, so the leading hypothesis is a code-buffer
-   position handed out twice, most likely around `w64_speculate()`'s
-   `tb_gen_code()` calls into an open batch.  The forensic dump
-   (`/w64bad-<n>.bin`) must be pulled out of MEMFS by the driver
-   (`m.FS.readFile`, as `tools/conlog.mjs SAVE_FS=` does) and compared
-   against the staged record: a valid, different TB body there confirms
-   the double hand-out, and the question becomes which path advanced
-   `code_gen_ptr` twice.  Add `W64_DEBUG=1` for the batch histogram.
-   One occurrence in 285 s on KE800, none in the shorter S75/EL71 runs —
-   do not assume it is LG-specific.
-5. **AOT cache — OPEN, orthogonal** (backend plan phase 5): persist
-   translated batches (Cache API/IndexedDB, keyed by flash hash) —
-   zero-translation second boots; would also attack #1.
-6. **Backend tail — `/dist-jit` only**: 0022 fixed the dead goto_ptr
-   fast path, 0026 keeps indirect jumps inside wasm, 0027 turned the
-   CPSR-write exits into goto_ptr.  Left: `helper_lookup_tb_ptr`
-   (~5–7 % of vCPU: a C helper + `arm_get_tb_cpu_state` + jmp-cache
-   probe per indirect jump, now also per CPSR write — an inline
-   jmp-cache probe in the emitted goto_ptr would skip the import for
-   hits), qht misses (~3 %), `tcg_qemu_tb_exec` self time (~15 %,
-   partly guest code misattributed by the profiler — verify with
-   counters before chasing).  The per-TB inline cache for the lookup
-   was tried and is flat (§ REJECTED): `helper_lookup_tb_ptr` is ~40–50
-   ns per call at 1.75M calls/s, and the inline key costs the same.
-   Meter: temporary exit-kind counters in `tcg_qemu_tb_exec`.
+4. **wasm64 batcher `SOURCE-CORRUPT` — CLOSED 2026-09-13** (`bf0b67d4`,
+   see the landed table): `encode_search()`'s overflow path abandoned a
+   TB without advancing `code_gen_ptr`, so `tcg_tb_alloc()` carved
+   `TranslationBlock`s out of the staged member's bytes.  Not
+   `w64_speculate()`, which was the standing hypothesis.  It was also
+   far more frequent than recorded — 1–2 per 60 s S75 boot.
+5. **AOT cache — OPEN, and now costed.**  Persist translated batches
+   (Cache API/IndexedDB, keyed by flash hash) for zero-translation
+   second boots.  What it can actually buy, from § Remaining 0c:
+   `Module` 14.1 % + instantiate 2.8 % + translate 3.9 % ≈ **21 % of the
+   vCPU in the early phase**, ~12 % mid — call it 3–5 s of a 30 s
+   `rt=off` boot, and since only the first ~0.75 G instructions move
+   under the shipping cap, ~3–4 s of a 39 s `rt=banked` boot.  Real, but
+   an order of magnitude smaller than "removes the whole 197 MB"
+   suggests, against a large implementation (serialise the TB set + code
+   buffer, restore the qht/chain table, invalidate on flash change) and
+   a correctness surface the gates do not cover today.  Decide on those
+   numbers, not on the byte count.
+6. **Backend tail — the TB lookup path is the biggest measured lever
+   left (`/dist-jit`).**  It is ~12.6 % of the
+   vCPU mid-boot: `helper_lookup_tb_ptr` 7.4 %, `qht_lookup_custom`
+   3.0 %, `arm_get_tb_cpu_state` 1.3 %, `tb_htable_lookup` 0.5 %.
+   153.4 M lookups per boot — one per ~12 guest instructions — because
+   every `bx lr` / `pop {pc}` / `ldr pc` and (since 0027) every
+   `msr CPSR_*` goes through it.  What is left to try, in order:
+   - **An hflags-generation counter + a per-TB inline cache keyed on
+     `(pc, gen)`.**  This is precisely the "only a cheaper key would
+     change this" the 2026-09-11 rejection named, and it is now the
+     ranked #1 rather than a footnote: bump `env->hflags_gen` wherever
+     `env->hflags` is assigned, and the emitted `goto_ptr` can test
+     `cached_pc == pc && cached_gen == gen` — two loads and two
+     compares — instead of importing a helper that recomputes the whole
+     ARM key.  The 2026-09-11 attempt failed *because* it computed that
+     key inline (~10 loads + 4 compares) at 80 % hit rate.
+   - Two `wasm_diag_stat` RMWs still run on every lookup (306 M per
+     boot, ~1 %).  `LOOKUP` is derivable as `JC + QHT + not-found`, so
+     one of them is free to delete — below the ±3 % noise floor on its
+     own, so land it with something else.
+   - Resizing the jump cache is closed: 8k and 32k both measured worse
+     (§ REJECTED).  The misses are not a capacity problem.
 
 Landed/closed since the last ranking: MMIO dispatch path (0018 —
 mmiopoll 534→202 ns, native parity; re-measure before reopening).
