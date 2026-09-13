@@ -6,6 +6,24 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-13, round five: 0051 — "keep looking")
+
+Fresh stopwatch profile of 0050, three small cuts on the per-word
+display chain (playbook row 0051): the `BUS()` checked cast still in
+`ssi_transfer` (one per LCD byte), the DIF's six-pin rebuild skipped
+when its inputs match the previous pass (it runs twice per word), and
+the FIFO's modulo per push/pop.  Profile: "other" 1416 → 1056 ms of
+20.3 s, the cast gone; the stopwatch meter reads +4 % on a quiet pair,
+inside its drift.  A fourth change — the same input cache on
+`dif_trigger_dma` — blanked the Siemens displays (self re-entry through
+the DMAC; the native suite caught it) and, once guarded, never hit; it
+is not in.  Gates green (native 4/4, lockstep, bootcheck).  What is left
+of the chain is ten pieces of 1–5 % each with no single call to
+remove (playbook § Remaining 7); the next real lever is structural
+(collapse the per-word request/acknowledge dance into one pass per
+burst) or on the guest side (per-TB overhead, IRQ entry/exit ~3.5 %).
+The Pixel reading with `?hud=1` is still the missing datum.
+
 ## Update (2026-09-13, round four: 0050 — "still below real time on a Pixel 8 Pro")
 
 What the phone is short of was measured on the desktop, because the

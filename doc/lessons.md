@@ -314,6 +314,23 @@ file is the "why" behind them and behind the timing model.
   `qom_cast_debug=false`, so a checked cast per transferred byte
   (`ssi_transfer`, `lcd_transfer`) is a real call — a plain cast where
   the type is guaranteed by construction.
+- **Memoising a device callback: check re-entrancy first, then check
+  the profile, not the meter** (2026-09-13, 0051).  Two "skip if the
+  inputs are unchanged" caches went into the DIF's per-word path.  The
+  one on `dif_trigger_dma` blanked the display on all three Siemens
+  boards (native suite caught it): driving a request line re-enters the
+  function through the DMAC's CLR handler, the nested call drove the
+  lines from the fresh inputs, then the outer pass finished driving them
+  from the stale ones — with the fresh key already stored, the next call
+  was skipped and the lines stayed wrong.  Before this the redundant
+  trailing calls were what repaired it.  A re-entrancy guard fixed the
+  bug, and the profile then showed the cache never hits anyway (the key
+  differs on every call of a word's raise / acknowledge / release
+  sequence; self time went up 299 → 462 ms), so it was dropped.  The
+  cache on `dif_update_gpio_state` (no re-entrant consumers) halved that
+  function.  The stopwatch meter cannot resolve a 1–2 % change (±5 %
+  drift); a 20 s profile can — compare the touched symbols' self time
+  and the category totals.
 - **Counter indices come from the enum with its `= 0` first entry**:
   a `grep -c` of trailing-comma entries undercounts by one and the
   first readings then carry the wrong labels (a "500 k mux rebuilds/s"
