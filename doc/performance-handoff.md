@@ -6,6 +6,27 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-13, round seven: 0053 — Firefox had been broken since the review session)
+
+Firefox on the Pixel stalled at the Siemens logo.  Not 0052: local
+Playwright Firefox failed identically on every snapshot back to 0046,
+and a six-build bisect pinned it to the prologue cleanup `58bb2742`
+from the 2026-09-13 review session (playbook row 0053, lessons.md).
+The batch was opened as a side effect of an import the cleanup
+removed; ~20 % of TBs then ran from throwaway per-TB modules, which
+Firefox's module budget cannot absorb and Chrome does not notice.
+Fixed with an explicit open at TB start.  Firefox boots to idle again;
+Chrome gates green; perf pair vs 0052: stopwatch flat, boot tIdle −3 %
+in both idlebench orders (the throwaway modules were a `Module`
+compile per TB).
+
+**Process change**: the Firefox boot is gate rung 7 in the playbook and
+in the session checklist.  It existed as a tool since 0019 and was
+never in the ladder, which is how nine commits shipped broken.  For a
+backend change run rungs 3–7, all of them, before committing.  The
+`ffboot` line now prints `temp=` (modules created − closes −
+compactions); it must read ~0.
+
 ## Update (2026-09-13, round six: 0052 — guest per-TB overhead, and the Pixel's own numbers)
 
 **The Pixel 8 Pro reading exists now** (two `?hud=1` screenshots from

@@ -342,6 +342,32 @@ file is the "why" behind them and behind the timing model.
   what a TB emits, dump the ops (`-d op_opt` on the native build) and
   count: the S75 firmware is 4.0 insns / 26 ops / 1.5 labels per TB with
   no backward branch, which is what made the nested scheme possible.
+- **A gate that exists but is not in the ladder does not run** (2026-09-13,
+  0053).  `tools/ffboot.mjs` (the Firefox boot) had existed since 0019 and
+  was in diagnostics.md, but not in the playbook's gate table or the
+  session checklist, so nine commits — the whole review session and rounds
+  two to six of the perf sessions — shipped with Firefox dying at the
+  Siemens logo.  The user found it on the phone.  Every browser the page
+  claims to support is a gate rung; a backend change runs all of them.
+- **A side effect nobody wrote down was load-bearing** (2026-09-13, 0053).
+  The open batch was created lazily inside the union-type registration;
+  the only unconditional caller was the lockstep import in every TB
+  prologue.  The prologue cleanup removed that import ("measured flat")
+  and from then on ~20 % of TBs — those without a helper call translated
+  right after a batch close — ran from throwaway per-TB modules.  Chrome
+  did not care.  Firefox's module budget did.  When removing "measurement
+  scaffolding", list what else the removed call did; and make invariants
+  explicit calls (`w64_batch_begin_tb`) rather than consequences of
+  something else.  Corollary for the numbers: the cleanup's own "flat"
+  verdict compared a build with temp modules against one without, so the
+  bytes it removed were worth more than measured; the JIT-side
+  experiments after it (the `$tlb` hoist, compaction-off, 0052) had the
+  temp modules in both legs and stand as measured.
+- **A counter that would have shown the bug existed and nobody compared
+  it**: `MOD_COUNT` vs `CLOSE_N + COMPACT_N` was in every `diagall` dump
+  since 0019.  Invariants between counters belong in a tool's output as
+  one derived number (`ffboot` now prints `temp=`), not as two columns a
+  reader has to subtract.
 - **Counter indices come from the enum with its `= 0` first entry**:
   a `grep -c` of trailing-comma entries undercounts by one and the
   first readings then carry the wrong labels (a "500 k mux rebuilds/s"

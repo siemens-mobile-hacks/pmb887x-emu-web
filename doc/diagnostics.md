@@ -50,7 +50,7 @@ Benchmarks and gates:
 | `stopwatch.mjs` | J2ME pacing meter: boots S75v40lg1, walks the keypad to Extras → Stopwatch and prints `vratio` (virtual s per wall s), plus a `per-s` line with the display-path counters (`difTxWord`, `dmacBurst`, `dmacSchedTimer`, `dmacXlatFill`, `difMuxRebuild`, `lcCall`); `--devtools <port> --hold <s>` keeps the running app open for `wprof2.mjs PROF_ATTACH=<port>` — the profile that ranks this workload; `CHROME_ARGS="--js-flags=--liftoff-only"` passes browser switches (a phone-tier A/B: `--liftoff-only` pins V8's baseline tier, `--no-liftoff` pins TurboFan; `--no-wasm-tier-up` is a no-op in Chrome 153) |
 | `lockstep.mjs`, `lockstep-wasm.mjs` | cross-backend value-equality drivers — native JIT vs native TCI (plugin) / native JIT vs the wasm page (built-in fold); `scripts/run-lockstep.sh` is the native gate |
 | `tcgisa.mjs`, `tcgisa64.mjs` | drive the guest op-suite page leg (`scripts/run-tcg-isa.sh` is the gate; `tcgisa64.mjs` takes a dist + `--env` knobs) |
-| `ffboot.mjs` | boot a dist in Playwright's Firefox (cross-browser smoke; `BROWSER=chromium` too) |
+| `ffboot.mjs` | boot a dist in Playwright's Firefox (cross-browser smoke; `BROWSER=chromium` too); gate rung 7 — `temp=` (per-TB throwaway modules) must stay ~0 |
 | `ab.mjs` | parallel boot-survival A/B of query variants against the deployed dist (`scripts/iterate.sh` uses it) |
 | `loadbench.mjs` | startup-path benchmark (download, compile, instantiate) |
 

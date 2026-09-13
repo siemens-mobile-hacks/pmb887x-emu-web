@@ -56,14 +56,17 @@ while ((Date.now() - t0) / 1000 < maxSecs) {
   try {
     s = await p.evaluate(() => {
       const m = window.__qemu; if (!m || !m._wasm_vclock) return null;
-      const st = m._wasm_memstat ? [7, 9, 2, 8].map(i => Number(m._wasm_memstat(i))) : null;
+      // tbgen, modules created, batch closes, compactions: on a healthy
+      // build mods == close + compact; a surplus is per-TB temp modules,
+      // which Firefox's module budget cannot absorb (see lessons.md)
+      const st = m._wasm_memstat ? [7, 34, 48, 49].map(i => Number(m._wasm_memstat(i))) : null;
       const pcs = []; if (m._wasm_pc) { for (let i = 0; i < 8; i++) pcs.push(Number(m._wasm_pc()).toString(16)); }
       return { v: Number(m._wasm_vclock()) / 1e9, insns: m._wasm_insns ? Number(m._wasm_insns()) : 0, u: m._wasm_fb_updates ? Number(m._wasm_fb_updates()) : 0, st, pcs };
     });
   } catch (e) { console.log("  [evaluate failed]", String(e).slice(0, 120)); break; }
   const r = rssMB();
   const t = ((Date.now() - t0) / 1000).toFixed(1);
-  if (s) { last = s; console.log(`t=${t}s v=${s.v.toFixed(2)} insns=${(s.insns / 1e6).toFixed(0)}M u=${s.u} rss=${r ? r.sum + "MB (max proc " + r.max + ")" : "?"}` + (s.st ? ` tbgen=${s.st[0]} rewind=${s.st[1]} iold=${s.st[2]} flush=${s.st[3]}` : "") + (s.pcs ? " pc=" + s.pcs.join(",") : "")); }
+  if (s) { last = s; console.log(`t=${t}s v=${s.v.toFixed(2)} insns=${(s.insns / 1e6).toFixed(0)}M u=${s.u} rss=${r ? r.sum + "MB (max proc " + r.max + ")" : "?"}` + (s.st ? ` tbgen=${s.st[0]} mods=${s.st[1]} close=${s.st[2]} compact=${s.st[3]} temp=${s.st[1] - s.st[2] - s.st[3]}` : "") + (s.pcs ? " pc=" + s.pcs.join(",") : "")); }
   else console.log(`t=${t}s (no module) rss=${r ? r.sum : "?"}`);
   if (errs.some(e => /CRASH|out of memory/i.test(e))) break;
 }
