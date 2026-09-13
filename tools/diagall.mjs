@@ -37,6 +37,8 @@ const NAMES = [
   "warpNs", "warpB0", "warpB1", "warpB2", "warpB3", "warpB4", "warpB5", "warpB6",
   "modSrc", "closeBytes", "compactBytes", "ensureBytes",
   "closeN", "compactN", "ensureN",
+  "lcFill", "lcVhit", "lcVbad", "keyGen",
+  "lcCall", "keyGenFlush", "keyGenInval", "keyGenPage",
 ];
 
 const b = await chromium.launch({ headless: true });

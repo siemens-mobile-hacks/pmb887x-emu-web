@@ -40,7 +40,7 @@ Once that lands upstream, rebase onto master; expect only trivial
 conflicts (the series touches tcg/tci, tcg/wasm64, accel/tcg, util/,
 target/arm/tcg, hw/arm/pmb887x, ui/, configs/meson/).
 
-## Series contents (43 commits on master, in order)
+## Series contents (44 commits on master, in order)
 
 Patch numbers are the ones the docs use (the numbering has gaps where
 patches were dropped; 0033 sits at the top of the series).
@@ -88,6 +88,7 @@ patches were dropped; 0033 sits at the top of the series).
 | 0043 | cputlb phys range summary | generic core |
 | 0044 | tb lookup devirtualise | emscripten-only |
 | 0045 | arm cpsr hflags skip | ARM frontend |
+| 0046 | inline next-TB lookup cache on wasm64 goto_ptr exits (+ 0044 switched on) | ARM translator + accel/tcg, `CONFIG_TCG_WASM64`-only |
 | — | pmb887x: hacky AFE (LLE+HLE) implementation | cherry-pick from alula/dsp-stuff |
 | 0033 | pmb887x: seed the RTC counter in the layout the firmware expects | pmb887x RTC, per-board `[rtc] format` |
 

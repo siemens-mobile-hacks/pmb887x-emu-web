@@ -6,6 +6,34 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-13, second perf session: 0046)
+
+**Open item 1 is built and landed** as 0046: a per-TB inline next-TB
+cache on every ARM goto_ptr exit.  Not the design item 1 described —
+an hflags generation is useless here because hflags change 88 k times
+per second (mode switches), and the obvious fix, comparing every key
+word inline, measured **+2..+4 % slower** at an 84 % hit rate.  What
+landed compares only what can differ at the exit (pc, a generation that
+moves on jump-cache invalidations, and thumb after a `bx`); hflags and
+condexec are stamped statically by the translator and checked once when
+the slot is filled.  Verified with a cross-check mode over a full boot
+(101 M would-be hits, 0 mismatches).
+
+The numbers, and the lesson in them: **~80 % of the helper calls are
+gone and the boot milestones did not move** (`--quick --runs 2`, both
+orders, flat inside a ±5 % positional bias that this run measured
+directly), while the **J2ME stopwatch went 0.33 → 0.35 (+7..+9 %, four
+alternating samples)**.  The profile's "12.6 % of the vCPU in the
+lookup path" was real CPU time but not boot wall time that skipping the
+helper could recover.  Open item 2 (J2ME throughput) is now ~0.35×.
+
+Also found: **0044 was never active.**  Its `CONFIG_TARGET_ARM` guard is
+a macro no build defines (accel/tcg is target-independent; `TARGET_ARM`
+is poisoned there), so the devirtualised `arm_get_tb_cpu_state` call
+fell back to the ops call from the day it landed.  Switched on in 0046
+under `CONFIG_TCG_WASM64`; on its own it is flat (−1..+2 %).  The
+−2..−4 % credited to 0044 belonged to the rest of the 0043–0045 stack.
+
 ## Update (2026-09-13, perf session)
 
 **The cost model this document was ranked on was wrong, and the ranking
@@ -102,18 +130,16 @@ ns/access on `/dist-jit`, 252 on `/dist`, 223 native).
 
 ## Open items (ranked; details and meters in the playbook's § Remaining)
 
-1. **The TB lookup path** — the biggest *measured* lever left, ~12.6 %
-   of the vCPU mid-boot: 153.4 M lookups per boot,
-   one per ~12 guest instructions, because every `bx lr` / `pop {pc}` /
-   `ldr pc` and (since 0027) every `msr CPSR_*` goes through
-   `helper_lookup_tb_ptr`.  The concrete next step is the one the
-   2026-09-11 rejection named and nobody built: **an hflags-generation
-   counter in `env`, so the emitted `goto_ptr` can carry a per-TB inline
-   cache keyed on `(pc, gen)`** — two loads and two compares instead of
-   an imported helper that recomputes the whole ARM key.  The earlier
-   inline-cache attempt failed precisely because it computed that key
-   inline at 80 % hit rate.  Meter: `idlebench --quick` t0.5G +
-   `tools/diagall.mjs` lookup/jc/qht counters.
+1. **The TB lookup path — DONE (0046, 2026-09-13)**, with a result that
+   re-ranks the list: serving ~80 % of the 130 M lookups per boot inline
+   moved the J2ME stopwatch +7..+9 % and the boot milestones **not at
+   all**.  The lookup helper was never a boot lever; it was a
+   throughput lever for the one workload that is lookup-bound.  What is
+   left of it (26 M helper calls per boot, the alternating-target
+   exits) is a stopwatch item, not a boot item — see the playbook's
+   § Remaining 6.  Meters: `tools/stopwatch.mjs` (alternate builds, 4
+   samples), `tools/diagall.mjs` `lcCall`/`lcFill`/`keyGen`, and
+   `W64_LC_VERIFY=1` (`lcVhit`/`lcVbad`) for any change to the key.
 
 1b. **Emitted code volume — closed as a lever.** Three measurements now
    agree it is not what the early phase is bound by: the prologue
@@ -122,9 +148,11 @@ ns/access on `/dist-jit`, 252 on `/dist`, 223 native).
    executed ops, +3..+10 % slower).  The AOT cache is still open but is
    now costed at ~21 % of the early-phase vCPU, not "the whole 197 MB" —
    see the playbook's § Remaining 5 before committing to it.
-2. **J2ME throughput** (stopwatch ~0.30× → 1.0× needs ~3× on that
+2. **J2ME throughput** (stopwatch ~0.35× → 1.0× needs ~3× on that
    workload): the DIF/DMAC per-word path and the TB-lookup path.
-   2026-09-13: still ~0.30× (37–39 MIPS). The wide jump-cache entry was
+   2026-09-13 (second session): **0.33 → 0.35× (43.7–44.7 MIPS)** from
+   0046, the inline lookup cache; the helper share of that profile
+   (12 %) is now mostly gone.  Earlier that day: still ~0.30× (37–39 MIPS). The wide jump-cache entry was
    flat here too (8 alternating samples, means 0.3005 vs 0.3005) — the
    meter agreed with the boot before the boot's own baseline was found
    to be bad, which is worth remembering: two meters agreeing on "flat"

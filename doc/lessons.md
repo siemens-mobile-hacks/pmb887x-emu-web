@@ -136,6 +136,13 @@ file is the "why" behind them and behind the timing model.
   tlb_fill flags a `pc & 3` fetch as an alignment fault, and the guest
   got a prefetch abort at the miss pc. Probe target + next page before
   any lookup; a miss skips the target.
+- **Inline code is Liftoff code; a helper is TurboFan code.**  An
+  inline TB-lookup test of a dozen loads and six branches lost to the
+  helper it replaced (+2..+4 % at an 84 % hit rate); the same cache
+  comparing two or three words wins.  Anything moved from a C helper
+  into emitted wasm must be a handful of ops to break even, and a key
+  the translator can stamp statically (hflags cannot change without
+  ending the TB) should not be compared at run time at all.
 - **Per-TB overheads amortize over almost nothing** on this workload
   (3–4 insns/TB, ~90k MMIO dispatches/s in poll phases). Per-access and
   per-wake costs are the ones that scale; any per-access condition added
@@ -202,6 +209,23 @@ file is the "why" behind them and behind the timing model.
   being wrong was one patch, and the run is what found the phantom-win
   trap above.  Mark inspection-only rejections as such, and re-measure
   rather than argue.
+- **A profile share is CPU time, not removable wall time.**  The
+  lookup path was 12.6 % of the vCPU mid-boot; 0046 removed ~80 % of
+  the helper calls and the boot milestones did not move, while the
+  lookup-bound J2ME workload gained 7–9 %.  Measure a change on the
+  meter whose workload is bound by the thing you removed, and expect
+  the boot — compile-bound early, virtual-time-bound late — to shrug.
+- **Prove a new fast path ran before measuring it.**  0044's
+  devirtualised lookup was guarded by `CONFIG_TARGET_ARM`, a macro no
+  build defines (accel/tcg is target-independent and poisons
+  `TARGET_*`), and was never compiled in; a counter (`lcFill` staying
+  0) is what exposed it two days later.  A `#if defined(...)` typo
+  produces no warning, no test failure and a plausible A/B.
+- **The second-listed idlebench leg read +3..+5 % slower whichever
+  build it was** on 2026-09-13 (t0.1G +27..31 %), larger than the
+  +2..+3 % recorded earlier that day.  A single pair cannot see a ±5 %
+  effect; both orders are the minimum, and a knob leg in the same
+  invocation (`dist@env=...`) shows the bias directly.
 - **Beware a cost model built from per-unit costs × counts.**  "176k
   TBs × 38 µs translation" put translation at ~20 % of a boot and drove
   the whole "emitted code volume" workstream; the profiler says 3–4 %.

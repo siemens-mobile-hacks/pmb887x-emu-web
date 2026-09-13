@@ -35,10 +35,12 @@ SOURCE-CORRUPT root-caused and fixed; a wprof2 profile that **replaced
 the cost model this workstream was ranked on** — translation is 3–4 %
 of the vCPU, not ~20 %, and emitted code volume is closed as a lever;
 and the **phantom-win** baseline trap in § Measuring, which is the
-session's most reusable result) → **open now**: the
-TB lookup path's remaining 12.6 % via an hflags-generation inline cache
-(§ Remaining 6), the J2ME throughput target (§ Remaining 0), the AOT
-cache now that it is costed (§ Remaining 5).
+session's most reusable result) → 0046 inline next-TB lookup cache
+(2026-09-13: ~80 % of `helper_lookup_tb_ptr` calls gone, J2ME stopwatch
+0.33 → 0.35 (+7..+9 %), boot milestones flat; and the discovery that
+0044's devirtualisation had never been compiled in) → **open now**: the
+J2ME throughput target (§ Remaining 0, now ~0.35×), the AOT cache now
+that it is costed (§ Remaining 5).
 
 Since 2026-09-12 the qemu tree is the `qemu/` submodule: a "patch" is
 a commit on its branch (numbering continues as before), and
@@ -275,12 +277,13 @@ mmiopoll only) makes a whole-run profile pure.
 | 0041 wasm diag: lookup / fill / flush / halt counters | cold counters behind `wasm_memstat`: tb_lookup calls, jump-cache/qht hits, jump-cache flushes, table clears, fill classification, halts — read by `tools/memstat.mjs` / `tools/stopwatch.mjs` | zero hot-path cost; decided 0039/0040 (78 M lookups per boot at 92 % jc hits; 83k fills/s with 0 flushes; halts/s = 0 in the stopwatch) |
 | 0042 wasm diag: warp / module-economy / range-flush counters + compaction knobs | cold counters for the idle warp (ns + 7 size buckets), bytes handed to `WebAssembly.Module` split by assemble source (first close / compaction / re-ensure), emitted TB body bytes, and `tlb_flush_phys_ranges` calls/entries/drops; `W64_COMPACT_BATCHES`/`W64_COMPACT_MEMBERS` promoted from `#define` to env knobs | zero hot-path cost; decided 0043 and produced the module-economy and virtual-time numbers below |
 | 0043 cputlb: physical-address summary for the range flush | 0016's topology-commit flush finds its victims by walking every entry of every mmu_idx; 0040 grew the table 256 → 16384, so each romd flip streamed 512 KB of table.  Per mmu_idx keep a 64-bit mask of the 32 MB physical blocks its entries translate into, one per 64-entry group plus an OR over groups and the victim table; a commit ANDs the requested blocks against it and skips whole tables and groups.  Masks are conservative (added on fill and victim promotion) and rewritten exactly by any commit that walks the group, so staleness self-heals.  Block size must divide the reported ranges — 64 MB blocks lumped the two 32 MB flash banks together and only got 280M → 107M | entries walked per boot **280,759,680 → 1,179,712 (237×)**, 1.16 groups walked per commit, entries dropped **22,007 → 22,007 (identical)**; boot effect on its own **FLAT** (t1.3G 29.7 vs 29.8, both orders) — the walk is a predictable streaming scan at ~0.3 ns/entry.  Kept for the scaling property and as part of the 0043–0045 stack |
-| 0044 accel/tcg: devirtualise the TB-lookup helper on wasm | `helper_lookup_tb_ptr` runs per indirect jump (78 M/boot, 2.9 M/s, ~10 % of the vCPU) and reached `get_tb_cpu_state` through `cpu->cc->tcg_ops` — a wasm `call_indirect` — and `curr_cflags()` through a cross-TU call whose four debug-only conditions cannot be true in a browser build.  Both folded away under `__EMSCRIPTEN__`.  NOT the rejected per-TB inline cache: the key is still computed once, in the helper | stack 0043–0045, interleaved `--runs 4`: window 14.2 → 13.7 s (−4 %), t0.5G 21.8 → 21.4 (−2 %), t0.75G 27.1 → 26.4 (−3 %), t1G −2 %, t1.3G −1 %; −2 % on t0.5G in both orders of two `--quick` pairs; helper self time 7.3 % → 6.5 % |
+| 0044 accel/tcg: devirtualise the TB-lookup helper on wasm | `helper_lookup_tb_ptr` runs per indirect jump (78 M/boot, 2.9 M/s, ~10 % of the vCPU) and reached `get_tb_cpu_state` through `cpu->cc->tcg_ops` — a wasm `call_indirect` — and `curr_cflags()` through a cross-TU call whose four debug-only conditions cannot be true in a browser build.  Both folded away under `__EMSCRIPTEN__`.  NOT the rejected per-TB inline cache: the key is still computed once, in the helper.  **Correction (2026-09-13, 0046): the `get_tb_cpu_state` half was guarded by `CONFIG_TARGET_ARM`, a macro no build defines, so it was never compiled in; measured on its own once switched on it is flat (−1..+2 %).  The numbers in the next column belong to the 0043–0045 stack, i.e. to `curr_cflags_fast` and 0045** | stack 0043–0045, interleaved `--runs 4`: window 14.2 → 13.7 s (−4 %), t0.5G 21.8 → 21.4 (−2 %), t0.75G 27.1 → 26.4 (−3 %), t1G −2 %, t1.3G −1 %; −2 % on t0.5G in both orders of two `--quick` pairs; helper self time 7.3 % → 6.5 % |
 | 0045 target/arm: hflags rebuild on a CPSR write only when it can change them | upstream rebuilds unconditionally with a TODO saying not all cpsr bits matter; they do not, and 0027 made `msr CPSR_*` the boot's most frequent TB exit — those writes set I/F and the condition flags.  Every CPSR field hflags reads (mode → EL/mmu_idx/sctlr, E, IL, PAN) lives in `uncached_cpsr`; everything in `CACHED_CPSR_BITS` lives in dedicated env fields and is not an hflags input, so an unchanged `uncached_cpsr` means unchanged hflags | verified with a temporary build that recomputed and compared on every skip: **2,125,612 skips, 0 mismatches** over a full boot; ~2.1 M rebuilds saved (~0.2–0.4 s); measured as part of the 0043–0045 stack |
 
 | 2026-09-13 prologue cleanup (`58bb2742`) | the shipped TB prologue carried two RMWs of the `wasm_tb_stats` diagnostic counters and a lockstep-armed test per TB entry (~5 M/s) plus a `w64_chain_stop` load per chained jump — ~70 of ~560 bytes per TB module.  Under icount `wasm_insns()` now derives the count from the icount state (exact), the counters are emitted only on non-icount boards or with `W64_TBSTATS=1`, and the lockstep probes only in a `W64_LOCKSTEP` process; `W64_NOACCTINLINE` is gone | **flat**: quick pairs −6 %/−1 % window, −7 %/−2 % t0.5G; full `--runs 2` pair +0 % tIdle, +3 % window, +3 % t0.5G, +1 % t1.3G; rt=banked quick −3 %/0 %.  Landed as a simplification (W-19), not as a win — the per-TB counters were cheaper than their byte count suggested |
 | 2026-09-13 W-12 BLX speculation fix (`58f6f9c5`) | `trans_BLX_i`'s `gen_jmp` recorded the mode-switching target as a speculation successor; the wasm64 backend translated it with the caller's flags and the ARM translator emitted a PC-alignment-abort TB that a chained jump then ran → EL71 `Prefetch_Abort` in ~45 % of second-page boots.  `translator_unnote_succ()` withdraws the hint | correctness: 8/8 reproducer passes with the abort dump armed (`QEMU_LOG_PABT=1`) vs 5/11 failures before; no perf change expected (fewer dead speculated TBs) |
 | 2026-09-13 batcher SOURCE-CORRUPT fix (`bf0b67d4`) | § Remaining 4, root-caused from the forensic dump: `encode_search()` overflowing the region highwater does `goto buffer_overflow` **without advancing `code_gen_ptr`**, after `tcg_gen_code()` already staged the module body in the open batch, so the next `tcg_tb_alloc()` carves `TranslationBlock`s out of the staged bytes (the dump showed seven, at the 192-byte `sizeof(TranslationBlock)` stride).  `w64_batch_unstage()` withdraws the member; the staged-source check is now shared with `w64_batch_ensure()`, which re-assembled evicted batches with no validation at all | positive control (`-accel tcg,tb-size=8` forces region overflows): **5 dropped batches per 60 s → 0**, same guest progress.  Stock rate was 1–2 per 60 s boot, not the "once in 285 s" the hand-off recorded.  Correctness only; no perf claim |
+| 0046 wasm64: inline next-TB lookup cache on goto_ptr exits (+ 0044 actually switched on) | every `bx lr` / `pop {pc}` / `ldr pc` / `msr CPSR` ends in `helper_lookup_tb_ptr` (~130 M per boot, 2.75 M/s in the J2ME stopwatch).  The ARM translator now gives each TB's goto_ptr exit a slot in the TB (`w64_lc`: pc, generation, hflags/thumb/condexec words, target descriptor) and emits a test of only the words that can differ at that exit: pc, `cpu->neg.tb_key_gen` and thumb after a `gen_bx` — hflags cannot change without ending the TB, so they and condexec are **stamped statically by the translator** and checked once at fill time by `helper_lookup_tb_ptr_lc`; only an exit after a CPSR write compares all three.  The generation moves on every jump-cache invalidation (flush, page clear, TB invalidate) and on the rare key inputs nobody compares (hflags.flags2, FPSCR.Len/Stride, FPEXC.EN).  `W64_LC_VERIFY=1` routes every exit through the helper and cross-checks each would-be hit against the real lookup; `W64_NOLC=1` is the knob A/B.  **Found on the way**: 0044's `#if defined(CONFIG_TARGET_ARM)` guarded a macro no build defines (accel/tcg is target-independent, `TARGET_ARM` is poisoned there) — the devirtualised lookup was never compiled in until this patch keyed it on `CONFIG_TCG_WASM64` | verify: **101.3 M would-hits of 124.1 M helper calls (82 %), 0 mismatches** over a 40 s boot; normal: helper calls 26.1 M of ~126 M lookups, `keyGen` 1458 (= the jump-cache flushes).  **J2ME stopwatch vratio 0.328/0.329 → 0.350/0.358 (+7..+9 %, 40.9/41.1 → 43.7/44.7 MIPS), 4 alternating samples**, helper lookups 2.75 M/s → 0.43 M/s.  **Boot milestones flat**: `--quick --runs 2` both orders, the second-listed leg reads +3..+5 % slower whichever build it is (pair A jit second: t0.5G +5, t1.3G +4; pair B base second: every milestone −5 % for jit); three-leg runs with the `W64_NOLC=1` leg say the same, and the devirtualisation on its own is −1..+2 % (flat).  Emitted TB bytes 106.5 → 101.5 MB.  Gates: op-suite 1156/1156 ×2 identical, native 4/4, lockstep 250e6, bootcheck s75/el71/ke800 |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
@@ -317,6 +320,8 @@ commit, then `ninja-fast.sh` and the ladder.
 | **wasm64: hoist `env + fast_ofs` into a per-TB local** (2026-09-13; `$tlb` set once per label region instead of once per memory op, invalidated at each `tcg_out_set_label` because regions are sibling `if (bp <= k)` blocks a branch can enter directly — the hand-off's own § Remaining 0b candidate) | `--quick --runs 2` in **both** orders: **+3 % and +10 % slower** on t0.5G..t1.3G; reverting it recovered −6..−10 % in a third pair | it removes ~8 emitted bytes *and* a load+add+store per memory access and is still a clear regression — a local kept live across a whole label region evidently costs more in Liftoff's register allocation than the arithmetic it saves.  Third independent measurement (after the prologue cleanup and compaction-off) that **emitted-byte count is not the early-phase lever** |
 | **TB jump cache 4k → 8k entries** (`TB_JMP_CACHE_BITS` 13, 2026-09-13, on top of the wide entry) | `--quick --runs 2`: +1..+4 % — no gain, and the entry is now 40 B so the cache would be 320 KB | 7.2 % of lookups miss and `qht_lookup_custom` is 3 % of the vCPU, but more slots do not convert those misses.  Second size that fails (15 bits was +4..9 % in 2026-09-11) — **stop resizing this cache; attack the key instead** |
 | **`W64_NOCLOSEEXEC=1`** — stop closing the open batch when its first member executes, let it fill to `W64_BATCH_N` (2026-09-13, knob A/B: same wasm both legs) | **12–17 % slower on every milestone** (t0.5G 26.7 vs 22.5, t1.3G 35.1 vs 30.8) | the batch close is what makes speculation pay: one module covers the executing TB *and* its ~5 staged successors.  Deferring it needs a temp module per first execution — the pre-0019 design — and there are ~32k such executions per boot either way, so nothing is saved and the free successors are lost.  Module count is bounded by "how often a not-yet-compiled TB runs", not by `W64_BATCH_N` |
+| **Inline lookup cache keyed on an hflags generation** (2026-09-13, first design of 0046: `env` generation bumped on every hflags change, compared with pc) | never hit: hflags change **3.5 M times per 40 s boot (88 k/s, one per ~36 lookups)** on this firmware, so a generation that tracks them retires every slot before it is reused | hflags alternate between a few values (mode switches) rather than drifting; a cache must compare or stamp the value, not count changes.  The generation is only usable for events that are rare (jump-cache flushes: 1.4 k per boot) |
+| **Inline lookup cache comparing every key word** (2026-09-13, second design of 0046: pc, gen, hflags.flags, flags2, thumb, condexec — 12 loads, 6 branches) | **+2..+4 % slower on every milestone in both orders** at an **84 % hit rate** (verify mode: 107 M of 128 M) | Liftoff code for a dozen loads and six branches costs more than the TurboFan-compiled helper's jump-cache hit (~25 ns), exactly the 2026-09-11 lesson in a new coat.  The landed version compares 2–3 words and stamps the rest statically |
 | `-sSUPPORT_LONGJMP=wasm` (native unwinding for the SVC-exception longjmps) | binaryen's Asyncify pass crashes on it (verified with a standalone emcc test) | wasm-EH longjmp and `-sASYNCIFY` are incompatible in emsdk 4.0.10; ASYNCIFY is required (coroutine backend/condvar sleeps) |
 
 ## Remaining opportunities (ranked; the plan lives in performance-handoff.md)
@@ -445,26 +450,27 @@ commit, then `ninja-fast.sh` and the ladder.
    buffer, restore the qht/chain table, invalidate on flash change) and
    a correctness surface the gates do not cover today.  Decide on those
    numbers, not on the byte count.
-6. **Backend tail — the TB lookup path is the biggest measured lever
-   left (`/dist-jit`).**  It is ~12.6 % of the
-   vCPU mid-boot: `helper_lookup_tb_ptr` 7.4 %, `qht_lookup_custom`
-   3.0 %, `arm_get_tb_cpu_state` 1.3 %, `tb_htable_lookup` 0.5 %.
-   153.4 M lookups per boot — one per ~12 guest instructions — because
-   every `bx lr` / `pop {pc}` / `ldr pc` and (since 0027) every
-   `msr CPSR_*` goes through it.  What is left to try, in order:
-   - **An hflags-generation counter + a per-TB inline cache keyed on
-     `(pc, gen)`.**  This is precisely the "only a cheaper key would
-     change this" the 2026-09-11 rejection named, and it is now the
-     ranked #1 rather than a footnote: bump `env->hflags_gen` wherever
-     `env->hflags` is assigned, and the emitted `goto_ptr` can test
-     `cached_pc == pc && cached_gen == gen` — two loads and two
-     compares — instead of importing a helper that recomputes the whole
-     ARM key.  The 2026-09-11 attempt failed *because* it computed that
-     key inline (~10 loads + 4 compares) at 80 % hit rate.
-   - Two `wasm_diag_stat` RMWs still run on every lookup (306 M per
-     boot, ~1 %).  `LOOKUP` is derivable as `JC + QHT + not-found`, so
-     one of them is free to delete — below the ±3 % noise floor on its
-     own, so land it with something else.
+6. **Backend tail — the TB lookup path: 0046 landed the inline cache
+   (2026-09-13).**  It was ~12.6 % of the vCPU mid-boot by profile:
+   `helper_lookup_tb_ptr` 7.4 %, `qht_lookup_custom` 3.0 %,
+   `arm_get_tb_cpu_state` 1.3 %, `tb_htable_lookup` 0.5 %; 153.4 M
+   lookups per boot because every `bx lr` / `pop {pc}` / `ldr pc` and
+   (since 0027) every `msr CPSR_*` goes through it.  0046 serves ~80 %
+   of them from a per-TB slot without the helper — and the boot
+   milestones did not move (the J2ME stopwatch did, +7..+9 %).  Read
+   that as: the profile's 12.6 % was not 12.6 % of *boot wall time*
+   removable by skipping the helper; the boot's early phase is
+   compile-bound and its late phase is short at `rt=off`.  What is left:
+   - The hflags-generation idea as written here was **wrong** (hflags
+     change 88 k/s — § REJECTED); the version that landed stamps hflags
+     statically per exit and compares only pc/gen(/thumb).
+   - The remaining helper calls (26 M per boot) are real misses: the
+     ~20 % of exits whose target alternates (return sites shared by
+     several callers).  A 2-way slot would need a second compare on the
+     hit path, which the two rejected designs say is not free — measure
+     on the stopwatch, not the boot, if anyone tries.
+   - Two `wasm_diag_stat` RMWs still run on every helper lookup (now
+     ~52 M per boot, <0.5 %); `LC_CALL` is a third.  Not worth a commit.
    - Resizing the jump cache is closed: 8k and 32k both measured worse
      (§ REJECTED).  The misses are not a capacity problem.
 

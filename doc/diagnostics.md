@@ -17,7 +17,7 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
 | `?debug=1` | print every stderr line to console (no dedup) |
 | `?qargs=<args>` | append raw qemu arguments (e.g. `qargs=-d exec -D /exec.log`) |
-| `?env=NAME=VAL` | extra environment for the build (repeatable) — wasm64 knobs such as `W64_SPEC_N`, `W64_LIVE_MAX`, `W64_COMPACT_BATCHES`/`W64_COMPACT_MEMBERS`, `W64_NOTLB=1`, `W64_TBSTATS=1` (per-TB-entry counters under icount, so `wasm_tbs` reads non-zero), `W64_DEBUG=1` |
+| `?env=NAME=VAL` | extra environment for the build (repeatable) — wasm64 knobs such as `W64_SPEC_N`, `W64_LIVE_MAX`, `W64_COMPACT_BATCHES`/`W64_COMPACT_MEMBERS`, `W64_NOTLB=1`, `W64_TBSTATS=1` (per-TB-entry counters under icount, so `wasm_tbs` reads non-zero), `W64_DEBUG=1`, `W64_NOLC=1` (0046 inline next-TB lookup cache off: same-wasm knob A/B), `W64_LC_VERIFY=1` (every goto_ptr goes through the helper, which cross-checks each would-be inline hit — `lcVhit`/`lcVbad` in `tools/diagall.mjs`) |
 | `?w64debug=1` | wasm64 backend console diagnostics (batch histogram, module events) |
 | `?env=QEMU_LOG_PABT=1` | one stderr line per guest prefetch abort / BKPT (IFSR, IFAR, pc, lr, sp, cpsr) — the tool that pinned the W-12 panic; combine with `tracebuf=1`, never with `-d int` (its per-IRQ volume shifts timing enough to hide a race) |
 | `?suite=<url>` | boot a bare-metal versatilepb image instead of a phone (`dist/tcgisa.bin`, `dist/tcgbench.bin`); with `?icount=1` the suite runs under the phones' stock timing model (the tcgbench icount-tax leg) |
