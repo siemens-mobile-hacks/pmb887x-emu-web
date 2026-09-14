@@ -17,7 +17,12 @@
 services:
   pmb887x-web:
     build:
-      context: ..            # repo root (trimmed by /.dockerignore)
+      # NB: "../.." is deliberate. Compose v2 resolves this to the repo
+      # root either way, but legacy docker-compose v1 joins the dockerfile
+      # path as compose-dir + context + dockerfile WITHOUT normalising
+      # dot-dots, so "../.." is required to make that concatenation land on
+      # deploy/nginx/Dockerfile instead of a bogus deploy/deploy/... path.
+      context: ../..
       dockerfile: deploy/nginx/Dockerfile
     image: pmb887x-web
     container_name: pmb887x-web
