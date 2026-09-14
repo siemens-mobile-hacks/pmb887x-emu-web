@@ -1,0 +1,38 @@
+# qemu-pmb887x web container, wired for the perk11/nginx-proxy front
+# (github.com/perk11/nginx-proxy): jwilder/nginx-proxy + the letsencrypt
+# companion, both on the external `nginx-proxy` docker network.  The
+# proxy watches the docker socket, sees VIRTUAL_HOST below and generates
+# the vhost (TLS + http→https redirect once the letsencrypt companion has
+# issued the cert — see the front repo's README for the one-time setup).
+#
+# Usage (bundle first — the Dockerfile COPYs it):
+#   scripts/bundle-dist.sh
+#   VIRTUAL_HOST=emu.example.org \
+#   LETSENCRYPT_HOST=emu.example.org \
+#   LETSENCRYPT_EMAIL=you@example.org \
+#     docker compose up -d --build
+#
+# Or put those variables in deploy/nginx/.env (gitignored) and just run
+# `docker compose up -d --build`.
+services:
+  pmb887x-web:
+    build:
+      context: ..            # repo root (trimmed by /.dockerignore)
+      dockerfile: deploy/nginx/Dockerfile
+    image: pmb887x-web
+    container_name: pmb887x-web
+    restart: unless-stopped
+    expose:
+      - "80"
+    environment:
+      # picked up by jwilder/nginx-proxy via the docker socket
+      VIRTUAL_HOST: ${VIRTUAL_HOST:-emu.example.org}
+      VIRTUAL_PORT: "80"
+      # uncomment once DNS for the host points here and you want a real
+      # TLS cert from the letsencrypt companion:
+      #LETSENCRYPT_HOST: ${LETSENCRYPT_HOST:-emu.example.org}
+      #LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-you@example.org}
+networks:
+  default:
+    name: nginx-proxy
+    external: true

@@ -3,6 +3,10 @@
 /site/dist-jit/
 /build/
 
+# static deploy bundle (scripts/bundle-dist.sh → served by deploy/nginx/)
+/dist/
+/deploy/nginx/.env
+
 # IDE cruft
 /.idea/
 

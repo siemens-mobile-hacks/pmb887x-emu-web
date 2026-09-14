@@ -1,0 +1,9 @@
+# The site image build (deploy/nginx/Dockerfile) needs only the bundle
+# (dist/, from scripts/bundle-dist.sh) and its own config — keep the
+# multi-GB qemu/ tree, toolchains and A/B snapshots out of the context.
+*
+!dist/
+!dist/**
+!deploy/
+!deploy/nginx/
+!deploy/nginx/**
