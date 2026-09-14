@@ -65,13 +65,48 @@ surprise — **S75 menu MIPS +22 %** and the J2ME stopwatch +9..+35 %.  So
 the S75 had small-region traffic too; it was just spread thinly enough
 under the dispatch helpers to never rank.
 
-**What this leaves.**  The EL71's remaining top two are `io_prepare`
-(7.1 %) and `icount_get` (6.9 %) — the per-access icount bookkeeping on a
-firmware that polls the system timer ~400 k times/s — and after them the
-240×320 display chain (it pushes 4.6× the DIF words of the S75's
-132×176 at the same frame rate).  Neither is sized yet.  The KE800 now
-looks like a normal board and has never been profiled in its working
-state.
+**What this leaves, and how far the EL71 still is.**  With the menu
+driven every 700 ms the boards read v/wall 5.5 (S75), 4.0 (EL71) and
+— `icount=none` — 52 MIPS / 10 fps (KE800).  A Pixel 8 Pro is ~5× slower
+per instruction than the desktop every A/B here runs on (round six), so
+those are ~1.1 and ~0.8 on the phone: exactly the user's "S75 mostly real
+time, EL71 behind".  **The EL71 needs about +25 % to reach 1.0 on a
+phone**, and more for headroom.
+
+The next target is sized and is *one thing*: **the virtual-clock read on
+the MMIO path**.  `io_prepare` (7.1 %) and `icount_get` (6.9 %) are the
+EL71's top two symbols, and a caller-stack profile
+(`PROF_FN=icount_get`) attributes **90 % of `icount_get` to one stack**:
+
+    cpus_get_virtual_clock <- qemu_clock_get_ns <- stm_io_read <-
+    int_ld_mmio_beN <- ... <- tcg_qemu_tb_exec
+
+i.e. the firmware's STM poll, ~1.1 M MMIO loads/s, each reading the
+virtual clock.  What that read costs, in order of suspicion:
+1. `qemu_clock_get_ns(VIRTUAL)` → `cpus_get_virtual_clock()` → an accel
+   indirect → `icount_get()`: two calls that are pure indirection once
+   `icount_enabled()` is known.  `cpus_get_virtual_clock` is its own
+   1.4 % frame.  Free to remove, ~2 %, probably below the meter alone.
+2. `icount_get()`'s seqlock read loop — two `smp_rmb()`s, which on wasm
+   lower to `atomic.fence` (seq-cst; V8 emits a real barrier on x86).
+   **Every writer of `vm_clock_seqlock` in this configuration appears to
+   run on the vCPU thread** (0023 moved the idle warp there and
+   `sleep=off` keeps the main loop's warp timer out), so a read from that
+   thread may not need the loop at all — but that has to be *audited*,
+   not assumed, and a torn read would be a timing-dependent heisenbug of
+   exactly the kind the lockstep gate is weakest against.
+3. `icount_update_locked()` inside the read: it publishes executed
+   instructions on every clock read.  A read-only variant
+   (`qemu_icount + icount_get_executed(cpu)`, no store, no budget
+   decrement) is arithmetically identical for the caller but makes other
+   threads' view of `qemu_icount` staler — a fidelity decision, not a
+   free one.
+
+After that comes the 240×320 display chain: EL71 and KE800 push 3.3× the
+pixels of the S75's 132×176 through a per-byte `ssi_transfer` →
+`lcd_transfer` path, and `difTxWord/s` reads 138 k (EL71) and 223 k
+(KE800) against the S75's 3.7 k in the same test.  The KE800 now looks
+like a normal board and has never been profiled in its working state.
 
 ## Update (2026-09-14, round nine: 0055 — a negative result that closes the codegen-volume direction)
 
