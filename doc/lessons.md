@@ -108,6 +108,57 @@ file is the "why" behind them and behind the timing model.
   halted, not starved — check `halts/s` and the recompile counters before
   reading it as a problem.
 
+## What a wasm hot path actually costs
+
+Round eleven (0058–0064) profiled the device access path and found that
+*none* of the intuitions carried over from native code were right.
+
+- **A store to a cache line another thread touches costs ~24× a store to
+  an uncontended one, and that dominates everything else.**  An
+  emscripten microbenchmark of `icount_get`'s exact shape (three atomic
+  reads, one atomic store): **2.2 ns/iter alone, 52 ns/iter with a
+  single reader spinning on the same line from another core, 0.5 ns/iter
+  if the store is removed.**  That 52 ns *is* the ~50 ns/call the
+  profiler attributed to `icount_get`.  The fix was 56 bytes of padding
+  (0060).  Look for this signature: **a small function whose profiled
+  self-time per call is wildly more than its instruction count can
+  explain** — it is usually one store to a shared line.
+- **But do not "fix" it by removing the store.**  Not publishing the
+  running icount slice returns a bit-identical value and is a **7.8 %
+  MIPS regression, measured twice**: a global clock that only moves at
+  slice boundaries changes how the main loop paces itself.  Pad, don't
+  skip.
+- **Barriers are not the problem.**  `smp_rmb()`/`smp_wmb()` become
+  `atomic.fence`, and V8 lowers that to approximately nothing on x64: a
+  full seqlock read loop microbenchmarks at 2.3 ns/iter against 2.1 for
+  the same code with the fences removed.  Do not go after seqlocks for
+  speed.
+- **The tax is per *call*, not per instruction.**  Every one of the
+  MMIO path's small functions measured ~3× what its body suggests, and
+  the wins came from removing frames: six dispatch frames to one
+  (0059/0061), ~22 BQL calls to four (0063), one clock frame (0064), a
+  four-line `static inline` the size heuristic had left out of line
+  (`io_fast_bswap`, its own 0.5 % symbol).
+- **`bql_locked()` is a coroutine-TLS accessor and is `noinline` by
+  design** (`QEMU_DEFINE_STATIC_CO_TLS` puts an `asm volatile("")` in
+  it).  `BQL_LOCK_GUARD()` reaches it five times per lock and five more
+  per unlock, because three `g_assert`s and
+  `qemu_mutex_post_lock()`/`pre_unlock()` all call it again.  On a path
+  taken millions of times a second that is the cost, not the mutex.
+- **LTO is the obvious answer and it is the wrong one here**: it cannot
+  inline those `noinline` accessors, its link is single-threaded and
+  open-ended on a 27 MB module, and its function merging would break the
+  `ASYNCIFY_ONLY` list 0031 depends on — a silent regression no gate
+  watches for.
+- **A device that re-arms a QEMU timer on a *write* path is a storm
+  waiting to happen.**  `tpu_io_write()` ended in two `timer_mod()`
+  calls per register write (the first overwritten by the second before
+  the guest could see it): **1.45 M `timer_mod` calls a second on a
+  standing idle screen** (0062).  0049 found the same shape in the GPTU.
+  `sccu.c` and the `dyn_timer`/`timer` helpers are not audited.  The two
+  counters that made it obvious took ten minutes to add — add the
+  counter first.
+
 ## Emscripten runtime
 
 - **Asyncify breaks cross-worker `pthread_cond` wakeups**: signals from
@@ -450,6 +501,32 @@ file is the "why" behind them and behind the timing model.
   say what is running *now*.  Same trap one line over: loadavg rising
   through a long A/B is the 1-minute average accumulating, and on a
   32-core host loadavg 4 is ~12 % utilisation, not contention.
+
+### Measuring round eleven taught the hard way
+
+- **`--state menu` is not reproducible; `--state idle` is.**  The driven
+  menu lands on different screens run to run: across runs of the *same*
+  build, `ioLd/s` ranged from 171 k to 4.0 M and MIPS from 23 to 55.
+  Anything that must be comparable goes on `idle`, or on a state whose
+  counters you check match between the two legs before believing the
+  wall-clock number.
+- **Above ~20 of external host load the wall meters resolve nothing
+  below ~10 %.**  Three interleaved pairs of S75 idle at load 35
+  disagreed in *both directions* on a change that back-to-back profiles
+  showed cleanly.  Check `uptime` (uibench prints it) and, when the host
+  is busy, **fall back to profiling the two builds back to back in the
+  same state** — self-time proportions are load-insensitive in a way
+  MIPS is not.
+- **Orphaned `chrome-headless` processes survive killing the node
+  driver** and will quietly eat the host for the rest of the session.
+  They show as `PPID 1`.  Note that `ps %CPU` is a *lifetime average*,
+  so a pile of zombies looks like a pile of CPU hogs and is not — check
+  `STAT` for `Z` before panicking, and check `vmstat`/`top` for the real
+  number.
+- **`pgrep -f <pattern> | xargs kill` kills the invoking shell** when
+  the pattern appears in its own command line (the bash wrapper carries
+  the whole script).  It happened three times this session.  Bracket the
+  pattern: `pgrep -af "uibench[.]mjs"`.
 
 ## Gates
 

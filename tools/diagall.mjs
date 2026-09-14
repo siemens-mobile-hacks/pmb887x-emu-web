@@ -40,6 +40,7 @@ const NAMES = [
   "lcFill", "lcVhit", "lcVbad", "keyGen",
   "lcCall", "keyGenFlush", "keyGenInval", "keyGenPage","difMuxRebuild","difTxWord","dmacBurst","dmacSchedTimer","dmacXlatFill","gptuTimer",
   "ioRecomp", "ioBarrierEvict", "ioBarrierSplit",
+  "ioLdFast", "vclockRead", "ioStFast", "tpuTimer", "tpuRearm",
 ];
 
 const b = await chromium.launch({ headless: true });

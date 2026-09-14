@@ -6,6 +6,157 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-14, round eleven: 0058–0065 — the device access path)
+
+**What this round is about.**  Round ten fixed two board-specific
+mechanisms; this one took apart the thing all three boards spend most
+of their time in.  The firmware polls device registers, and on the
+driven-menu state that is **1.2 M MMIO accesses/s on the EL71 and
+4.0 M on the S75** — one MMIO access per ~14 guest instructions on the
+S75.  A `wprof2` profile of the S75 vCPU worker showed the guest's own
+generated code at ~24 % and the MMIO path at ~66 %: **one device
+register read cost ~170 ns**, against ~7 cycles for a guest
+instruction.  Eight patches took pieces out of that 170 ns.
+
+| what | where it went |
+|---|---|
+| 0058 the redundant icount commit | `io_prepare` **7.1 % → 0.9 %** of the vCPU |
+| 0059 fused MMIO load dispatch | six frames → one; **99.1 %** of loads take it |
+| 0060 `qemu_icount` on its own cache line | S75 menu MIPS **+5.5 %, 3/3 pairs** |
+| 0061 fused MMIO store dispatch | **98.8 %** of the S75's idle stores take it |
+| 0062 TPU timer re-arm | `timer_mod/s` **1,449,833 → 82,882** (−94 %) |
+| 0063 lean BQL pair | BQL symbols **4.6 % → 2.4 %** (idle); 15.8 % in menu |
+| 0064 clock read without the accel frame | `cpus_get_virtual_clock` 2.0 % → gone |
+| 0065 one clock notify per idle round | the vCPU's cross-thread wakes **−27 %** |
+
+**End to end, against 0057** (the round-ten tip), interleaved,
+`--state idle` because it is the reproducible one, on a host at
+external load ~40 — so treat the magnitudes as a floor:
+
+| S75 idle | new | 0057 |
+|---|---|---|
+| MIPS | 18.5, 19.3 | 15.6, 16.9 (**+16 %**, 2/2) |
+| v/wall | 11.4, 12.6 | 8.6, 9.9 (**+30 %**, 2/2) |
+| MMIO stores/s | 434 k, 487 k | 327 k, 379 k (**+30 %**) |
+
+The EL71 and KE800 legs of that run are **not** usable: at that load
+neither board had reached the same state in both legs (`fills/s` 12 727
+against 81 on the EL71 — one had settled and the other had not).  Their
+per-patch numbers, taken earlier at load 5–11, are in the playbook's
+"What landed" rows: EL71 menu MIPS +6.9 % and fps +41 % for 0059 alone,
+v/wall +21 % for 0062 alone.
+
+**The two findings worth carrying forward.**
+
+1. *A store to a cache line another thread touches costs 24× more than
+   one to an uncontended line.*  `icount_get()` was ~50 ns/call — far
+   more than its arithmetic can explain — because
+   `icount_get_raw_locked()` commits the running slice on **every**
+   virtual-clock read, and `timers_state.qemu_icount` shared a line with
+   the seqlock and spin lock every other thread touches to read a clock.
+   An emscripten microbenchmark of the exact shape: **2.2 ns/iter alone,
+   52 ns/iter with one reader on another core, 0.5 ns/iter read-only.**
+   The fix is 56 bytes of padding (0060).  Note what *did not* work:
+   removing the store entirely (the value is identical without it) is a
+   **7.8 % MIPS regression, twice** — a global icount that only moves at
+   slice boundaries changes how the main loop paces itself.  Pad, don't
+   skip.
+2. *Everything on a wasm hot path costs ~3× what the instruction count
+   suggests, and the tax is per **call**.*  `BQL_LOCK_GUARD()` is ~22
+   calls no compiler may inline — `bql_locked()` and its coroutine-TLS
+   accessor are `noinline` **by design**, three `g_assert`s call them
+   again, and `qemu_mutex_post_lock()` calls `mutex_is_bql()` and
+   `bql_update_status()`, which calls the accessor twice more.  That
+   measured ~41 ns per lock/unlock pair, a quarter of a device read.
+   0063 does the same job in four calls.  The same tax is why
+   `io_fast_bswap` had its own 0.5 % symbol and why 0064 pays.
+
+**A device that re-arms a QEMU timer on a write path is a storm waiting
+to happen** (0062, and 0049 before it).  `tpu_io_write()` ends in
+`tpu_update_state()` for *every* TPU register, and that called
+`tpu_update_timer()` twice — the first arm overwritten by the second
+before the guest could observe it.  1.45 M `timer_mod` calls a second on
+a *standing idle screen*.  The counters that found it (`tpuTimer`,
+`tpuRearm`) took ten minutes to add and made the whole thing obvious;
+**`sccu.c` and the `dyn_timer`/`timer` helpers have not been audited for
+the same pattern.**
+
+**LTO was tried and abandoned.**  It is the obvious answer to a
+call-overhead-bound profile, but (a) it cannot inline the `noinline`
+coroutine-TLS accessors, which is where the BQL cost actually is, (b)
+the link is single-threaded and open-ended on a 27 MB module, and (c)
+function merging would break the `ASYNCIFY_ONLY` list that 0031 depends
+on — a silent 18 % regression or worse.  Not without an Asyncify audit.
+
+### What is left
+
+A fresh S75 profile after the round (idle screen, back-to-back with the
+previous build, so the proportions are comparable):
+
+| | |
+|---|---|
+| `emscripten_futex_wake` | **14.6 %** |
+| `emscripten_futex_wait` | 6.7 % |
+| `icount_get` | 6.4 % |
+| `tpu_advance` | 5.8 % |
+| `do_st_mmio_1p` / `do_ld_mmio_1p` | 2.5 % / 1.6 % |
+| BQL | 2.4 % |
+
+**1. The main loop is woken thousands of times a second to do nothing
+(~21 % of the vCPU at idle).**  `PROF_FN=emscripten_futex_wake` caller
+stacks, S75 idle, 25 s:
+
+```
+2472ms __wake <- __pthread_mutex_unlock <- qemu_mutex_unlock_impl <- bql_unlock <- qemu_thread_start
+1185ms aio_timerlist_notify <- qemu_clock_notify <- icount_start_warp_timer <- qemu_thread_start
+ 449ms aio_timerlist_notify <- qemu_clock_notify <- icount_handle_deadline <- qemu_thread_start
+```
+
+The second and third were the idle warp notifying **twice** per round.
+**0065 took the first one** — with `sleep=off` the warp moves the bias
+by exactly the `~EXTERNAL` deadline, so the `ATTR_ALL` deadline
+`icount_handle_deadline()` tests (a superset, never larger) is 0 and it
+always notifies a few instructions later, on the same thread.  After it
+the `icount_start_warp_timer` stack is gone and the wake callers total
+4303 ms → 3127 ms.
+
+**What is still there** is the remaining half (1260 ms,
+`icount_handle_deadline`) and the BQL handoff (1525 ms) — the same story
+seen from the lock side, `bql_unlock()/bql_lock()` inside
+`rr_idle_advance`'s loop, which exists to give the main loop a turn.
+Each notify reaches `aio_notify()`, whose emscripten branch calls
+`qemu_main_loop_wake()` **above** the `qatomic_read(&ctx->notify_me)`
+guard the stock path uses, so it is unconditional; `Atomics.notify` is
+~2.7 µs here.  Two things to know before touching it: a "is anyone
+waiting" flag does **not** help (the main loop really is parked — 97 %
+`futex_wait`), and the remaining notify is not obviously redundant the
+way 0065's was, because the vCPU already runs the main-loop virtual
+timer list itself (`icount_notify_aio_contexts` →
+`qemu_clock_run_timers`) — so the open question is what the wake is
+still *for*.  Coalescing in `aio_notify()` on an already-set
+`ctx->notified` is the shape to try.
+
+**2. `icount_get` is still ~50 ns/call** and is called 1.5 M/s (EL71)
+to 4.3 M/s (S75) — once per device register read, because every pmb887x
+timer model derives its counter from the virtual clock.  After 0060 and
+0064 the remaining cost is the body itself: a seqlock read loop, six
+atomics and the slice commit.  The barriers are *not* it — an
+`atomic.fence` microbenchmarks at 0.2 ns here (2.3 vs 2.1 ns/iter with
+and without).  What is left to try is making the read inlinable into
+`qemu_clock_get_ns` without pulling `CPUState` into
+`cpu-timers-internal.h`.
+
+**Where the phones stand.**  Driven every 700 ms, the desktop v/wall ÷ 5
+≈ the Pixel 8 Pro's.  Measure on a quiet host: this round's numbers were
+taken with external load between 5 and 40, and above ~20 the
+wall-clock meters cannot resolve anything below ~10 % (three pairs of
+S75 idle at load 35 disagreed in both directions on a change the
+profile showed clearly).  **Use `--state idle`, not `--state menu`, for
+anything that must be comparable** — the menu state lands on different
+screens run to run (ioLd/s ranged 171 k to 4.0 M across runs of the
+*same* build), which is the single biggest source of noise in this
+round's A/Bs.
+
 ## Update (2026-09-14, round ten: 0056 + 0057 — the other two phones)
 
 **Read this if you are about to optimize the S75.**  Rounds 4–9 all

@@ -101,6 +101,8 @@ async function snap() {
       difMuxRebuild: g(59), difTxWord: g(60), dmacBurst: g(61),
       dmacSchedTimer: g(62), dmacXlatFill: g(63), gptuTimer: g(64),
       ioRecomp: g(65), ioBarrierEvict: g(66), ioBarrierSplit: g(67),
+      ioLdFast: g(68), vclockRead: g(69), ioStFast: g(70),
+      tpuTimer: g(71), tpuRearm: g(72),
       tbGen: g(7), modCount: g(34), jcFlush: g(16),
     };
   });
@@ -176,6 +178,11 @@ async function measure(name, drive) {
     ioRecompPerS: Math.round(d.ioRecomp / wall),
     ioBarrierEvictPerS: Math.round(d.ioBarrierEvict / wall),
     ioBarrierSplitPerS: Math.round(d.ioBarrierSplit / wall),
+    ioLdFastPerS: Math.round(d.ioLdFast / wall),
+    ioStFastPerS: Math.round(d.ioStFast / wall),
+    tpuTimerPerS: Math.round(d.tpuTimer / wall),
+    tpuRearmPerS: Math.round(d.tpuRearm / wall),
+    vclockReadPerS: Math.round(d.vclockRead / wall),
     tbGenPerS: Math.round(d.tbGen / wall), modCountPerS: Math.round(d.modCount / wall),
     jcFlushPerS: Math.round(d.jcFlush / wall),
   };
@@ -183,6 +190,7 @@ async function measure(name, drive) {
     `halts/s=${rec.haltsPerS} ioLd/s=${rec.ioLdPerS} ioSt/s=${rec.ioStPerS} difTxWord/s=${rec.difTxWordPerS} ` +
     `dmacBurst/s=${rec.dmacBurstPerS} gptuTimer/s=${rec.gptuTimerPerS} fills/s=${rec.fillsPerS} ` +
     `ioRecomp/s=${rec.ioRecompPerS} barrierEvict/s=${rec.ioBarrierEvictPerS} barrierSplit/s=${rec.ioBarrierSplitPerS} ` +
+    `ioLdFast/s=${rec.ioLdFastPerS} ioStFast/s=${rec.ioStFastPerS} vclock/s=${rec.vclockReadPerS} tpuTimer/s=${rec.tpuTimerPerS} tpuRearm/s=${rec.tpuRearmPerS} ` +
     `tbGen/s=${rec.tbGenPerS} mod/s=${rec.modCountPerS} jcFlush/s=${rec.jcFlushPerS} wall=${rec.wall}`);
   return rec;
 }
