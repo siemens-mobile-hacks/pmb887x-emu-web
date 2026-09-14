@@ -43,13 +43,24 @@ display-DMA per-word chain (stopwatch 0.33 → ~0.58) → 0052 the per-TB
 dispatch loop (+3.5 %) → 0053 the Firefox module-budget fix (a
 regression nine commits old that no gate was watching for; Firefox boot
 is now rung 7) → 0054 the per-word MMIO dispatch decision (~2 points of
-non-guest work; both wall-clock meters flat) → **open now**: the J2ME
-throughput target (§ Remaining 0, now ~0.58×), the AOT cache now that
-it is costed (§ Remaining 5), and — the honest read after 0054 — the
-device chain is down to a long tail of ~1–3 % items that the meters
-cannot resolve individually, so the next *structural* win has to come
-from the guest's own ~49 % or from § Remaining 5, not from more of
-these.
+non-guest work; both wall-clock meters flat) → 0055 the emitter
+peephole (−3.7 % emitted bytes/TB, flat on all three speed meters) →
+**open now**: the J2ME throughput target (§ Remaining 0, now ~0.58×),
+the AOT cache now that it is costed (§ Remaining 5), and — the honest
+read after 0054/0055 — **both cheap directions are now exhausted**.
+The device chain is a long tail of ~1–3 % items with no single
+removable piece (re-checked against a fresh profile in § Remaining 7,
+three candidates sized and rejected without building), and the guest's
+49 % is not reachable by codegen volume: it is smeared over thousands
+of TBs (§ Remaining 0b) and four independent measurements now say
+emitted bytes and op count are not what it is bound by.  So the next
+*structural* win has to be a **design** change — § Remaining 5 (AOT
+cache, ~21 % of the early vCPU, large and with a correctness surface
+the gates do not cover today) or collapsing the per-word DMA
+request/acknowledge dance (§ Remaining 7, changes what the guest could
+observe between words) — not another peephole.  Round nine's real
+product is arguably the negative results and the two new meters in
+§ Measurement methodology, not the 0055 commit.
 
 Since 2026-09-12 the qemu tree is the `qemu/` submodule: a "patch" is
 a commit on its branch (numbering continues as before), and
@@ -182,6 +193,41 @@ garbage.
   (v 4.7→23.5, ~7 s at 10–20 MIPS: one IRQ + WFI per word, no
   main-loop handoffs since 0023/0024), then compute (TCI 45 MIPS, JIT
   190).  A change can move one phase and leave tIdle flat.
+- **When no speed meter can resolve a change, measure the mechanism
+  instead (2026-09-14, 0055).**  `diagall`'s `tbBytes`/`tbGen` give
+  emitted bytes per TB with a **0.04 % run-to-run spread** — three
+  orders of magnitude tighter than any wall-clock meter here — so a
+  codegen change can be shown to do exactly what it claims even when
+  every timing meter says flat.  Use it to separate "the change did
+  nothing" from "the change did what it said and that does not matter";
+  0055 is the second (§ Remaining 0b).  `modBytes`/`modCount` do the
+  same for what the browser compiles.
+- **idlebench `--quick` can contradict itself, and says so if you let
+  it (2026-09-14).**  Running the same pair in both orders gave "+6..8 %
+  against the candidate" and then "+6..12 % against the baseline".  The
+  tell is in its own output: the same-wasm lines read 12.5 s → 14.3 s
+  (**+14 %**) for one dist between back-to-back invocations.  A single
+  quick pair cannot resolve anything below ~15 % on this host — rule 5
+  exists for exactly this, and the answer when the orders disagree is
+  "undecided", never the flattering leg.
+- **`insns` at a fixed wall time is bimodal on this boot — do not read
+  it at n=2.**  Five runs per dist cluster around ~2440 M and ~2600 M
+  for *both* builds; two samples landing in different clusters read as
+  a clean +3.5 % that vanishes (to +1.0 % inside ±7.5 %) by n=5.
+- **Ask `profjit.mjs` whether guest time is concentrated before
+  optimizing guest code.**  On the stopwatch it is not: 25 % of jit
+  time in the top 21 functions but 90 % needs 2389, top function 1.5 %
+  of total.  That rules out hand-tuning hot TBs and says only uniform
+  per-op overhead is worth touching — which is how 0055 was chosen (and
+  why it was expected to be small).
+- **`ps` `%CPU` is a lifetime average, not an instantaneous one.**  A
+  just-finished benchmark's browser shows "54 %" in `ps -eo pcpu` after
+  it has already exited; reading that as live contention produced a
+  false "every leg leaks a browser" diagnosis on 2026-09-14.  Use
+  `top -bn1` (or the `R`/`D` states) for what is running now.  Related:
+  `load=` in the stopwatch line rises monotonically across a long A/B
+  purely because the 1-minute average accumulates — on a 32-core host
+  loadavg 4 is ~12 % utilisation and not contention.
 - **tcgbench and idlebench are complementary, not substitutes**:
   tcgbench cannot see translation cost (hot loops), idlebench `--quick`
   cannot attribute to an op class.  A compute win on tcgbench that does
@@ -308,6 +354,7 @@ mmiopoll only) makes a whole-run profile pure.
 | 0052 tcg/wasm64: labels as nested blocks instead of the dispatch loop | the per-TB structure, sized first: the stopwatch does ~17 M TB entries/s (4.24 insns/TB with `EXTRA_Q="env=W64_TBSTATS=1"`, 73.6 MIPS), i.e. ~28 ns per TB entry of which the guest's four instructions are only part; a native `-d op_opt` dump of 25 s of S75 boot: 132 k TBs, 4.0 insns / 26 ops / 1.5 labels per TB, 200 k `brcond`, **0 backward branches**, max 54 labels in one TB.  Every TB body was a `loop` around sibling `if (bp <= k)` regions (a branch set `$bp` and re-entered the loop; each label cost a compare on fall-through; V8 adds a loop stack check and loop phis for every live local — the likely reason the `$tlb` hoist regressed).  Now `w64_scan_labels` numbers the labels at TB start and, when no branch is backward, opens them as nested blocks (last label outermost); `set_label` closes the innermost, `br`/`brcond` become `br`/`br_if depth`.  A backward branch keeps the loop scheme.  `W64_MAX_BLK` 32 → 128 | `tools/stopwatch.mjs` quiet host: **0.603 / 0.628 / 0.605 / 0.592 vs 0051 0.584 / 0.589 / 0.582 (+3.5 %)**, every new leg above every old one (a 0051 leg under a load spike read 0.523).  Profile 20 s: jit-guest 50.9 → 49.5 %, cpu-loop+devices 31.4 → 31.6 % (flat), tb-lookup 4.5 → 4.8.  Boot: bootcheck s75 1718 M / el71 1608 M / ke800 2242 M (0051: 1717 / 1608 / 2030); idlebench `--runs 2` both orders tIdle 28.2/29.8 (−5 %) with the new build second, 29.1/29.9 (+3 %) with it first — the usual order bias, boot flat.  Gates: lockstep 250e6 identical vs the native oracle, op-suite 1156/1156.  wasm +1.6 KB.  **Not gated on Firefox — see 0053** |
 | 0053 tcg/wasm64: open the batch at TB start (Firefox module budget) | Firefox on the Pixel stalled at the Siemens logo (0.76 G insns, MIPS 0); local Playwright Firefox reproduced it on every snapshot back to 0046 ("failed to allocate executable memory for module", the vCPU worker dies at ~450 M insns) while 0022 booted.  Six bisect builds (the first two were invalid — pre-AFE, the Siemens boot never reaches the phase) pinned it to the prologue cleanup `58bb2742` (2026-09-13 review session, "measured flat").  Mechanism: the open batch is created lazily inside `w64_union_type`; until the cleanup every prologue registered a lockstep import type, which opened a batch as a side effect.  After it, a TB translated right after a batch close — no helper call, so no type registration — was never staged and ran from a throwaway per-TB module: Firefox counters at the crash read modules 27.6 k vs closes + compactions 21.8 k (5.9 k temp modules, ~20 % of TBs), the good build 27.4 k vs 27.4 k.  Temp modules are never evicted, so Firefox's ~16 k-module budget runs out; Chrome has no such budget and never showed it.  Fix: `w64_batch_begin_tb()` at `tcg_out_tb_start` opens the batch explicitly; `ffboot.mjs` now prints `temp=` so the invariant is visible | Firefox: boots to idle again (v 58.9 at 60 s, 1.62 G insns, `temp=0`, errors 0).  Chrome: lockstep 250e6 identical, op-suite 1156/1156, bootcheck s75 1718 M / el71 1608 M / ke800 2408 M.  Stopwatch 0.605 vs 0052 0.596 (flat).  idlebench `--runs 2` both orders: tIdle **28.6 vs 29.6 (−3 %) with the fix listed second, 28.7 vs 29.5 (−3 %) listed first** — faster in both orders, against the order bias: a temp module is a `Module` compile per TB |
 | 0054 memory/pmb887x: MMIO write dispatch decision cached per DMAC window | after 0053 the stopwatch profile read guest 47.2 %, devices 33.8 %, memory 4.2 %, other 5.8 %.  The display DMA is one 4-byte word per request (~570 k/s) and 0048's translation window already keeps it off the flatview, but every word still paid `memory_region_dispatch_write`'s own per-access work for a window that had not changed: alias resolution, `memory_region_access_valid`, the endianness-swap test, the ioeventfd match, and `access_with_adjusted_size`'s split loop with its MAX/MIN/mask/shift arithmetic (`access_with_adjusted_size` 270 ms + `memory_access_size` 92 ms of 20.3 s).  Whether all of it can be skipped depends only on the region and the width, so `memory_region_write_direct_ok()` decides it once per window and `memory_region_dispatch_write_direct()` runs the tail — reentrancy guard, trace point and the device's write callback all kept, since all three are observable.  The DMAC caches the predicate in `pmb887x_dmac_xlat_t` (cleared on refill) and checks only the per-access alignment; whatever the predicate rejects falls through to the unchanged path.  **Closed by inspection on the way** (§ Remaining 7): a same-batch direct `return_call` for chained TBs is not possible as written — the chain slot is patched by `tb_add_jump` at runtime, long after the module is compiled, so the target is unknown at emission; and the per-exit `fidx` load is not removable, because `w64_batch_evict_oldest()` makes eviction real even though a boot shows `ensureN 0` | profile: `access_with_adjusted_size` and `memory_access_size` **gone from the profile entirely**, memory 4.2 → 3.5 %, other 5.8 → 4.1 %, the freed share moving to guest code (47.2 → 49.0 %) — ~2.1 points of non-guest work.  **Both end-to-end meters read flat**, as in 0051: stopwatch 10 alternating samples, candidate mean 0.601 (0.618/0.563/0.604/0.608/0.612) vs 0.593 (0.635/0.603/0.578/0.536/0.612) inside a baseline spread of 0.536–0.635; idlebench `--runs 2` both orders puts the *second-listed* leg 4–6 % slower whichever build it is (the order bias), so the boot is flat.  Gates: op-suite 1156/1156 three backends identical, native 4/4 displays PASS, lockstep 250e6 identical, bootcheck s75 1718 M / el71 1608 M / ke800 2198 M, Firefox boot `temp=0` errors=0 |
+| 0055 tcg/wasm64: `local.tee` for set+get pairs, no scratch local in the TLB probe | picked from the 0054 profile by asking where the *uniform* cost is rather than the biggest symbol: `tools/profjit.mjs` says guest time is smeared (25 % of jit time in the top 21 functions, 50 % in 272, 90 % needs 2389, top function 1.5 % of total), so there is no hot TB to hand-tune and only per-op overhead is worth touching.  The emitter wrote `local.set $x; local.get $x` in eight places — that is what `local.tee` is for — and the inline probe additionally round-tripped `tlb_addr` through `$scr1` although nothing reads it after the compare.  The probe runs on **every** guest memory access (`qemu_ld/st` = 37 % of emitted bytes) and drops from seven local ops to three; `tcg_out_goto_tb` and `tcg_out_goto_ptr` lose one each at ~17 M TB entries/s.  Net −3 lines | **mechanism proven, speed flat.**  `diagall` 45 s boot, 2 runs per dist, run-to-run spread **0.04 %**: emitted bytes per TB 530.6 → 511.0 (**−3.7 %**), `modBytes` 194.2 → 189.1 MB (−2.6 %).  Speed: idlebench `--quick` **contradicts itself** in the two orders (the same wasm read 12.5 s then 14.3 s, +14 %); stopwatch 10 ABBA legs 0.545 vs 0.535 with per-pair ratios +9.2/+1.3/+22/−16.7/−6.7 %; insns at a fixed 45 s wall time, 5 runs each, 2550 vs 2524 M (+1.0 %) inside a ±7.5 % spread on both sides (an n=2 read of +3.5 % did not survive n=5 — the samples are bimodal at ~2440 and ~2600 for *both* dists).  Landed as a simplification on the byte evidence, not as a speed win.  Gates: op-suite 1156/1156 three backends byte-identical, native 4/4 displays PASS, lockstep 250e6 serial + 29 SRAM digests + 20 SDRAM + 20 epoch reg sets identical, Firefox idle `temp=0` errors=0 |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
@@ -388,13 +435,21 @@ commit, then `ninja-fast.sh` and the ladder.
    per-word cost.  What is left is the per-word chain itself
    (§ Remaining 7).
 
-0b. **Emitted code volume — CLOSED as a lever (2026-09-13).**  Three
-   independent measurements now say the emitted-byte count is not what
-   the early phase is bound by: the prologue cleanup (−12 % bytes/TB,
-   flat), compaction off (−49 % compiled bytes, a wash), and the inline
-   TLB-probe hoist (fewer bytes *and* fewer executed ops per access,
-   **+3..+10 % slower**, § REJECTED).  Do not spend more here; the
-   byte histogram below is kept only as reference.
+0b. **Emitted code volume — CLOSED as a lever (2026-09-13, reconfirmed
+   2026-09-14).**  Four independent measurements now say the
+   emitted-byte count is not what the early phase is bound by: the
+   prologue cleanup (−12 % bytes/TB, flat), compaction off (−49 %
+   compiled bytes, a wash), the inline TLB-probe hoist (fewer bytes
+   *and* fewer executed ops per access, **+3..+10 % slower**,
+   § REJECTED), and **0055** (−3.7 % bytes/TB and four fewer wasm ops
+   per memory access, **flat on all three speed meters**).  0055 is the
+   one that settles the mechanism question the hoist left open: the
+   hoist could be blamed on register pressure, because it kept a local
+   live across a whole label region; `local.tee` only ever *shortens* a
+   live range, so it cannot disturb Liftoff's allocation — and it still
+   buys nothing.  The cost is not in the bytes or in the op count.
+   Do not spend more here; the byte histogram below is kept only as
+   reference.
    Per TCG opcode (temporary histogram in `tcg_gen_code`, first 1.5 M
    ops): `qemu_ld` 83.9 B/op and `qemu_st` 86.9 B/op = 37 % of all
    emitted bytes (the inline TLB probe), `add` 12.0 B × 4.2/TB,
@@ -567,6 +622,22 @@ commit, then `ninja-fast.sh` and the ladder.
    function of the region and the width only, so it is now decided once
    per translation window.  Bigger TBs are not
    available: the firmware branches every four instructions.
+   **2026-09-14, re-checked on the 0054 profile and nothing new found
+   — three candidates sized and all rejected before building.**
+   `dif_tx_from_fifo` is still the largest single non-guest symbol
+   (1152 ms of 20.3 s, 5.7 %) but its `while` runs **once per call** in
+   the display path (one word per request), so hoisting to the loop
+   head buys nothing, and the per-word decodes it inlines are cheap
+   ANDs/shifts whose one real candidate (`dif_get_bsconf_word_count`)
+   keys on `tx_csreg`, popped from a parallel FIFO *per word* — a cache
+   would need a config generation plus a `tx_csreg` compare for maybe
+   half of 5.7 %.  `dif_mux` is already 0047's table lookup (four loads
+   + ORs).  `dmac_timer_reset`'s "8 channel passes per word" overstates
+   it: seven are two bit tests each (`ch->config`/`p->config` ENABLE),
+   so most of its 1.9 % is the *active* channel's real work and a
+   channel bitmask would buy a fraction of it.  The chain really is a
+   tail of 1–3 % items with no single removable piece — the 0051 note
+   below said so and a fresh profile agrees.
    Earlier list (profile `prof-stopwatch-0049`, per word):
    `dif_tx_from_fifo` 4 % self, `pmb887x_srb_set_event` 2.3 % (two
    events per word — the TXBREQ set from `dif_tx_fifo_req` and its clear

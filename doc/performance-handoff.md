@@ -6,6 +6,88 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-14, round nine: 0055 — a negative result that closes the codegen-volume direction)
+
+**Read this before picking a target.** Round nine's product is mostly
+what it ruled out. If you are here to make the stopwatch faster, the
+cheap directions are gone and the remaining ones are design changes,
+not peepholes — skip to "What is actually left" at the end of this
+section.
+
+**How the target was chosen.** Rather than take the biggest symbol, I
+asked `tools/profjit.mjs` whether guest time (49 % of the vCPU) is
+*concentrated*. It is not: 25 % of jit time in the top 21 functions,
+50 % in 272, 90 % needs 2389, top function 1.5 % of total. That rules
+out hand-tuning hot TBs and says only uniform per-op overhead can
+matter. The most uniform thing in the backend is the inline TLB probe —
+`qemu_ld/st` are 37 % of all emitted bytes and the probe runs on every
+guest memory access.
+
+**0055.** The emitter wrote `local.set $x; local.get $x` in eight
+places (that is what wasm's `local.tee` is for), and the probe also
+round-tripped `tlb_addr` through `$scr1` although nothing reads it
+after the compare. The probe drops from **seven local ops to three**;
+`tcg_out_goto_tb` and `tcg_out_goto_ptr` lose one each at ~17 M TB
+entries/s. Net −3 lines.
+
+**Result: mechanism proven, speed flat.** Emitted bytes per TB
+530.6 → 511.0 (**−3.7 %**), `modBytes` 194.2 → 189.1 MB (−2.6 %), with
+a **0.04 %** run-to-run spread. Every speed meter: flat. It is landed
+as a simplification on the byte evidence, not as a speed win, and the
+commit message says so.
+
+**Why that is the valuable part.** This is the fourth measurement
+saying emitted-byte count is not the lever here, and the first from the
+*reducing* direction. The 2026-09-13 hoist removed bytes and cost
++3..+10 %, which left "maybe that was register pressure" open;
+`local.tee` only ever *shortens* a live range, so it cannot be that —
+and it still buys nothing. Two experiments pointing opposite ways at
+the same hypothesis is what closes it. **Do not spend another round on
+codegen volume or op count.**
+
+**Three device candidates sized and rejected without building** (all on
+the fresh 0054 profile, details in playbook § Remaining 7):
+`dif_tx_from_fifo` is the largest single non-guest symbol (5.7 %) but
+its loop runs once per call in the display path, so there is nothing to
+hoist, and its one cacheable decode keys on a per-word FIFO value;
+`dif_mux` is already 0047's table lookup; `dmac_timer_reset`'s "8
+channel passes" is seven two-bit-test early-outs plus the real channel.
+Sizing on the profile cost minutes instead of hours — do this first.
+
+**Two meter lessons worth more than the commit** (playbook
+§ Measurement methodology):
+- **`diagall`'s `tbBytes`/`tbGen` is a mechanism meter** with a 0.04 %
+  spread. When no timing meter can resolve a codegen change, this
+  separates "did nothing" from "did what it said, and that does not
+  matter". It never answers "did it help".
+- **idlebench `--quick` contradicted itself** across the two orders
+  here (+6..8 % one way, +6..12 % the other), and its own same-wasm
+  lines showed 12.5 s → 14.3 s (**+14 %**) for one dist between
+  back-to-back invocations. Below ~15 % a single quick pair resolves
+  nothing. Also: `insns` at fixed wall time is **bimodal** on this boot
+  (~2440 M / ~2600 M for both builds) — an n=2 read of +3.5 % went to
+  +1.0 % inside ±7.5 % at n=5.
+- Method slip to avoid repeating: I called a browser leak from `ps`
+  `%CPU`, which is a *lifetime* average — the processes had already
+  exited. `top -bn1` for what is running now. Likewise a rising
+  `load=` across a long A/B is just the 1-minute average accumulating;
+  loadavg 4 on 32 cores is ~12 % utilisation.
+
+**What is actually left.** Both cheap directions are exhausted. The
+device chain is a 1–3 % tail with no single removable piece, and the
+guest's 49 % is not reachable by codegen volume. The next structural
+win must be a design change:
+1. **AOT cache** (§ Remaining 5) — ~21 % of the *early* vCPU, so it
+   helps boot, not the stopwatch. Large, and with a correctness surface
+   today's gates do not cover. It is the best-costed option.
+2. **Collapse the per-word DMA request/acknowledge dance**
+   (§ Remaining 7) — the ~30 % that is left of the chain, but it
+   changes what the guest could observe between words, so it needs a
+   lockstep story before a line is written.
+On a Pixel (~5× slower per instruction than the desktop Chrome every
+A/B here runs on) the boot-vs-steady-state distinction is the whole
+game — which argues for (1).
+
 ## Update (2026-09-14, round eight: 0054 — the last cheap per-word item, and where the tail ends)
 
 Re-profiled the running stopwatch on 0053 (the previous profile was

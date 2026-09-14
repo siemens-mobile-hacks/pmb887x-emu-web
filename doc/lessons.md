@@ -387,6 +387,31 @@ file is the "why" behind them and behind the timing model.
   a list of 1–3 % items, each under the meters' resolution.  Grinding
   further down it buys less than it costs to verify; say so in the
   hand-off rather than leaving the list looking like open work.
+- **When the speed meters cannot resolve it, measure the mechanism.**
+  0055 was flat on all three timing meters, but `diagall`'s
+  `tbBytes`/`tbGen` gave emitted bytes per TB with a **0.04 %**
+  run-to-run spread — tight enough to prove the change did exactly what
+  it claimed (−3.7 %) while saying nothing about speed.  That is the
+  honest shape of the result and it is worth landing on, but only if
+  you write both halves down.  A mechanism meter answers "did my change
+  happen"; it never answers "did it help".
+- **A negative result that closes a direction is worth a round.**  0055
+  removed bytes *and* executed ops and bought nothing.  That matters
+  more than the commit: the 2026-09-13 hoist had removed bytes and cost
+  +3..+10 %, which left "maybe it was register pressure" open.
+  `local.tee` only shortens a live range, so it cannot be that — and it
+  is still flat.  Two experiments pointing opposite ways at the same
+  hypothesis are what actually closes it.  Size a candidate before
+  building it: three device items were rejected on the profile alone
+  this round, which cost minutes instead of hours.
+- **Check the tool's units before you diagnose with it.**  `ps`'s
+  `%CPU` is a lifetime average; a benchmark browser that has already
+  exited still shows "54 %", and reading that as live contention
+  produced a confident, wrong "every leg leaks a browser" claim that
+  had to be retracted a minute later.  `top -bn1` or the `R`/`D` states
+  say what is running *now*.  Same trap one line over: loadavg rising
+  through a long A/B is the 1-minute average accumulating, and on a
+  32-core host loadavg 4 is ~12 % utilisation, not contention.
 
 ## Gates
 
