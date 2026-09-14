@@ -40,7 +40,7 @@ Once that lands upstream, rebase onto master; expect only trivial
 conflicts (the series touches tcg/tci, tcg/wasm64, accel/tcg, util/,
 target/arm/tcg, hw/arm/pmb887x, ui/, configs/meson/).
 
-## Series contents (51 commits on master, in order)
+## Series contents (52 commits on master, in order)
 
 Patch numbers are the ones the docs use (the numbering has gaps where
 patches were dropped; 0033 sits at the top of the series).
@@ -96,6 +96,7 @@ patches were dropped; 0033 sits at the top of the series).
 | 0051 | pmb887x: DIF pin rebuild skipped on unchanged inputs, FIFO index without modulo, no checked bus cast per SSI transfer | pmb887x DIF v2 + `fifo.h`, `hw/ssi/ssi.c`, all backends |
 | 0052 | tcg/wasm64: labels as nested blocks instead of the dispatch loop | `tcg/wasm64/tcg-target.c.inc`, wasm64 backend only |
 | 0053 | tcg/wasm64: open the batch at TB start (Firefox module budget; regression since the prologue cleanup) | `tcg/wasm64/`, wasm64 backend only |
+| 0054 | memory/pmb887x: MMIO write dispatch decision cached per DMAC window | `system/memory.c` + `include/system/memory.h` (two new entry points), `hw/arm/pmb887x/dmac.c` |
 | — | pmb887x: hacky AFE (LLE+HLE) implementation | cherry-pick from alula/dsp-stuff |
 | 0033 | pmb887x: seed the RTC counter in the layout the firmware expects | pmb887x RTC, per-board `[rtc] format` |
 

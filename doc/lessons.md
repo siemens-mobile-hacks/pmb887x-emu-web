@@ -373,6 +373,20 @@ file is the "why" behind them and behind the timing model.
   first readings then carry the wrong labels (a "500 k mux rebuilds/s"
   that was really the DMA burst count).  Cross-check a new counter's
   rate against something already known before believing it.
+- **A change can be right and unmeasurable.**  0054 removed two symbols
+  from the profile outright and moved ~2 points of vCPU share, and both
+  wall-clock meters read flat — ten alternating stopwatch samples inside
+  a baseline spread three times the effect, idlebench showing only the
+  order bias.  That is a legitimate keep (0051 set the precedent), but
+  it has to be *reported* as flat: the +1.4 % in the sample means is not
+  a result, and writing it up as one is how a "win" that is really noise
+  gets into the record.  When the profile and the meter disagree at this
+  size, the profile is the finer instrument and the meter is the veto —
+  neither is the headline on its own.
+- **Know when a tail is finished.**  After 0047–0054 the device chain is
+  a list of 1–3 % items, each under the meters' resolution.  Grinding
+  further down it buys less than it costs to verify; say so in the
+  hand-off rather than leaving the list looking like open work.
 
 ## Gates
 

@@ -38,9 +38,18 @@ and the **phantom-win** baseline trap in § Measuring, which is the
 session's most reusable result) → 0046 inline next-TB lookup cache
 (2026-09-13: ~80 % of `helper_lookup_tb_ptr` calls gone, J2ME stopwatch
 0.33 → 0.35 (+7..+9 %), boot milestones flat; and the discovery that
-0044's devirtualisation had never been compiled in) → **open now**: the
-J2ME throughput target (§ Remaining 0, now ~0.35×), the AOT cache now
-that it is costed (§ Remaining 5).
+0044's devirtualisation had never been compiled in) → 0047–0051 the
+display-DMA per-word chain (stopwatch 0.33 → ~0.58) → 0052 the per-TB
+dispatch loop (+3.5 %) → 0053 the Firefox module-budget fix (a
+regression nine commits old that no gate was watching for; Firefox boot
+is now rung 7) → 0054 the per-word MMIO dispatch decision (~2 points of
+non-guest work; both wall-clock meters flat) → **open now**: the J2ME
+throughput target (§ Remaining 0, now ~0.58×), the AOT cache now that
+it is costed (§ Remaining 5), and — the honest read after 0054 — the
+device chain is down to a long tail of ~1–3 % items that the meters
+cannot resolve individually, so the next *structural* win has to come
+from the guest's own ~49 % or from § Remaining 5, not from more of
+these.
 
 Since 2026-09-12 the qemu tree is the `qemu/` submodule: a "patch" is
 a commit on its branch (numbering continues as before), and
@@ -298,6 +307,7 @@ mmiopoll only) makes a whole-run profile pure.
 | 0051 pmb887x: DIF pin rebuild skipped on unchanged inputs, FIFO index without modulo, no checked bus cast per SSI transfer | the stopwatch profile of 0050 (`prof-stopwatch-0050`): guest 48 %, devices 32 %, other 7 %; the checked casts were not all gone — `BUS()` in `ssi_transfer` still called `object_dynamic_cast_assert` once per LCD byte (119 ms/20 s, attributed to `dif_tx_from_fifo` by the profiler); `dif_update_gpio_state` runs twice per word (tx_csreg active/inactive) and rebuilt six pin levels from unchanged inputs (235 ms); `pmb887x_fifo_base_push/pop` took a modulo per index step.  Plain cast, an input key that skips the pin pass, compare-and-wrap.  **Tried and dropped**: the same key on `dif_trigger_dma` — it blanked the Siemens displays (the function re-enters itself through the DMAC's CLR handler; the outer pass finished with stale levels after the nested pass had stored the fresh key — the native suite caught it) and, once guarded, the profile showed it never hits (self 299 → 462 ms: the inputs differ on every call of a word's raise/acknowledge/release sequence) | profile candidate vs 0050: **"other" 1416 → 1056 ms** of 20.3 s, `dif_update_gpio_state` 235 → 142, the cast gone, cpu-loop+devices flat (6435 → 6391).  `tools/stopwatch.mjs`: loaded host three candidate legs 0.547/0.554/0.540 vs 0050 0.486/0.530 (two 0050 legs failed at app navigation under load — a flake, the same snapshot then ran); quiet pair after the gates **0.584 vs 0.562 (+4 %)**.  The meter's ±5 % drift cannot resolve a change this size; the profile deltas are the evidence.  Gates: native 4/4, lockstep 250e6 clean vs the 0051 native oracle, bootcheck s75 1717 M / el71 1608 M / ke800 2030 M |
 | 0052 tcg/wasm64: labels as nested blocks instead of the dispatch loop | the per-TB structure, sized first: the stopwatch does ~17 M TB entries/s (4.24 insns/TB with `EXTRA_Q="env=W64_TBSTATS=1"`, 73.6 MIPS), i.e. ~28 ns per TB entry of which the guest's four instructions are only part; a native `-d op_opt` dump of 25 s of S75 boot: 132 k TBs, 4.0 insns / 26 ops / 1.5 labels per TB, 200 k `brcond`, **0 backward branches**, max 54 labels in one TB.  Every TB body was a `loop` around sibling `if (bp <= k)` regions (a branch set `$bp` and re-entered the loop; each label cost a compare on fall-through; V8 adds a loop stack check and loop phis for every live local — the likely reason the `$tlb` hoist regressed).  Now `w64_scan_labels` numbers the labels at TB start and, when no branch is backward, opens them as nested blocks (last label outermost); `set_label` closes the innermost, `br`/`brcond` become `br`/`br_if depth`.  A backward branch keeps the loop scheme.  `W64_MAX_BLK` 32 → 128 | `tools/stopwatch.mjs` quiet host: **0.603 / 0.628 / 0.605 / 0.592 vs 0051 0.584 / 0.589 / 0.582 (+3.5 %)**, every new leg above every old one (a 0051 leg under a load spike read 0.523).  Profile 20 s: jit-guest 50.9 → 49.5 %, cpu-loop+devices 31.4 → 31.6 % (flat), tb-lookup 4.5 → 4.8.  Boot: bootcheck s75 1718 M / el71 1608 M / ke800 2242 M (0051: 1717 / 1608 / 2030); idlebench `--runs 2` both orders tIdle 28.2/29.8 (−5 %) with the new build second, 29.1/29.9 (+3 %) with it first — the usual order bias, boot flat.  Gates: lockstep 250e6 identical vs the native oracle, op-suite 1156/1156.  wasm +1.6 KB.  **Not gated on Firefox — see 0053** |
 | 0053 tcg/wasm64: open the batch at TB start (Firefox module budget) | Firefox on the Pixel stalled at the Siemens logo (0.76 G insns, MIPS 0); local Playwright Firefox reproduced it on every snapshot back to 0046 ("failed to allocate executable memory for module", the vCPU worker dies at ~450 M insns) while 0022 booted.  Six bisect builds (the first two were invalid — pre-AFE, the Siemens boot never reaches the phase) pinned it to the prologue cleanup `58bb2742` (2026-09-13 review session, "measured flat").  Mechanism: the open batch is created lazily inside `w64_union_type`; until the cleanup every prologue registered a lockstep import type, which opened a batch as a side effect.  After it, a TB translated right after a batch close — no helper call, so no type registration — was never staged and ran from a throwaway per-TB module: Firefox counters at the crash read modules 27.6 k vs closes + compactions 21.8 k (5.9 k temp modules, ~20 % of TBs), the good build 27.4 k vs 27.4 k.  Temp modules are never evicted, so Firefox's ~16 k-module budget runs out; Chrome has no such budget and never showed it.  Fix: `w64_batch_begin_tb()` at `tcg_out_tb_start` opens the batch explicitly; `ffboot.mjs` now prints `temp=` so the invariant is visible | Firefox: boots to idle again (v 58.9 at 60 s, 1.62 G insns, `temp=0`, errors 0).  Chrome: lockstep 250e6 identical, op-suite 1156/1156, bootcheck s75 1718 M / el71 1608 M / ke800 2408 M.  Stopwatch 0.605 vs 0052 0.596 (flat).  idlebench `--runs 2` both orders: tIdle **28.6 vs 29.6 (−3 %) with the fix listed second, 28.7 vs 29.5 (−3 %) listed first** — faster in both orders, against the order bias: a temp module is a `Module` compile per TB |
+| 0054 memory/pmb887x: MMIO write dispatch decision cached per DMAC window | after 0053 the stopwatch profile read guest 47.2 %, devices 33.8 %, memory 4.2 %, other 5.8 %.  The display DMA is one 4-byte word per request (~570 k/s) and 0048's translation window already keeps it off the flatview, but every word still paid `memory_region_dispatch_write`'s own per-access work for a window that had not changed: alias resolution, `memory_region_access_valid`, the endianness-swap test, the ioeventfd match, and `access_with_adjusted_size`'s split loop with its MAX/MIN/mask/shift arithmetic (`access_with_adjusted_size` 270 ms + `memory_access_size` 92 ms of 20.3 s).  Whether all of it can be skipped depends only on the region and the width, so `memory_region_write_direct_ok()` decides it once per window and `memory_region_dispatch_write_direct()` runs the tail — reentrancy guard, trace point and the device's write callback all kept, since all three are observable.  The DMAC caches the predicate in `pmb887x_dmac_xlat_t` (cleared on refill) and checks only the per-access alignment; whatever the predicate rejects falls through to the unchanged path.  **Closed by inspection on the way** (§ Remaining 7): a same-batch direct `return_call` for chained TBs is not possible as written — the chain slot is patched by `tb_add_jump` at runtime, long after the module is compiled, so the target is unknown at emission; and the per-exit `fidx` load is not removable, because `w64_batch_evict_oldest()` makes eviction real even though a boot shows `ensureN 0` | profile: `access_with_adjusted_size` and `memory_access_size` **gone from the profile entirely**, memory 4.2 → 3.5 %, other 5.8 → 4.1 %, the freed share moving to guest code (47.2 → 49.0 %) — ~2.1 points of non-guest work.  **Both end-to-end meters read flat**, as in 0051: stopwatch 10 alternating samples, candidate mean 0.601 (0.618/0.563/0.604/0.608/0.612) vs 0.593 (0.635/0.603/0.578/0.536/0.612) inside a baseline spread of 0.536–0.635; idlebench `--runs 2` both orders puts the *second-listed* leg 4–6 % slower whichever build it is (the order bias), so the boot is flat.  Gates: op-suite 1156/1156 three backends identical, native 4/4 displays PASS, lockstep 250e6 identical, bootcheck s75 1718 M / el71 1608 M / ke800 2198 M, Firefox boot `temp=0` errors=0 |
 
 (The 0017 row is a pointer — that patch's own docs are authoritative for
 its compute numbers; its boot numbers are idlebench's.)
@@ -540,9 +550,22 @@ commit, then `ninja-fast.sh` and the ladder.
    TB entry still pays, at ~17 M entries/s: the icount decrement (load,
    sub, brcond, store — the timing model), the chain jump (three loads,
    two compares, `return_call_indirect` through the shared table with
-   V8's signature check — a direct `return_call` for same-batch targets
-   would drop the table and signature check, untried), and the guest
-   register loads/stores from `env` (TCG's design).  Bigger TBs are not
+   V8's signature check), and the guest register loads/stores from
+   `env` (TCG's design).  **Both chain-jump ideas are closed by
+   inspection (2026-09-14), do not retry them blind**: a direct
+   `return_call` for same-batch targets cannot be emitted, because the
+   chain slot is patched by `tb_add_jump` at *runtime*, long after the
+   module is compiled — the target is simply not known at emission (it
+   would take a fixup of the staged member bytes at batch-assembly
+   time, a much larger design); and the per-exit `fidx` load cannot be
+   dropped in favour of the `reset_addr` compare alone, because
+   `w64_batch_evict_oldest()` makes eviction real — a boot reads
+   `ensureN 0`, but a long run (the phone's 177 s stopwatch) is exactly
+   where the cap bites.
+   **0054 took the per-word MMIO dispatch decision** (row 0054): the
+   destination write's validity/endianness/ioeventfd/split work is a
+   function of the region and the width only, so it is now decided once
+   per translation window.  Bigger TBs are not
    available: the firmware branches every four instructions.
    Earlier list (profile `prof-stopwatch-0049`, per word):
    `dif_tx_from_fifo` 4 % self, `pmb887x_srb_set_event` 2.3 % (two

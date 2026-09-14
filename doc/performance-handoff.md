@@ -6,6 +6,51 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-14, round eight: 0054 — the last cheap per-word item, and where the tail ends)
+
+Re-profiled the running stopwatch on 0053 (the previous profile was
+0051, two backend changes stale): guest 47.2 %, devices 33.8 %,
+tb-lookup 4.3 %, memory 4.2 %, other 5.8 %.
+
+**Landed (0054).**  The display-DMA destination write still paid all of
+`memory_region_dispatch_write`'s per-access work — validity, endianness,
+ioeventfds, `access_with_adjusted_size`'s split loop — once per word,
+for a translation window that had not changed since 0048 installed it.
+That decision is a function of the region and the access width only, so
+`memory_region_write_direct_ok()` now answers it once per window and
+`memory_region_dispatch_write_direct()` runs the tail; the reentrancy
+guard and the trace point are kept, both being observable.  Two
+profile symbols disappeared outright (`access_with_adjusted_size`,
+`memory_access_size`) and ~2.1 points of vCPU moved from device/memory
+work to guest code.
+
+**Both wall-clock meters read flat**, and that is the honest headline:
+ten alternating stopwatch samples give 0.601 vs 0.593 inside a baseline
+spread of 0.536–0.635, and idlebench in both orders shows only the
+order bias.  The evidence for 0054 is the profile delta, exactly as for
+0051.  Anyone tempted to read the +1.4 % as a win should not.
+
+**Closed by inspection, so nobody spends a build on them** (both were
+written down as open in § Remaining 7): a same-batch direct
+`return_call` for chained TBs is impossible as described — the chain
+slot is patched by `tb_add_jump` at runtime, after the module is
+compiled, so the target is unknown at emission; and the per-exit `fidx`
+load cannot go, because `w64_batch_evict_oldest()` makes eviction real
+even though a boot reads `ensureN 0`.
+
+**Housekeeping**: the submodule was on a detached HEAD — 0053 was
+committed off-branch and `wasm-browser-port` still pointed at 0052.
+Fast-forwarded (verified 0052 is an ancestor first).  Check
+`git -C qemu status -sb` before committing; the branch is what gets
+pushed.
+
+**Where this leaves the device chain.**  After 0047–0054 it is a tail of
+~1–3 % items, each below what the meters can resolve alone.  The next
+structural win is not there: it is the guest's own ~49 %, or the AOT
+cache (§ Remaining 5, costed at ~21 % of the early vCPU).  On the Pixel
+— ~5× slower per instruction than the desktop Chrome every A/B here
+runs on — that distinction is the whole game.
+
 ## Update (2026-09-13, round seven: 0053 — Firefox had been broken since the review session)
 
 Firefox on the Pixel stalled at the Siemens logo.  Not 0052: local
