@@ -1,8 +1,9 @@
 // On-screen keyboard definitions: "boards" describe the physical button
-// arrangement (any number of rows/columns/keys + optional aux column),
-// "layouts" the legends shown on a board, and applyKbdLayout() renders both
-// into #keypad/#aux-keys. app.js imports this module and hooks up input
-// handling + the layout dropdown.
+// arrangement (any number of rows/columns/keys + optional auxLeft/auxRight
+// columns for the phone's side keys), "layouts" the legends shown on a
+// board, and applyKbdLayout() renders both into
+// #keypad/#aux-keys-left/#aux-keys-right. app.js imports this module and hooks
+// up input handling + the layout dropdown.
 
 // small line-art icons matching the engraved S75 key legends
 export const KBD_ICONS = {
@@ -26,6 +27,10 @@ const NAV_CHEVRON = {
 };
 // side power button: broken circle + bar, stroke-drawn (see .key-icon-line)
 const POWER_ICON = '<svg class="key-icon-line" viewBox="0 0 14 14"><line x1="7" y1="1.2" x2="7" y2="7.2"/><path d="M4.2 3.5a4.8 4.8 0 1 0 5.6 0"/></svg>';
+// one-glyph alternates for the aux columns on narrow screens (.key-short in
+// style.css swaps them in): camera = body + lens, browser = wireframe globe
+const CAMERA_ICON = '<svg class="key-icon-line" viewBox="0 0 16 12.6"><path d="M5.5 2.8 6.7 1.2h2.6l1.2 1.6"/><rect x="1" y="2.8" width="14" height="8.8" rx="1.6"/><circle cx="8" cy="7.2" r="2.7"/></svg>';
+const GLOBE_ICON = '<svg class="key-icon-line" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.6"/><line x1="1.4" y1="7" x2="12.6" y2="7"/><ellipse cx="7" cy="7" rx="2.7" ry="5.6"/></svg>';
 // KE800 call key: the hung-up receiver lying in its cradle (arch with the
 // ends curling down — material "call_end"), as engraved on the real phone
 const CALL_ICON_HUNGUP = '<svg class="key-icon" viewBox="0 0 24 24"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.7l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.68-1.36-2.66-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>';
@@ -40,19 +45,23 @@ const END_ICON = '<svg class="key-icon key-icon-stack" viewBox="0 0 24 40">'
   + '</svg>';
 
 // a "board" describes the physical buttons: any number of rows (each with
-// its own grid columns and keys) plus an optional aux column. label may be
-// HTML (e.g. an icon). Every key also needs a KEY_TO_LINUX entry (app.js) to
-// reach qemu; keys without one are still clickable but simply send nothing.
+// its own grid columns and keys) plus optional auxLeft/auxRight columns for
+// the side keys flanking the LCD (auxLeft = left side, auxRight = right
+// side, top to bottom). label may be HTML (e.g. an icon); short is a one-glyph
+// alternate label aux keys switch to when the screen is narrow (see
+// .key-short in style.css). Every key also needs a KEY_TO_LINUX entry
+// (app.js) to reach qemu; keys without one are still clickable but simply
+// send nothing.
 export const KBD_BOARDS = {
   s75: {
-    aux: [
-      { key: "music", label: "♪", title: "Media key (note)" },
-      { key: "play", label: "▶", title: "Play / pause" },
-      { key: "ptt", label: "PTT", title: "Push to talk" },
-      { key: "camera", label: "CAM", title: "Camera" },
-      { key: "browser", label: "WWW", title: "Browser / internet" },
-      { key: "vol_up", label: "Vol+", title: "Volume up" },
-      { key: "vol_down", label: "Vol−", title: "Volume down" },
+    auxLeft: [
+      { key: "music", label: "♪", short: "♪", title: "Media key (note)" },
+      { key: "play", label: "▶", short: "▶", title: "Play / pause" },
+      { key: "ptt", label: "PTT", short: "P", title: "Push to talk" },
+      { key: "camera", label: "CAM", short: CAMERA_ICON, title: "Camera" },
+      { key: "browser", label: "WWW", short: GLOBE_ICON, title: "Browser / internet" },
+      { key: "vol_up", label: "Vol+", short: "+", title: "Volume up" },
+      { key: "vol_down", label: "Vol−", short: "−", title: "Volume down" },
     ],
     rows: [
       { cls: "krow krow-soft", cols: "1fr 1.2fr 1fr", keys: [
@@ -82,16 +91,19 @@ export const KBD_BOARDS = {
   },
 
 // LG KE800 Chocolate: 4-way pad with OK center, soft keys + up above it,
-// call / down / C below it, and side keys (vol rocker, power, camera, mp3)
-// hanging off the aux column. C maps to the board CLEAR key (backspace).
-// Legends glow red on the real phone (keyboards/LG KE800.png) → key-red.
+// call / down / C below it; side keys sit on BOTH flanks of the phone —
+// vol rocker on the left, power / camera / mp3 (top to bottom) on the
+// right. C maps to the board CLEAR key (backspace). Legends glow red on
+// the real phone (keyboards/LG KE800.png) → key-red.
 ke800: {
-  aux: [
-    { key: "vol_up", label: "Vol+", title: "Volume up (left side)" },
-    { key: "vol_down", label: "Vol−", title: "Volume down (left side)" },
-    { key: "end", label: POWER_ICON, title: "Power / end call (side)" },
-    { key: "camera", label: "CAM", title: "Camera (side)" },
-    { key: "music", label: "MP3", title: "Music player (side)" },
+  auxLeft: [
+    { key: "vol_up", label: "Vol+", short: "+", title: "Volume up (left side)" },
+    { key: "vol_down", label: "Vol−", short: "−", title: "Volume down (left side)" },
+  ],
+  auxRight: [
+    { key: "end", label: POWER_ICON, short: POWER_ICON, title: "Power / end call (right side, top)" },
+    { key: "camera", label: "CAM", short: CAMERA_ICON, title: "Camera (right side)" },
+    { key: "music", label: "MP3", short: "♪", title: "Music player (right side)" },
   ],
   rows: [
     { cls: "krow krow-soft", cols: "1fr 1.2fr 1fr", keys: [
@@ -186,6 +198,12 @@ function keyButton(def, sub) {
   main.className = "key-main";
   main.innerHTML = def.label ?? def.key;
   btn.appendChild(main);
+  if (def.short) {
+    const shortEl = document.createElement("span");
+    shortEl.className = "key-short";
+    shortEl.innerHTML = def.short;
+    btn.appendChild(shortEl);
+  }
   const subHtml = sub ?? def.sub ?? "";
   if (subHtml) {
     const subEl = document.createElement("span");
@@ -210,8 +228,12 @@ export function applyKbdLayout(id, onRender) {
     for (const def of row.keys) rowEl.appendChild(keyButton(def, layout.subs[def.key]));
     keypad.appendChild(rowEl);
   }
-  const aux = document.getElementById("aux-keys");
-  aux.replaceChildren(...(board.aux ?? []).map((def) => keyButton(def)));
-  aux.style.display = board.aux?.length ? "" : "none";
+  // side columns: auxLeft = left flank, auxRight = right flank (if the board
+  // has one); hidden entirely when a board defines no keys for a side
+  for (const [id, defs] of [["aux-keys-left", board.auxLeft], ["aux-keys-right", board.auxRight]]) {
+    const el = document.getElementById(id);
+    el.replaceChildren(...(defs ?? []).map((def) => keyButton(def)));
+    el.style.display = defs?.length ? "" : "none";
+  }
   onRender?.();
 }

@@ -768,7 +768,8 @@ function sendKey(phoneKey, down) {
 // press-and-hold wiring for every on-screen key; re-run after each keyboard
 // render since the buttons are rebuilt per layout
 function bindKeypad() {
-  for (const btn of document.querySelectorAll("#keypad button[data-key], #aux-keys button[data-key]")) {
+  for (const btn of document.querySelectorAll(
+      "#keypad button[data-key], .aux-keys-left button[data-key], .aux-keys-right button[data-key]")) {
     const key = btn.dataset.key;
     const press = (ev) => {
       ev.preventDefault();

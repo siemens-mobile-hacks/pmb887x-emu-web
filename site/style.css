@@ -31,9 +31,10 @@ main {
 }
 
 /* ---------------- phone panel ---------------- */
-/* padding-left reserves room for the absolutely-positioned .aux-keys column
+/* padding-left reserves room for the absolutely-positioned .aux-keys-left column
    (64px keys + 10px gap) so it participates in flex layout and can never be
-   clipped by the viewport when the window gets narrow */
+   clipped by the viewport when the window gets narrow; boards with a right
+   column get matching padding-right via :has() further down */
 .phone-panel { display: flex; flex-direction: column; align-items: center; gap: 1rem; padding-left: 74px; }
 
 .lcd-wrap { position: relative; }
@@ -59,7 +60,7 @@ main {
 .krow-call    { grid-template-columns: 1fr 1.2fr 1fr; }
 .krow-digits  { grid-template-columns: repeat(3, 1fr); }
 
-.keypad button, .aux-keys button {
+.keypad button, .aux-keys-left button, .aux-keys-right button {
   font: inherit; color: var(--text); background: var(--panel2);
   border: 1px solid var(--border); border-radius: 8px;
   padding: 0.55rem 0.2rem; cursor: pointer; user-select: none;
@@ -85,8 +86,10 @@ main {
 .key-sub .sub-pair svg { position: absolute; margin: 0; }
 .key-sub .sub-pair svg.icon-flash { top: 0; right: 0; height: 1.05rem; }
 .key-sub .sub-pair svg.icon-arrow { bottom: 0; left: 0; height: 0.8rem; }
-.keypad button:hover, .aux-keys button:hover { border-color: var(--accent); }
-.keypad button:active, .keypad button.pressed, .aux-keys button:active, .aux-keys button.pressed {
+.keypad button:hover, .aux-keys-left button:hover, .aux-keys-right button:hover { border-color: var(--accent); }
+.keypad button:active, .keypad button.pressed,
+.aux-keys-left button:active, .aux-keys-left button.pressed,
+.aux-keys-right button:active, .aux-keys-right button.pressed {
   background: var(--accent); color: #08131f; border-color: var(--accent);
 }
 .keypad button:active .key-sub, .keypad button.pressed .key-sub { color: #08131f; }
@@ -114,32 +117,39 @@ main {
    .key-send so the red wins on the call key */
 .keypad .key-red { color: #ef1d24; }
 
-/* secondary column: auxiliary keys, left of the LCD, vertically centered on it */
-.aux-keys {
-  position: absolute; top: 50%; right: calc(100% + 10px); transform: translateY(-50%);
+/* side columns: auxiliary keys flanking the LCD, vertically centered on it */
+.aux-keys-left, .aux-keys-right {
+  position: absolute; top: 50%; transform: translateY(-50%);
   display: flex; flex-direction: column; gap: 6px; width: 64px;
 }
-.aux-keys button { font-size: 0.78rem; }
+/* left flank hangs off the LCD's left edge (KE800: volume rocker) */
+.aux-keys-left { right: calc(100% + 10px); }
+/* right-hand twin (KE800: power/camera/MP3 opposite the volume rocker) */
+.aux-keys-right { left: calc(100% + 10px); }
+.aux-keys-left button, .aux-keys-right button { font-size: 0.78rem; }
+/* a populated right column needs matching breathing room on that side */
+.phone-panel:has(#aux-keys-right:not(:empty)) { padding-right: 74px; }
+/* one-glyph alternates for the aux keys — only shown by the narrow-screen
+   media query at the bottom, so the side columns can shrink to one
+   character wide and still flank the LCD when space runs out */
+.aux-keys-left .key-short, .aux-keys-right .key-short { display: none; }
 
 /* keyboard letter layout picker (under the keypad) */
 .kbd-row { display: flex; align-items: center; gap: 0.6rem; width: 320px; }
 .kbd-row label { flex: none; font-size: 0.78rem; color: var(--muted); }
 .kbd-row select { flex: 1; min-width: 0; }
 
-/* very narrow screens: the padded panel (394px) no longer fits, so let the
-   aux keys flow as a centered row under the LCD instead of hanging left */
+/* very narrow screens: the padded panel no longer fits — keep the side
+   columns flanking the LCD, but shrink them to one-character keys */
 @media (max-width: 420px) {
-  .phone-panel { padding-left: 0; }
+  .phone-panel { padding-left: calc(1.7rem + 4px); }
+  .phone-panel:has(#aux-keys-right:not(:empty)) { padding-right: calc(1.7rem + 4px); }
   .lcd-overlay { inset: 6px 6px auto; height: 352px; }
-  .aux-keys {
-    position: static; transform: none;
-    flex-direction: row; flex-wrap: wrap; justify-content: center;
-    width: auto; padding-top: 6px;
-  }
-  /* vertical column shows Vol+ above Vol− (DOM order); in the horizontal
-     row swap just that pair so Vol− sits left of Vol+ */
-  #aux-keys button[data-key="vol_down"] { order: 1; }
-  #aux-keys button[data-key="vol_up"]   { order: 2; }
+  .aux-keys-left { width: 1.7rem; right: calc(100% + 4px); }
+  .aux-keys-right { width: 1.7rem; left: calc(100% + 4px); }
+  .aux-keys-left button, .aux-keys-right button { font-size: 0.7rem; padding: 0.5rem 0.1rem; }
+  .aux-keys-left .key-main, .aux-keys-right .key-main { display: none; }
+  .aux-keys-left .key-short, .aux-keys-right .key-short { display: block; }
 }
 
 /* ---------------- control panel ---------------- */

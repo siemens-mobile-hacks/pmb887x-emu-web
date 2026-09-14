@@ -21,8 +21,9 @@
       <canvas id="lcd" width="132" height="176"></canvas>
       <div id="lcd-overlay" class="lcd-overlay">press “Start” to boot</div>
 
-      <!-- secondary column: floats to the left of the LCD, vertically centered on it -->
-      <div id="aux-keys" class="aux-keys">
+      <!-- side columns: float to the left/right of the LCD, vertically
+           centered on it — keyboards.js fills them per phone layout -->
+      <div id="aux-keys-left" class="aux-keys-left">
         <button data-key="music"   title="Media key (note)">♪</button>
         <button data-key="play"    title="Play / pause">▶</button>
         <button data-key="ptt"     title="Push to talk">PTT</button>
@@ -31,6 +32,9 @@
         <button data-key="vol_up"   title="Volume up">Vol+</button>
         <button data-key="vol_down" title="Volume down">Vol−</button>
       </div>
+      <!-- right-side twin (e.g. KE800 power/camera/MP3); stays empty and
+           hidden until a board with auxRight keys is applied -->
+      <div id="aux-keys-right" class="aux-keys-right"></div>
     </div>
 
       <div id="keypad" class="keypad">
