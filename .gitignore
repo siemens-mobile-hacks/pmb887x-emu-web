@@ -52,3 +52,6 @@ tests/tcg-isa/*.elf
 /tests/tcgbench/*.o
 /tests/tcgbench/*.elf
 /tests/tcgbench/*.bin
+
+# playwright browser download (tools/chrome) — a local binary, never committed
+tools/chrome/

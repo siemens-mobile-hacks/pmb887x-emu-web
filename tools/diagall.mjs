@@ -41,6 +41,7 @@ const NAMES = [
   "lcCall", "keyGenFlush", "keyGenInval", "keyGenPage","difMuxRebuild","difTxWord","dmacBurst","dmacSchedTimer","dmacXlatFill","gptuTimer",
   "ioRecomp", "ioBarrierEvict", "ioBarrierSplit",
   "ioLdFast", "vclockRead", "ioStFast", "tpuTimer", "tpuRearm",
+  "mlWake", "mlWakeDup", "tpuRamW", "tpuRamSkip",
 ];
 
 const b = await chromium.launch({ headless: true });

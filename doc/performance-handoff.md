@@ -6,6 +6,147 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-14, round twelve: 0067–0069 — the wake, the TPU RAM, and a double rebuild)
+
+Round eleven left two named targets.  The first one turned out to be
+the round's whole result; the second is still open.
+
+| what | where it went |
+|---|---|
+| 0067 no virtual-clock notify for an empty timerlist | main-loop wakes **38,481/s → 66/s** |
+| 0068 no TPU advance for an event-RAM write that cannot move the deadline | **77 %** of the S75's event-RAM writes; `vclock/s` −42 % |
+| 0069 no double hflags rebuild per CPSR write | hflags **3.9 % → 3.2 %** of the vCPU |
+
+**End to end, against 0066**, interleaved, `--state idle`, host load
+5–10 (a genuinely quiet machine this time — see "Where the phones
+stand"):
+
+| | 0066 | new | |
+|---|---|---|---|
+| **S75 idle** MIPS | 29.7, 30.3, 29.4 | 46.8, 47.3, 45.3 | **+56 %**, 3/3 |
+| **S75 idle** v/wall | 31.4, 31.8, 30.8 | 49.2, 49.4, 47.7 | **+56 %**, 3/3 |
+| **EL71 idle** MIPS | 45.3, 44.2, 44.8 | 56.8, 56.9, 57.1 | **+27 %**, 3/3 |
+| **EL71 idle** v/wall | 17.0, 16.6, 17.0 | 21.5, 21.5, 21.5 | **+27 %**, 3/3 |
+
+The KE800 is untouched by construction: it runs `icount=none`, and all
+three patches are either gated on icount (0067) or aimed at a device it
+barely uses (0068 — it writes the TPU event RAM 3.4k times a second, not
+1.5M).
+
+### 0067: the wake cost was never the futex
+
+Round eleven's own `PROF_FN` stacks had already named the path —
+`aio_timerlist_notify <- qemu_clock_notify` — but read it as "the idle
+warp notifies twice".  It was simpler than that.  `qemu_clock_notify()`
+fans a notify out to **every** timerlist on the clock, and
+`qemu_aio_context`'s QEMU_CLOCK_VIRTUAL list is empty for this machine's
+whole life: every pmb887x device arms its timers on `main_loop_tlg`.  A
+notify means "recompute your deadline"; a list with no armed timer has
+no deadline to recompute.  Each one still woke the parked main-loop
+thread through a futex.
+
+**The futex call is not what it cost.**  What it cost was the BQL round
+trip behind it: the woken thread takes the lock, finds nothing to do and
+parks again, and the vCPU pays for the handoff.  That is why deleting
+38k wakes/s is worth **+37 %** on a board whose vCPU those wakes were
+only ~15 % of by self-time.  The main-loop worker now sits at **99.4 %
+`futex_wait`**, against 91.2 % before.
+
+It has to be gated on icount.  Without it the *main loop* is what runs
+QEMU_CLOCK_VIRTUAL timers, so there the notify is not spare capacity —
+it is the kick that keeps the loop iterating.  An ungated skip measured
+11–14 % slower on the KE800 boot and produced a run that never reached
+idle.  (That meter then drifted 45 % between same-binary runs the same
+afternoon, so the magnitude is unproven — but gating costs nothing,
+because the boards paying the 38k wakes/s are exactly the icount ones.)
+
+### 0068: 84 % of the S75's MMIO stores are one register
+
+Every TPU register write ends in `tpu_update_state()` →
+`tpu_update_timer()` → `tpu_advance()`, which reads the virtual clock.
+A counter says the S75 idle screen does that **1.48M times a second**,
+and **96 %** of those writes are to the TPU *event RAM* — 84 % of every
+MMIO store the board makes.  Caller stacks put **76 % of `icount_get()`**,
+then the vCPU's top symbol at 7.7 %, under that single path.
+
+The event RAM is plain memory: `tpu_run_events()` re-reads it on every
+scan and caches nothing.  So a word can only change `p->next` while it
+is inside the part of the current frame's list still to be scanned,
+`[ceap, eapt)`.  Everything else — the RF half of the RAM, entries the
+frame has consumed, entries past `eapt`, and every word once the list
+has finished — is read no earlier than the next frame, where
+`tpu_advance()` runs anyway because the QEMU timer is armed for it.
+77 % of the writes take the early return.
+
+### The verification trick that earned its keep twice
+
+Both 0068 and 0069 rest on "this recomputation cannot change anything".
+Both were checked by building a variant that **takes the skip but does
+the work anyway and counts the disagreements**, then running every board
+through both states.
+
+It paid immediately.  0068's first predicate looked violated 840k times
+per 20 s window — until the magnitude was measured: **max 1 ns, none
+above 64 ns**.  That residue is `tpu_ticks_to_ns()` rounding
+(`ticks_to_ns(a) + ticks_to_ns(b) != ticks_to_ns(a+b)`) against a
+~232 ns TPU tick, on a clock icount quantises to 8 ns per instruction.
+Counting violations alone would have killed a good patch; counting
+their size proved it.  0069's check came back **51.8M skips, 0
+disagreements** across three boards and two states.
+
+Neither would have been caught by the gates: the lockstep runs both legs
+from the same tree, so it checks JIT-vs-wasm equivalence, never a
+behaviour change against the previous revision.
+
+### What is left
+
+A fresh S75 idle profile, back-to-back with the previous build:
+
+| | after 0066 | now |
+|---|---|---|
+| `icount_get` | 7.7 % | **4.2 %** |
+| `do_st_mmio_1p` / `do_ld_mmio_1p` | 3.1 / 2.5 % | 3.6 / 2.9 % |
+| `helper_lookup_tb_ptr_lc` | 2.4 % | 2.7 % |
+| `cpu_exec_loop` | 2.3 % | 2.6 % |
+| hflags rebuild | 3.6 % | 3.2 % |
+| `tpu_advance` | 4.1 % | 1.7 % |
+| BQL / mutex | ~3.9 % | ~3.7 % |
+
+The main loop is no longer on the list at all.  Note the shares that
+*rose*: nothing got slower — the denominator shrank.
+
+**1. `icount_get`, still the top symbol at 4.2 %** and ~1.2M calls/s on
+the S75 (down from 2.0M).  Round eleven's note still stands: the
+barriers are not the cost (an `atomic.fence` microbenchmarks at 0.2 ns
+here), and what is left to try is making the read inlinable into
+`qemu_clock_get_ns` without pulling `CPUState` into
+`cpu-timers-internal.h`.  Worth knowing first: `icount_get_locked` and
+`icount_get_raw_locked` are *already* inlined into it (they are absent
+from the symbol map), so the remaining chain is two calls, not four.
+
+**2. The hflags rebuild is still 3.2 %**, and most of what
+`rebuild_hflags_a32()` computes is dead on an ARM926EJ-S: `arm_el_is_aa64`,
+`arm_is_el2_enabled`, `arm_hcr_el2_eff`, `arm_fgt_active`, SME — all
+constant-false for this CPU, each one a call the wasm backend cannot
+inline.  A per-CPU "no EL2, no AArch64, no FGT, no SME" flag computed at
+realize, with a short path behind it, is the shape to try.  It is
+generic `target/arm` code, so the op-suite is the gate.
+
+**3. `helper_lookup_tb_ptr_lc` at 2.7 %** — the indirect-branch
+inline-cache miss path, untouched since 0044 and never profiled with
+its own caller stacks.
+
+**Where the phones stand.**  Driven every 700 ms, the desktop v/wall ÷ 5
+≈ the Pixel 8 Pro's.  The S75 idle screen is now v/wall ≈ 48 here.
+Measure on a quiet host: this round started at external load 16–22,
+where the KE800 boot meter drifted **45 % between runs of the same
+binary**, and finished at load 5–10, where three S75 pairs agreed to
+within 2 points.  **Use `--state idle`, not `--state menu`.**  When a
+change is below the wall-clock meter's resolution (0069 was: three
+pairs came out +2.4/−4.4/+8.1 % on a real 0.7 % win), back-to-back
+profiles settle it — self-time shares do not move with host load, and
+the unchanged symbols are the control.
+
 ## Update (2026-09-14, round eleven: 0058–0066 — the device access path)
 
 **What this round is about.**  Round ten fixed two board-specific
@@ -91,7 +232,7 @@ the link is single-threaded and open-ended on a 27 MB module, and (c)
 function merging would break the `ASYNCIFY_ONLY` list that 0031 depends
 on — a silent 18 % regression or worse.  Not without an Asyncify audit.
 
-### What is left
+### What is left (as of round eleven; superseded above)
 
 A fresh S75 profile after the round (idle screen, back-to-back with the
 previous build, so the proportions are comparable):

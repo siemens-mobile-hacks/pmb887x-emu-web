@@ -108,6 +108,65 @@ file is the "why" behind them and behind the timing model.
   halted, not starved — check `halts/s` and the recompile counters before
   reading it as a problem.
 
+## What a cross-thread wake really costs (round twelve)
+
+The wake is not the futex call.  It is the **BQL round trip behind it**:
+the woken thread takes the lock, finds nothing to do, and parks again,
+and the thread that woke it pays for the handoff.
+
+Deleting 38k useless wakes a second was worth **+37 % MIPS** on the S75,
+on a board whose vCPU those wakes accounted for only ~15 % of by
+self-time.  Nothing in the self-time profile predicts that ratio, and
+nothing would have, because the cost lands on the *other* thread and
+comes back as lock contention.  When a profile shows a parked thread
+being woken at kHz rates, size the fix by the wake count, not by the
+symbol's share.
+
+Corollary for this port: `qemu_clock_notify()` fans out to every
+timerlist on the clock, and an empty one still costs a full wake.  Check
+for empty-list fan-out before assuming a notify is meaningful.
+
+And the asymmetry that nearly made it a regression: **who runs the
+timers decides whether the wake is waste.**  Under icount the vCPU
+thread runs QEMU_CLOCK_VIRTUAL timers, so waking the main loop for them
+is pure loss.  With `icount=none` — the LG boards — the main loop *is*
+the timer runner, and the same notify is the kick that keeps it
+iterating.  Gate on `icount_enabled()`, not on the shape of the code.
+
+## "This recomputation cannot change anything" — verify, don't argue
+
+Two of round twelve's three patches rest on that claim.  The way to
+check it is a build that **takes the skip but does the work anyway and
+counts the disagreements**, run across every board and state.  It is one
+build and one measurement run, and it is the only check that sees a
+behaviour change against the *previous revision* — the lockstep gate
+runs both legs from the same tree, so it proves JIT-vs-wasm equivalence
+and nothing about whether the patch altered the machine.
+
+**Count the size of a disagreement, not just its existence.**  0068's
+predicate looked violated 840k times per 20 s window.  Measuring the
+magnitude showed **max 1 ns, none above 64 ns** — `tpu_ticks_to_ns()`
+rounding (`ticks_to_ns(a) + ticks_to_ns(b) != ticks_to_ns(a+b)`) against
+a ~232 ns device tick, on a clock icount already quantises to 8 ns per
+instruction.  A violation *counter* would have killed a patch worth
++12 %; a violation *histogram* shipped it.  0069's came back 51.8M
+skips, 0 disagreements.
+
+## When the change is smaller than the meter
+
+0069 is a real 0.7 % win whose three interleaved wall-clock pairs came
+out **+2.4 %, −4.4 %, +8.1 %**.  Back-to-back profiles of the same state
+settle that case: self-time *shares* do not move with host load, and the
+symbols the patch does not touch are the control.  0069 read
+`rebuild_hflags_a32` 2.4 → 2.0 % and `arm_rebuild_hflags` 1.5 → 1.2 %
+with `icount_get` 4.2/4.2 and `do_st_mmio_1p` 3.6/3.6 unmoved — which is
+a result, where the wall-clock numbers were not.  Report it as a
+mechanism result and say so.
+
+Related: watch for shares that *rise* across a round.  After round
+twelve `do_st_mmio_1p` reads 3.1 → 3.6 % and `cpu_exec_loop` 2.3 →
+2.6 %.  Nothing got slower; the denominator shrank.
+
 ## What a wasm hot path actually costs
 
 Round eleven (0058–0064) profiled the device access path and found that

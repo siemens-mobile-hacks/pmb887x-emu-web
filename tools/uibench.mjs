@@ -103,6 +103,8 @@ async function snap() {
       ioRecomp: g(65), ioBarrierEvict: g(66), ioBarrierSplit: g(67),
       ioLdFast: g(68), vclockRead: g(69), ioStFast: g(70),
       tpuTimer: g(71), tpuRearm: g(72),
+      mlWake: g(73), mlWakeDup: g(74),
+      tpuRamW: g(75), tpuRamSkip: g(76),
       tbGen: g(7), modCount: g(34), jcFlush: g(16),
     };
   });
@@ -182,6 +184,10 @@ async function measure(name, drive) {
     ioStFastPerS: Math.round(d.ioStFast / wall),
     tpuTimerPerS: Math.round(d.tpuTimer / wall),
     tpuRearmPerS: Math.round(d.tpuRearm / wall),
+    mlWakePerS: Math.round(d.mlWake / wall),
+    mlWakeDupPerS: Math.round(d.mlWakeDup / wall),
+    tpuRamWPerS: Math.round(d.tpuRamW / wall),
+    tpuRamSkipPerS: Math.round(d.tpuRamSkip / wall),
     vclockReadPerS: Math.round(d.vclockRead / wall),
     tbGenPerS: Math.round(d.tbGen / wall), modCountPerS: Math.round(d.modCount / wall),
     jcFlushPerS: Math.round(d.jcFlush / wall),
@@ -191,6 +197,7 @@ async function measure(name, drive) {
     `dmacBurst/s=${rec.dmacBurstPerS} gptuTimer/s=${rec.gptuTimerPerS} fills/s=${rec.fillsPerS} ` +
     `ioRecomp/s=${rec.ioRecompPerS} barrierEvict/s=${rec.ioBarrierEvictPerS} barrierSplit/s=${rec.ioBarrierSplitPerS} ` +
     `ioLdFast/s=${rec.ioLdFastPerS} ioStFast/s=${rec.ioStFastPerS} vclock/s=${rec.vclockReadPerS} tpuTimer/s=${rec.tpuTimerPerS} tpuRearm/s=${rec.tpuRearmPerS} ` +
+    `mlWake/s=${rec.mlWakePerS} mlWakeDup/s=${rec.mlWakeDupPerS} tpuRamW/s=${rec.tpuRamWPerS} tpuRamSkip/s=${rec.tpuRamSkipPerS} ` +
     `tbGen/s=${rec.tbGenPerS} mod/s=${rec.modCountPerS} jcFlush/s=${rec.jcFlushPerS} wall=${rec.wall}`);
   return rec;
 }
