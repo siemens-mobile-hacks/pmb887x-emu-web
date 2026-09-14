@@ -6,7 +6,7 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
-## Update (2026-09-14, round eleven: 0058–0065 — the device access path)
+## Update (2026-09-14, round eleven: 0058–0066 — the device access path)
 
 **What this round is about.**  Round ten fixed two board-specific
 mechanisms; this one took apart the thing all three boards spend most
@@ -16,7 +16,7 @@ driven-menu state that is **1.2 M MMIO accesses/s on the EL71 and
 S75.  A `wprof2` profile of the S75 vCPU worker showed the guest's own
 generated code at ~24 % and the MMIO path at ~66 %: **one device
 register read cost ~170 ns**, against ~7 cycles for a guest
-instruction.  Eight patches took pieces out of that 170 ns.
+instruction.  Nine patches took pieces out of that 170 ns.
 
 | what | where it went |
 |---|---|
@@ -28,23 +28,26 @@ instruction.  Eight patches took pieces out of that 170 ns.
 | 0063 lean BQL pair | BQL symbols **4.6 % → 2.4 %** (idle); 15.8 % in menu |
 | 0064 clock read without the accel frame | `cpus_get_virtual_clock` 2.0 % → gone |
 | 0065 one clock notify per idle round | the vCPU's cross-thread wakes **−27 %** |
+| 0066 no double TPU advance per write | `tpu_advance` **5.8 % → 2.9 %**, `icount_get` 6.4 % → 4.5 % |
 
 **End to end, against 0057** (the round-ten tip), interleaved,
 `--state idle` because it is the reproducible one, on a host at
 external load ~40 — so treat the magnitudes as a floor:
 
-| S75 idle | new | 0057 |
-|---|---|---|
-| MIPS | 18.5, 19.3 | 15.6, 16.9 (**+16 %**, 2/2) |
-| v/wall | 11.4, 12.6 | 8.6, 9.9 (**+30 %**, 2/2) |
-| MMIO stores/s | 434 k, 487 k | 327 k, 379 k (**+30 %**) |
+| | new | 0057 | |
+|---|---|---|---|
+| **S75 idle** MIPS | 14.6, 19.3, 15.8 | 12.2, 12.9, 13.1 | **+30 %**, 3/3 |
+| **S75 idle** v/wall | 15.0, 20.3, 16.5 | 12.3, 13.3, 11.0 | **+41 %**, 3/3 |
+| **S75 idle** MMIO ld/s | 358 k, 481 k, 391 k | 292 k, 317 k, 261 k | **+41 %**, 3/3 |
+| **EL71 idle** MIPS | 30.8, 23.8 | 25.6, 19.3 | **+21 %**, 2/2 |
+| **EL71 idle** v/wall | 11.6, 9.0 | 9.6, 7.4 | **+21 %**, 2/2 |
 
-The EL71 and KE800 legs of that run are **not** usable: at that load
-neither board had reached the same state in both legs (`fills/s` 12 727
-against 81 on the EL71 — one had settled and the other had not).  Their
-per-patch numbers, taken earlier at load 5–11, are in the playbook's
-"What landed" rows: EL71 menu MIPS +6.9 % and fps +41 % for 0059 alone,
-v/wall +21 % for 0062 alone.
+The EL71 needs `--settle 150`, not 90: at this load 90 s leaves one leg
+still filling TLBs (`fills/s` 12 727 against 81) and the pair is
+meaningless — **check `fills/s` matches between legs before believing a
+number.**  The KE800 is untouched by most of this round (it runs
+`icount=none`, so 0058/0060/0064/0065 do not apply to it); its
+round-ten numbers stand.
 
 **The two findings worth carrying forward.**
 
