@@ -7,8 +7,8 @@
 #
 # Usage (bundle first — the Dockerfile COPYs it):
 #   scripts/bundle-dist.sh
-#   VIRTUAL_HOST=emu.example.org \
-#   LETSENCRYPT_HOST=emu.example.org \
+#   VIRTUAL_HOST=emu.test \
+#   LETSENCRYPT_HOST=emu.test \
 #   LETSENCRYPT_EMAIL=you@example.org \
 #     docker compose up -d --build
 #
@@ -31,12 +31,13 @@ services:
       - "80"
     environment:
       # picked up by jwilder/nginx-proxy via the docker socket
-      VIRTUAL_HOST: ${VIRTUAL_HOST:-emu.example.org}
+      VIRTUAL_HOST: ${VIRTUAL_HOST:-emu.test}
       VIRTUAL_PORT: "80"
-      # uncomment once DNS for the host points here and you want a real
-      # TLS cert from the letsencrypt companion:
-      #LETSENCRYPT_HOST: ${LETSENCRYPT_HOST:-emu.example.org}
-      #LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-you@example.org}
+      # picked up by the letsencrypt companion via the docker socket
+      # (needs DNS for the host to point at the proxy; the http→https
+      # redirect appears automatically once the cert is issued)
+      LETSENCRYPT_HOST: ${LETSENCRYPT_HOST:-emu.test}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-you@example.org}
 networks:
   default:
     name: nginx-proxy
