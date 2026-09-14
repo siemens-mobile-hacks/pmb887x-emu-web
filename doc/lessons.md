@@ -70,6 +70,44 @@ file is the "why" behind them and behind the timing model.
   (0034). `one-insn-per-tb` hides this class of bug, which is why the
   lockstep gate stayed green.
 
+- **A direct-mapped fix-once cache can thrash into a fix-never loop**
+  (0056, 2026-09-14).  The io-barrier set was 64 slots indexed by
+  `(pc >> 2)`; on the LG boards, which take this path for *every* mid-TB
+  MMIO because they run `icount=none`, two hot MMIO insns shared a slot
+  and evicted each other on every pass.  Nothing was ever kept out of the
+  middle of a TB, so each pass paid an unwind + `tb_phys_invalidate` +
+  retranslation + a wasm module — ~800/s, which caps the board at about
+  one TB per recompile (~1 MIPS) whenever it has work.  Two consequences
+  worth carrying: `(pc >> 2)` aliases adjacent **Thumb** insns onto one
+  slot, and a path with no counter is a path nobody can see — `ioRewind`
+  counted only the ROM-device branch, so the LG branch was invisible for
+  as long as it existed.  `ioRecomp`/`ioBarrierEvict`/`ioBarrierSplit`
+  now cover it.
+
+## The board you measure is the board you fix
+
+- **Rounds 4–9 optimized the S75 because that is what the meters
+  measured.**  When the user reported EL71 and KE800 "very much behind",
+  both turned out to be mechanisms that no S75 meter could see: the LG's
+  io-recompile thrash (0056) needs `icount=none`, and the EL71's subpage
+  MMIO re-dispatch (0057) needs a *hot register in a region smaller than
+  a target page* — the S75's hot register is in the TPU (`0x2000`, whole
+  pages), the EL71's in the STM (`0x30`).  Nine rounds of S75 profiles
+  contained no `subpage_*` symbol at all.
+- **The display cost scales with the panel, and only two of the three
+  boards are 240×320.**  S75 is 132×176 (ssd1286), EL71 (jbt6k71) and
+  KE800 (r63400) are 240×320 — 3.3× the pixels through the same per-byte
+  `ssi_transfer` → `lcd_transfer` chain, and the LCD data path is one
+  byte per call regardless of panel.
+- **`tools/uibench.mjs` is the per-board meter** (`--board s75|el71|ke800`,
+  `--state idle|menu|both`).  Use `--settle <s>` rather than its rate
+  detector whenever runs must be comparable: a boot has compile-bound
+  stretches that read as "quiet" and end the wait 100 s early.
+- **On an `icount=none` board v/wall is 1.0 by construction**, so MIPS and
+  fps are the numbers; and a low idle MIPS there means the guest is
+  halted, not starved — check `halts/s` and the recompile counters before
+  reading it as a problem.
+
 ## Emscripten runtime
 
 - **Asyncify breaks cross-worker `pthread_cond` wakeups**: signals from

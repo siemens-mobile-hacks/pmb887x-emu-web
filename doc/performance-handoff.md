@@ -6,6 +6,73 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-14, round ten: 0056 + 0057 — the other two phones)
+
+**Read this if you are about to optimize the S75.**  Rounds 4–9 all
+measured the S75, and its meters had gone flat.  The user's report was
+"mostly real time on the S75, EL71 and KE800 still very much behind",
+and both of those turned out to be *board-specific* mechanisms that no
+S75 meter could ever see.  The lesson is in
+[lessons.md](lessons.md) ("the board you measure is the board you
+fix"): before the next round of per-cent hunting, run the new meter on
+all three boards.
+
+**The meter that was missing.**  `tools/uibench.mjs` is the S75
+stopwatch generalized: it boots any board, waits for it to settle, and
+measures a fixed window twice — `idle` (no input) and `menu` (the
+board's open-menu / back-to-idle key pair pressed every 2 s, which
+repaints the whole screen).  No reference image, so it works on any
+firmware.  It reports MIPS, v/wall, fps, halts/s and the display and
+dispatch counters per second.  `--settle <s>` instead of the rate
+detector whenever the number must be comparable across runs — a boot has
+compile-bound stretches that read as "quiet".
+
+The first run of it said what the S75 could not:
+
+| board | idle v/wall | menu v/wall | menu MIPS | menu fps |
+|---|---|---|---|---|
+| S75 | 22.0 | 15.0 | 31 | 9.9 |
+| EL71 | 14.9 | 6.5 | 60 | 12.6 |
+| KE800 | n/a (`icount=none`) | 1.0 | **0.8** | **0** |
+
+**KE800 (0056) — it was not slow, it was stuck.**  The LG boards run
+`icount=none`, so every mid-TB MMIO access takes the stock
+`cpu_io_recompile()`: a JS-exception unwind, `tb_phys_invalidate` of the
+running TB (a whole-jump-cache flush, the TB being CF_PCREL), a
+retranslation and a new `WebAssembly.Module`.  The io-barrier set from
+0014 exists to make that a one-time cost per faulting insn, but at 64
+direct-mapped slots on `(pc >> 2)` two hot MMIO insns simply evicted each
+other forever.  The board sat at ~800 recompiles/s — and ~800
+retranslations, jump-cache flushes and modules per second — which caps it
+at about one TB per recompile, i.e. ~1 MIPS, whenever it has anything to
+run.  With the set at 4096 × 2 ways on `(pc >> 1)`: menu **0.8–1.8 → 25–43
+MIPS, 0 → 5–10 fps**, `ioRecomp` 1/s, `barrierEvict` 0/s.  The idle screen
+is ~1 MIPS either way — an idle LG guest is halted, so that number was
+never the churn.
+
+**EL71 (0057) — a device smaller than a page.**  A target page shared by
+several regions is represented by a subpage container, the TLB fills with
+the container, and the container re-enters the flatview on every access
+*and* blocks the fill-time dispatch cache.  Every pmb887x device under
+1 KB is one (STM `0x30`, GPTU `0x100`, SCU `0x200`, VIC `0x2d8`); the
+EL71 firmware polls the STM, so ~22 % of its vCPU was in the
+re-dispatch.  The S75's hot register is in the TPU (`0x2000`, whole
+pages), which is exactly why nine rounds of S75 profiles never showed a
+single `subpage_*` symbol.  Resolving the leaf once at fill time, with
+the run of offsets it backs and an offset delta, removed every one of
+those symbols from the profile: **EL71 menu v/wall +10 %**, and — the
+surprise — **S75 menu MIPS +22 %** and the J2ME stopwatch +9..+35 %.  So
+the S75 had small-region traffic too; it was just spread thinly enough
+under the dispatch helpers to never rank.
+
+**What this leaves.**  The EL71's remaining top two are `io_prepare`
+(7.1 %) and `icount_get` (6.9 %) — the per-access icount bookkeeping on a
+firmware that polls the system timer ~400 k times/s — and after them the
+240×320 display chain (it pushes 4.6× the DIF words of the S75's
+132×176 at the same frame rate).  Neither is sized yet.  The KE800 now
+looks like a normal board and has never been profiled in its working
+state.
+
 ## Update (2026-09-14, round nine: 0055 — a negative result that closes the codegen-volume direction)
 
 **Read this before picking a target.** Round nine's product is mostly

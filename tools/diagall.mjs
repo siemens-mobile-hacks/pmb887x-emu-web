@@ -39,6 +39,7 @@ const NAMES = [
   "closeN", "compactN", "ensureN",
   "lcFill", "lcVhit", "lcVbad", "keyGen",
   "lcCall", "keyGenFlush", "keyGenInval", "keyGenPage","difMuxRebuild","difTxWord","dmacBurst","dmacSchedTimer","dmacXlatFill","gptuTimer",
+  "ioRecomp", "ioBarrierEvict", "ioBarrierSplit",
 ];
 
 const b = await chromium.launch({ headless: true });
