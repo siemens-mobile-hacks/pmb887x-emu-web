@@ -502,9 +502,12 @@ await page.click("#btn-settings");
 await page.waitForTimeout(300);
 ok("5.4 settings sheet body", await page.evaluate(() =>
   [...document.querySelectorAll("#sheet-settings .group-title")].map((e) => e.textContent).join() === "Keyboard,Export"));
-ok("v4.4 the HUD toggle is hidden from the mobile settings sheet", await page.evaluate(() =>
-  document.querySelector("#sheet-settings #opt-hud")
-  && getComputedStyle(document.querySelector("#sheet-settings #opt-hud").closest("label")).display === "none"));
+// v4 §4 said the toggle had no effect on a phone and hid it there; both
+// layouts honour it now, so the sheet is where a phone reaches it
+ok("v4.4 the HUD toggle is in the mobile settings sheet", await page.evaluate(() => {
+  const c = document.querySelector("#sheet-settings #opt-hud");
+  return !!c && getComputedStyle(c.closest("label")).display !== "none";
+}));
 ok("v4.2 Copy diagnostics is in the mobile settings sheet", await page.evaluate(() => {
   const b = document.querySelector("#sheet-settings #btn-diag");
   return !!b && getComputedStyle(b).display !== "none";
@@ -623,11 +626,15 @@ if (!process.env.SKIP_BOOT) {
   /* ---------------- v4 §4: the phone overlay ---------------- */
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(600);
-  ok("v4.4 always on with a guest, toggle or no toggle", await page.evaluate(async () => {
+  ok("v4.4 the toggle governs the overlay too", await page.evaluate(async () => {
     const c = document.getElementById("opt-hud");
-    c.checked = false; c.dispatchEvent(new Event("change", { bubbles: true }));
-    await new Promise((r) => setTimeout(r, 200));
-    return !document.getElementById("hud").hidden;
+    const set = async (v) => {
+      c.checked = v; c.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      return document.getElementById("hud").hidden;
+    };
+    const off = await set(false), on = await set(true);   // left on for §4 below
+    return off && !on;
   }));
   ok("v4.4 an overlay on the top edge of the screen box", await page.evaluate(() => {
     const h = document.getElementById("hud"), wrap = document.querySelector(".lcd-wrap");

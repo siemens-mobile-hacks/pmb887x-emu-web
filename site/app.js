@@ -574,6 +574,10 @@ function renderAction() {
 
 function captionText() {
   if (errorMsg) return errorMsg;
+  // the run ended in the firmware's own crash dump. The screen beside this
+  // line carries the whole of it, and the caption's track is one nowrap
+  // line wide, so here it is only the headline.
+  if (exitReport) return "Firmware EXIT";
   if (emuState !== "idle" || firmwareReady()) return "";
   if (ffMode === "own") return "Choose a file and device to start";
   return cacheAvailable() ? "Choose a firmware to start"
@@ -644,6 +648,11 @@ function render() {
   window.__ui = {
     state: emuState, mode: ffMode, device: currentDevice(),
     ready: firmwareReady(), error: errorMsg, exitCode, slow,
+    serialTap: serialTapped,
+    exit: exitReport && {
+      type: exitReport.type, code: exitReport.code,
+      fields: Object.fromEntries(exitReport.rows),
+    },
   };
 }
 
@@ -907,6 +916,9 @@ let exitCode = null;
 async function bootSuite(url) {
   errorMsg = null;
   exitCode = null;
+  clearExit();
+  serialTapped = false;
+  ranDevice = null;       // not a phone: nothing here can EXIT
   setEmuState("booting");
   showOverlay("Loading suite…");
   try {
@@ -940,6 +952,7 @@ async function bootSuite(url) {
       },
       preRun: (mod) => {
         modRef = mod;
+        tapSerial(mod);
         for (const kv of new URLSearchParams(location.search).getAll("env")) {
           const i = kv.indexOf("=");
           if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
@@ -953,7 +966,7 @@ async function bootSuite(url) {
     });
     hideOverlay();
     window.__qemu = qemuModule; // debugging hook (same as the phone boot)
-    startSerialPoll();
+    startSerial();
     running = true;
     runStartedAt = Date.now();
     setEmuState("running");
@@ -1004,6 +1017,8 @@ async function boot() {
 
   errorMsg = null;
   exitCode = null;
+  clearExit();            // a new run, a screen that is lit again
+  serialTapped = false;   // until this run's preRun says otherwise
   exportsReady = false;   // this run is about to replace the MEMFS image
   ranDevice = device;
   setEmuState("booting");
@@ -1146,6 +1161,7 @@ async function boot() {
       },
       preRun: (mod) => {
         modRef = mod;
+        tapSerial(mod);   // every byte the phone prints, as it prints it
         mod.FS.mkdirTree("/boards");
         untar(boardsBuf, (name, data) => {
           const path = "/boards/" + name;
@@ -1218,7 +1234,7 @@ async function boot() {
   hideOverlay();
   window.__qemu = qemuModule; // debugging hook
   startPainting();
-  startSerialPoll();
+  startSerial();
   running = true;
   exportsReady = true;
   runStartedAt = Date.now();
@@ -1234,8 +1250,10 @@ function onGuestExit(code) {
   exitCode = code;
   stopPainting();
   stopRecording();          // flushes whatever was captured
+  finalExitCheck();         // a crash dump it printed on its way out
   setEmuState("idle");
-  showOverlay("Ready to boot", `Exited (${code})`);
+  // the EXIT panel is the screen's own report; it replaces this one
+  if (!exitReport) showOverlay("Ready to boot", `Exited (${code})`);
 }
 
 function stop() {
@@ -1380,13 +1398,122 @@ function setRecordLabel(on) {
 }
 
 /* ------------------------------------------------------------------ */
-/* serial log tools                                                     */
+/* the guest's serial port                                              */
 /* ------------------------------------------------------------------ */
 
-// The <pre> only ever holds the last 16 KiB (see startSerialPoll); Download
-// goes back to MEMFS for the whole thing.
+// qemu writes the phone's serial port to a file in the emscripten FS
+// (-serial file:), and that FS is plain JS on the page's own thread: with
+// pthreads every FS syscall a worker makes is proxied here, so MEMFS's own
+// write() is where the guest's bytes surface. Wrapping the log's node ops
+// turns that into a callback — the page is handed each line as the phone
+// prints it, and nothing has to watch the file.
+
+const SERIAL_PATH = "/serial.log";
+const SERIAL_KEEP = 16384;   // the tail the <pre> holds; Download has it all
+
+let serialTapped = false;    // the callback is in place for this run
+let serialText = "";         // that tail, exactly as the guest printed it
+let serialWork = 0, serialDraw = 0;
+
+function tapSerial(mod) {
+  try {
+    // ?serialpoll=1 exercises the fallback deliberately
+    if (new URLSearchParams(location.search).get("serialpoll") === "1") {
+      return (serialTapped = false);
+    }
+    const FS = mod.FS;
+    FS.writeFile(SERIAL_PATH, new Uint8Array(0));  // exist before qemu opens it
+    const node = FS.lookupPath(SERIAL_PATH).node;
+    const base = node.stream_ops;
+    const dec = new TextDecoder("latin1");
+    // preRun is where this run's log starts: a phone that crashes before
+    // the factory's promise resolves has already printed by then
+    resetSerial();
+    // FS.open copies the node's ops into the stream, so qemu's own handle
+    // (opened later, from main()) picks this up
+    node.stream_ops = Object.assign(Object.create(base), {
+      write(stream, buffer, offset, length, position, canOwn) {
+        const n = base.write(stream, buffer, offset, length, position, canOwn);
+        // The guest's thread is blocked in this syscall and nothing here may
+        // throw into it: take a copy of the bytes (slice(), because the heap
+        // these arrive on is a SharedArrayBuffer and TextDecoder will not
+        // read one) and leave the rest of the work to a timeout.
+        try {
+          if (n > 0) {
+            serialText += dec.decode(buffer.slice(offset, offset + n));
+            if (!serialWork) serialWork = setTimeout(onSerial, 0);
+          }
+        } catch (e) {
+          console.error("serial tap:", e);
+        }
+        return n;
+      },
+    });
+    return (serialTapped = true);
+  } catch (e) {
+    console.warn("serial tap unavailable, falling back to polling:", e);
+    return (serialTapped = false);
+  }
+}
+
+// Off the syscall, once per batch of writes.
+function onSerial() {
+  serialWork = 0;
+  if (serialText.length > SERIAL_KEEP * 2) serialText = serialText.slice(-SERIAL_KEEP);
+  if (!serialDraw) serialDraw = setTimeout(drawSerial, 200);  // the DOM, at 5 Hz
+  watchForExit();
+}
+
+function drawSerial() {
+  serialDraw = 0;
+  const el = $("serial");
+  const text = serialText.length > SERIAL_KEEP ? serialText.slice(-SERIAL_KEEP) : serialText;
+  if (el.textContent !== text) {
+    el.textContent = text;
+    if (serTail.checked) el.scrollTop = el.scrollHeight;
+  }
+  if (text) $("serial-box").hidden = false;
+}
+
+// a fresh run starts with an empty log: drop the previous one and fold the
+// box away again until this guest prints its first line
+function resetSerial() {
+  clearInterval(serialTimer);
+  clearTimeout(serialDraw);
+  serialWork = serialDraw = 0;
+  serialText = "";
+  $("serial").textContent = "";
+  $("serial-box").hidden = true;
+}
+
+// Once the module is up. With the tap in place the bytes have been arriving
+// since preRun and there is nothing to start; a build whose FS internals
+// have moved under it falls back to reading the log on a timer, the way the
+// page used to.
+function startSerial() {
+  if (serialTapped) return;
+  resetSerial();
+  serialTimer = setInterval(pollSerial, 1000);
+}
+
+function pollSerial() {
+  const m = qemuModule;
+  if (!m?.FS) return;
+  try {
+    if (!m.FS.analyzePath(SERIAL_PATH).exists) return;
+    const data = m.FS.readFile(SERIAL_PATH, { encoding: "binary" });
+    const text = new TextDecoder("latin1").decode(
+      data.length > SERIAL_KEEP ? data.subarray(data.length - SERIAL_KEEP) : data);
+    if (text === serialText) return;
+    serialText = text;
+    drawSerial();
+    watchForExit();
+  } catch { /* not there yet */ }
+}
+
+// Copy and Download hand out the whole log, not the tail the <pre> holds.
 function serialBytes() {
-  try { return qemuModule?.FS?.readFile("/serial.log", { encoding: "binary" }) ?? null; }
+  try { return qemuModule?.FS?.readFile(SERIAL_PATH, { encoding: "binary" }) ?? null; }
   catch { return null; }
 }
 
@@ -1470,6 +1597,225 @@ function stopPainting() {
   cancelAnimationFrame(rafHandle);
   clearInterval(serialTimer);
   stopHudTimer();
+}
+
+/* ------------------------------------------------------------------ */
+/* Siemens EXIT: the firmware's own crash dump, off the serial port      */
+/* ------------------------------------------------------------------ */
+
+// A Siemens phone that panics prints a crash dump on the trace USART and
+// then stops being a phone. Two generations, two shapes of the same dump —
+// the labels are the firmware's own, lifted from the images in fullflashes/:
+//
+//   x75/x85 (S75, EL71, C81)      x65 (S65, S66, C65)
+//   >>EXIT<<                      EXIT: 000E:F7FB     <- the marker is the code
+//   ExitType: Processor Exit      FILE:               <- the value follows as
+//   ExitCode: 0x0206              ddsphw                 its own message
+//   FILE: Prefetch_Abort!         CPSR: 60000130
+//   At address: 0xA068C7A8        CepId: FFFF
+//   ExitString: Address: 0x…      ExitString:
+//   CepId: 0x430F                 0801
+//   CepName: DDL_HANDLER
+//   CPSR: 0x20000110
+//   Checksum: 0x0000
+//
+// Receiving one ends the run — there is nothing left to run — and the page
+// says so the way the phone itself would have: a short beep, the backlight
+// off, the pixels fading out over half a minute, and the dump left on top.
+
+const EXIT_MARK = ">>EXIT<<";        // x75/x85 opens with this
+const EXIT_HEAD = "EXIT: ";          // x65 opens with the code instead
+// what the firmware prints -> the row this page draws for it
+const EXIT_FIELDS = [
+  [EXIT_HEAD, "Code"],
+  ["ExitType: ", "Type"],
+  ["ExitCode: ", "Code"],
+  ["FILE: ", "File"],
+  ["At address: ", "Address"],
+  ["ExitString: ", "String"],
+  ["CepId: ", "CepId"],
+  ["CepName: ", "CepName"],
+  ["CPSR: ", "CPSR"],
+  ["Checksum: ", "Checksum"],
+  ["recursive Exit detected: ", "Recursive"],
+  ["2nd Exit: ", "2nd exit"],
+];
+
+const EXIT_SETTLE_MS = 250;  // quiet on the port = the dump is all here
+const EXIT_MAX_MS = 2000;    // …and a phone that will not stop talking
+const EXIT_DIM = 0.45;       // the step the backlight going off is
+const EXIT_FADE_MS = 30000;  // and how long the pixels take to follow it
+
+let exitReport = null;    // the dump this run ended on, once it is complete
+let exitPending = null;   // { at, timer } while one is still being printed
+
+// Every trace message is framed: FF FE, a big-endian 16-bit length, that
+// length with its low bit flipped, then that many bytes of text. Bytes that
+// are not a frame (a half-written tail, a firmware that frames differently)
+// are cut on their non-printable runs instead, which lands in the same
+// places — the payloads themselves are plain ASCII.
+function serialMessages(text) {
+  const msgs = [];
+  const at = (i) => text.charCodeAt(i);
+  let i = 0, plainFrom = 0, end = text.length;
+  const flushPlain = (to) => {
+    for (const s of text.slice(plainFrom, to).split(/[^\x20-\x7e]+/))
+      if (s.trim()) msgs.push(s);
+  };
+  while (i + 1 < end) {
+    if (at(i) !== 0xff || at(i + 1) !== 0xfe) { i++; continue; }
+    if (i + 6 > end) { end = i; break; }              // header still arriving
+    const len = (at(i + 2) << 8) | at(i + 3);
+    if (((at(i + 4) << 8) | at(i + 5)) !== (len ^ 1)) { i++; continue; }
+    if (i + 6 + len > end) { end = i; break; }        // payload still arriving
+    flushPlain(i);
+    msgs.push(text.slice(i + 6, i + 6 + len));
+    i = plainFrom = i + 6 + len;
+  }
+  flushPlain(end);
+  return msgs;
+}
+
+// The newest dump in the log, or null. A dump is contiguous, so it ends at
+// the first message that is not one of its fields.
+function parseExit(msgs) {
+  let at = -1;
+  for (let i = msgs.length - 1; i >= 0 && at < 0; i--) {
+    if (msgs[i] === EXIT_MARK || msgs[i].startsWith(EXIT_HEAD)) at = i;
+  }
+  if (at < 0) return null;
+  const rows = [];
+  for (let i = msgs[at] === EXIT_MARK ? at + 1 : at; i < msgs.length; i++) {
+    const f = EXIT_FIELDS.find(([label]) => msgs[i].startsWith(label));
+    if (!f) break;
+    // x65 prints a label and its value as two messages ("FILE: ", "ddsphw")
+    let value = msgs[i].slice(f[0].length).trim();
+    if (!value && i + 1 < msgs.length
+        && !EXIT_FIELDS.some(([label]) => msgs[i + 1].startsWith(label))) {
+      value = msgs[++i].trim();
+    }
+    rows.push([f[1], value]);
+  }
+  const field = (name) => rows.find(([n]) => n === name)?.[1] ?? null;
+  return { rows, type: field("Type"), code: field("Code") };
+}
+
+// Called whenever the phone has printed something (and once more when the
+// guest goes away). A dump takes several writes, so it is presented once the
+// port has gone quiet — never later than EXIT_MAX_MS after its first byte,
+// in case the firmware carries on talking.
+function watchForExit() {
+  if (exitReport || !ranDevice?.startsWith("siemens-")) return;
+  if (!exitPending) {
+    if (!parseExit(serialMessages(serialText))) return;
+    exitPending = { at: performance.now(), timer: 0 };
+  }
+  clearTimeout(exitPending.timer);
+  exitPending.timer = setTimeout(() => presentPendingExit(), Math.min(EXIT_SETTLE_MS,
+    Math.max(0, exitPending.at + EXIT_MAX_MS - performance.now())));
+}
+
+function presentPendingExit(quit = true) {
+  clearTimeout(exitPending?.timer);
+  const report = parseExit(serialMessages(serialText));
+  if (report) presentExit(report, quit);
+  else exitPending = null;
+}
+
+// The guest has gone: whatever it printed on its way out is all there is.
+// (Its log outlives it — MEMFS does — so a run whose tap never installed is
+// read back from the file here.)
+function finalExitCheck() {
+  if (exitReport || !ranDevice?.startsWith("siemens-")) return;
+  if (!serialText) {
+    const bytes = serialBytes();
+    if (bytes) serialText = new TextDecoder("latin1").decode(bytes);
+  }
+  presentPendingExit(false);
+}
+
+function presentExit(report, quit) {
+  if (exitReport) return;
+  exitReport = report;
+  exitPending = null;
+  stopPainting();          // the last frame the phone drew stays on the canvas
+  hideOverlay();
+  beep();
+  fadeScreen();
+  drawExitPanel(report);
+  if (quit) liveModule()?._wasm_quit?.();
+  render();
+  say(`Firmware EXIT — ${[report.type, report.code].filter(Boolean).join(" ") || "no details"}`
+    + ". The emulator has stopped.");
+}
+
+function clearExit() {
+  clearTimeout(exitPending?.timer);
+  exitReport = null;
+  exitPending = null;
+  $("exit-overlay").hidden = true;
+  canvas.style.transition = "";
+  canvas.style.filter = "";
+}
+
+function drawExitPanel(report) {
+  // x75 names the kind of exit and x65 does not, so the headline is that
+  // name where there is one and the code where there is not
+  const head = report.type ? "Type" : "Code";
+  $("exit-type").textContent = report.type ?? report.code ?? "";
+  const cells = [];
+  // whatever became the headline is not a row as well
+  for (const [label, value] of report.rows.filter(([n]) => n !== head)) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value || "—";
+    cells.push(dt, dd);
+  }
+  if (!cells.length) {
+    const dd = document.createElement("dd");
+    dd.textContent = "No fields — see the serial log.";
+    dd.style.gridColumn = "1 / -1";
+    cells.push(dd);
+  }
+  $("exit-fields").replaceChildren(...cells);
+  $("exit-overlay").hidden = false;
+}
+
+// The backlight going off, then the pixels going with it. A CSS filter, so
+// none of it reaches a screenshot or a capture: those still hand back what
+// the phone last drew.
+function fadeScreen() {
+  canvas.style.transition = "none";
+  canvas.style.filter = `brightness(${EXIT_DIM})`;
+  canvas.getBoundingClientRect();   // commit the step before the fade starts
+  canvas.style.transition = `filter ${EXIT_FADE_MS}ms linear`;
+  canvas.style.filter = "brightness(0)";
+}
+
+// ~80 ms: long enough to notice, short enough not to be an alarm. Start was
+// a user gesture, so the context is allowed to make a sound; a browser that
+// refuses anyway leaves the rest of the report exactly as it is.
+function beep() {
+  try {
+    const AC = window.AudioContext ?? window.webkitAudioContext;
+    if (!AC) return;
+    const ac = new AC();
+    ac.resume?.();
+    const t = ac.currentTime;
+    const osc = ac.createOscillator(), gain = ac.createGain();
+    osc.type = "square";
+    osc.frequency.value = 880;
+    // ramps at both ends: a square wave switched on at full gain clicks
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.16, t + 0.008);
+    gain.gain.setValueAtTime(0.16, t + 0.055);
+    gain.gain.linearRampToValueAtTime(0, t + 0.08);
+    osc.connect(gain).connect(ac.destination);
+    osc.start(t);
+    osc.stop(t + 0.085);
+    osc.onended = () => ac.close();
+  } catch { /* no audio: nothing to say about it */ }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1839,17 +2185,22 @@ function hudReset() {
   if (!hudEl.hidden) drawHud();
 }
 
-const hudLive = () => emuState === "booting" || emuState === "running" || emuState === "paused";
+// A firmware EXIT ends the run before qemu has finished going away, and the
+// strip shares the top of the screen box with the dump: the guest is dead,
+// so there is nothing left to sample either way.
+const hudLive = () => !exitReport
+  && (emuState === "booting" || emuState === "running" || emuState === "paused");
 
-// Phone widths draw the strip whenever there is a guest, toggle or no toggle
-// (§4); desktop only with the toggle on (§5). The sampler follows the guest,
+// Both layouts follow the toggle; at phone widths the strip is an overlay on
+// the screen box, so it waits for a guest rather than sitting on the idle
+// "Ready to boot" panel (§4). The sampler follows the guest,
 // not the strip: it runs for any live guest either way — the pill's slow
 // warning does not wait for the strip — and stops the moment the guest goes,
 // since there is nothing left to sample and calling the exports past the
 // runtime's exit aborts it. A strip left on keeps the last window's numbers.
 function syncHud() {
   if (!hudReady) return;
-  const show = phoneLayout.matches ? hudLive() : hudChk.checked;
+  const show = hudChk.checked && (!phoneLayout.matches || hudLive());
   const changed = hudEl.hidden === show;   // it was the other way a moment ago
   hudEl.hidden = !show;
   if (hudLive()) { if (!hudTimer) hudTimer = setInterval(hudTick, HUD_MS); }
@@ -1861,8 +2212,11 @@ function syncHud() {
 
 function stopHudTimer() { clearInterval(hudTimer); hudTimer = 0; }
 
-// the toggle takes effect immediately, mid-run or before one
-hudChk.checked = localStorage.getItem("opt-hud") === "1";
+// the toggle takes effect immediately, mid-run or before one; with no choice
+// stored it starts on at phone widths, which is where the strip is the only
+// way to read the numbers without a debugger
+const storedHud = localStorage.getItem("opt-hud");
+hudChk.checked = storedHud == null ? phoneLayout.matches : storedHud === "1";
 hudChk.addEventListener("change", () => {
   localStorage.setItem("opt-hud", hudChk.checked ? "1" : "0");
   syncHud();
@@ -1882,6 +2236,8 @@ function diagnostics() {
     deviceMemory: navigator.deviceMemory ?? null,
     isolated: crossOriginIsolated,
     device: currentDevice(), state: emuState, slow, exitCode,
+    // the firmware's own crash dump, if this run ended in one
+    exit: exitReport && Object.fromEntries(exitReport.rows),
     avg10s: {
       mips: avg("mips"), vratio: avg("vratio"), fps: avg("fps"),
       halts: avg("halts"), paintMsPerS: avg("paintMsPerS"),
@@ -1910,30 +2266,6 @@ window.__hud = { shortUserAgent, diagnostics };
 
 hudReady = true;
 syncHud();   // applies the remembered toggle, and nothing above could
-
-function startSerialPoll() {
-  clearInterval(serialTimer);
-  // a fresh run starts with an empty log: drop the previous one and fold the
-  // box away again until this guest prints its first line
-  $("serial").textContent = "";
-  $("serial-box").hidden = true;
-  serialTimer = setInterval(() => {
-    const m = qemuModule;
-    if (!m?.FS) return;
-    try {
-      if (!m.FS.analyzePath("/serial.log").exists) return;
-      const data = m.FS.readFile("/serial.log", { encoding: "binary" });
-      const el = $("serial");
-      const tail = data.length > 16384 ? data.subarray(data.length - 16384) : data;
-      const text = new TextDecoder("latin1").decode(tail);
-      if (el.textContent !== text) {
-        el.textContent = text;
-        if (serTail.checked) el.scrollTop = el.scrollHeight;
-      }
-      if (text) $("serial-box").hidden = false;
-    } catch { /* not there yet */ }
-  }, 1000);
-}
 
 /* ------------------------------------------------------------------ */
 /* keypad: one <button> per phone key                                   */

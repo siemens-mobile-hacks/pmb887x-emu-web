@@ -23,6 +23,7 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 | `?suite=<url>` | boot a bare-metal versatilepb image instead of a phone (`dist/tcgisa.bin`, `dist/tcgbench.bin`); with `?icount=1` the suite runs under the phones' stock timing model (the tcgbench icount-tax leg) |
 | `?lockstep=1` (+ `ls-*`) | built-in guest-state fold on the wasm64 backend — the b-side of `tools/lockstep-wasm.mjs`; `ls-*` params set the insn budget and grid |
 | `?iorewind=1` | force the stock io-recompile everywhere (0004's A/B escape hatch) |
+| `?serialpoll=1` | don't tap the serial log's MEMFS ops — read the file on a 1 Hz timer instead (the page's fallback path; `SERIAL_POLL=1 tools/exitcheck.mjs` takes it through the EXIT checks) |
 
 Fullflash, device, IMEI/ESN, SIM, operator and startup are form controls in
 the Firmware panel, not params. The pflash drive is always writable (there
@@ -39,11 +40,14 @@ a short user agent (`Android 8 · Chrome 147 · SM-G955U`), cores, memory and
 `isolated`. Narrow screens drop whole tokens off the line rather than wrap
 or shrink, paint first.
 
-On a phone the strip is an overlay on the top edge of the screen box and is
-always on while the guest is; on desktop **"Performance HUD"** in the Run
-panel draws it under the status pill (it used to be `?hud=1`, then a band
-across the top of the page) and the choice is remembered. Either way the
-pill itself turns amber and gains `· slow` after three seconds under 0.80×.
+**"Performance HUD"** in the Run panel draws it — under the status pill on
+desktop, and at phone widths (where the panel is the settings sheet) as an
+overlay on the top edge of the screen box, which waits for a guest rather
+than covering the idle panel. It used to be `?hud=1`, then a band across the
+top of the page. The choice is remembered; with none stored it starts on at
+phone widths, the one place with no debugger to fall back to, and off on
+desktop. Either way the pill itself turns amber and gains `· slow` after
+three seconds under 0.80×.
 
 **"Copy diagnostics"**, beside the toggle, puts the last 60 s of samples,
 the 10 s averages, the environment and the full unmodified user agent on the
@@ -98,6 +102,7 @@ Probes and traces:
 | `peekcode.mjs` | dump + disassemble guest memory ranges after a boot delay |
 | `w64dbg.mjs`, `w64walk.mjs`, `repro.mjs` | wasm64 backend console diagnostics, structural module walker, failing-batch capture loop |
 | `efa-web.mjs`, `preset-web.mjs` | E2E page tests: LG fullflash + EFA sidecar; preset download → cache → boot |
+| `exitcheck.mjs` | the Siemens EXIT path end to end: boots an image that panics (default `fullflashes/BROKEN)S66_no_recalc.bin` as `siemens-s65`, ~3 s to the dump) and checks the page stopped the guest, beeped once, dimmed the canvas and started the 30 s fade, and drew the parsed dump over it — desktop and phone layouts, screenshots in `exitcheck*.png`; `--inject` writes the recorded EL71 (x75-shaped) dump into a healthy guest's log instead, once it has drawn something, which is the leg that watches a lit screen fade |
 | `session.mjs` + `ctl.mjs` | persistent headless-browser session and its client |
 | `vclock.mjs`, `bootmatrix.mjs` | virtual-clock progression per `?icount=` variant; parallel boot matrix over query variants |
 

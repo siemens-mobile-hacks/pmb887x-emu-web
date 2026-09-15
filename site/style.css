@@ -234,6 +234,34 @@ main {
 /* the sub-line carries "<file>\n<size> of <total>" */
 .ov-sub { margin-top: 0.4rem; font-size: 0.72rem; line-height: 1.4; white-space: pre-line; word-break: break-word; }
 
+/* The firmware's own crash dump (see app.js, "Siemens EXIT"). The card is
+   only as tall as the dump, and it is the only thing that stays lit: the
+   screen behind and around it is fading to black under it. */
+.exit-overlay {
+  position: absolute; inset: 6px; z-index: 3;
+  display: flex; align-items: flex-start; padding: 5px;
+  pointer-events: none;                /* the fading screen, not a surface */
+}
+.exit-card {
+  pointer-events: auto;                /* except the dump: it scrolls */
+  width: 100%; max-height: 100%; overflow: auto;
+  padding: 5px 6px; border-radius: 5px;
+  border: 1px solid #8a2b2b; background: rgba(10, 11, 14, 0.88);
+  font: 10px/1.4 ui-monospace, "Cascadia Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+.exit-head { display: flex; align-items: baseline; gap: 5px; margin-bottom: 3px; }
+.exit-badge {
+  flex: none; padding: 0 4px; border-radius: 3px;
+  background: #5c1a1a; color: #ffc4c4; font-weight: 700; letter-spacing: 0.08em;
+}
+.exit-type { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exit-fields {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 6px; margin: 0;
+}
+.exit-fields dt { color: var(--muted); }
+.exit-fields dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+
 /* ---------------- keypad ---------------- */
 .keypad { display: flex; flex-direction: column; gap: 6px; width: 320px; }
 .krow { display: grid; gap: 6px; }
@@ -735,6 +763,10 @@ fieldset:disabled .advanced summary { pointer-events: none; }
     box-shadow: 0 0 0 1px var(--border);
   }
   .lcd-overlay { inset: 0; border-radius: 6px; }
+  /* the box is bigger here than the 264px desktop one, so the dump gets the
+     point of type it was one short of */
+  .exit-overlay { inset: 0; padding: 6px; }
+  .exit-card { font-size: 11px; }
 
   /* app.js moves the HUD in here: an overlay on the top edge of the screen
      box, so it costs the layout column no height at all and the keypad-fit
@@ -746,8 +778,6 @@ fieldset:disabled .advanced summary { pointer-events: none; }
     background: rgba(0, 0, 0, 0.6); border-radius: 6px 6px 0 0;
     font-size: 9px; color: #d7f0dd;
   }
-  /* the toggle has no effect here (§4) */
-  .hud-toggle { display: none; }
 
   /* the keypad is the floor of the layout: it scales with the viewport and
      is never the thing that gets clipped */

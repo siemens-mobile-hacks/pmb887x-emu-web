@@ -118,10 +118,13 @@ proven `ui/wasm.c` (patch 0001) pattern:
   faithful even over the virtual link.
 * Native build is unaffected (`run-native.sh SERIAL=path|...` keeps working).
 
-**Interim zero-patch hack:** the consumer tab can already tail `/serial.log`
-(read-only) via `BroadcastChannel` messages from `app.js`'s existing
-serial-poll loop. Good enough to demo a cross-tab *monitor*; not enough
-for interactive tools.
+**Interim zero-patch hack:** the guest TX side is already a push without
+any qemu patch — `app.js`'s `tapSerial()` wraps the MEMFS `stream_ops` of
+`/serial.log`, so every write the guest makes arrives as a callback on the
+page thread (FS syscalls from the vCPU worker are proxied there). Relaying
+that to a `BroadcastChannel` is a few lines, and it is what the Siemens
+EXIT watcher already consumes. Good enough for a cross-tab *monitor*; guest
+RX still needs the chardev, so still not enough for interactive tools.
 
 ## Option B: a *real* `navigator.serial` device via a native bridge
 

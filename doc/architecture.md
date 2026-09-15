@@ -174,7 +174,22 @@ packed calendar).
   devices; `QEMU_ICOUNT_RTCAP=banked` unless `?rt=` says otherwise).
 - LCD canvas repaints from the staging buffer on `requestAnimationFrame`;
   every phone key is a `<button>` mapped to linux keycodes, plus
-  physical-key mapping. Serial pane polls `/serial.log`.
+  physical-key mapping.
+- Serial is a push, not a poll: `tapSerial()` wraps the MEMFS `stream_ops`
+  of `/serial.log` in `preRun`, so every write the guest makes surfaces as
+  a callback on the page (with pthreads, FS syscalls from the vCPU worker
+  are proxied to the page's thread, which is why this works at all). The
+  guest's thread is blocked inside that syscall, so the tap only copies
+  the bytes — the pane redraw and the EXIT scan run off a timeout. A build
+  whose FS internals moved falls back to the old 1 Hz read of the file.
+- **Siemens EXIT**: a panicking firmware prints a crash dump on the trace
+  USART, framed `FF FE <len> <len^1> <text>` per message — `>>EXIT<<` plus
+  labelled fields on x75/x85, `EXIT: <code>` with the values as separate
+  messages on x65. Receiving one ends the run: the page beeps, requests
+  the guest's shutdown, drops the canvas to 45 % brightness and fades it to
+  black over 30 s (a CSS filter, so screenshots and captures still hand
+  back what the phone last drew), and draws the parsed dump over the top
+  of the dying screen. `tools/exitcheck.mjs` drives the whole path.
 - URL params (see [diagnostics.md](diagnostics.md)): `?dist=dist`
   switches engine, `?suite=` boots a bare-metal image headlessly,
   `?env=NAME=VAL` passes build knobs, `?icount=`/`?rt=`/`?trace=`/
