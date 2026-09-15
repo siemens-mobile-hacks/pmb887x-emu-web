@@ -6,6 +6,203 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-15, round thirteen: 0070–0073 — what a wasm atomic costs)
+
+Three of this round's four patches turned out to be the same patch.
+
+QEMU is written as though a relaxed atomic were free, because on x86 it
+is: `qatomic_read`/`qatomic_set` are `__ATOMIC_RELAXED`, and
+`smp_rmb()`/`smp_mb_acquire()` compile to nothing there.  **wasm has no
+relaxed atomics and no acquire fence.**  LLVM lowers every `qatomic_*`
+on shared memory to `iN.atomic.load`/`iN.atomic.store`, which the wasm
+spec defines as sequentially consistent, and every
+`__atomic_thread_fence` to `atomic.fence`, likewise seq_cst.  An engine
+emits a real locked operation for the stores and the fences.  A relaxed
+load stays free (x86 gives it away); a relaxed *store* and any fence do
+not.
+
+So the round's method was: find the hot paths where QEMU pays for
+ordering it does not need on this target, and show — per path, not in
+general — that the ordering is already there.
+
+| what | where it went |
+|---|---|
+| 0070 virtual-clock read without the fence pair or the atomic publish | `icount_get` **4.3 % → 0.6 %** of the vCPU |
+| 0071 short hflags rebuild for a pre-v6 A-profile CPU | the hflags cluster **4.3 % → 1.5 %** |
+| 0072 four fixed costs on the per-access and per-TB paths | `io_open_clock_window` **0.9 % → 0.4 %** |
+| 0073 do not give the BQL back after every device access | `__pthread_mutex_lock`+`_unlock` **3.2 % → 1.3 %** |
+
+End to end against the round-twelve tip, interleaved A/B, `--state idle`,
+host load ~5.3.  Every pair is a win:
+
+| board | metric | round twelve | round thirteen | |
+|---|---|---|---|---|
+| S75 idle | MIPS | 45.4, 43.4, 42.6, 42.3 | 50.1, 48.6, 49.3, 51.0 | **+14.6 %** (4/4) |
+| S75 idle | v/wall | 47.8, 45.8, 44.8, 44.5 | 52.7, 51.0, 51.5, 53.5 | **+14.1 %** (4/4) |
+| EL71 idle | MIPS | 60.6, 59.7, 65.0 | 66.6, 70.6, 66.6 | **+10.0 %** (3/3) |
+| EL71 idle | v/wall | 22.9, 22.6, 24.5 | 25.2, 26.7, 25.1 | **+9.9 %** (3/3) |
+
+KE800 runs `icount=none`, so 0070 does not apply to it and there is no
+steady-state idle meter; its number is boot time to idle, **52.4 s →
+47.2 s (−10 %)**, which is 0072 and 0073.  That board was the one at risk
+from 0073 — with no icount the main loop owns the virtual-clock timers,
+so it is the case where a deferred BQL release could have cost — and it
+got faster.
+
+### 0070: the seqlock, the publish, and a ceiling probe
+
+`icount_get()` was the top symbol on an idle S75 — 4.3 % of the vCPU for
+~1.2M reads a second, which is what it costs to answer a guest that
+polls a device register whose value is a function of virtual time.
+Almost none of it was arithmetic.  Per call: two `atomic.fence` (the
+seqlock's `smp_rmb()` pair), one `i64.atomic.store` (publishing
+`qemu_icount`), and four atomic loads.
+
+**Measure the ceiling before designing the fix.**  A throwaway build with
+every atomic and fence stripped out of `icount_get()` — unsound, but it
+runs — measured **+5.0 %** on three interleaved pairs.  That made the
+shape of the fix worth arguing about, and gave a target to check the
+real patch against.
+
+The real patch keeps the seqlock and replaces its `smp_rmb()` with a
+compiler `barrier()`, on an argument that is specific to this one read
+section: *every* shared location it touches is reached through
+`qatomic_*`, which on wasm are already seq_cst accesses, so the engine
+orders them against the writer and only the compiler needs restraining.
+That does not generalise — a seqlock whose payload is plain loads still
+needs the real fence — which is why it is a local pair and not a change
+to `seqlock.h`.  The publish becomes a plain store (single writer,
+`QEMU_ALIGNED(64)`, and readers already tolerate staleness because the
+writer does not hold the write lock), and a read that follows another
+inside the same TB now returns early instead of re-publishing a value
+that has not moved.
+
+**+5.2 %, 4/4 pairs** — the whole ceiling.  The first cut, with only the
+fences replaced, measured +1.8 % on 3 pairs: the locked *store* was more
+than half the cost, and the fences less than I expected.
+
+### 0071: most of an hflags rebuild is dead on an ARM926EJ-S
+
+An idle S75 rebuilds its AArch32 hflags **814k times a second** — one
+per 57 guest instructions — and an idle EL71 a million.  That was not
+guessable; it came from a counter.
+
+On a CPU with no M-profile, no AArch64, no EL2, no EL3, no PMSA and no
+v6, every question `rebuild_hflags_a32()` asks has a constant answer or
+a two-load one, and five of the calls it makes cannot be inlined by the
+backend.  One test of `env->features` picks a short path that computes
+the same flags from `sctlr_el[1]` and four CPSR bits.  **+3.9 %, 4/4.**
+
+The correctness argument is long (nine separate "this is constant
+because…" steps), so it was not argued, it was **verified**:
+`-DHFLAGS_FAST_VERIFY` builds a variant that takes the short path,
+computes the generic answer anyway, counts disagreements and returns the
+generic one — behaviourally the tip, so it can run anywhere.  Three
+boards × idle and menu, ~59M rebuilds, **zero disagreements**, and the
+short path took every rebuild but one per run.
+
+### 0073: the BQL was costing 3.2 % to protect nothing
+
+`bql_lock_mmio()` was already the lean pair (0058) — a thread-local flag
+read once, the mutex, the flag written once.  But an idle S75 runs it
+**three million times a second**, and an uncontended musl mutex is still
+a locked compare-exchange plus a locked exchange.  Meanwhile 0067 had
+left the main loop parked 99.4 % of the time, waking ~90 times a second.
+The lock was being handed back and forth for the benefit of a thread
+that was asleep.
+
+So `bql_unlock_mmio()` on a vCPU thread no longer unlocks: it leaves the
+flag set, and the next `bql_lock_mmio()` finds it set and does nothing at
+all.  Three things end the deferral — an explicit `bql_lock()` on this
+thread adopts it, `bql_lock_impl()` counts itself into `bql_wanted`
+before blocking and `cpu_exec_loop()` gives the lock back as soon as that
+count is non-zero, and `bql_lock_mmio()` hands it over directly if it
+finds someone waiting.
+
+What makes this safe rather than merely fast is a property none of those
+three provide: **the rr loop unlocks the BQL for real before every
+`tcg_cpu_exec()`**, so even if all three mechanisms failed the lock could
+not be held across more than one icount slice.  A missed release is a
+bounded delay, not a deadlock.  (The vCPU does not block inside
+`cpu_exec()` — the halt path returns out of it first — so there is no
+path that parks while holding a deferred lock.)
+
+The boards to worry about are the LG ones: `icount=none`, so their
+virtual-clock timers run on the main loop, the thread this keeps out.
+**KE800 boot: tIdle 52.4 s → 47.2 s (−10 %)**, all milestones −6 to
+−13 %.
+
+### Three things that did not work, and why
+
+- **`__udivti3` on the TPU path.**  `muldiv64()` divides by a runtime
+  frequency, which on a 128-bit path is a software division.  The symbol
+  map has no `__udivti3` at all: `CONFIG_INT128` is *unset* for this
+  build, so `muldiv64_rounding()`'s two 64-bit divisions are what run,
+  and they are inlined into `tpu_advance` — 1.7 %, not the 3–5 % the
+  idea assumed.  Checking the symbol map took a minute; the patch would
+  have taken an afternoon.
+- **Inlining the BQL's coroutine-TLS accessors.**  `get_bql_locked()`
+  and `set_bql_locked()` are deliberately `noinline`, which looked like
+  four extra calls per device access.  They profile at **0.0 %** — the
+  compiler gets them anyway.
+- **The no-BQL ceiling probe.**  Removing the mutex while keeping the
+  `bql_locked` bookkeeping lets the main loop and the vCPU run device
+  code concurrently; the guest never reached idle.  Some ceilings cannot
+  be probed by deleting the thing — 0073 had to be built properly and
+  then measured.
+
+### What is left
+
+A fresh S75 idle profile after 0073:
+
+| | round-twelve tip | now |
+|---|---|---|
+| `do_st_mmio_1p` / `do_ld_mmio_1p` | 3.6 / 2.9 % | **3.8 / 3.1 %** |
+| `helper_lookup_tb_ptr_lc` | 2.8 % | 2.9 % |
+| `cpu_exec_loop` | 2.5 % | 2.6 % |
+| `tpu_advance` | 1.7 % | 1.9 % |
+| `invoke_ijj` (the JS trampoline) | 0.6 % | 1.2 % |
+| BQL / mutex, all seven symbols | 5.1 % | **3.7 %** |
+| the hflags cluster | 4.3 % | **1.4 %** |
+| `icount_get` | 4.3 % | **0.7 %** |
+
+Both profiles are 30 s of the S75 idle state, taken back to back.  Shares
+that rose did not get slower: the guest now runs ~11 % more instructions
+per second of wall clock, so everything driven by guest activity scales
+up with it.
+
+**1. The MMIO dispatch path, ~10 % and now the clear top.**
+`do_st_mmio_1p` is 22 ns per store and `do_ld_mmio_1p` 27 ns per load,
+for a function that is about fifteen loads and fifteen branches.  Two
+things to try, in order of confidence: pack the small per-region control
+fields (`io_rmask`, `io_wmask`, `io_swap`, `io_check_align`,
+`io_rom_device`) into one word so the sequence of tests is one load
+instead of five; and `always_inline` the `_1p` bodies into the four
+`do_st*_mmu`/`do_ld*_mmu` callers.  Worth knowing first: wasm64 has no
+4 GB guard region, so V8 may be bounds-checking **every** load here —
+which would explain why fifteen loads cost sixty cycles, and would cap
+what any of this can win.
+
+**2. `helper_lookup_tb_ptr_lc` at 2.9 %**, still never profiled with its
+own caller stacks, and still unmeasured: get `lcCall/s` and `lcFill/s`
+out of `diagall` first.  A fill rate near the call rate means the
+one-entry-per-TB inline cache is thrashing and wants a second way; a low
+one means the misses are elsewhere and the helper body is the target.
+
+**3. `invoke_ijj` doubled to 1.2 %** — the emscripten JS trampoline that
+`cpu_exec_setjmp` goes through, once per `cpu_exec()` call, i.e. once
+per icount slice.  It is now as expensive as `tcg_qemu_tb_exec`.  Nobody
+has looked at whether the setjmp round trip can avoid JS on this
+toolchain.
+
+**Two meter lessons this round.**  `--devtools` costs ~15 % even with no
+client attached, so never compare a profiled run's MIPS against an
+unprofiled one.  And `prof.sh` killed the node process without closing
+the browser it had spawned: eight orphaned headless Chromes pushed the
+host from load 4.5 to 19 and quietly wrecked the 0073 A/B, which is why
+that one was settled on profiles instead.  **Check `uptime` and count
+stray browsers between runs.**
+
 ## Update (2026-09-14, round twelve: 0067–0069 — the wake, the TPU RAM, and a double rebuild)
 
 Round eleven left two named targets.  The first one turned out to be
@@ -98,7 +295,7 @@ Neither would have been caught by the gates: the lockstep runs both legs
 from the same tree, so it checks JIT-vs-wasm equivalence, never a
 behaviour change against the previous revision.
 
-### What is left
+### What is left (as of round twelve; superseded above)
 
 A fresh S75 idle profile, back-to-back with the previous build:
 

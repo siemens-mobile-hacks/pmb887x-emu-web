@@ -42,6 +42,7 @@ const NAMES = [
   "ioRecomp", "ioBarrierEvict", "ioBarrierSplit",
   "ioLdFast", "vclockRead", "ioStFast", "tpuTimer", "tpuRearm",
   "mlWake", "mlWakeDup", "tpuRamW", "tpuRamSkip",
+  "hflags", "hflagsFast", "hflagsBad",
 ];
 
 const b = await chromium.launch({ headless: true });

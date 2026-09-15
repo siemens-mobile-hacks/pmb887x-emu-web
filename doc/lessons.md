@@ -108,6 +108,102 @@ file is the "why" behind them and behind the timing model.
   halted, not starved — check `halts/s` and the recompile counters before
   reading it as a problem.
 
+## wasm has no relaxed atomic and no acquire fence (round thirteen)
+
+QEMU's `qatomic_read`/`qatomic_set` are `__ATOMIC_RELAXED` and
+`smp_rmb()` is `__atomic_thread_fence(ACQUIRE)`, both of which cost
+nothing on x86.  On wasm they are not free and not equal:
+
+- a **relaxed load** lowers to `iN.atomic.load`, which the wasm spec
+  defines as seq_cst — but x86 gives a seq_cst load away, so it stays a
+  plain `mov`.  Cheap.
+- a **relaxed store** lowers to `iN.atomic.store`, also seq_cst, and
+  that is a locked exchange.  Not cheap.
+- an **acquire fence** lowers to `atomic.fence`, seq_cst because wasm
+  has no other kind, and that is a locked operation too.
+
+Two consequences that drove a whole round:
+
+**The ordering is often already there.**  If every shared location a
+read section touches is reached through `qatomic_*`, then on wasm they
+are all seq_cst accesses and the engine has already ordered them; what
+is left to prevent is the *compiler* reordering them, because LLVM sees
+`__ATOMIC_RELAXED` whatever the backend later emits.  A `barrier()` does
+that for nothing.  This is a per-section argument, never a general one —
+a seqlock whose payload is plain loads still needs the real fence — so
+make the local pair, do not change `seqlock.h` (0070).
+
+**A single-writer publish does not need to be atomic.**  If exactly one
+thread writes a naturally-aligned word and readers already tolerate
+staleness (a seqlock reader does: the writer of `qemu_icount` does not
+hold the write lock), a plain store is the same value with none of the
+locked operation.  0070's first cut — the two fences replaced *and* an
+early return when nothing had executed — measured +1.8 %; adding the
+plain store took it to +5.2 %, matching the ceiling probe.  So **the
+locked store was the larger half**, and round eleven's "barriers are
+free" (an `atomic.fence` microbenchmarked at 0.2 ns) is not contradicted
+by this: the two changes in that first cut were never separated, and the
++1.8 % may be mostly the early return.  If the split ever matters,
+measure it — three builds, not two.
+
+Corollary for the whole tree: anywhere QEMU pays for ordering in a hot
+path, ask what it is ordering *against* on this target before assuming
+the cost is intrinsic.  `qatomic_set_mb()` in `cpu_handle_interrupt()`
+was a store plus a fence on every pass of the execution loop, whether or
+not there was anything to clear (0072) — though that one turned out to
+be nearly free, so ask the profiler too.
+
+## An uncontended lock still costs, and the fix is to stop taking it
+
+The BQL on the MMIO path was already the leanest possible pair — one
+TLS read, `pthread_mutex_lock`, one TLS write — and still cost 3.2 % of
+the vCPU, because an idle S75 takes it **three million times a second**
+and musl's uncontended path is a locked compare-exchange plus a locked
+exchange.  There is no way to make that pair cheaper.  There is a way to
+stop running it: **hold the lock and give it back only when asked**
+(0073).
+
+What makes deferred release safe is not the release mechanism — it is a
+structural bound that holds when the mechanism fails.  Here the rr loop
+already unlocks the BQL for real before every `tcg_cpu_exec()`, so the
+worst case of a missed release is one icount slice of delay, not a
+deadlock.  Design for that property first; the prompt-release path
+(`bql_wanted`, checked once per `cpu_exec_loop()` pass) is then an
+optimisation of the latency, not the thing correctness rests on.
+
+Check the other direction too: the boards that stood to lose are the LG
+ones, where `icount=none` puts the virtual-clock timers on the main loop
+— the thread being kept out.  They got 10 % *faster*.
+
+## Read the symbol map before believing a cost model
+
+Three ideas died in one round, each in under a minute, each of which
+would have been an afternoon:
+
+- `muldiv64()` divides by a runtime frequency, so the TPU path "must" be
+  running software 128-bit division.  There is no `__udivti3` in the
+  symbol map at all — `CONFIG_INT128` is unset for this build, so the
+  64-bit fallback runs and is inlined.
+- the BQL's coroutine-TLS accessors are deliberately `noinline`, so they
+  "must" be four extra calls per device access.  They profile at 0.0 %.
+- a function marked `static inline` is not necessarily inlined:
+  `io_clock_window` and `rebuild_hflags_a32_el` both appeared as their
+  own symbols until they were marked `always_inline`.
+
+The symbol map (`site/<dist>/qemu-system-arm.js.symbols`) and a deep
+profile (`PROF_TOP=150`) answer all three.  Ask them first.
+
+## Some ceilings cannot be probed by deletion
+
+The ceiling probe — build a variant with the suspect work removed, run
+it once, see what the prize is — is the cheapest tool here, and it paid
+for 0070 (+5.0 %, which told us the real patch at +5.2 % had taken all
+of it).  But it only works when deleting the work still leaves a
+*running* guest.  Deleting the BQL from the MMIO path lets the main loop
+and the vCPU run device code concurrently; the guest never reached idle,
+and there was no number.  When that happens, build the real thing and
+measure it — do not read the failure as "no win available".
+
 ## What a cross-thread wake really costs (round twelve)
 
 The wake is not the futex call.  It is the **BQL round trip behind it**:
