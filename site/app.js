@@ -2220,7 +2220,6 @@ function scrollToPhone() {
 // the canvas fills it exactly, with no letterbox inside and no bars around.
 const lcdWrap = document.querySelector(".lcd-wrap");
 const screenCell = document.querySelector(".screen-cell");
-const keypadEl = document.getElementById("keypad");
 
 function screenAspect() {
   // a live guest's framebuffer beats the board config
@@ -2274,14 +2273,11 @@ window.visualViewport?.addEventListener("resize", scheduleFit);
 // ...and on Android it retracts on scroll, which fires neither resize event
 window.visualViewport?.addEventListener("scroll", scheduleFit);
 for (const mq of [sideBySide, landscapeFit, phoneLayout]) mq.addEventListener("change", scheduleFit);
-// The box is sized from what the keypad and the control row leave, so a change
-// in either has to re-fit it — a taller keypad (switching to a phone with more
-// rows) would otherwise leave a box measured against the old one and push the
-// bottom rows off screen. The HUD is as wide as the box it sits on, so it
-// follows. fitScreen() only writes on a real change, which keeps observing an
-// element it resizes from looping.
-const refit = new ResizeObserver(() => { fitScreen(); refitHud(); });
-for (const el of [screenCell, keypadEl, statusBlock]) refit.observe(el);
+// Whatever moves the row's height — a keypad with more rows, a sheet, the
+// control row rewrapping — reaches the box through the cell, because flex has
+// already resized the cell by the time this fires. Watching the cell alone is
+// therefore enough. The HUD is as wide as the box it sits on, so it follows.
+new ResizeObserver(() => { fitScreen(); refitHud(); }).observe(screenCell);
 // the token budget follows the container width, wherever that came from
 function refitHud() { if (!hudEl.hidden) drawHud(); }
 document.fonts?.ready.then(scheduleFit);
@@ -2614,9 +2610,10 @@ document.addEventListener("fullscreenchange", () => {
 });
 
 /* ?vp=1 — the height budget drawn on the page, because "the keypad does not
- * fit" is reported with a screenshot and the numbers have to be in it. The
- * browsers disagree about which of inner/visual/client is the area actually
- * on screen; this is what says which one to believe. */
+ * fit" is reported with a screenshot and the numbers have to be in it. It is
+ * what found the `min-height: 100vh` floor: the viewport figures all agreed,
+ * and the tell was a `flex: 1` row measuring taller than its flex share,
+ * which can only mean an ancestor is taller than the viewport. */
 let vpEl = null;
 const vpForced = new URLSearchParams(location.search).get("vp") === "1";
 
@@ -2634,16 +2631,15 @@ function vpProbeEl() {
 function drawVpProbe() {
   if (!phoneLayout.matches) { if (vpEl) vpEl.hidden = true; return; }
   const v = viewportReport();
-  // Self-shows only when the browser's *own* numbers say the column
-  // overflows. That will not catch the edge-to-edge case this exists for —
-  // there the numbers claim it fits — so ?vp=1 stays the way to ask for it.
+  // self-shows on a real overflow, so a regression is visible without knowing
+  // to ask for it; ?vp=1 pins it on when nothing is wrong yet
   if (!vpForced && v.fits) { if (vpEl) vpEl.hidden = true; return; }
   vpEl = vpProbeEl();
   vpEl.hidden = false;
   vpEl.textContent =
-    `inner ${v.inner}  visual ${v.visual}  client ${v.client}\n`
-    + `appH ${v.appH}  outer ${v.outer}  screen ${v.screenH}  dpr ${v.dpr}\n`
-    + `safeBottom ${v.safeAreaBottom}  fs ${v.fullscreen ? 1 : 0}\n`
+    `inner ${v.inner}  visual ${v.visual}  client ${v.client}  dpr ${v.dpr}\n`
+    + `appH ${v.appH}  bodyMin ${v.bodyMin}  safeBottom ${v.safeAreaBottom}`
+    + `  fs ${v.fullscreen ? 1 : 0}\n`
     + `status ${v.status}  screen ${v.screen}  keypad ${v.keypad}\n`
     + `used ${v.used}  budget ${v.budget}  fits ${v.fits ? "YES" : "NO"}`;
 }
@@ -2654,21 +2650,23 @@ function viewportReport() {
   const px = (v) => Math.round(parseFloat(v) || 0);
   const cs = getComputedStyle(document.querySelector("main"));
   const R = (s) => Math.round(document.querySelector(s)?.getBoundingClientRect().height ?? 0);
-  const used = R(".status-block") + R(".screen-row") + R("#keypad") + 12;
+  const gap = px(getComputedStyle(phonePanel).rowGap);
+  const used = R(".status-block") + R(".screen-row") + R("#keypad") + gap * 2;
+  const budget = window.innerHeight - px(cs.paddingTop) - px(cs.paddingBottom);
   return {
     inner: window.innerHeight,
     visual: Math.round(window.visualViewport?.height ?? 0),
-    appH: px(getComputedStyle(document.documentElement).getPropertyValue("--app-h")),
-    // the three the browser disagrees about when it lays out edge-to-edge
     client: document.documentElement.clientHeight,
-    screenH: window.screen?.height ?? null,
-    outer: window.outerHeight,
+    appH: px(getComputedStyle(document.documentElement).getPropertyValue("--app-h")),
+    // min-height outranks the height we set: if this exceeds `inner`, the
+    // column is floored taller than the viewport and nothing below fits
+    bodyMin: px(getComputedStyle(document.body).minHeight),
     safeAreaBottom: px(cs.paddingBottom) - 6,
     dpr: +devicePixelRatio.toFixed(2),
     fullscreen: !!document.fullscreenElement,
     status: R(".status-block"), screen: R(".screen-row"), keypad: R("#keypad"),
-    used, budget: window.innerHeight - px(cs.paddingTop) - px(cs.paddingBottom),
-    fits: used <= window.innerHeight - px(cs.paddingTop) - px(cs.paddingBottom) + 1,
+    used, budget,
+    fits: used <= budget + 1,
   };
 }
 

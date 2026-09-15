@@ -220,8 +220,8 @@ packed calendar).
   (`--key-h`) while `fitScreen()` gives the screen box whatever is left. The
   Firmware and Run panels move into two bottom sheets.
   `tools/ui-acceptance.mjs` checks all of this, `tools/uidiff.mjs` that the
-  keypad itself did not move. Three things about the height are not obvious,
-  and headless Chromium shows none of them — only a real phone does:
+  keypad itself did not move. What is not obvious is the height, and headless
+  Chromium hides most of it — only a real phone shows these:
   - `100dvh` is not what is on screen on Chrome for Android while the URL bar
     is showing, so the column's height is `--app-h`, published from
     `visualViewport.height` by `syncAppHeight()` (ignored while pinch-zoomed;
@@ -253,9 +253,10 @@ packed calendar).
     are kept only in case that meta returns.
   - `#btn-fullscreen`, the control row's third icon (after the recorder), is
     the only way to get the browser and system bars back — worth ~80px on a
-    phone. It needs a user gesture, syncs
-    on `fullscreenchange` (swipe/Back/Esc never go through the button), and is
-    hidden where the Fullscreen API is not available (iOS Safari).
+    phone. It needs a user gesture, syncs on `fullscreenchange` (swipe, Back
+    and Esc never go through the button), stands down while a capture runs
+    (the recording pill needs that width at 320px), and is hidden where the
+    Fullscreen API is not available (iOS Safari).
   - `?vp=1` draws that budget on the page, since this class of bug is reported
     with a screenshot and the numbers have to be inside it.
   `diagnostics()` reports the resulting budget under `viewport` (`inner`,

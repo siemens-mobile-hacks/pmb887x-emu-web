@@ -706,21 +706,19 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 
 /* ---------------- phone layout ---------------- */
 /* One column the height of the visible viewport and no page scroll: a single
-   32px control row, then the screen and the keypad as one group, 6px apart,
-   taking every pixel that is left. The keypad keeps its natural height and the
-   screen box gets the remainder, so the keypad is never clipped or scrolled;
-   any space neither of them can use splits evenly above and below the group. */
+   32px control row, the screen with the two edge-key columns taking every
+   pixel that is left, and the keypad pinned to the bottom. The status row and
+   the keypad keep their natural heights and the screen row is handed the
+   remainder, so the keypad is never clipped or scrolled — see the
+   `min-height` note below for the one rule that quietly breaks that. */
 @media (max-width: 599px) {
   /* --app-h is visualViewport.height, published by syncAppHeight() in app.js:
-     100dvh is not the area actually on screen on Chrome for Android while the
-     URL bar is showing, and the column's last rows — the keypad — end up under
-     the browser chrome. 100dvh stays as the pre-JS fallback. */
-  /* `min-height: 0` is not redundant: the base rule gives body
-     `min-height: 100vh`, min-height beats height, and Chrome for Android keeps
-     100vh at the URL-bar-*retracted* height. The column was therefore floored
-     at ~80px taller than the viewport it had to fit in, which is what pushed
-     the keypad's last row off the bottom. Headless never shows it — there
-     100vh == innerHeight and the floor is a no-op. */
+     100dvh is not the area on screen on Chrome for Android while the URL bar
+     is showing (100dvh is the pre-JS fallback). `min-height: 0` is not
+     redundant either — the base rule floors body at `min-height: 100vh`,
+     min-height beats height, and that 100vh stays at the URL-bar-*retracted*
+     height, flooring the column ~80px taller than the viewport it has to fit
+     in. Both are invisible headless, where 100vh == innerHeight. */
   html, body { height: var(--app-h, 100dvh); min-height: 0; overflow: hidden; }
   body { display: flex; flex-direction: column; }
   header { display: none; }
