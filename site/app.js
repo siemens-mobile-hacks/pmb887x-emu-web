@@ -123,6 +123,13 @@ function untar(buf, writeFn) {
 const $ = (id) => document.getElementById(id);
 let qemuModule = null;   // current emscripten module instance
 let running = false;     // a guest is live (the module object outlives it)
+// The module object outlives the guest, but its wasm exports do not:
+// emscripten replaces them with stubs that abort ("called after runtime
+// exit") once main() has returned, and the stale module of a finished run is
+// still assigned while the next one boots. Everything that calls into wasm
+// asks for the module here; only FS reads (the exports, the serial log) go to
+// qemuModule directly, since MEMFS survives the exit.
+const liveModule = () => (running ? qemuModule : null);
 let rafHandle = 0;
 let serialTimer = 0;
 let boards = [];         // [{id, file}] parsed from boards.tar
@@ -1240,7 +1247,12 @@ function stop() {
   // a capture in flight is finished and saved first — the frames stop
   // arriving the moment the guest goes away
   finishRecording(() => {
-    if (qemuModule && qemuModule._wasm_quit) qemuModule._wasm_quit();
+    // flushing the capture takes a moment, in which the guest can exit on its
+    // own — then there is nothing left to stop, and onGuestExit already
+    // put the page back to idle
+    const m = liveModule();
+    if (!m?._wasm_quit) return;
+    m._wasm_quit();
     showOverlay("Stopping…");
   });
 }
@@ -1422,8 +1434,8 @@ function startPainting() {
   cancelAnimationFrame(rafHandle);
   const step = () => {
     rafHandle = requestAnimationFrame(step);
-    const m = qemuModule;
-    if (!m || !m._wasm_fb_ptr) return;
+    const m = liveModule();
+    if (!m?._wasm_fb_ptr) return;
     if (!m._wasm_fb_take_dirty()) return;
     const w = m._wasm_fb_width(), h = m._wasm_fb_height(), stride = m._wasm_fb_stride();
     if (w <= 0 || h <= 0) return;
@@ -1772,7 +1784,7 @@ function drawHud() {
 /* ---- sampling ---- */
 
 function hudTick() {
-  const m = qemuModule;
+  const m = liveModule();
   if (!m?._wasm_insns) return;
   const s = { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
     fb: Number(m._wasm_fb_updates()), halts: Number(m._wasm_memstat(HUD_HALT_INDEX)), paint: paintMs };
@@ -1830,14 +1842,17 @@ function hudReset() {
 const hudLive = () => emuState === "booting" || emuState === "running" || emuState === "paused";
 
 // Phone widths draw the strip whenever there is a guest, toggle or no toggle
-// (§4); desktop only with the toggle on (§5). The sampler runs for any live
-// guest either way — the pill's slow warning does not wait for the strip.
+// (§4); desktop only with the toggle on (§5). The sampler follows the guest,
+// not the strip: it runs for any live guest either way — the pill's slow
+// warning does not wait for the strip — and stops the moment the guest goes,
+// since there is nothing left to sample and calling the exports past the
+// runtime's exit aborts it. A strip left on keeps the last window's numbers.
 function syncHud() {
   if (!hudReady) return;
   const show = phoneLayout.matches ? hudLive() : hudChk.checked;
   const changed = hudEl.hidden === show;   // it was the other way a moment ago
   hudEl.hidden = !show;
-  if (show || hudLive()) { if (!hudTimer) hudTimer = setInterval(hudTick, HUD_MS); }
+  if (hudLive()) { if (!hudTimer) hudTimer = setInterval(hudTick, HUD_MS); }
   else stopHudTimer();
   if (show) drawHud();
   // off the phone layout the two lines are real height in the phone column
@@ -1925,8 +1940,8 @@ function startSerialPoll() {
 /* ------------------------------------------------------------------ */
 
 function sendKey(phoneKey, down) {
-  const m = qemuModule;
-  if (!m || !m._wasm_send_key) return;
+  const m = liveModule();
+  if (!m?._wasm_send_key) return;
   const lnx = KEY_TO_LINUX[phoneKey];
   if (lnx == null) return;
   m._wasm_send_key(lnx, down ? 1 : 0);
