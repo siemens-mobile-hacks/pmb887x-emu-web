@@ -583,10 +583,64 @@ for (const [w, h] of [[320, 568], [320, 490], [360, 640], [360, 560], [390, 844]
     `scroll=${r.scroll}/${r.inner} kpBottom=${r.kpBottom} clipped=${r.clipped}`);
 }
 
+/* ------ the screen and the keypad are one group, with the slack split ------ */
+// The keypad keeps its natural height and the box takes what is left, so the
+// gap between them is the panel's own 6px and never a pile of leftover space.
+// Headless Chromium has no retractable URL bar, so this is necessary but not
+// sufficient — the real check is a phone (see doc/architecture.md).
+for (const [w, h] of [[360, 640], [390, 750], [320, 900]]) {
+  await page.setViewportSize({ width: w, height: h });
+  await page.waitForTimeout(300);
+  const r = await page.evaluate(() => {
+    const R = (s) => document.querySelector(s).getBoundingClientRect();
+    const st = R(".status-block"), row = R(".screen-row"), kp = R("#keypad");
+    return {
+      gap: Math.round(kp.top - row.bottom),
+      above: Math.round(row.top - st.bottom),
+      below: Math.round(window.innerHeight - 6 - kp.bottom),
+      rowH: Math.round(row.height), boxH: Math.round(R(".lcd-wrap").height),
+    };
+  });
+  // above includes the 6px panel gap that `below` does not
+  ok(`v5.1 ${w}x${h}: 6px to the keypad, slack split (${r.above - 6}/${r.below})`,
+    r.gap === 6 && Math.abs((r.above - 6) - r.below) <= 2 && r.rowH === r.boxH,
+    `gap=${r.gap} above=${r.above} below=${r.below} row=${r.rowH} box=${r.boxH}`);
+}
+
 await page.setViewportSize({ width: 1770, height: 1000 });
 await page.waitForTimeout(200);
 ok("5 panels come back to the columns on desktop", await page.evaluate(() =>
   document.getElementById("pre-panel").parentElement.tagName === "MAIN"));
+
+/* ---------------- device names, the chip, content detection ---------------- */
+await page.click("#ff-mode-own");
+await page.waitForTimeout(300);
+const devOpts = await page.$$eval("#device option",
+  (o) => o.filter((e) => e.value).map((e) => [e.value, e.textContent]));
+const labelOf = (id) => (devOpts.find((o) => o[0] === id) ?? [])[1];
+ok("v5.2 device options read as names, values unchanged",
+  labelOf("siemens-s75") === "Siemens S75" && labelOf("lg-ke800") === "LG KE800",
+  `${labelOf("siemens-s75")} / ${labelOf("lg-ke800")}`);
+// upstream's siemens-el71.toml says model = "E71", the same as siemens-e71
+ok("v5.2 EL71 and E71 do not collide",
+  labelOf("siemens-el71") === "BenQ-Siemens EL71"
+  && labelOf("siemens-e71") === "BenQ-Siemens E71",
+  `${labelOf("siemens-el71")} vs ${labelOf("siemens-e71")}`);
+ok("v5.2 sorted by what is shown",
+  devOpts.map((o) => o[1]).every((v, i, a) => i === 0 || a[i - 1].localeCompare(v) <= 0));
+
+// a name that says nothing sends the picker to the image itself; a 32-byte
+// stub has nothing to read, so it must come back with no device and no throw
+await page.evaluate(() => { document.getElementById("device").value = ""; });
+await drop("#ff-bin-slot", ["dump.bin"]);
+await page.waitForTimeout(500);
+ok("v5.3 a too-small file is not a detection", await page.evaluate(() =>
+  document.getElementById("device").value === ""),
+  await page.$eval("#device", (e) => e.value));
+
+const fc = page.waitForEvent("filechooser", { timeout: 5000 }).then(() => true, () => false);
+await page.click("#ff-bin-pick");
+ok("v5.4 the chosen file's name reopens the picker", await fc);
 
 /* ---------------- boot: §1.7, §2.2 running, §3.2 ---------------- */
 if (!process.env.SKIP_BOOT) {

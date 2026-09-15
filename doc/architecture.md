@@ -160,6 +160,41 @@ packed calendar).
   bytes written into the emscripten MEMFS; Advanced options (IMEI/ESN→OTP,
   SIM, operator, startup) become `PMB887X_*` env vars — the exact set the
   pmb887x-emu `load` tool uses. The panel is `disabled` while a guest runs.
+- Which phone a fullflash came from (`detectDevice()` in `fullflashes.js`):
+  the filename first (`DEVICE_RULES`), then the image itself, so a dump named
+  `dump.bin` still selects its board. Offsets, all verified against the sample
+  dumps in `fullflashes/` (S75, EL71, C81, S66, KE800) — re-derive with
+  `grep -abo` for the model string if a new dump ever disagrees:
+  - `0x3C` `"CJKT"` — every pmb887x NOR dump, LG included
+    (`build/bsp/boot/fakesign.py`). Separates "not a fullflash" from
+    "a fullflash I can't identify".
+  - Siemens/BenQ-Siemens firmware record, 16-byte NUL-padded ASCII fields at a
+    fixed offset, the same on SGold and SGold2: `0x8FC60` build tag (`lg1`),
+    **`0x8FC70` model** (`S75`), **`0x8FC80` vendor** (`SIEMENS`, even for the
+    BenQ-Siemens-era phones), `0x8FC90` version. Model + `v` + the version byte
+    at `0x8FC50` + the build tag reproduces the preset naming convention
+    (`S75v40lg1`).
+  - Fallback for an erased record: the bootcore header `siemens_recalc.cpp`
+    parses — magic `02 02 4C 53` / `00 02 4C 53` at `0x200` with the model at
+    `0x210`, or `00 03 4C 53` at `0x1200` with the model at `0x3E000`. Its own
+    version record names the model `BC65`/`BC75`/`BC85`; that is the bootcore,
+    not the phone, so those are discarded.
+  - LG has none of the above: the model comes from the J2ME user agent
+    (`LG-KE800 MIC/…`, ~4.2 MiB in), scanned over a bounded window.
+  - `MODEL_VARIANTS` maps a model with no board of its own onto the board that
+    emulates it. Sourced, never guessed — a wrong row boots someone's phone as
+    the wrong hardware, so a model that cannot be placed is left to the user.
+    `C1F0`→EL71 is upstream's own (`pmb887x-emu/README.md`); `ELF1`/`ELC1`→EL71
+    and `S66`→S65 come from ru.wikipedia (the S66 is the Americas-band S65, and
+    the dump agrees: 32 MiB, `BC65`, the R65 family that holds S65);
+    `C66`/`CT65`/`CV65`/`CO65`→C65 from the en.wikipedia C65 article ("known in
+    North America as the Siemens C66" plus its carrier variants); `CX66`→CX65
+    from the en.wikipedia model list. Every row but the upstream one says in
+    the UI that it is substituting, because same-family is not the same board:
+    the configs carry per-model `HW_DET_MOB_TYPE` strap bits (S65 `01100`,
+    C65 `10010`) that firmware can read. Deliberately not mapped: `CL61A` is a
+    different part from CL61 (flash `0x880D` vs `0x8819`), and `M75`, `C70`
+    and `ME75` have no source putting them on the same silicon as a board here.
 - Advanced ▸ Siemens keys (`site/recalc.js`, `site/recalc-worker.js`): for a
   `siemens-*` device in Own file mode only — the presets are published
   already recalculated — the three ways pmb887x-emu reconciles a fullflash
