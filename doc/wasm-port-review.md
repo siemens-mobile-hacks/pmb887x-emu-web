@@ -26,7 +26,7 @@ the page's default path:
 | # | Severity | Where | One line |
 |---|---|---|---|
 | R-01 | BUG-HIGH | `include/qemu/futex.h:81` | `qemu_futex_wait` passes a 0 ms timeout to `emscripten_futex_wait` (= immediate timeout, proven with emsdk source + test): every `QemuEvent`/`QemuLockCnt` wait busy-spins; the RCU thread pegs a core at the idle screen. One-word fix (`INFINITY`). |
-| R-02 | BUG-MED (latent hang) | `accel/tcg/icount-common.c:405-416` | Under the shipped `rt=banked` cap the main loop hands a virtual deadline back with `qemu_cpu_kick`, which cannot wake an idle rr thread; reachable after `rr_idle_advance`'s 64-iteration bound. |
+| R-02 | BUG-MED (latent hang) — **FIXED** in `f193e849` | `accel/tcg/icount-common.c:405-416` | Under the shipped `rt=banked` cap the main loop hands a virtual deadline back with `qemu_cpu_kick`, which cannot wake an idle rr thread; reachable after `rr_idle_advance`'s 64-iteration bound. The hand-back now goes through `async_run_on_cpu` and is skipped while the vCPU is in the cap's own timed wait. |
 | R-03 | BUG-MED (generic) | `system/physmem.c:3119-3124` | 0016's range-scoped topology flush never clears `tb_jmp_cache`; a remap (SCU BROM mirror, TCM, EBU; upstream PAM) can execute a stale TB until the guest's next TLB flush. |
 | W-01/02/03 | BUG-MED (wasm64, any ARMv6T2+ guest) | `tcg/wasm64/tcg-target.c.inc` | `deposit_i32`, mid-field `sextract`, and `bswap32_i64` emit **invalid wasm modules** (validated with V8); unreachable on the ARM926 firmware, fatal for any other `qemu-system-arm` CPU model. |
 | W-04 | BUG-MED (wasm64, shipped) | `tcg-target.c.inc:2497-2610` | The per-TB temp-module prelude has unchecked 1-byte section sizes; ≥ 15 helper imports in one TB → rejected module, ≥ ~20 → unsigned underflow writes ~4 GB of zeros into a stack buffer. Built for every TB although temp modules are never instantiated in the default config. |
@@ -369,6 +369,7 @@ reachable in principle on the pmb887x firmware.
 - **Confidence:** high for the semantics (proven) and the composition (upstream `qemu_event_wait` is unchanged); the *observable* CPU cost should be confirmed by the measurement above.
 
 ### R-02 — Under the real-time cap the main loop hands a virtual deadline back to the vCPU with a plain `qemu_cpu_kick`, which cannot wake an idle rr thread: latent guest hang
+- **Status: FIXED** in `f193e849` ("wasm: fix the futex, main-loop and real-time-cap wake paths"). The description below is of the original code; the hand-back is now an `async_run_on_cpu`, guarded by `rtcap_vcpu_waiting` so it is skipped while the vCPU is already in the cap's own kick-interruptible wait.
 - **Severity:** BUG-MED (latent hang in the shipped `QEMU_ICOUNT_RTCAP=banked` wasm configuration; HIGH if the trigger is ever hit). **Introduced:** 0032 (`accel/tcg/icount-common.c:405-416`), interacting with 0023 (`tcg-accel-ops-rr.c:133`).
 - **Evidence:** `icount-common.c:405-416`:
   ```c
@@ -598,7 +599,7 @@ Grouped by what it costs. Line counts are approximate.
 | Knob | Where read (cached?) | Still used by | Verdict |
 |---|---|---|---|
 | `QEMU_IO_REWIND` | `accel/tcg/cputlb.c:1639` (static) | page `?iorewind=1` | A/B escape hatch for 0010 — keep or drop with it |
-| `QEMU_ICOUNT_RTCAP` | `accel/tcg/icount-common.c:523` (all builds; default `banked` on wasm, `off` native) | page `?rt=`; benchmarks pass `off`; not `run-native.sh` | shipping knob; native/web pacing disagree (handoff item 5) |
+| `QEMU_ICOUNT_RTCAP` | `accel/tcg/icount-common.c` (all builds; `off\|banked\|banked:<n>\|strict`, default `banked:30` on wasm, `off` native) | page `?rt=`; benchmarks pass `off`, `RT=ship` takes the default | shipping knob; native/web pacing disagree (handoff item 5) |
 | `QEMU_COSTACK` | `util/coroutine-wasm.c:132` — **on every coroutine switch** | onlylist capture recipe only | cache the result (R-33) |
 | `QEMU_ICOUNT2_DEBUG` | pre-existing in master | page | unchanged |
 | `W64_DEBUG` | `tcg-target.c.inc:1088`, `wasm64.c:1303,1512,1841`, `cpu-exec.c:711` (static); `wasm64.c:1427` (**every 1024th re-ensure, uncached**) | page `?w64debug=1`, `tools/repro.mjs` | keep one cached flag for batch/compact stats; drop the `W64CALL` print (W-18) |

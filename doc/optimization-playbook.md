@@ -354,6 +354,7 @@ mmiopoll only) makes a whole-run profile pure.
 | 0018 cputlb: fill-time MMIO dispatch + victim-TLB masked compare | (a) `tlb_set_page_full` resolves `(callback, opaque, size-mask, swap, align, re-entrancy guard)` per iotlb entry — the MMIO access path becomes one mask test + indirect call instead of dispatch_read→access_valid→adjusted_size→accessor; (b) `victim_tlb_hit` compared `cmp == page` unmasked, but every MMIO entry carries TLB_FORCE_SLOW in addr_idx → the victim TLB *never hit for MMIO*, so two MMIO pages aliasing on one TLB index (sysctl 0x10000000 + VIC 0x10140000, both index 0 under ARMv5 1K target pages) re-walked the guest page tables on **every access** | tcgbench mirrors: mmiopoll **534→202 ns** (dist-jit), 606→252 (dist), mmiow 305→227; native parity (223).  bootbench finalV/insns@110 s up on every pair (windows noisy under host load); op-suite 1156/1156 byte-identical ×3, native suite 4/4 on the branch binary, lockstep 20e6+250e6 clean (sessions doc, 2026-09-11 device-path) |
 | 0031 wasm64: Asyncify instrumentation allowlist (`-sASYNCIFY_ONLY`) | the emscripten fiber backend unwinds the whole C stack at a switch, so the old `-sASYNCIFY_REMOVE=tcg_qemu_tb_exec` instrumented ~everything the `invoke_*` longjmp wrappers reach (~21k fns / 17 MB / ~25 % of early-boot vCPU).  The wasm64 backend runs guest code as JIT'd modules, not `tcg_qemu_tb_exec`, so instrument ONLY the functions seen on a real switch stack (`configs/meson/asyncify-only.txt`, captured with `QEMU_COSTACK=1` over boot/rw-flash/shutdown + name families).  Prereqs: flash `blk_pwrite` deferred to a main-loop BH (a vCPU-thread block coroutine can't unwind a JIT frame); vCPU thread marked `qemu_coroutine_forbid_current_thread` (abort, not derail).  **wasm64-only** (`build-qemu-wasm64.sh` overrides the shared cross file): the TCI dist's hot path IS the interpreter, onlylist **regressed dist +26 %** | dist-jit wasm **45.1→27.8 MB**; idlebench `--runs 2`: **tIdle 40.3→33.2 s (−18 %)**, t0.5G 29.6→24.0 (−19 %), t0.1G 5.4→3.3 (−39 %); op-suite native JIT+TCI 1156/1156 identical, lockstep 250e6 serial+regs identical, Chromium idle |
 | 0032 icount: real-time cap for sleep=off (`QEMU_ICOUNT_RTCAP`, wasm default banked) | sleep=off warps the virtual clock straight to the next deadline (0023, on the vCPU), so a halted guest advances virtual time as fast as the host runs deadlines → the idle clock/animations run ahead of wall (~3.7× at t≈45 s; a regression vs native's RT-paced warp).  The vCPU sleeps (kick-interruptible, sub-ms `qemu_cond_timedwait_ns`) before a warp / after a budget round until wall reaches the virtual target.  "banked" measures allowed time from VM start, so the compute-bound boot (virtual *behind* wall) is never throttled and only idle overrun is paced; "strict" re-anchors on lag (paces the boot too — not the default).  Virtual time stays instruction-deterministic (lockstep/op-suite unaffected) | at t=45 s: virtual v=166 s (off) → **44.8 s (banked) ≈ wall**; boot-to-idle unchanged (insns@30 s 1.13 G banked vs 1.19 G off); default off on non-emscripten.  **Residual:** the phone's displayed digital clock still advances too fast per virtual second — an RTC/timer decode issue separate from the virtual-time rate, resolved by 0033 |
+| 0077 icount: the real-time cap switches banked -> strict after `<n>` guest seconds (`QEMU_ICOUNT_RTCAP=banked:<n>`, wasm default `banked:30`) | `banked` lets a boot that fell behind catch up as fast as it can - and lets any *later* stall (a backgrounded tab, a host hiccup) be repaid the same way, by sprinting the phone's clock and animations.  So bank only for the boot: `banked` until the guest has run `<n>` seconds of its own clock, then re-anchor on lag forever.  Guest time, not wall time - the boot costs ~42 s of virtual time on every host but 39 s to minutes of wall, so a wall window would expire mid-boot on exactly the slow machines banked protects; it is also one compare against a constant on a path already handed a virtual-time value (no clock read) and is not consumed by a pause.  No re-anchor at the switch: `excess_strict <= excess_banked` always, so the flip can only shorten a sleep.  Plain `banked`/`strict` stay pinned, so the ladder above and every historical A/B keep their meaning; `RT=ship` is the new idlebench leg that takes the page's own default.  Page side: the pill's `slow` warning is suppressed while banking (v/wall is below 1 there by construction), and the HUD's `lag` re-anchors at the switch because strict forgives the debt rather than paying it back | switch lands at wall ~30.7 s with v=30.2 s, i.e. the guest is already pinned at the cap (it spent its bank through the display-DMA warp stretch: v 4.2 -> 30.2 in ten seconds, v/wall 2.58), so the flip is the no-op case and tIdle is unmoved; v/wall settles at 1.00 after it.  The boot no longer reads "Booting - slow" |
 | 0033 pmb887x: RTC `CNT` seed layout per board (`cnt-format`) | the pinned rev seeds `CNT` as a packed calendar (sec/min/hour/yday fields, 964/4/40 reloads); LG firmware reads those fields, Siemens firmware treats `CNT` as one linear Unix-seconds counter (+ its own time-zone setting), so the packed value decoded to "Wed 02 May 2091" and each minute wrap (0x3FF → 0x7C4 = +965) jumped the shown clock +16 min.  Not wasm- or warp-related: identical on the pristine native build.  Board config `[rtc] format` (default unix; the LG configs set calendar — upstream in bsp `e6e73d1`); both honour `-rtc base=` | native S75 "Пт 11 Сен 21:22" / C81 "11.09.2026 20:22" / KE800 unchanged "17:20 11/9"; wasm dist-jit 21:23 → 21:24 over 60 s, dist 21:26 → 21:27 over 40 s (was 15:39 → 15:55 over 40 s); no perf change |
 | 0039 pmb887x: display path per-word costs | a redrawing J2ME app (the stopwatch, ~57 fps) pushes every LCD word through DIF FIFO → DMAC request → VIC; that chain was 44 % of the vCPU: `vic_update_state` scanned all 170 lines on every level change (now an asserted bitmap + unchanged-level no-op), the DIF re-drove 6 GPIO pins per FIFO word and 8 DMAC request lines per event (level caches; every consumer is level-idempotent), `dif_mux` was a 32-iteration bit loop per word (byte-lane tables), DMAC read a memory source word by word (burst read once), `srb_set_isr` tested 32 bits.  Plus `-Dqom_cast_debug=false` for the wasm64 build (`OBJECT_CHECK` asserted per FIFO word) | `tools/stopwatch.mjs` vratio **0.19 → 0.33** (25 → 41 MIPS); QOM casts off: boot −3..−5 % every milestone, both orders; op-suite 1156/1156, native 4/4, bootcheck s75/el71/ke800, lockstep 250e6 |
 | 0040 cputlb: fill-time TLB growth | QEMU's dynamic TLB resizes only at flush time; a phase with no flushes (the JVM: ARMv5 1 KB pages, ~6.2k-page working set) sat at 256 entries at 83k fills/s.  `tlb_set_page_full` doubles the table when fills since the last flush exceed 2× its size (cap 2^14); trap: index `f[]` through `cpu_tlb_fast()` (mmuidx_to_fast_index), not by mmu_idx | fills 83k/s → 35/s, table → 16384; boot (both orders, with 0039): t0.1G −18..−20 %, t0.5G −2..−3 %, t1.3G −1..−3 % |
@@ -830,6 +831,13 @@ under the cap could not have been caught by any of them.
 
 Now an env knob: `RT=banked node tools/idlebench.mjs …` (default stays
 `off`; an `RT!=off` run is a knob run and never becomes a baseline).
+**`RT=ship`** goes one better: it omits `&rt=` from the URL entirely, so
+the page picks its own built-in default and the tool cannot go stale the
+next time that default changes — which it since has (`banked:30`).
+Spelling the default out in the benchmark invocation would have
+reintroduced exactly the blind spot this section is about.  `RT=banked`
+stays the *stable* leg to A/B engine work against, because `RT=ship`
+numbers straddle the banked→strict switch.
 `EXTRA_Q`/`RT` still apply to every dist of an invocation, so they can only
 compare *across* invocations — the comparison rule 3 forbids.  A dist may
 therefore be written **`<dir>@<query>`**
@@ -898,6 +906,49 @@ disagree about wall-clock pacing while agreeing about the timing model
 `site/app.js`).  Aligning them means defaulting `QEMU_ICOUNT_RTCAP=banked`
 natively too — which would take a native S75 boot from ~15 s to ~40 s and
 needs `tests/run.mjs` timeouts revisited first.
+
+## The cap now has two phases: `banked:30` (2026-09-15)
+
+`banked` is the right mode *during* a boot and the wrong one after it.
+The credit that lets a compute-bound boot catch up as fast as it can is
+the same credit that lets a later stall — a backgrounded tab, a host
+hiccup — be repaid by sprinting the phone's clock and animations.  So the
+shipping default became **`banked:30`**: banked until the guest has run
+30 seconds of its own clock, then strict for the rest of the run.  Plain
+`banked` and `strict` stay pinned, so the ladder above and every
+historical A/B keep their meaning.
+
+Two things worth keeping:
+
+- **The window is guest time, not wall time.**  The boot costs ~42 s of
+  virtual time on every host, but 39 s of wall on the reference machine
+  and minutes on a phone.  A wall window would therefore expire mid-boot
+  on exactly the slow machines banked exists to protect, forfeiting a
+  large unspent bank.  A guest window also costs nothing to implement —
+  `icount_rtcap_excess_ns` is already handed a virtual-time value, so the
+  test is one compare against a constant with no extra clock read — and
+  it is not consumed by a pause.
+- **The switch needs no re-anchor.**  strict's branch only fires when
+  `vtarget < allowed - SLACK` and then sets `allowed = vtarget`, so
+  strict's `allowed` is never greater than banked's:
+  `excess_strict <= excess_banked` in every state.  Flipping can only
+  shorten a sleep, never lengthen one.  Either the guest is lagging and
+  the branch discards the bank on the same call, or it is inside the
+  slack band and the flip is a literal no-op.
+
+Measured on the reference host (`dist-jit`, S75v40lg1): the switch lands
+at wall ≈30.7 s with `v = 30.2 s` — the guest is pinned at the cap by
+then, having just spent its bank through the display-DMA warp stretch
+(`v` 4.2 → 30.2 in ten seconds, v/wall 2.58), so the flip is the no-op
+case and `tIdle` is unmoved.  Afterwards v/wall settles at 1.00.
+
+The page side: the status pill's `slow` warning is suppressed while the
+cap is banking, because v/wall is below 1 there *by construction* — the
+guest is behind and allowed to catch up, so the warning fired on every
+boot and meant nothing.  The HUD strip keeps its real colours.  The HUD's
+`lag` also re-anchors at the switch: strict *forgives* the debt instead
+of paying it back, so carrying the boot's 16 s of lag past the switch
+would show an amber token for a debt that no longer exists.
 
 ## Gates added 2026-09-11
 

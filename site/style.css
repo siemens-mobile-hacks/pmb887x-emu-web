@@ -89,8 +89,10 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .status[data-state="running"] .status-dot { background: var(--good); }
 .status[data-state="paused"] { background: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
 .status[data-state="paused"] .status-dot { background: var(--warn); }
-/* the guest has been slower than 0.80x for three seconds (§6): amber until
-   it has been back up for three. After the green rules, before the red one */
+/* the guest has been slower than 0.80x for three seconds (§6), and the
+   real-time cap is no longer banking — during the banked boot, below 1.00x
+   is what the guest is supposed to look like. Amber until it has been back
+   up for three. After the green rules, before the red one */
 .status.warn { background: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
 .status.warn .status-dot { background: var(--warn); }
 .status.error { background: #5c1a1a; color: #ffc4c4; border-color: #8a2b2b; }

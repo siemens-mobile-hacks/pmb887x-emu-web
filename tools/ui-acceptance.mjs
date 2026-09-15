@@ -567,6 +567,37 @@ if (!process.env.SKIP_BOOT) {
   await page.click("#btn-start");
   await page.waitForFunction(() => window.__ui.state === "running", null, { timeout: 180000 });
 
+  /* v4 §6a: no slow warning while the real-time cap is still banking. It has
+     to run here — the guest is seconds into its own clock, so the cap is
+     certainly still banked, which it may not be by the time §6b runs. */
+  {
+    // the phase is published by the 2 Hz HUD sampler, so it reads "off" for
+    // up to one tick after the module starts — wait for the first sample
+    // rather than racing it
+    const banked = await page.waitForFunction(() => window.__ui.rtcap === "banked",
+      null, { timeout: 10000 }).then(() => true).catch(() => false);
+    if (!banked) {
+      console.log(`skip v4.6 banked-phase checks — cap is "${(await ui()).rtcap}"`
+        + " (rt=off, or a board that runs without icount)");
+    } else {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 20 });
+      const under = await page.waitForFunction(
+        () => window.__hud.diagnostics().avg10s.vratio < 0.8, null, { timeout: 30000 })
+        .then(() => true).catch(() => false);
+      await page.waitForTimeout(4000);      // longer than the 3 s hysteresis
+      ok("v4.6 no slow warning while the cap is still banking",
+        under && await page.evaluate(() =>
+          window.__ui.rtcap === "banked" && !window.__ui.slow
+          && !document.getElementById("status").classList.contains("warn")
+          && !/slow/.test(document.getElementById("status-text").textContent)),
+        `v/wall ${await page.evaluate(() => window.__hud.diagnostics().avg10s.vratio)}, `
+        + `pill "${await text("#status-text")}"`);
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+      await cdp.detach();
+    }
+  }
+
   // the v4 §6 "· slow" suffix rides on the same text whenever the guest has
   // been under 0.80x for three seconds
   ok("2.2 running pill", /^Running · \d+:\d\d( · slow)?$/.test(await text("#status-text")), await text("#status-text"));
@@ -701,6 +732,13 @@ if (!process.env.SKIP_BOOT) {
   {
     const cdp = await page.context().newCDPSession(page);
     const speed = () => page.evaluate(() => window.__hud.diagnostics().avg10s.vratio);
+
+    // §6b the warning itself, which only applies once the cap has switched to
+    // strict (§6a, in the boot section, covers the banked half). Waiting on the
+    // phase rather than a timeout is what makes this deterministic — under an
+    // explicit ?rt=strict or ?rt=off it resolves at once.
+    await page.waitForFunction(() => window.__ui.rtcap !== "banked", null,
+      { timeout: 180000 });
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: 20 });
     const slow = await page.waitForFunction(() => window.__ui.slow, null, { timeout: 30000 })
       .then(() => true).catch(() => false);

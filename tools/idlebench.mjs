@@ -62,9 +62,10 @@
 //     --regress (5) % is flagged REGRESSION / IMPROVEMENT on stdout, so
 //     a slower build cannot pass silently.
 //   - RT env: real-time cap mode (0032) the page boots with — default
-//     "off" so milestones measure engine speed; RT=banked measures the
-//     shipping configuration (site/app.js default).  Like JS_FLAGS/
-//     EXTRA_Q, an RT!=off run never becomes the baseline.
+//     "off" so milestones measure engine speed; RT=banked pins the cap,
+//     RT=ship omits ?rt= so the page uses its own built-in default
+//     (banked:30) and the run measures what a user actually gets.  Like
+//     JS_FLAGS/EXTRA_Q, an RT!=off run never becomes the baseline.
 //   - JS_FLAGS env: extra V8 flags for the browser (e.g. "--no-wasm-lazy-compilation").
 //   - EXTRA_Q env: extra query string appended to the page URL.
 //   - RATES=1 env: per-sample guest insns/s added to the JSON.
@@ -192,10 +193,15 @@ const extraQ = process.env.EXTRA_Q || "";
 // RT env: the 0032 real-time cap mode the page boots with.  The default
 // stays "off" so the milestone numbers keep measuring engine speed (a
 // boot that runs faster than wall must not be paced), but the cap IS the
-// shipping default (site/app.js: banked), so a regression that only
-// exists under it was invisible here until this knob existed — measure
-// RT=banked whenever anything touches icount/halt/timers.
+// shipping default, so a regression that only exists under it was
+// invisible here until this knob existed — measure it whenever anything
+// touches icount/halt/timers.  RT=banked pins the cap and is the stable
+// A/B leg; RT=ship drops ?rt= entirely so the page picks its own default
+// and the tool cannot go stale when that default changes — but those
+// numbers straddle the banked→strict switch, so they are the "what a user
+// gets" leg, not the leg to A/B engine work against.
 const rtMode = process.env.RT || "off";
+const rtQuery = rtMode === "ship" ? "" : `&rt=${rtMode}`;
 const SAMPLE_MS = 1000;        // before the floor (v/insns curve)
 const SAMPLE_MS_IDLE = 500;    // at/after the floor (tIdle resolution)
 const INSN_MILESTONES = board.insnMilestones;
@@ -364,8 +370,8 @@ async function runOne(dist, hashes, r) {
 
     try {
       // rt=off by default: the real-time cap would pace a
-      // faster-than-realtime boot (RT=banked measures what users get)
-      await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(dist)}${distQuery(dist) ? "&" + distQuery(dist) : ""}&rt=${rtMode}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+      // faster-than-realtime boot (RT=ship measures what users get)
+      await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(dist)}${distQuery(dist) ? "&" + distQuery(dist) : ""}${rtQuery}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
       await p.selectOption("#startup", "ONLINE");
       await p.click("#ff-mode-own");
       await p.setInputFiles("#fullflash", [FLASH, ...SIDECARS]);

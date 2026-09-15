@@ -11,7 +11,7 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 |---|---|
 | `?dist=<dir>` | build output under `site/` to run: default `dist-jit` (wasm64 TCG backend); `dist` = the TCI interpreter; any `dist-*` A/B snapshot |
 | `?icount=<spec>` | override `-icount` (default `shift=3,sleep=off`; `none` for `lg-*` devices — `precise-clocks=on`, `shift=N`, `none`, …) |
-| `?rt=off\|banked\|strict` | `QEMU_ICOUNT_RTCAP` — the real-time cap on the sleep=off idle warp (default `banked`: the boot is never throttled, idle time is paced to wall; benchmarks pass `rt=off` to measure engine speed) |
+| `?rt=off\|banked\|banked:<n>\|strict` | `QEMU_ICOUNT_RTCAP` — the real-time cap on the sleep=off idle warp. Default **`banked:30`**: `banked` (the boot is never throttled, idle time is paced to wall) for the guest's first 30 seconds of *its own* clock, then `strict` (lag is forgiven rather than banked, so a later stall is not repaid by sprinting the phone's clock). `<n>` is guest seconds, not wall seconds — the boot costs the same virtual time on every host but anywhere from 39 s to minutes of wall. Plain `banked` and `strict` are pinned for the whole run and are the stable A/B legs; benchmarks pass `rt=off` to measure engine speed. While the cap is still banking the pill's `slow` warning stays off (see below) |
 | `?icount2debug=1` | `QEMU_ICOUNT2_DEBUG=1` — only meaningful with `?icount=precise-clocks=on`: prints the controller state each second |
 | `?trace=<channels>` | `PMB887X_TRACE_IO/LOG` (e.g. `trace=dsp,scu`); channels: dsp, scu, gptu, tpu, vic, capcom, usart, rtc, … |
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
@@ -34,8 +34,11 @@ a two-line strip sampled at 2 Hz. Line 1 is this second's guest: speed
 (`1.00×` — virtual seconds per wall second, 1.0 = real time, below it the
 guest is compute-bound; green ≥ 0.95, amber ≥ 0.80, red under), `MIPS`
 (guest insns/s; 125 = real time under the stock `shift=3`), `fps`, the
-page's own paint cost in `ms`, `lag` (wall − virtual since the run started:
-what the real-time cap still owes) and `halt/s`. Line 2 is the machine:
+page's own paint cost in `ms`, `lag` (wall − virtual: what the real-time cap
+still owes) and `halt/s`. `lag` counts from the run start, or from the
+banked→strict switch once that has happened — strict *forgives* the debt
+rather than paying it back, so carrying the boot's lag past the switch would
+show an amber token for a debt that no longer exists. Line 2 is the machine:
 a short user agent (`Android 8 · Chrome 147 · SM-G955U`), cores, memory and
 `isolated`. Narrow screens drop whole tokens off the line rather than wrap
 or shrink, paint first.
@@ -47,7 +50,12 @@ than covering the idle panel. It used to be `?hud=1`, then a band across the
 top of the page. The choice is remembered; with none stored it starts on at
 phone widths, the one place with no debugger to fall back to, and off on
 desktop. Either way the pill itself turns amber and gains `· slow` after
-three seconds under 0.80×.
+three seconds under 0.80× — except while the real-time cap is still banking
+(`?rt=` above), where below 1.00× is what a boot looks like by construction:
+the guest is behind and allowed to catch up, not slow. The three-second
+hysteresis restarts at the switch. The HUD's own `×` and `lag` tokens keep
+their colours throughout: the strip is a raw instrument, the pill is a
+judgement about whether the user should care.
 
 **"Copy diagnostics"**, beside the toggle, puts the last 60 s of samples,
 the 10 s averages, the environment and the full unmodified user agent on the

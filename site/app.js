@@ -158,6 +158,10 @@ let ranDevice = null;
 // §6 of the HUD criteria: the guest has been slower than 0.80x for three
 // seconds. Drawn on the pill whether or not the HUD itself is shown.
 let slow = false;
+// icount_rtcap_mode(): 0 off, 1 banked, 2 strict. The cap ships banked for
+// the guest's first 30 s of its own clock — the boot — and strict after, and
+// §6 stays quiet while banked (see trackSpeed).
+let rtcapMode = 0;
 
 const statusEl = $("status");
 const statusTextEl = $("status-text");
@@ -648,6 +652,7 @@ function render() {
   window.__ui = {
     state: emuState, mode: ffMode, device: currentDevice(),
     ready: firmwareReady(), error: errorMsg, exitCode, slow,
+    rtcap: ["off", "banked", "strict"][rtcapMode],
     serialTap: serialTapped,
     exit: exitReport && {
       type: exitReport.type, code: exitReport.code,
@@ -1185,10 +1190,12 @@ async function boot() {
         if (qsp.get("icount2debug") === "1") {
           mod.ENV.QEMU_ICOUNT2_DEBUG = "1";
         }
-        // ?rt=off|banked|strict: real-time cap on the icount clock (the
-        // vCPU sleeps instead of running its clocks ahead of wall time;
-        // default banked — a slow boot is never slowed further; the
-        // benchmarks pass rt=off to measure engine speed)
+        // ?rt=off|banked|banked:<n>|strict: real-time cap on the icount clock
+        // (the vCPU sleeps instead of running its clocks ahead of wall time).
+        // Default banked:30 — banked for the guest's first 30 s of its own
+        // clock, so the boot is never slowed further, then strict, so a later
+        // stall is not repaid by sprinting the phone's clock. Plain banked and
+        // strict are pinned; the benchmarks pass rt=off to measure engine speed
         const rt = qsp.get("rt");
         if (rt) mod.ENV.QEMU_ICOUNT_RTCAP = rt;
         // ?lockstep=1: built-in guest-state fold (wasm64 backend,
@@ -1967,6 +1974,10 @@ const HUD_AVG = 20;          // the 10 s averages it still carries
 
 let hudSamples = [];
 let hudLast = null, hudNow = null, hudT0 = 0, hudV0 = null;
+// lag has its own origin because the real-time cap forgives its debt when it
+// switches from banked to strict: measured from hudT0 it would freeze at the
+// switch and show a debt that no longer exists, for the rest of the run.
+let lagT0 = 0, lagV0 = null;
 let slowSince = 0, fastSince = 0;
 
 /* ---- shortUserAgent(): "Android 8 · Chrome 147 · SM-G955U" ---- */
@@ -2137,6 +2148,15 @@ function hudTick() {
   // virtual time already on the clock when this window opened: lag is wall
   // minus virtual *since then*, the only thing this window can measure
   hudV0 ??= s.v;
+  lagV0 ??= s.v;
+  // old dists have no such export — treat them as "off", i.e. exactly today
+  const rt = m._wasm_rtcap ? m._wasm_rtcap() : 0;
+  if (rt !== rtcapMode) {
+    // the bank is written off at the switch, so lag restarts from here
+    if (rtcapMode === 1) { lagT0 = s.t; lagV0 = s.v; }
+    rtcapMode = rt;
+    render();     // __ui is rebuilt there, not per tick
+  }
   if (hudLast) {
     const dt = (s.t - hudLast.t) / 1000;
     hudNow = {
@@ -2146,7 +2166,7 @@ function hudTick() {
       fps: (s.fb - hudLast.fb) / dt,
       halts: (s.halts - hudLast.halts) / dt,
       paint: (s.paint - hudLast.paint) / dt,      // ms of page paint per second
-      lag: (s.t - hudT0) / 1000 - (s.v - hudV0) / 1e9,
+      lag: (s.t - lagT0) / 1000 - (s.v - lagV0) / 1e9,
     };
     hudSamples.push({
       wall: +hudNow.wall.toFixed(1), mips: +hudNow.mips.toFixed(1),
@@ -2165,6 +2185,16 @@ function hudTick() {
 // over it turn it green again. The hysteresis is the point — one slow sample
 // (a GC pause, a tab coming back) must not flicker the pill.
 function trackSpeed(vratio, now) {
+  // While the cap is still banking (the guest's first 30 s of its own clock:
+  // the boot) v/wall is below 1 by construction — the guest is behind and
+  // allowed to catch up, not slow. Clearing both timers means the first
+  // strict sample starts a clean three seconds rather than inheriting the
+  // boot's.
+  if (rtcapMode === 1) {
+    slowSince = 0; fastSince = 0;
+    if (slow) { slow = false; render(); }
+    return;
+  }
   if (vratio < 0.8) {
     fastSince = 0;
     slowSince ||= now;
@@ -2181,7 +2211,8 @@ function trackSpeed(vratio, now) {
 function hudReset() {
   hudSamples = [];
   hudLast = null; hudNow = null; hudV0 = null; hudT0 = performance.now();
-  slowSince = 0; fastSince = 0; slow = false;
+  lagV0 = null; lagT0 = hudT0;
+  slowSince = 0; fastSince = 0; slow = false; rtcapMode = 0;
   if (!hudEl.hidden) drawHud();
 }
 
@@ -2235,7 +2266,10 @@ function diagnostics() {
     cores: navigator.hardwareConcurrency ?? null,
     deviceMemory: navigator.deviceMemory ?? null,
     isolated: crossOriginIsolated,
+    // rtcap makes vratio readable: 0.6x is a slow host under strict, but a
+    // guest still catching up under banked
     device: currentDevice(), state: emuState, slow, exitCode,
+    rtcap: ["off", "banked", "strict"][rtcapMode],
     // the firmware's own crash dump, if this run ended in one
     exit: exitReport && Object.fromEntries(exitReport.rows),
     avg10s: {
