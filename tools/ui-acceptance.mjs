@@ -429,13 +429,19 @@ ok("v2.1 idle pill names the firmware and opens the sheet", await page.evaluate(
 ok("v2.1 no locked-summary row left", !(await has("#ff-summary")) && !(await has("#phone-bar")));
 
 /* ---------------- v2 §2: thin edge keys ---------------- */
-ok("v2.2 edge tabs are 14x40 with an 8px gap", await page.evaluate(() => {
-  const col = document.querySelector(".aux-keys-left");
-  const b = [...col.querySelectorAll("button")].map((e) => e.getBoundingClientRect());
+// The tabs are 40px tall with an 8px gap; their width is whatever the
+// ratio-locked screen box cannot use, between a 14px floor and a 44px ceiling.
+ok("v2.2 edge tabs are 40 tall, 14-44 wide, with an 8px gap", await page.evaluate(() => {
+  const b = [...document.querySelectorAll(".aux-keys-left button")].map((e) => e.getBoundingClientRect());
+  const r = [...document.querySelectorAll(".aux-keys-right button")].map((e) => e.getBoundingClientRect());
   if (b.length < 2) return false;
-  return b.every((r) => Math.round(r.width) === 14 && Math.round(r.height) === 40)
+  const w = Math.round(b[0].width);
+  return b.every((x) => Math.round(x.height) === 40 && Math.round(x.width) === w)
+    && r.every((x) => Math.round(x.width) === w)   // both columns match
+    && w >= 14 && w <= 44
     && Math.round(b[1].top - b[0].bottom) === 8;
-}));
+}), await page.$eval(".aux-keys-left button", (e) =>
+  Math.round(e.getBoundingClientRect().width) + "px wide"));
 ok("v2.2 outer-rounded corners", await page.evaluate(() => {
   const l = getComputedStyle(document.querySelector(".aux-keys-left button"));
   const r = getComputedStyle(document.querySelector(".aux-keys-right button"));
@@ -447,13 +453,24 @@ ok("v2.2 column 34px below the top of the screen box", await page.evaluate(() =>
   const box = document.querySelector(".lcd-wrap").getBoundingClientRect();
   return Math.round(k.top - box.top) === 34;
 }));
-ok("v2.2 non-screen width is 48px", await page.evaluate(() => {
+// The row is used up: 8px page padding each side, then the box and the tabs
+// between them share the rest, so nothing is left blank beside the screen
+// unless the tabs have already reached their 44px ceiling.
+ok("v2.2 the row's width is spent on the box and the tabs", await page.evaluate(() => {
   const row = document.querySelector(".screen-row").getBoundingClientRect();
   const box = document.querySelector(".lcd-wrap").getBoundingClientRect();
   const pad = parseFloat(getComputedStyle(document.querySelector("main")).paddingLeft);
-  // 2x8 page padding + 2x14 tabs + 2x2 gaps
-  return pad === 8 && Math.round(row.width + 2 * pad - (row.width - 2 * (14 + 2))) === 48
-    && box.width <= row.width - 2 * (14 + 2) + 0.5;
+  const gap = parseFloat(getComputedStyle(document.querySelector(".screen-row")).columnGap);
+  const cols = [...document.querySelectorAll(".aux-keys-left, .aux-keys-right")]
+    .filter((c) => c.children.length);
+  const tabs = cols.reduce((n, c) => n + c.getBoundingClientRect().width, 0);
+  const spare = row.width - box.width - tabs - 2 * gap;
+  const tabW = cols.length ? Math.round(cols[0].getBoundingClientRect().width) : 14;
+  return pad === 8 && box.width <= row.width - tabs - 2 * gap + 0.5
+    && spare >= -0.5 && (spare <= 2.5 || tabW === 44);
+}), await page.evaluate(() => {
+  const w = (s) => Math.round(document.querySelector(s).getBoundingClientRect().width);
+  return `row ${w(".screen-row")} box ${w(".lcd-wrap")} tab ${w(".aux-keys-left")}`;
 }));
 ok("v2.2 a tap 20px outside the screen edge hits the key", await page.evaluate(() => {
   const box = document.querySelector(".lcd-wrap").getBoundingClientRect();

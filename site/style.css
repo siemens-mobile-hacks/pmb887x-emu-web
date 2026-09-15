@@ -783,20 +783,28 @@ fieldset:disabled .advanced summary { pointer-events: none; }
     display: flex; flex: 1; min-width: 0; height: 100%;
     align-items: flex-start; justify-content: center;
   }
-  /* thin edge tabs, top-aligned 34px below the top of the screen box */
+  /* Edge tabs, top-aligned 34px below the top of the screen box. `--tab-w` is
+     set by fitScreen(): the screen box keeps its ratio, so on most phones it
+     cannot use the full width, and the tabs take what is left over instead of
+     leaving it blank either side. 14px is the floor (what is left when the box
+     *is* width-limited), 44px the ceiling. The columns are sized by their
+     buttons so a board with keys on one side only — `generic` has no
+     auxRight — collapses the empty column instead of reserving width for it. */
   .aux-keys-left, .aux-keys-right {
     position: static; transform: none; flex: none;
-    width: 14px; gap: 8px; padding-top: 34px;
+    width: auto; gap: 8px; padding-top: 34px;
   }
   .aux-keys-left button, .aux-keys-right button {
-    width: 14px; height: 40px; min-height: 0; padding: 0;
-    justify-content: center; font-size: 0.7rem; line-height: 1;
+    width: var(--tab-w, 14px); height: 40px; min-height: 0; padding: 0;
+    justify-content: center; line-height: 1;
+    font-size: clamp(0.7rem, calc(var(--tab-w, 14px) * 0.32), 1rem);
   }
   .aux-keys-left button { border-radius: 4px 0 0 4px; }
   .aux-keys-right button { border-radius: 0 4px 4px 0; }
   .aux-keys-left .key-icon, .aux-keys-right .key-icon,
   .aux-keys-left .key-icon-line, .aux-keys-right .key-icon-line {
-    width: 11px; height: 11px;
+    width: clamp(11px, calc(var(--tab-w, 14px) * 0.4), 18px);
+    height: clamp(11px, calc(var(--tab-w, 14px) * 0.4), 18px);
   }
   /* 14px of tab is nothing to hit: each key claims a 32x44 target reaching
      out into the page padding, without growing the tab itself */

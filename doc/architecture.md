@@ -215,8 +215,11 @@ packed calendar).
   ended with **Finish** — "Stop" only ever means the emulator.
 - At phone widths (< 600px) the page is one column with no scroll: a single
   32px row (state/firmware pill, screenshot, record, settings), the screen at
-  the board's own `[peripheral.LCD0]` aspect ratio flanked by thin edge tabs
-  for the side keys, and the keypad, which keeps its natural height
+  the board's own `[peripheral.LCD0]` aspect ratio flanked by edge tabs for the
+  side keys (`--tab-w`, set by `fitScreen()`: a ratio-locked box usually cannot
+  use the full width, so the tabs take what is left, 14px to 44px, and a board
+  with keys on one side only collapses the empty column), and the keypad, which
+  keeps its natural height
   (`--key-h`) while `fitScreen()` gives the screen box whatever is left. The
   Firmware and Run panels move into two bottom sheets.
   `tools/ui-acceptance.mjs` checks all of this, `tools/uidiff.mjs` that the

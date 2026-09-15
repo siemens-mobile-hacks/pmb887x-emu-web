@@ -2220,6 +2220,11 @@ function scrollToPhone() {
 // the canvas fills it exactly, with no letterbox inside and no bars around.
 const lcdWrap = document.querySelector(".lcd-wrap");
 const screenCell = document.querySelector(".screen-cell");
+const screenRow = document.querySelector(".screen-row");
+const auxCols = [...document.querySelectorAll(".aux-keys-left, .aux-keys-right")];
+// the edge tabs when the screen box is width-limited and there is nothing
+// spare, and the widest they are worth growing to (a full touch target)
+const TAB_MIN = 14, TAB_MAX = 44;
 
 function screenAspect() {
   // a live guest's framebuffer beats the board config
@@ -2232,21 +2237,38 @@ function fitScreen() {
   if (!phoneLayout.matches) {
     lcdWrap.style.removeProperty("width");
     lcdWrap.style.removeProperty("height");
+    screenRow.style.removeProperty("--tab-w");
     return;
   }
-  // The row is `flex: 1; min-height: 0`, so this rect is exactly what the
+  // The row is `flex: 1; min-height: 0`, so its height is exactly what the
   // column has left once the status row and the keypad have taken their
   // natural heights — the browser has already done the constraint solving.
   // Fitting the box inside it is the whole job; there is no budget to compute
   // and nothing here can make the column taller than the viewport.
-  const cell = screenCell.getBoundingClientRect();
-  if (!cell.width || !cell.height) return;
+  const row = screenRow.getBoundingClientRect();
+  const cellH = screenCell.getBoundingClientRect().height;
+  if (!row.width || !cellH) return;
+  // Width is measured from the row, not the cell, and against the tabs at
+  // their *minimum*: the tabs are widened below out of whatever the box then
+  // leaves, and deriving the box from a width the tabs have already taken
+  // would feed that back in on the next fit.
+  const gaps = (parseFloat(getComputedStyle(screenRow).columnGap) || 0) * 2;
+  const cols = auxCols.filter((c) => c.children.length).length;
   const ar = screenAspect();
-  let w = cell.width, h = w / ar;
-  if (h > cell.height) { h = cell.height; w = h * ar; } // height is tighter
+  let w = row.width - gaps - cols * TAB_MIN, h = w / ar;
+  if (h > cellH) { h = cellH; w = h * ar; }   // height is tighter
   const wPx = Math.floor(w) + "px", hPx = Math.floor(h) + "px";
   if (lcdWrap.style.width !== wPx) lcdWrap.style.width = wPx;
   if (lcdWrap.style.height !== hPx) lcdWrap.style.height = hPx;
+  // A ratio-locked box usually cannot use the full width; rather than leave
+  // that blank either side of it, the edge tabs take it.
+  const tabW = cols
+    ? Math.max(TAB_MIN, Math.min(TAB_MAX, Math.floor((row.width - gaps - w) / cols)))
+    : TAB_MIN;
+  const tabPx = tabW + "px";
+  if (screenRow.style.getPropertyValue("--tab-w") !== tabPx) {
+    screenRow.style.setProperty("--tab-w", tabPx);
+  }
 }
 
 // 100dvh is not the visible area on Chrome for Android while the URL bar is
