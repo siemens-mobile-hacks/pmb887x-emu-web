@@ -108,9 +108,18 @@ plus 32 bytes per TB.  Measured, not built.
 5. **The 2-way inline cache is measured and unbuilt** — 42 % of el71
    misses, ~3 % of wall.  It needs a second slot in `TranslationBlock`
    and a second compare chain on the miss path in `gen_goto_ptr`.
-6. **`arm_rebuild_hflags` runs 809k/s**, one per 67 guest instructions,
-   and nobody has found the caller doing that.  It is only 2.6 %, but
-   the rate is odd enough to be worth ten minutes.
+6. ~~`arm_rebuild_hflags` runs 809k/s~~ — **closed by 0085**: it was
+   `cpsr_write()` rebuilding whenever the write *mask* covered M/E/IL,
+   which `msr cpsr_c` always does.  873k/s -> 317k/s; cx70 +1.0 %, el71
+   a tie.  The ten minutes were worth it; the *wall* win was not what
+   the timer promised, which is item 7.
+7. **The phase timer over-attributes short functions.**  It put hflags
+   at 3.8 % of wall and the patch delivered ~1 %.  `CAL_NS` removes the
+   floor but not whatever else inflates a sub-50 ns interval.  Trust the
+   *call-count* reduction and the A/B; treat a sub-50 ns per-call figure
+   as an upper bound.  A good next instrument would calibrate against a
+   known-cost function (a volatile spin of N iterations) rather than
+   against an empty interval.
 
 ## Update (2026-09-15, round seventeen: what the pipeline actually costs)
 
