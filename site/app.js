@@ -15,6 +15,9 @@ import {
   PRESET_FULLFLASHES, SIDE_CAR_RE, inferDevice,
   cacheAvailable, entryCacheState, downloadEntry, deleteEntry, readCachedEntry,
 } from "./fullflashes.js";
+import {
+  readIdentity, recalc, recoverEsn, cachedEsnCount, clearEsnCache, workerCount,
+} from "./recalc.js";
 
 /* ------------------------------------------------------------------ */
 /* phone key tables (mirrors pmb887x-emu-mcp/src/keys.ts + otp.ts)      */
@@ -147,6 +150,7 @@ let emuState = "idle";
 let runStartedAt = 0;     // uptime origin, reset on every Start
 let uptimeTimer = 0;
 let dlLoaded = 0, dlTotal = 0; // preset download progress, for the pill
+let esnPct = 0;                // ESN sweep progress, likewise
 let errorMsg = null;      // shown in place of the pill's state text
 let startBlocked = false; // a failure Start cannot recover from (isolation)
 // The exports read this run's MEMFS, which outlives the guest: once a boot
@@ -155,6 +159,11 @@ let startBlocked = false; // a failure Start cannot recover from (isolation)
 // one has an EFA block to hand back.
 let exportsReady = false;
 let ranDevice = null;
+// What Advanced ▸ Siemens keys did to this run's image, for Copy diagnostics.
+let keyReport = null;
+// The ESN sweep's AbortController while it runs — Cancel uses it, the way
+// downloadAbort works for a preset download.
+let esnAbort = null;
 // §6 of the HUD criteria: the guest has been slower than 0.80x for three
 // seconds. Drawn on the pill whether or not the HUD itself is shown.
 let slow = false;
@@ -281,6 +290,104 @@ function setNote(el, kind, text) {
   el.hidden = !text;
 }
 
+/* ------------------------------------------------------------------ */
+/* Advanced ▸ Siemens keys                                              */
+/* ------------------------------------------------------------------ */
+
+// Siemens firmware checks the keys stored in the fullflash against the ESN it
+// is handed, so a dump built for another phone does not boot as is. The three
+// modes are pmb887x-emu's: recalculate the keys for our identity (its
+// default), recover the ESN the stored keys answer to (--siemens-recover-esn),
+// or hand the image over untouched (--siemens-no-recalc).
+const SK = {
+  block: $("siemens-keys-block"),
+  grid: $("siemens-keys-block").parentElement,
+  // the block goes back in front of the IMEI/ESN pair it refers to, not at
+  // the end of the grid where a plain appendChild would put it
+  anchor: $("imei").closest("label"),
+  note: $("siemens-keys-note"),
+  clear: $("esn-cache-clear"),
+  radios: [...document.querySelectorAll('input[name="siemens-mode"]')],
+};
+SK.block.remove();  // not in the DOM until siemensKeysApply() says so
+const SIEMENS_MODE_KEY = "siemens-mode";
+
+function siemensMode() {
+  return SK.radios.find((r) => r.checked)?.value ?? "recalc";
+}
+
+// Unlike the identity fields next to it this one is remembered: it is a
+// choice about how the page should behave, not a value to boot with.
+{
+  const stored = localStorage.getItem(SIEMENS_MODE_KEY);
+  const match = SK.radios.find((r) => r.value === stored);
+  if (match) match.checked = true;
+}
+
+// The block is Siemens-only, the way the EFA picker is LG-only: out of the
+// DOM entirely for every other device. Own file only, too — every preset in
+// the inventory is published already recalculated, so there is nothing for
+// the modes to do there and no reason to offer them.
+function siemensKeysApply() {
+  return ffMode === "own" && !!currentDevice()?.startsWith("siemens-");
+}
+
+function refreshSiemensKeys() {
+  const show = siemensKeysApply();
+  if (show && !SK.block.isConnected) SK.grid.insertBefore(SK.block, SK.anchor);
+  else if (!show && SK.block.isConnected) SK.block.remove();
+
+  // --siemens-recover-esn reads both from the image, and pmb887x-emu refuses
+  // to take them from the user at the same time. The block going away takes
+  // the lock with it, or a mode picked for one flash would leave the fields
+  // dead for the next.
+  const recovering = show && siemensMode() === "recover-esn";
+  for (const id of ["imei", "esn"]) $(id).disabled = recovering;
+  SK.note.textContent = recovering
+    ? "IMEI and ESN come from the fullflash in this mode."
+    : "";
+  if (show) {
+    const cached = cachedEsnCount();
+    SK.clear.hidden = cached === 0;
+    SK.clear.textContent = `Clear ESN cache (${cached})`;
+  }
+  refreshAdvancedSummary();
+}
+
+for (const r of SK.radios) {
+  r.addEventListener("change", () => {
+    localStorage.setItem(SIEMENS_MODE_KEY, r.value);
+    refreshSiemensKeys();
+  });
+}
+
+SK.clear.addEventListener("click", () => {
+  clearEsnCache();
+  refreshSiemensKeys();
+  say("Cached ESNs cleared");
+});
+
+/* ---- what the folded Advanced summary says was changed inside ---- */
+
+// Defaults come from the markup, so the two cannot drift. The Siemens key
+// mode is deliberately not listed: it is only offered for the flash in hand,
+// so naming it here would put a change on the summary that the next flash
+// does not have.
+const ADV_FIELDS = [["imei", "IMEI"], ["esn", "ESN"], ["sim", "SIM"],
+  ["operator", "operator"], ["startup", "startup"]];
+const advDefaults = new Map(
+  ADV_FIELDS.map(([id]) => [id, $(id).type === "checkbox" ? $(id).checked : $(id).value]));
+
+function refreshAdvancedSummary() {
+  const changed = ADV_FIELDS
+    .filter(([id]) => (($(id).type === "checkbox" ? $(id).checked : $(id).value)) !== advDefaults.get(id))
+    .map(([, name]) => name);
+  $("adv-summary").textContent = changed.length ? `— ${changed.join(", ")}` : "";
+}
+
+for (const [id] of ADV_FIELDS) $(id).addEventListener("input", refreshAdvancedSummary);
+refreshAdvancedSummary();
+
 function mountMode() {
   modeBody.replaceChildren(ffMode === "preset" ? presetBody : ownBody);
 }
@@ -338,6 +445,7 @@ async function refreshPresetUi() {
     P.status.textContent = "Browser cache unavailable — pick Own file";
     P.clear.hidden = true;
     P.device.textContent = "";
+    refreshSiemensKeys();
     render();
     return;
   }
@@ -346,6 +454,7 @@ async function refreshPresetUi() {
   P.clear.hidden = !entry || presetState.count === 0;
   P.device.textContent = entry
     ? `Device: ${inferDevice(entry.files[0]) ?? "unknown"} (from preset)` : "";
+  refreshSiemensKeys();
   const downloading = presetBusy && emuState === "downloading";
   P.bar.hidden = !downloading;
   P.status.className = "ff-status" + (!downloading && presetState.complete ? " ok" : "");
@@ -407,6 +516,7 @@ function renderOwn() {
     O.efaSize.textContent = fmtMiB(ownEfa.size);
   }
   if (lg) setNote(O.devNote, null, "");
+  refreshSiemensKeys();
 }
 
 // §1.5 — one selection can carry both slots. The rules are applied in
@@ -542,6 +652,7 @@ function pillText() {
   const tail = slow ? " · slow" : "";
   switch (emuState) {
     case "downloading": return `Downloading · ${fmtProgress(dlLoaded, dlTotal)}`;
+    case "recovering": return `Recovering ESN · ${esnPct}%`;
     case "booting": return "Booting" + tail;
     case "running": return (bare ? "" : "Running · ") + mmss(Date.now() - runStartedAt) + tail;
     case "paused": return (bare ? "" : "Paused · ") + mmss(Date.now() - runStartedAt) + tail;
@@ -553,7 +664,7 @@ function pillText() {
 let actionKind = null;
 function renderAction() {
   const kind = emuState === "idle" ? "start"
-    : emuState === "downloading" ? "cancel" : "stop";
+    : (emuState === "downloading" || emuState === "recovering") ? "cancel" : "stop";
   if (kind !== actionKind) {
     actionKind = kind;
     const b = document.createElement("button");
@@ -608,6 +719,9 @@ function render() {
   // lose their tab stop by hand.
   fwFieldset.disabled = locked;
   for (const el of fwFieldset.querySelectorAll("input, select, button")) el.disabled = locked;
+  // the blanket re-enable above would undo the IMEI/ESN lock that
+  // "Brute-force ESN" needs (their values come from the image there)
+  if (!locked) refreshSiemensKeys();
   if (!cacheAvailable()) P.sel.disabled = true;
   for (const b of segButtons) {
     b.tabIndex = locked ? -1 : (b.getAttribute("aria-checked") === "true" ? 0 : -1);
@@ -897,6 +1011,7 @@ function applyFullflashName(name) {
     else if (boardsReady) pendingDevice = dev; // boards.tar still loading
   }
   syncKeyboardToDevice(dev);
+  refreshSiemensKeys();
 }
 
 /* ------------------------------------------------------------------ */
@@ -982,6 +1097,43 @@ async function bootSuite(url) {
   }
 }
 
+// The 2^32 ESN sweep, with the progress and Cancel a minutes-long wait needs.
+// Returns null when it was cancelled or the space held no answer (the caller
+// has already been told why).
+async function runEsnRecovery(identity, device) {
+  esnAbort = new AbortController();
+  setEmuState("recovering");
+  esnPct = 0;
+  const cores = workerCount();
+  showOverlay("Recovering ESN…",
+    `${cores} core${cores > 1 ? "s" : ""} · up to 4.3 billion candidates`, 0);
+  try {
+    const found = await recoverEsn(identity, {
+      signal: esnAbort.signal,
+      onProgress: (frac) => {
+        esnPct = Math.round(frac * 100);
+        statusTextEl.textContent = pillText();
+        showOverlay("Recovering ESN…", `${esnPct}% of the ESN space searched`, esnPct);
+      },
+    });
+    if (esnAbort.signal.aborted) {
+      setEmuState("idle");
+      showOverlay("Ready to boot", "ESN recovery cancelled");
+      return null;
+    }
+    if (!found) {
+      setEmuState("idle");
+      setError("No ESN produces the keys stored in this fullflash — the whole " +
+        "space was searched. Pick “Automatically recalculate keys” instead.");
+      return null;
+    }
+    setEmuState("booting");
+    return found;
+  } finally {
+    esnAbort = null;
+  }
+}
+
 async function boot() {
   // guest op-suite mode (phase 0a): no fullflash, no boards.tar needed
   {
@@ -1005,26 +1157,32 @@ async function boot() {
   }
 
   const device = currentDevice();
-  const imei = $("imei").value.trim();
-  const esn = $("esn").value.trim();
+  // "as-is" wherever the radio is not offered: a non-Siemens board (only
+  // Siemens firmware binds itself to the flash ESN) or a preset, which the
+  // inventory publishes already recalculated
+  const keyMode = siemensKeysApply() ? siemensMode() : "as-is";
+  // the identity is the image's own in recover-esn mode, so the two fields
+  // are disabled there and only read in the modes that use them
+  let imei = $("imei").value.trim();
+  let esn = $("esn").value.trim();
   const sim = $("sim").value;
   const operator = $("operator").value.trim();
   const startup = $("startup").value;
 
-  if (!/^\d{15}$/.test(imei)) { setError("IMEI must be 15 digits"); return; }
-  if (!/^[0-9A-Fa-f]{8}$/.test(esn)) { setError("ESN must be 8 hex chars"); return; }
+  if (keyMode !== "recover-esn") {
+    if (!/^\d{15}$/.test(imei)) { setError("IMEI must be 15 digits"); return; }
+    if (!/^[0-9A-Fa-f]{8}$/.test(esn)) { setError("ESN must be 8 hex chars"); return; }
+  }
 
   const qsp = new URLSearchParams(location.search);
   const debug = qsp.get("debug") === "1";
-
-  const otp0 = esnToOtp0(esn);
-  const otp1 = imeiToOtp1(imei);
 
   errorMsg = null;
   exitCode = null;
   clearExit();            // a new run, a screen that is lit again
   serialTapped = false;   // until this run's preRun says otherwise
   exportsReady = false;   // this run is about to replace the MEMFS image
+  keyReport = null;
   ranDevice = device;
   setEmuState("booting");
   showOverlay("Loading…");
@@ -1095,6 +1253,43 @@ async function boot() {
     showOverlay("Booting…", device);
 
     const flashBytes = new Uint8Array(await file.arrayBuffer());
+
+    // Advanced ▸ Siemens keys. The image only ever lives in this run's
+    // MEMFS, so "recalculate" changes this copy and the one Export ▸ Flash
+    // hands back — never the preset cache or the file on disk.
+    if (keyMode === "recalc") {
+      showOverlay("Recalculating keys…", device);
+      const r = await recalc(flashBytes, imei, parseInt(esn, 16));
+      keyReport = { mode: keyMode, replaced: r.replaced, complete: r.complete };
+      if (!r.complete) {
+        say("Some EEPROM key blocks were not found — booting anyway");
+        console.warn("[recalc]", r.log);
+      }
+      if (r.replaced) say(`Recalculated ${r.replaced} key items for ESN ${esn}`);
+    } else if (keyMode === "recover-esn") {
+      showOverlay("Reading fullflash keys…", device);
+      const identity = await readIdentity(flashBytes);
+      if (!identity.ok) {
+        setEmuState("idle");   // no guest was ever started
+        setError("This fullflash carries no intact keys to recover an ESN from — " +
+          "pick “Automatically recalculate keys” instead.");
+        return;
+      }
+      const found = await runEsnRecovery(identity, device);
+      if (!found) return;   // cancelled, or the whole space held no answer
+      imei = identity.imei;
+      esn = (found.esn >>> 0).toString(16).padStart(8, "0");
+      $("imei").value = imei;   // show what the image actually boots with
+      $("esn").value = esn;
+      keyReport = { mode: keyMode, esn, cached: found.cached, seconds: found.seconds };
+      say(`ESN ${esn}${found.cached ? " (remembered)" : ""}`);
+      refreshSiemensKeys();
+      showOverlay("Booting…", device);
+    }
+
+    const otp0 = esnToOtp0(esn);
+    const otp1 = imeiToOtp1(imei);
+
     for (const sc of sidecars) {
       const suffix = sc.name.match(SIDE_CAR_RE)[0].toLowerCase();
       if (sidecarBytes.some(([s]) => s === suffix)) continue; // first one wins
@@ -1268,6 +1463,11 @@ function stop() {
   if (downloadAbort) {
     downloadAbort.abort();
     return; // boot()'s catch reports it and re-arms Start
+  }
+  // ...or "cancel the ESN sweep", the other pre-guest wait worth stopping
+  if (esnAbort) {
+    esnAbort.abort();
+    return; // runEsnRecovery() puts the page back to idle
   }
   // a capture in flight is finished and saved first — the frames stop
   // arriving the moment the guest goes away
@@ -2269,6 +2469,9 @@ function diagnostics() {
     // rtcap makes vratio readable: 0.6x is a slow host under strict, but a
     // guest still catching up under banked
     device: currentDevice(), state: emuState, slow, exitCode,
+    // what Advanced ▸ Siemens keys was set to, and what it did to this image
+    siemensMode: currentDevice()?.startsWith("siemens-") ? siemensMode() : null,
+    siemensKeys: keyReport,
     rtcap: ["off", "banked", "strict"][rtcapMode],
     // the firmware's own crash dump, if this run ended in one
     exit: exitReport && Object.fromEntries(exitReport.rows),
@@ -2443,26 +2646,6 @@ window.addEventListener("keyup", (e) => {
   const key = CODE_TO_KEY[e.code];
   if (key) sendKey(key, false);
 });
-
-/* ------------------------------------------------------------------ */
-/* Advanced fieldset: say on the folded summary what was changed inside  */
-/* ------------------------------------------------------------------ */
-
-// Defaults come from the markup, so the two cannot drift.
-const ADV_FIELDS = [["imei", "IMEI"], ["esn", "ESN"], ["sim", "SIM"],
-  ["operator", "operator"], ["startup", "startup"]];
-const advDefaults = new Map(
-  ADV_FIELDS.map(([id]) => [id, $(id).type === "checkbox" ? $(id).checked : $(id).value]));
-
-function refreshAdvancedSummary() {
-  const changed = ADV_FIELDS
-    .filter(([id]) => (($(id).type === "checkbox" ? $(id).checked : $(id).value)) !== advDefaults.get(id))
-    .map(([, name]) => name);
-  $("adv-summary").textContent = changed.length ? `— ${changed.join(", ")}` : "";
-}
-
-for (const [id] of ADV_FIELDS) $(id).addEventListener("input", refreshAdvancedSummary);
-refreshAdvancedSummary();
 
 // The tools/ drivers set these fields straight from Playwright, whose
 // actionability checks fail on anything a folded <details> keeps hidden.

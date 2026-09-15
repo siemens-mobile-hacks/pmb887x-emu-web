@@ -14,16 +14,22 @@ SRC="$ROOT/qemu"
 WT="$ROOT/build/qemu-native"
 BUILD="$ROOT/build/qemu-native-build"
 
-# worktree at the pinned revision (shares the existing clone's objects)
+# worktree at the pinned revision (shares the existing clone's objects).
+# It is moved to the pin on every run, not only created: an existing
+# worktree left behind at an older rev used to build silently and hand
+# tests/run.mjs a stale binary as if it were the gate.
 bash "$ROOT/scripts/fetch-qemu.sh" "$SRC"
 if [ ! -d "$WT" ]; then
   git -C "$SRC" worktree add --detach "$WT" "$QEMU_PMB887X_REV"
-  if grep -q 'subprojects/teakra' "$WT/.gitmodules" 2>/dev/null; then
-    (cd "$WT" \
-      && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
-      && git submodule update --init --depth 1 subprojects/teakra \
-      && (cd subprojects/teakra && git checkout -q -f HEAD))
-  fi
+elif [ "$(git -C "$WT" rev-parse HEAD)" != "$QEMU_PMB887X_REV" ]; then
+  git -C "$WT" checkout -q -f --detach "$QEMU_PMB887X_REV"
+fi
+if grep -q 'subprojects/teakra' "$WT/.gitmodules" 2>/dev/null \
+   && [ ! -e "$WT/subprojects/teakra/.git" ]; then
+  (cd "$WT" \
+    && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
+    && git submodule update --init --depth 1 subprojects/teakra \
+    && (cd subprojects/teakra && git checkout -q -f HEAD))
 fi
 
 mkdir -p "$BUILD"

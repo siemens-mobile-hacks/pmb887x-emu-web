@@ -25,8 +25,12 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 | `?iorewind=1` | force the stock io-recompile everywhere (0004's A/B escape hatch) |
 | `?serialpoll=1` | don't tap the serial log's MEMFS ops — read the file on a 1 Hz timer instead (the page's fallback path; `SERIAL_POLL=1 tools/exitcheck.mjs` takes it through the EXIT checks) |
 
-Fullflash, device, IMEI/ESN, SIM, operator and startup are form controls in
-the Firmware panel, not params. The pflash drive is always writable (there
+Fullflash, device, IMEI/ESN, SIM, operator, startup and the Siemens key mode
+are form controls in the Firmware panel, not params. **Copy diagnostics**
+carries the last of those as `siemensMode`, and what it did to this run's
+image as `siemensKeys` (`replaced`/`complete` for a recalculation, the
+recovered `esn` and whether it came from the cache for a sweep).
+The pflash drive is always writable (there
 is no longer a "writable flash" checkbox, and `tools/session.mjs` ignores a
 `rw=1` token) — the image only lives in this run's MEMFS, and **Export ▸
 Flash** in the Run panel hands that copy back. So is the stats HUD:

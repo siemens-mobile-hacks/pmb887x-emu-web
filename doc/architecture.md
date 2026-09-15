@@ -10,8 +10,8 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
                                             see upstream-branch.md for the commit list
   pmb887x-emu/                              submodule: the meta-repo whose qemu pin matches (reference)
   build.sh, versions.env, scripts/          build pipeline (WASM + native modes)
-  bsp-patches/                              bsp board-config workaround (hd155153np → pmb6272),
-                                            applied by scripts/sync-bsp.sh
+  site-src/recalc/                          emcc glue around pmb887x-emu's siemens_recalc.cpp
+                                            → site/dist/siemens-recalc.wasm (Advanced ▸ Siemens keys)
   site/                                     served web root (index.html / app.js /
                                             keyboards.js / fullflashes.js); dist-jit/ = wasm64
                                             backend build (page default), dist/ = TCI build
@@ -54,9 +54,11 @@ engines are served side by side, built from the same tree:
    `versions.env`).
 2. `scripts/build-qemu.sh` initialises the `qemu/` submodule at the
    pinned rev (`scripts/fetch-qemu.sh`), checks out the bsp at its pin
-   with `bsp-patches/` applied (`scripts/sync-bsp.sh`), packs the board
-   configs into `site/dist/boards.tar` (`scripts/pack-boards.sh`), then
-   runs `scripts/build-qemu-wasm64.sh`: configure like qemu's CI wasm64
+   (`scripts/sync-bsp.sh`), packs the board configs into
+   `site/dist/boards.tar` (`scripts/pack-boards.sh`), builds the Siemens
+   key module into `site/dist/siemens-recalc.wasm`
+   (`scripts/build-recalc-wasm.sh`), then runs
+   `scripts/build-qemu-wasm64.sh`: configure like qemu's CI wasm64
    job (`--static --cpu=wasm64 --target-list=arm-softmmu
    --with-coroutine=wasm`, no `--enable-tcg-interpreter`) in
    `build/qemu-wasm64`, link with the Asyncify onlylist
@@ -158,6 +160,20 @@ packed calendar).
   bytes written into the emscripten MEMFS; Advanced options (IMEI/ESN→OTP,
   SIM, operator, startup) become `PMB887X_*` env vars — the exact set the
   pmb887x-emu `load` tool uses. The panel is `disabled` while a guest runs.
+- Advanced ▸ Siemens keys (`site/recalc.js`, `site/recalc-worker.js`): for a
+  `siemens-*` device in Own file mode only — the presets are published
+  already recalculated — the three ways pmb887x-emu reconciles a fullflash
+  with the ESN it is handed. **Automatically recalculate keys** (the
+  default) rewrites the bootcore HASH/IMEI and the confidential EEPROM
+  blocks in this run's copy for the IMEI/ESN below; **Brute-force ESN**
+  reads the identity out of the image and sweeps the 2^32 ESN space in
+  `min(hardwareConcurrency, 8)` Web Workers (~10M candidates/s per core;
+  progress on the pill, Cancel is the pill's action, the answer is kept in
+  `localStorage["siemens-esn-v1"]` keyed on IMEI + stored key and
+  re-verified on every hit) and then boots the image untouched with its own
+  IMEI/ESN; **Run as is** hands it over unchanged. The arithmetic is
+  pmb887x-emu's `siemens_recalc.cpp` compiled to wasm, not a reimplementation
+  — see `site-src/recalc/recalc_wasm.cpp` for why it is `#include`d.
 - The status pill above the screen carries the run state and the only
   Start/Stop/Cancel there is (`window.__ui` mirrors that state for the
   drivers in `tools/`). A capture in progress is a second pill beside it,

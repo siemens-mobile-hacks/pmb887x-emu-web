@@ -772,9 +772,11 @@ Round eleven (0058–0064) profiled the device access path and found that
   produced a 2091 date and a clock jumping +16 min per minute. The board
   config's `[rtc] format` selects it (0033). It was never a wasm or warp
   issue — the pristine native build showed the same.
-- The bsp main branch defines an RF peripheral (`hd155153np`) the
-  emulator does not implement; `bsp-patches/0001` re-points it at the
-  `pmb6272` stub.
+- The bsp main branch used to define an RF peripheral (`hd155153np`) the
+  emulator does not implement, and this project carried a `bsp-patches/`
+  workaround re-pointing it at the `pmb6272` stub. bsp `55752c5`
+  commented the peripheral out at the source; the patch directory went
+  with it (2026-09-15).
 - qemu-pmb887x master alone aborts every Siemens fullflash in L1 GSM
   frame handling; the "hacky AFE (LLE+HLE)" DSP commit is required.
 - The boot consumes ~42 s of virtual time, ~31.5 s of it idle warp on

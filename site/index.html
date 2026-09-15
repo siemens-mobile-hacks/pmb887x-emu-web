@@ -46,14 +46,6 @@
         <details class="advanced" id="advanced">
           <summary>Advanced <small id="adv-summary"></small></summary>
           <div class="adv-grid">
-            <label>IMEI <small>(15 digits → OTP1)</small>
-              <input type="text" id="imei" value="490154203237518" pattern="\d{15}" maxlength="15">
-            </label>
-
-            <label>ESN <small>(8 hex → OTP0)</small>
-              <input type="text" id="esn" value="12345678" pattern="[0-9a-fA-F]{8}" maxlength="8">
-            </label>
-
             <label>SIM
               <select id="sim" size="1">
                 <option value="virtual" selected>virtual</option>
@@ -71,6 +63,48 @@
                 <option value="PTEST">PTEST</option>
                 <option value="OFFLINE">OFFLINE</option>
               </select>
+            </label>
+
+            <!-- Siemens only: the firmware refuses to boot unless the keys
+                 stored in the fullflash match the ESN it is handed. app.js
+                 attaches this block only for a siemens-* device in Own file
+                 mode, the way the LG EFA picker works — the presets in the
+                 inventory are published already recalculated. -->
+            <div class="adv-span" id="siemens-keys-block">
+              <p class="adv-group-title">Siemens keys</p>
+              <label class="checkbox-label">
+                <input type="radio" name="siemens-mode" value="recalc" checked>
+                <span>Automatically recalculate keys
+                  <small>Rewrites the keys in this run's copy of the fullflash to
+                    match the IMEI and ESN below. The file on your disk is not
+                    touched.</small></span>
+              </label>
+              <label class="checkbox-label">
+                <input type="radio" name="siemens-mode" value="recover-esn">
+                <span>Brute-force ESN
+                  <small>Searches for the ESN the stored keys were built from and
+                    runs the fullflash byte for byte. Needs a flash whose keys are
+                    intact; the ESN it finds is remembered.</small></span>
+              </label>
+              <label class="checkbox-label">
+                <input type="radio" name="siemens-mode" value="as-is">
+                <span>Run as is
+                  <small>Hands the fullflash to the phone unchanged.</small></span>
+              </label>
+              <div class="ff-status-row">
+                <span id="siemens-keys-note" class="ff-status"></span>
+                <button type="button" id="esn-cache-clear" class="linkbtn" hidden>Clear ESN cache</button>
+              </div>
+            </div>
+
+            <!-- last, and in that order: the identity the key modes above
+                 work from, and the one pair "Brute-force ESN" takes over -->
+            <label>IMEI <small>(15 digits → OTP1)</small>
+              <input type="text" id="imei" value="490154203237518" pattern="\d{15}" maxlength="15">
+            </label>
+
+            <label>ESN <small>(8 hex → OTP0)</small>
+              <input type="text" id="esn" value="12345678" pattern="[0-9a-fA-F]{8}" maxlength="8">
             </label>
           </div>
         </details>

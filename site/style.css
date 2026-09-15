@@ -469,6 +469,14 @@ input[type=text]:focus, select:focus { outline: 1px solid var(--accent); }
 input:invalid { border-color: var(--bad); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 :disabled { cursor: not-allowed; }
+/* a field that is disabled on its own — IMEI/ESN while "Brute-force ESN"
+   owns them — has to read that way next to the ones that are not. (The
+   whole panel going disabled while the guest runs is the other case, and
+   .advanced already fades as a block there.) */
+input[type=text]:disabled, select:disabled {
+  color: var(--muted); background: var(--panel2); border-style: dashed;
+}
+label:has(> input:disabled), label:has(> select:disabled) { color: var(--muted); }
 
 /* ---------------- Firmware panel ---------------- */
 .segmented {
@@ -562,6 +570,17 @@ fieldset:disabled .advanced summary { pointer-events: none; }
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem 1rem;
   padding: 0.8rem;
 }
+/* a full-width row in the two-column grid: the Siemens key modes need the
+   whole width for their one-line explanations */
+.adv-span {
+  grid-column: 1 / -1; display: flex; flex-direction: column; gap: 0.4rem;
+  border-top: 1px solid var(--border); padding-top: 0.7rem;
+}
+.adv-group-title { margin: 0; font-size: 0.85rem; font-weight: 600; }
+/* the radio sits on the first line of a two-line label, not centred on both */
+.adv-span label.checkbox-label { align-items: flex-start; gap: 0.45rem; }
+.adv-span label.checkbox-label input { margin-top: 0.15rem; flex: none; }
+.adv-span label small { display: block; }
 
 /* ---------------- Run panel ---------------- */
 .export-row { display: flex; gap: 0.6rem; }

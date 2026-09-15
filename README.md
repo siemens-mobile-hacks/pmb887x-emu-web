@@ -30,7 +30,9 @@ strip sits under the pill (on a phone, on the top edge of the screen, always
 on while the guest is), and the on-screen keypad has every phone key as its
 own `<button>` (plus physical-keyboard mapping). `load` options (device
 inference, IMEI/ESN→OTP, SIM, operator, startup scenario) are under
-**Advanced**.
+**Advanced**, and so is **Siemens keys** — the three ways pmb887x-emu can
+reconcile an own-file Siemens fullflash with the ESN the phone is handed
+(see below).
 
 ## Running it (experimental)
 
@@ -109,6 +111,28 @@ threading audit — the build really is multi-threaded in the browser (5
 pthread workers; one vCPU thread executing guest code, the rest parked in
 futex waits; no spin).
 
+## Siemens keys
+
+Siemens firmware binds itself to the NOR flash serial number: the keys in
+the bootcore and the confidential EEPROM blocks must match the ESN the phone
+is handed, or it refuses to boot. A dump read off a real phone answers to
+*that* phone's ESN, not to the page's. **Advanced ▸ Siemens keys** offers the
+three ways `pmb887x-emu` settles this, for a `siemens-*` device in **Own
+file** mode (the presets in the inventory are published already
+recalculated, so the modes have nothing to do there):
+
+| mode | what happens |
+| ---- | ------------ |
+| **Automatically recalculate keys** (default) | The bootcore HASH/IMEI and the confidential EEPROM blocks in *this run's copy* are rewritten for the IMEI and ESN in the fields below. Your file is not touched; **Export ▸ Flash** hands the patched copy back. A flash that already matches is left alone. |
+| **Brute-force ESN** | The IMEI, SKEY and stored key are read out of the image and the 2³² ESN space is swept for the one they were built from; the flash then boots byte for byte with its own identity. ~10 M candidates/s per core in a browser (20 M under node) over `min(hardwareConcurrency, 8)` workers, so single-digit minutes at worst — with progress on the status pill and Cancel in place of Start. The answer is remembered (keyed on the IMEI + stored key, so it follows the image, not the filename) and re-verified on every reuse; **Clear ESN cache** drops it. Needs intact keys — there is nothing to recover from a cleared bootcore. |
+| **Run as is** | The fullflash goes to the phone unchanged. |
+
+The arithmetic is not a reimplementation: `site-src/recalc/recalc_wasm.cpp`
+compiles pmb887x-emu's own `src/siemens_recalc.cpp` to a 35 KB wasm module
+(`scripts/build-recalc-wasm.sh` → `site/dist/siemens-recalc.wasm`).
+`node tools/recalc-check.mjs` exercises it against a real fullflash without a
+browser; `node tools/keysboot.mjs` boots one through every mode.
+
 ## Native (Linux) build
 
 The same emulator, compiled natively (real TCG JIT — much faster than
@@ -167,9 +191,11 @@ and the lockstep gate cover.
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
     fetch-qemu.sh       initialise the qemu (+ pmb887x-emu) submodules and
                         check qemu out at the pinned rev
-    sync-bsp.sh         bsp checkout @ pin + bsp-patches/ workarounds → build/bsp
+    sync-bsp.sh         bsp checkout @ pin → build/bsp
     pack-boards.sh      build/bsp board configs → site/dist/boards.tar (run by
                         every deploy path)
+    build-recalc-wasm.sh  site-src/recalc + pmb887x-emu's siemens_recalc.cpp →
+                        site/dist/siemens-recalc.wasm (likewise)
     build-qemu.sh       submodule → wasm64 TCG backend build → site/dist-jit/
                         (the default) + boards.tar; TCI=1 also builds the
                         interpreter dist → site/dist/
@@ -185,8 +211,8 @@ and the lockstep gate cover.
     iterate.sh          one-command edit→rebuild→browser-verdict loop
     run-tcg-isa.sh      guest op-suite gate (3 backends, byte-compared)
     run-lockstep.sh     native cross-backend lockstep gate
-  bsp-patches/0001      board-config workaround applied by sync-bsp.sh
-                        (hd155153np RF → the defined pmb6272 stub)
+  site-src/recalc/      emcc glue around pmb887x-emu's siemens_recalc.cpp
+                        (the only C++ here outside the submodules)
   tests/
     tcg-isa/            guest op-suite (bare-metal ARM926 versatilepb image
                         asserting (value, NZCV) per op class; runs on native
@@ -235,18 +261,24 @@ Select with `-display wasm` — the same way `-display none` works.
 
 `versions.env` pins:
 
-- qemu-pmb887x `debfa3d6f5` — the tip of the series branch
+- qemu-pmb887x `b7822c674b` — the tip of the series branch
   (`wasm-browser-port` locally, `wasm-patches` on Azq2/qemu-pmb887x):
-  qemu-pmb887x master (`8b9d485bc2`) + 41 series commits + the "hacky
-  AFE (LLE+HLE)" DSP fix cherry-picked from alula's `dsp-stuff` branch +
-  the per-board RTC seed. Master alone aborts every Siemens fullflash
+  qemu-pmb887x master merged in, the series on top of it, the "hacky
+  AFE (LLE+HLE)" DSP fix cherry-picked from alula's `dsp-stuff` branch,
+  and the per-board RTC seed. Master alone aborts every Siemens fullflash
   during L1 GSM frame handling (`>>EXIT<< FILE: l1bbcsg`, ~25–30 s);
-  the AFE commit is what makes s75/el71/c81 boot.
-- bsp (pmb887x-dev) `e6e73d1` — carries the LG `[rtc] format =
-  "calendar"` the LG firmware needs. The bsp main branch also defines
-  `[peripheral.RF] type = "hd155153np"`, a device the emulator does not
-  define (only the `pmb6272` stub); `bsp-patches/0001` re-points the two
-  affected includes until upstream grows the device.
+  the AFE commit is what makes s75/el71/c81 boot. The master merge also
+  brought the SGOLD DSP mask-ROM fix, which upstream leaves inside a
+  disabled `#ifdef STUB_DSP` and this branch compiles. `alula/dsp-stuff`
+  is merged too and changed nothing: both of its content commits are
+  already here verbatim (same patch-id), and its remaining differences are
+  a `dsp_hexdump()` that indexes words where the offset counts bytes, the
+  pre-fix `dsp_realize()`, and two `#if 0` debug blocks.
+- bsp (pmb887x-dev) `21fdacb` — bsp master merged into the branch that
+  carries the LG `[rtc] format = "calendar"` the LG firmware needs.
+  Master is where `[peripheral.RF] type = "hd155153np"` — a device the
+  emulator has no table entry for — got commented out, which is why
+  there is no longer a `bsp-patches/` directory to apply.
 - emsdk 4.0.10, glib 2.84.0, pixman 0.44.2, zlib 1.3.2, libffi v3.5.2
   (mirrors qemu's `emsdk-wasm64-cross.docker`).
 

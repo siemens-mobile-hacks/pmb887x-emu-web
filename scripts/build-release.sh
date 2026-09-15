@@ -6,7 +6,7 @@
 #   - qemu/ is hard-synced to the pinned rev (fetch-qemu.sh inits, then
 #     a forced checkout discards any local edits — an edited file in the
 #     tree must never leak into a release artifact)
-#   - bsp is re-synced and bsp-patches re-applied (sync-bsp.sh, idempotent)
+#   - bsp is re-synced at the pin (sync-bsp.sh, idempotent)
 #   - build/qemu-wasm64 and build/qemu-wasm are wiped, so no ninja object
 #     from an earlier tree can survive into the artifacts
 # The pinned toolchain/deps (build/deps: emsdk + glib/pixman/zlib/libffi)
@@ -62,9 +62,9 @@ fi
 # ---- 3. rebuild + bundle ------------------------------------------------
 
 # build.sh: deps (cached unless DEPS_CLEAN) → fetch-qemu/sync-bsp/
-# pack-boards (idempotent re-syncs) → build-qemu-wasm64 → site/dist-jit
-# (+ site/dist with TCI=1).  Native build dirs (qemu-native*) are not
-# part of the deploy path and are left alone.
+# pack-boards/build-recalc-wasm (idempotent re-syncs) → build-qemu-wasm64
+# → site/dist-jit (+ site/dist with TCI=1).  Native build dirs
+# (qemu-native*) are not part of the deploy path and are left alone.
 TCI="${TCI:-}" bash ./build.sh
 
 bash scripts/bundle-dist.sh

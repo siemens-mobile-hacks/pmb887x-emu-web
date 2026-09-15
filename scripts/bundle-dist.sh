@@ -36,7 +36,7 @@ if [ "${BUNDLE_SYMBOLS:-0}" = 1 ]; then note "including .symbols maps"; fi
 # --------------------------------------------------------------- contents --
 
 # The editable page (site/ top level; index.html pulls in the rest).
-page="index.html app.js style.css keyboards.js fullflashes.js"
+page="index.html app.js style.css keyboards.js fullflashes.js recalc.js recalc-worker.js"
 
 # The two engines: dist-jit = wasm64 TCG backend, the page default
 # (required); dist = TCI interpreter, the ?dist=dist fallback (only built
@@ -51,6 +51,9 @@ done
   fail "site/dist/boards.tar missing — run scripts/build-qemu.sh (or scripts/pack-boards.sh)"
 [ -f "$SITE/dist-jit/qemu-system-arm.wasm" ] ||
   fail "site/dist-jit/qemu-system-arm.wasm missing — run scripts/build-qemu.sh"
+# the Siemens key module lives in dist/ for the same reason boards.tar does
+[ -f "$SITE/dist/siemens-recalc.wasm" ] ||
+  fail "site/dist/siemens-recalc.wasm missing — run scripts/build-recalc-wasm.sh"
 
 # ---------------------------------------------------------------- assemble --
 
@@ -64,6 +67,9 @@ done
 # boards.tar only ever lives in dist/ (pack-boards.sh drops stale copies
 # next to the other engine) — the page expects it there.
 cp "$SITE/dist/boards.tar" "$OUT/dist/boards.tar"
+for f in siemens-recalc.js siemens-recalc.wasm; do
+  cp "$SITE/dist/$f" "$OUT/dist/$f"
+done
 
 for d in $engines; do
   for f in qemu-system-arm.js qemu-system-arm.wasm; do

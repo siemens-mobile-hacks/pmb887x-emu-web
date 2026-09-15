@@ -77,6 +77,9 @@ done
 # board configs (site/dist/boards.tar, what the page always fetches) are not
 # part of this build's ninja graph — refresh them with the deploy
 bash scripts/pack-boards.sh
+# same for the Siemens key module (site/dist/siemens-recalc.wasm), which is
+# built from the pmb887x-emu submodule, not from qemu
+bash scripts/build-recalc-wasm.sh
 # The lockstep fold reads the insn budget + grid from the URL (ls-* params).
 ls -la site/dist-jit/qemu-system-arm.{js,wasm}
 echo "== done. Serve: node scripts/serve.mjs 8094   Run: cd tools && node lockstep-wasm.mjs --runs 3"

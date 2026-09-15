@@ -1,11 +1,10 @@
 #!/bin/bash
-# Check out the pinned pmb887x-dev (BSP) revision into build/bsp and apply
-# the board-config patches from bsp-patches/.
+# Check out the pinned pmb887x-dev (BSP) revision into build/bsp.
 #
-# Workaround (see versions.env): the BSP main branch references devices
-# that the emulator does not define; bsp-patches/ re-points them at the
-# closest defined stubs. Patches that do not apply (e.g. on older BSP
-# revisions that lack the affected sections) are skipped with a notice.
+# There is nothing to patch any more: the hd155153np RF peripheral the
+# emulator has no table entry for is commented out at the source as of
+# bsp 55752c5, so the bsp-patches/ directory this script used to apply
+# was removed on 2026-09-15.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,13 +22,4 @@ fi
   git checkout -q -- . 2>/dev/null || true
 )
 
-shopt -s nullglob
-for p in "$ROOT"/bsp-patches/*.patch; do
-  if (cd "$BSP" && git apply --check "$p" 2>/dev/null); then
-    echo "bsp: applying $(basename "$p")"
-    (cd "$BSP" && git apply "$p")
-  else
-    echo "bsp: skip $(basename "$p") (already applied or not applicable to $(basename "$PMB887X_BSP_REV"))"
-  fi
-done
 echo "bsp ready: $BSP @ $PMB887X_BSP_REV"

@@ -40,9 +40,12 @@ if grep -q 'subprojects/teakra' "$QEMU_SRC/.gitmodules" 2>/dev/null; then
     && (cd subprojects/teakra && git checkout -q -f HEAD))
 fi
 
-# --- board configs from bsp (pinned rev + bsp-patches/ workarounds) ---
+# --- board configs from bsp (pinned rev) ---
 bash "$WEB_DIR/scripts/sync-bsp.sh"
 bash "$WEB_DIR/scripts/pack-boards.sh"
+
+# --- the Siemens key module the Firmware panel drives (site/dist/) ---
+bash "$WEB_DIR/scripts/build-recalc-wasm.sh"
 
 # --- build: wasm64 TCG backend (site/dist-jit/, the page default) ---
 bash "$WEB_DIR/scripts/build-qemu-wasm64.sh"

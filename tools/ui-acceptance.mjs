@@ -137,6 +137,38 @@ ok("1.2 own-file values survived the round trip",
   (await page.$eval("#ff-bin-name", (e) => e.textContent)) === "KE800.BIN"
   && (await page.$eval("#device", (e) => e.value)) === "lg-ke800");
 
+/* Advanced ▸ Siemens keys — Own file + a siemens-* device only */
+ok("keys block absent for LG", !(await has("#siemens-keys-block")));
+await page.selectOption("#device", "siemens-s75");
+ok("keys block appears for Siemens", await has("#siemens-keys-block"));
+ok("keys default is recalculate",
+  (await page.$eval('input[name="siemens-mode"]:checked', (e) => e.value)) === "recalc");
+ok("keys block sits above IMEI/ESN", await page.$eval(".adv-grid", (g) =>
+  [...g.children].map((c) => c.id || c.querySelector("input,select")?.id).join(",")
+    === "sim,operator,startup,siemens-keys-block,imei,esn"));
+ok("IMEI/ESN editable in recalc mode",
+  !(await page.$eval("#imei", (e) => e.disabled)) && !(await page.$eval("#esn", (e) => e.disabled)));
+
+await page.check('input[name="siemens-mode"][value="recover-esn"]');
+ok("brute-force takes over IMEI/ESN",
+  (await page.$eval("#imei", (e) => e.disabled)) && (await page.$eval("#esn", (e) => e.disabled))
+  && (await text("#siemens-keys-note")) === "IMEI and ESN come from the fullflash in this mode.");
+ok("the other Advanced fields stay editable",
+  !(await page.$eval("#operator", (e) => e.disabled)));
+ok("the key mode is not named on the Advanced summary",
+  !(await text("#adv-summary")).includes("keys"));
+
+// presets are published already recalculated, so the modes are not offered
+// there — and the IMEI/ESN lock must not follow the block out of the DOM
+await page.click("#ff-mode-preset");
+ok("keys block absent in Preset mode", !(await has("#siemens-keys-block")));
+ok("IMEI/ESN unlocked again in Preset mode",
+  !(await page.$eval("#imei", (e) => e.disabled)) && !(await page.$eval("#esn", (e) => e.disabled)));
+await page.click("#ff-mode-own");
+ok("the mode came back with the block",
+  (await page.$eval('input[name="siemens-mode"]:checked', (e) => e.value)) === "recover-esn");
+await page.check('input[name="siemens-mode"][value="recalc"]');
+
 /* §1.6 */
 ok("1.6 no Start/Stop inside the panel",
   !(await has("#firmware-panel #btn-start")) && !(await has("#firmware-panel #btn-stop")));

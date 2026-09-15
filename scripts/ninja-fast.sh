@@ -75,6 +75,9 @@ rm -f "$DIST/qemu-system-arm.wasm.gz" "$DIST/qemu-system-arm.js.gz"
 # reads site/dist/boards.tar — repack on every deploy so iterating here can
 # never run a fresh qemu against yesterday's board configs
 bash "$WEB_DIR/scripts/pack-boards.sh"
+# likewise the Siemens key module: it comes from the pmb887x-emu submodule,
+# so a qemu-only rebuild would otherwise leave an old one next to a new dist
+bash "$WEB_DIR/scripts/build-recalc-wasm.sh"
 if [ "${GZ:-0}" = "1" ] && command -v gzip >/dev/null; then
   gzip -9 -k "$DIST/qemu-system-arm.wasm"
 fi
