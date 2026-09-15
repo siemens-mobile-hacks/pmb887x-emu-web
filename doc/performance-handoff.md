@@ -76,14 +76,28 @@ in particular: the boards run `-drive if=pflash,...` with no
 exercised the vCPU flash write/erase path — the very stack 0074's removed
 entries were added for.  `qemu_coroutine_switch()`'s abort never fired.
 
-Two harness traps cost time here and are worth knowing:
-`tools/idlebench.mjs` takes its dist list as the **first positional
-argument**, so `idlebench.mjs --board ke800` silently reads "ke800" as
-the dist and every run dies with "module never loaded"; write
-`idlebench.mjs dist-a,dist-b --board ke800`.  And **never redeploy
-`site/dist-jit` while a gate is running against it** — a relink mid-run
-produced exactly the same "module never loaded" failure and looked like a
-regression.
+KE800 (`icount=none`) is neutral: boot to idle **57 → 52.1 s** on one run
+and **49.5 → 49.0 s** on the next, i.e. −9 % and −1 %, which is noise
+either side of unchanged.  That is the expected shape for the board that
+gains least from un-instrumenting the vCPU helper path.
+
+**`tools/idlebench.mjs` was fixed this round** after a ke800 run cost 25
+minutes of silence.  Three independent faults: the dist list is the first
+*positional* argument, so `idlebench.mjs --board ke800` read "ke800" as
+the dist and every run died with "module never loaded"; the LG idle
+screen **prints the host date and time**, ~1.8 % of the compared rows,
+which can never match a reference captured at another moment and against
+the 0.5 % threshold made every ke800 run a full-timeout NOIDLE (pctMax is
+now per board, ke800 = 3 %, versus 80–90 % for a boot that really has not
+arrived); and nothing was printed during a run.  Now `--max` is 300 s not
+1500 s, `--stall` 120 s, a new `--noconv` ends a run once the best LCD
+mismatch stops improving and reports that percentage, and a 15 s
+heartbeat prints `t`, `v`, `insns` and the live mismatch.  The same
+diagnosis now takes 60 seconds.
+
+One more trap: **never redeploy `site/dist-jit` while a gate is running
+against it** — a relink mid-run produces exactly the same "module never
+loaded" failure and looks like a regression.
 
 ### Evidence, not argument: QEMU_COSTACK and the audit tool
 
