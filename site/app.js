@@ -43,11 +43,32 @@ const CODE_TO_KEY = {
   NumpadAdd: "vol_up", NumpadSubtract: "vol_down", Equal: "vol_up", Minus: "vol_down",
   Digit0: "0", Digit1: "1", Digit2: "2", Digit3: "3", Digit4: "4",
   Digit5: "5", Digit6: "6", Digit7: "7", Digit8: "8", Digit9: "9",
-  Numpad0: "0", Numpad1: "1", Numpad2: "2", Numpad3: "3", Numpad4: "4",
-  Numpad5: "5", Numpad6: "6", Numpad7: "7", Numpad8: "8", Numpad9: "9",
-  Backquote: "star", NumpadMultiply: "star", Slash: "hash", NumpadDivide: "hash",
+  // the numpad is mapped by position, not by digit: its top row sits where
+  // the phone's 1-2-3 row is, so 7-8-9 press 1-2-3 (and 1-2-3 press 7-8-9)
+  // and the hand keeps the phone's layout under it
+  Numpad7: "1", Numpad8: "2", Numpad9: "3",
+  Numpad4: "4", Numpad5: "5", Numpad6: "6",
+  Numpad1: "7", Numpad2: "8", Numpad3: "9",
+  Numpad0: "0",
+  NumpadMultiply: "star", Backquote: "star", NumpadDivide: "hash", Slash: "hash",
   Escape: "end",
 };
+
+// Physical-keyboard binding drawn on each key ("show key bindings" checkbox
+// under the keypad). Derived from CODE_TO_KEY so the two cannot drift: the
+// first code listed there for a key is the one shown. Digit keys are left
+// out — their own legend already names the key that presses them.
+const CODE_LABEL = {
+  ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
+  Enter: "Enter", Backspace: "⌫", Escape: "Esc",
+  NumpadAdd: "Num +", NumpadSubtract: "Num −",
+  NumpadMultiply: "Num *", NumpadDivide: "Num /",
+};
+const KEY_HINT = {};
+for (const [code, key] of Object.entries(CODE_TO_KEY)) {
+  if (/^\d$/.test(key)) continue;
+  KEY_HINT[key] ??= CODE_LABEL[code] ?? code;
+}
 
 // Fullflash sidecars (SIDE_CAR_RE) + filename -> device inference now
 // live in fullflashes.js.
@@ -181,7 +202,7 @@ function applyFullflashName(name) {
   if (kbd && kbd in KBD_LAYOUTS
       && KBD_LAYOUTS[kbdSel.value]?.board !== KBD_LAYOUTS[kbd].board) {
     kbdSel.value = kbd;
-    applyKbdLayout(kbd, bindKeypad);
+    applyKbdLayout(kbd, renderKeypad);
     localStorage.setItem("kbd-layout", kbd);
   }
 }
@@ -765,11 +786,13 @@ function sendKey(phoneKey, down) {
   m._wasm_send_key(lnx, down ? 1 : 0);
 }
 
+const KEY_SELECTOR =
+  "#keypad button[data-key], .aux-keys-left button[data-key], .aux-keys-right button[data-key]";
+
 // press-and-hold wiring for every on-screen key; re-run after each keyboard
 // render since the buttons are rebuilt per layout
 function bindKeypad() {
-  for (const btn of document.querySelectorAll(
-      "#keypad button[data-key], .aux-keys-left button[data-key], .aux-keys-right button[data-key]")) {
+  for (const btn of document.querySelectorAll(KEY_SELECTOR)) {
     const key = btn.dataset.key;
     const press = (ev) => {
       ev.preventDefault();
@@ -788,6 +811,25 @@ function bindKeypad() {
   }
 }
 
+// label each key with the physical key that presses it; the labels stay in
+// the DOM and the "show key bindings" checkbox only toggles a body class
+function renderKeyHints() {
+  for (const btn of document.querySelectorAll(KEY_SELECTOR)) {
+    const hint = KEY_HINT[btn.dataset.key];
+    if (!hint) continue;
+    const el = document.createElement("span");
+    el.className = "key-hint";
+    el.textContent = hint;
+    btn.appendChild(el);
+  }
+}
+
+// both halves of a keypad re-render (keyboards.js rebuilds the buttons)
+function renderKeypad() {
+  bindKeypad();
+  renderKeyHints();
+}
+
 /* ------------------------------------------------------------------ */
 /* on-screen keyboard layout picker (definitions live in keyboards.js)   */
 /* ------------------------------------------------------------------ */
@@ -801,10 +843,26 @@ for (const [id, layout] of Object.entries(KBD_LAYOUTS)) {
 }
 kbdSel.value = localStorage.getItem("kbd-layout");
 if (!(kbdSel.value in KBD_LAYOUTS)) kbdSel.value = "en";
-applyKbdLayout(kbdSel.value, bindKeypad);
+applyKbdLayout(kbdSel.value, renderKeypad);
 kbdSel.addEventListener("change", () => {
-  applyKbdLayout(kbdSel.value, bindKeypad);
+  applyKbdLayout(kbdSel.value, renderKeypad);
   localStorage.setItem("kbd-layout", kbdSel.value);
+});
+
+// key-binding hints: on by default on a desktop (a pointer that hovers and
+// can point precisely => a real keyboard is attached), off on touch screens;
+// the remembered choice wins over that default
+const hintsChk = $("kbd-hints");
+const storedHints = localStorage.getItem("kbd-hints");
+hintsChk.checked = storedHints == null
+  ? matchMedia("(hover: hover) and (pointer: fine)").matches
+  : storedHints === "1";
+const showKeyHints = () =>
+  document.body.classList.toggle("show-key-hints", hintsChk.checked);
+showKeyHints();
+hintsChk.addEventListener("change", () => {
+  showKeyHints();
+  localStorage.setItem("kbd-hints", hintsChk.checked ? "1" : "0");
 });
 
 // physical keyboard -> phone keys

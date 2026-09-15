@@ -83,6 +83,14 @@
         <label for="kbd-layout">Keyboard</label>
         <select id="kbd-layout"></select>
       </div>
+      <!-- app.js ticks this by default on desktop (a hovering, fine pointer)
+           and remembers the choice; it only toggles a body class -->
+      <div class="kbd-row kbd-row-hints">
+        <label class="kbd-check" for="kbd-hints">
+          <input type="checkbox" id="kbd-hints">
+          show keyboard shortcuts on the keys
+        </label>
+      </div>
   </section>
 
   <!-- ============ controls ============ -->
@@ -165,7 +173,8 @@
       Everything runs locally in your browser: qemu (arm-softmmu, TCG interpreter)
       compiled to wasm64 with emscripten, driven by a small
       <code>-display wasm</code> backend. The physical keyboard works too:
-      arrows / Enter / F1–F9 / digits / numpad +−*/ / Backspace.
+      arrows / Enter / F1–F9 / digits / numpad +−*/ / Backspace. The numpad
+      digits go by position, so its 7-8-9 row presses the phone's 1-2-3.
     </p>
   </section>
 </main>
