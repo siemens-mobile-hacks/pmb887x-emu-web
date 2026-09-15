@@ -6,6 +6,130 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-15, round sixteen: 0080 — the round the profile lost its credibility)
+
+No throughput patch landed.  What landed is **instrumentation and two
+retired beliefs**, and the second of those is worth more than a patch:
+every profile-driven decision in this project rested on a measurement
+that is wrong by two orders of magnitude.
+
+### Round fifteen, re-priced on a quiet host
+
+The CX70 numbers were re-taken at load 2.9–4.3 (the originals spanned
+2.8–5.8):
+
+| | pre-round `r15` | tip | |
+|---|---|---|---|
+| fixed-work MIPS | 113.20 | 126.57 | **+11.8 %**, 3/3, guest work identical to 0.217 % |
+| **idle v/wall** | **2.58** | **4.28** | **+66 %** |
+| idle halts/s | 676 | 1322 | |
+
+Take **+11.8 %** as the throughput number (the +14 % sum of three
+separately-measured steps overstated it, as such sums do).  But the
+throughput number is the *small* half.  `tools/haltprobe.mjs` shows the
+DIF/DMAC timer storm was not merely costing cycles, it was **keeping the
+vCPU awake**: the idle screen now warps instead of spinning, which is
++66 % on the thing a user actually sits in front of.  **On any board that
+does not halt, run `haltprobe` next to `workbench` — throughput alone
+under-reports a change that lets the guest sleep.**
+
+The same probe closed the round-fifteen question: `interrupt_request` is
+**0 for 99.2 %** of an idle CX70, so nothing is holding a line asserted
+and `arm_cpu_has_work()` is honest.  There is no emulation bug there; the
+board is awake because the firmware is, at about a 30 % duty cycle.
+
+### The profile names the wrong function
+
+A fresh CX70 profile put **11.0 %** of the vCPU in `arm_rebuild_hflags`,
+its largest single entry — apparently contradicting round fifteen's
+rejection of the `cpsr_write` hflags skip.  It took four steps to settle,
+and the method is the reusable part:
+
+1. **Count it.** A new unconditional counter at that function's entry
+   (`hflagsCalls`) reads **11,606 calls/s**.  11.0 % of a 30 s profile
+   over 348k calls is **9.5 µs per call**, for a function priced at
+   ~76 ns.
+2. **Probe the cost.** Re-running its body 2000 extra times per call
+   measured **+3.7 % faster** — which reads exactly like "this function
+   is free", and was a lie: the compiler had hoisted the duplicate calls.
+3. **Prove the knob arrived.** A 10,000-iteration *volatile* loop (which
+   cannot be hoisted or elided) took the board from **113 MIPS to 0.7**.
+   So the counter, the knob and the call rate all agree.
+4. **Profile the probe.** With all the work provably inside
+   `arm_rebuild_hflags`, calling nothing, the profiler reported
+   `rebuild_hflags_a32` **67.3 %**, `arm_rebuild_hflags` 20.3 %,
+   `arm_security_space` 9.5 %, `cpsr_write` 1.0 %.
+
+**A name in a wprof2 profile identifies a neighbourhood, not a
+function.**  Round fifteen's A/B was right and its profile was not; its
+lesson ("a self-time share is an upper bound, not a budget") was too
+generous — it is not a bound at all.  Frames under `wasm://wasm/<hash>`
+are JIT'd guest TBs symbolised through the *main* module's map, which is
+why `machine_parse_smp_config` and `target_s390x` appear as hot functions
+in an ARM phone emulator; their sum (~59 % of the vCPU) means something,
+their names do not.
+
+Use `tools/counters.mjs` (new: every unconditional counter as a rate, per
+board) to find work, and a volatile-spin probe to price it.
+
+### The EL71 key lag has a floor, and speculation is below it
+
+Return-address speculation — translate each walked TB's fall-through,
+which is the return point of a `bl` and of an indirect `blx rN`, neither
+of which the frontend records — is in § REJECTED with its numbers.  The
+counters it needed established the shape of the problem permanently:
+
+> **Module count is miss count.**  On an EL71 boot window, `closeN`
+> (34922) equals `specMiss` (34922) *exactly*, with zero throwaway temp
+> modules.  A batch is opened by a lookup miss and closed the moment that
+> miss's TB executes.
+
+So no amount of extra speculation can lower the module count; only
+speculating what the guest misses on *next* can.  Fall-throughs are that
+on an interactive path (press 2: modules 456 → 339, **−26 %**) but not
+during boot, where the wall time is — there the goto_tb graph already
+yields 5.3 TBs per module, and the patch bought **+15 % translation for
+nothing**.  Measure `specMiss`, never `tbGen`.  **Tiering** (first
+executions on TCI, compile once a batch fills or the TB is hot) remains
+the only direction that breaks this floor, because it is the only one
+that decouples "the guest needs this TB now" from "compile a module now".
+
+### Also found
+
+- The ARM `ldr pc, [pc, #-4]` trampoline heuristic in `w64_speculate()`
+  has **never run**: `arm_cpu_realizefn` sets `CF_PCREL` on every
+  system-mode TB and the branch is guarded on `!CF_PCREL`.  It was born
+  inert (both guards landed in one commit).  `CF_PCREL` also means
+  `tb_gen_code` never writes `tb->pc`, so anything in `accel/tcg` wanting
+  a TB's guest pc must carry it alongside.  Enabling it is a behaviour
+  change with a known crash mode (the KE800 Prefetch_Abort) and wants its
+  own measurement.
+- The CX70's device layer is now **clean**: no counter shows a storm.
+  Per million guest instructions at idle — `tpuRamW` 898–1349,
+  `lookup` 715–980, `tpuRearm` 81, `dmacBurst` 51 (was 84,481/s before
+  round fifteen), `tpuTimer` 46.  The remaining cost is general
+  emulation, not a peripheral.
+- Every qht lookup on an idle CX70 is a **capacity** miss
+  (`lookupConfl` == `lookupQht`, `jcFlush` = 0 there).  At 90 per million
+  instructions a bigger jump cache is not worth it; during EL71 boot it
+  is ~0.9 %.
+
+### The host, again
+
+The gates could not all be run.  The host — a container whose
+`/proc/loadavg` and `free` are the *host's*, with invisible co-tenants —
+went to **62 GB used and 23 GB of swap**.  Native `boot-init` (a
+wall-clock liveness threshold) then failed for S75 and KE800 with "0
+insns @15s", and the browser gate began trapping with "memory access out
+of bounds" on every board and **every build, including ones that had
+passed hours earlier**.  Both were bisected against the pre-change
+revision and fail identically there, so neither is 0080.  What did pass:
+**native op-suite 1156/1156 on both backends with byte-identical serial,
+native JIT-vs-TCI lockstep 3/3 clean at 2.5 G**, and `boot-progress` +
+`no-exit` on all four native boards.  0080 is compiled out of native
+builds entirely (`CONFIG_TCG_WASM64` is not defined there), so those are
+the gates that could have caught it.
+
 ## Update (2026-09-15, round fifteen: 0078–0079 — SGOLD, and the v1 that never caught up)
 
 This round starts from a new board.  The user added a **CX70 fullflash**
@@ -50,6 +174,13 @@ DIF/DMAC/SSI chain.  Three pieces, all of which v2 had already fixed:
 
 Together **+14 %** on a CX70, measured as wall time for a fixed 8 G guest
 instructions, every step winning every interleaved pair.
+
+**Re-measured on a quiet host** (load 2.9–4.3, where the step numbers
+above were taken between load 2.8 and 5.8): pre-round `dist-jit-r15`
+113.20 MIPS, tip 126.57 — **+11.8 %, 3/3 wins**, virtual time at the
+milestone spanning 0.217 % across all six runs.  Take +11.8 % as the
+round's number; the +14 % sum of the three steps overstates it slightly,
+as sums of separately-measured steps do.
 
 **The meter had to be built first.**  `uibench --state idle` cannot
 resolve this board: the SGOLD idle screen animates and the GSM stack
@@ -143,13 +274,27 @@ Both are in § REJECTED with their numbers; neither shipped.
    indistinguishable from that.  Press 1 still got 12:1, so speculation
    works when there is something to follow.
 
-   Two directions, neither tried: **speculate along the return address**
-   (when the BFS runs out of `goto_tb` successors the unknown one is
-   usually `bx lr`, and `env->regs[14]` is right there in the CPU
-   context at speculation time — translation is already side-effect free
-   and bounded, so a wrong guess only wastes work), or **tier**: run a
-   TB's first executions on TCI and only compile once a batch has filled
-   or the TB is hot.  The second is the real answer and a large change.
+   **Return-address speculation was tried and rejected** (2026-09-15,
+   § playbook REJECTED).  The instrumentation it needed — `specMiss`,
+   `specNosucc`, `specExists`, `specNotram`, `specMade`, indices 80-84 —
+   is kept, and it settled the shape of the problem for good:
+
+   > **Module count is miss count.**  On an EL71 boot window,
+   > `close` = 34922 and `specMiss` = 34922 *exactly*, with `temp` = 0.
+   > A batch is opened by a lookup miss and closed the moment that
+   > miss's TB executes, so no amount of extra speculation can lower the
+   > module count — only speculating the TBs the guest will *miss on
+   > next* can.  Measure `specMiss`, never `tbGen`.
+
+   Fall-throughs are those TBs on an interactive path (press 2: modules
+   456 → 339, −26 %) but not during boot, where the wall time is: there
+   the goto_tb graph already yields 5.3 TBs per module, and the change
+   bought +15 % translation for no module reduction and no measurable
+   time.  **Tiering** — run a TB's first executions on TCI and compile
+   once a batch has filled or the TB is hot — is still the real answer
+   and still a large change; it is the one direction that breaks the
+   module-count = miss-count floor, because it decouples "the guest
+   needs this TB now" from "compile a module now".
 
 2. **The inline next-TB cache hits 85.1 %, so it is not the problem it
    looked like.**  `lcFill` 248,137,662 against `lcCall` 248,153,578 is
@@ -162,16 +307,28 @@ Both are in § REJECTED with their numbers; neither shipped.
    attempt at a wider inline test measured *slower*.  Of the 56.8M
    misses the jump cache serves 83 % and the qht 17 %.
 
-3. **The CX70 never halts, and nothing has looked at why.**  64 halts/s
-   against the S75's 27091, 116 MIPS burned to hold 1.07x real time.
-   `tools/haltprobe.mjs` was written for this and not yet run: it
-   samples `cs->interrupt_request` densely and reports how much of the
-   time each bit is set.  `arm_cpu_has_work()` tests that word alone, so
-   **a line left asserted — even one the guest has masked in CPSR or in
-   the VIC — makes `HELPER(wfi)` return without halting**.  If any part
-   of the CX70's wakefulness is that, it is worth more than everything
-   in this round put together.  If it is genuinely the firmware's
-   network search, the only lever is raw speed.
+3. **The CX70's wakefulness is not a stuck interrupt line — answered.**
+   `tools/haltprobe.mjs` (1.95M samples over 20 s at the idle screen)
+   reads `cs->interrupt_request == 0` **99.2 %** of the time, so
+   `arm_cpu_has_work()` is false and the vCPU is free to halt whenever
+   the firmware asks.  There is no emulation bug to find here; the board
+   is awake because the firmware is awake, and the only lever is raw
+   speed.
+
+   The same probe re-priced round fifteen, and much higher than the
+   throughput number did.  At the settled idle screen:
+
+   | | pre-round `r15` | tip |
+   |---|---|---|
+   | v/wall | 2.58 | **4.28** |
+   | halts/s | 676 | **1322** |
+   | MIPS | 132.3 | 160.9 |
+
+   **+66 % on idle v/wall** — the DIF/DMAC timer storm was not just
+   costing throughput, it was keeping the vCPU awake.  At 30 % duty
+   cycle the CX70 now idles like a phone rather than a spin loop.  Use
+   `haltprobe` alongside `workbench` on any board that does not halt:
+   throughput alone under-reports a change that lets the guest sleep.
 
 4. **The host stopped being measurable half way through.**  Load average
    went 3 → 55 and stayed; this is a container, `/proc/loadavg` is the

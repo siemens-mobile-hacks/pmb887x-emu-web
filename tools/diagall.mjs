@@ -43,6 +43,8 @@ const NAMES = [
   "ioLdFast", "vclockRead", "ioStFast", "tpuTimer", "tpuRearm",
   "mlWake", "mlWakeDup", "tpuRamW", "tpuRamSkip",
   "hflags", "hflagsFast", "hflagsBad",
+  "specMiss", "specNosucc", "specExists", "specNotram", "specMade", "specRet",
+  "hflagsCalls", "lookupConfl",
 ];
 
 const b = await chromium.launch({ headless: true });

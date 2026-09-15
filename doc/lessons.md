@@ -351,6 +351,100 @@ Check the other direction too: the boards that stood to lose are the LG
 ones, where `icount=none` puts the virtual-clock timers on the main loop
 — the thread being kept out.  They got 10 % *faster*.
 
+## Count the fast path, or it may never have run
+
+Twice now a carefully written fast path has turned out to be dead code
+that nothing complained about:
+
+- 0044's devirtualised TB lookup was gated on `CONFIG_TARGET_ARM`, which
+  has never existed (`TARGET_ARM` is poisoned inside `accel/tcg`).  It
+  compiled, it linked, it was never once compiled *in*.
+- the speculative-translation walker resolves ARM `ldr pc, [pc, #-4]`
+  trampolines "when the TB is not `CF_PCREL`".  `arm_cpu_realizefn` sets
+  `CF_PCREL` on **every** system-mode TB, so that branch has never been
+  taken on any board here.  It was written to fix a real KE800 crash,
+  which means the crash was fixed by the `!(target & 3)` guard on a
+  different path, and this one has been inert ever since.
+
+Both are silent: a fast path that never runs produces correct output and
+costs nothing, so no gate and no A/B can see it — the A/B just reads
+"no change", which is indistinguishable from "the idea was wrong".  The
+first version of this round's fall-through speculation died exactly that
+way, reading `specRet=0` on every key press because it copied the same
+`CF_PCREL` guard.
+
+So: **every new fast path ships with a counter, and the first thing you
+look at is whether the counter is non-zero** — before the timing, before
+the A/B.  `CF_PCREL` also means `tb->pc` is never written
+(`tb_gen_code` skips it), so anything in `accel/tcg` that wants a TB's
+guest pc has to carry it alongside rather than read it back.
+
+## The wasm profile names the wrong function
+
+`tools/wprof2.mjs` resolves a CDP `wasm-function[N]` frame through the
+`--emit-symbol-map` sidecar.  **The resulting per-function self-time is
+not trustworthy in this build**, and a whole round was nearly spent on
+what it said.
+
+The evidence, in the order it was gathered on an idle CX70:
+
+1. The profile put **11.0 %** of the vCPU in `arm_rebuild_hflags` — the
+   largest single entry, and apparently a direct contradiction of round
+   fifteen's rejection of the `cpsr_write` hflags skip.
+2. An unconditional counter at that function's entry
+   (`hflagsCalls`, index 85) says it is called **11,606 times a second**.
+   11.0 % of a 30 s profile over 348k calls is **9.5 µs per call**, for a
+   function its own comment prices at ~76 ns.  One of the two is wrong by
+   a factor of a hundred.
+3. The counter is the one to believe.  A spin loop of 10,000 volatile
+   increments placed in that function took the board from 113 MIPS to
+   **0.7 MIPS** — exactly what 11.6 k calls/s predicts, and proof that
+   the knob, the counter and the call rate all agree.
+4. Profiling *that* build settled the attribution.  The spin loop is
+   inside `arm_rebuild_hflags` and calls nothing.  The profiler reported
+   it as **`rebuild_hflags_a32` 67.3 %**, `arm_rebuild_hflags` 20.3 %,
+   **`arm_security_space` 9.5 %**, `cpsr_write` 1.0 %.  Work that
+   provably lives in one function was spread over four.
+
+So a name in that profile identifies a *neighbourhood*, not a function.
+Two corollaries:
+
+- **Never size a change from profile self-time alone.**  Get a rate from
+  an unconditional counter and multiply by a defensible per-call cost, or
+  probe the cost directly (below).  Round fifteen's rule — "treat a
+  self-time share for a small leaf function as an upper bound, not a
+  budget" — was too generous; it is not a bound at all.
+- Frames whose url is `wasm://wasm/<hash>` are **JIT'd guest TBs**, and
+  wprof2 symbolises them through the *main module's* map, which is how
+  `machine_parse_smp_config` and `target_s390x` turn up as hot functions
+  in an ARM phone emulator.  Their sum (~59 % of the vCPU here) is
+  meaningful; their names are not.
+
+### The cost probe: multiply the work and measure
+
+The way to price a function without trusting a profile is to make it do
+its own work *n* extra times and measure the wall difference.  It is
+correct by construction when recomputation is idempotent — the guest
+stays bit-identical and only the cost moves — and `workbench.mjs`'s
+fixed-guest-work window resolves it.
+
+Two traps, both hit in one afternoon:
+
+- **The compiler will delete your probe.**  A duplicated call to a
+  memory-reading function is loop-invariant; LICM hoists it, and even a
+  `volatile` sink plus `__atomic_signal_fence` did not stop it here.
+  2000 extra rebuilds per call measured **+3.7 % faster**, which reads
+  exactly like "this function is free".  A `volatile` read-modify-write
+  loop cannot be hoisted or elided — use that.
+- **Confirm the knob arrived.**  Before believing "no change", crank the
+  multiplier until the guest visibly crawls.  If it never does, you are
+  measuring a knob that never reached the code, not a function that costs
+  nothing.  (See § Count the fast path, or it may never have run.)
+
+Also: the vCPU is not a fixed worker index.  It was #4 in one profile and
+#1 in the next on the same board and build — identify it by content (the
+`wasm://wasm/` TB frames land there), never by number.
+
 ## Read the symbol map before believing a cost model
 
 Three ideas died in one round, each in under a minute, each of which

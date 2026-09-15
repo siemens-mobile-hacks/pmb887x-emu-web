@@ -67,6 +67,19 @@ const snap = () => p.evaluate(() => {
     v: Number(m._wasm_vclock()),
     lookup: g(13), lookupJc: g(14), lookupQht: g(15), jcFlush: g(16),
     tlbFlush: g(18), tlbFlushRange: g(19), fill: g(4), tbGen: g(7),
+    // 86 = qht lookups whose jump-cache slot held a different TB.  qht minus
+    // this is what the flushes cost; this is what the 4096-entry cache's
+    // capacity costs.  51/55 = the inline next-TB cache's fills and misses,
+    // 54 = tb_key_gen bumps (every bump takes every inline cache cold, and a
+    // full TLB flush bumps it).  29 = halts, 34 = modules compiled.
+    conflict: g(86), lcFill: g(51), lcCall: g(55), keyGen: g(54),
+    halt: g(29), mods: g(34), tbFlush: g(8),
+    // 34 is every WebAssembly.Module; 48/49/50 split it by where the bytes
+    // came from (batch close / compaction / re-ensure after eviction).  What
+    // 34 minus those three leaves is the throwaway one-TB module, which is
+    // the thing batching exists to avoid -- if it dominates, batching is not
+    // reaching the TBs the guest actually runs.
+    closeN: g(48), compactN: g(49), ensureN: g(50), specMiss: g(80),
   };
 });
 
@@ -124,5 +137,9 @@ console.log(`WORKBENCH ${boardId} ${dist} MIPS=${(mi / wall).toFixed(1)} wall=${
   `vAt=${(a.v / 1e9).toFixed(3)}/${(c.v / 1e9).toFixed(3)}s ` +
   `lookup=${d("lookup")} jc=${d("lookupJc")} qht=${d("lookupQht")} ` +
   `jcFlush=${d("jcFlush")} tlbFlush=${d("tlbFlush")} tlbFlushRange=${d("tlbFlushRange")} ` +
-  `fill=${d("fill")} tbGen=${d("tbGen")} load=${load}`);
+  `fill=${d("fill")} tbGen=${d("tbGen")} ` +
+  `confl=${d("conflict")} lcCall=${d("lcCall")} lcFill=${d("lcFill")} keyGen=${d("keyGen")} ` +
+  `halt=${d("halt")} mods=${d("mods")} close=${d("closeN")} compact=${d("compactN")} ` +
+  `ensure=${d("ensureN")} temp=${d("mods") - d("closeN") - d("compactN") - d("ensureN")} ` +
+  `miss=${d("specMiss")} tbFlush=${d("tbFlush")} load=${load}`);
 await b.close();
