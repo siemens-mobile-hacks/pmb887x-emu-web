@@ -610,6 +610,32 @@ and the vCPU run device code concurrently; the guest never reached idle,
 and there was no number.  When that happens, build the real thing and
 measure it — do not read the failure as "no win available".
 
+## A ceiling probe measures the benefit and is silent on the cost
+
+The probe in "Some ceilings cannot be probed by deletion" works by
+*removing* work: whatever it recovers is the whole prize, cost included.
+A probe that instead *simulates a mechanism* is a different animal, and
+round eighteen paid to learn the difference.
+
+`W64_LC2` simulated a second way of the per-TB inline lookup cache in
+software — a shadow table in the miss helper, filled with whatever way 0
+was evicting — and reported that a second way would catch **42.3 %** of
+el71's misses.  Against a ~100 ns helper call that priced at +3.3 %.
+Built for real, it did exactly that: `lcCall` fell **39 % per Mi**.  Wall
+time did not move (el71 0.0 %, cx70 -0.2 %, A/B'd inside one binary via
+`W64_LC_WAYS`).
+
+The probe was right about every number it reported.  It simply had no
+way to report the cost the real thing adds: way 1's compare chain runs on
+every miss that still misses — 856k a second — and the emitted code for
+every goto_ptr exit grew 20.6 %.  The saving and the cost were the same
+size.
+
+So before building from a simulated-mechanism probe, write down what the
+real version adds to the path that *still* takes the slow route, and
+whether it grows the generated code.  If neither can be estimated, the
+probe has given you a hit rate, not a prize.
+
 ## What a cross-thread wake really costs (round twelve)
 
 The wake is not the futex call.  It is the **BQL round trip behind it**:

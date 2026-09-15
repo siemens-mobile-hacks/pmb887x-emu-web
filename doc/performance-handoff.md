@@ -105,9 +105,14 @@ plus 32 bytes per TB.  Measured, not built.
 4. The measurement build now has `W64_LDSTCOUNT`, `DEV_R_NS`/`DEV_W_NS`,
    `CAL_NS`, the `SLOWW_*` phys_addr histogram, `HFLAGS_NS`/`LC_NS` and
    the `W64_LC2` two-way ceiling probe.  **Use `CAL_NS`.**
-5. **The 2-way inline cache is measured and unbuilt** — 42 % of el71
-   misses, ~3 % of wall.  It needs a second slot in `TranslationBlock`
-   and a second compare chain on the miss path in `gen_goto_ptr`.
+5. ~~The 2-way inline cache is measured and unbuilt~~ — **built and
+   reverted, see § REJECTED.**  It does exactly what the probe said
+   (`lcCall` -39 % per Mi) and buys nothing: el71 0.0 %, cx70 -0.2 %,
+   A/B'd within one binary.  The second way's compare chain runs on
+   every remaining miss and emitted code grew 20.6 %.  **The ceiling
+   probe measured the benefit and was silent on the cost** — it
+   simulated the hit rate, not the work added to the path that still
+   misses.  That is the generalizable bit.
 6. ~~`arm_rebuild_hflags` runs 809k/s~~ — **closed by 0085**: it was
    `cpsr_write()` rebuilding whenever the write *mask* covered M/E/IL,
    which `msr cpsr_c` always does.  873k/s -> 317k/s; cx70 +1.0 %, el71
