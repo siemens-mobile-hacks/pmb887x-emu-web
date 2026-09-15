@@ -2775,6 +2775,12 @@ function bindKeypad() {
       sendKey(key, true);
     };
     const release = () => {
+      // pointerleave fires on a button the pointer merely moved over — and
+      // on one that simply rendered under a stationary pointer, which is
+      // what a layout change after Start does.  Only a key we actually
+      // pressed has a release to send; otherwise the phone gets a key-up
+      // for a key that was never down.
+      if (!btn.classList.contains("pressed")) return;
       btn.classList.remove("pressed");
       sendKey(key, false);
     };

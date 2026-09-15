@@ -6,7 +6,7 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
-## Update (2026-09-15, round sixteen: 0080 — the round the profile lost its credibility)
+## Update (2026-09-15, round sixteen: 0080–0081 — the round the profile lost its credibility)
 
 No throughput patch landed.  What landed is **instrumentation and two
 retired beliefs**, and the second of those is worth more than a patch:
@@ -114,21 +114,103 @@ that decouples "the guest needs this TB now" from "compile a module now".
   instructions a bigger jump cache is not worth it; during EL71 boot it
   is ~0.9 %.
 
-### The host, again
+### 0081: a key event before the display exists killed the module
 
-The gates could not all be run.  The host — a container whose
-`/proc/loadavg` and `free` are the *host's*, with invisible co-tenants —
-went to **62 GB used and 23 GB of swap**.  Native `boot-init` (a
-wall-clock liveness threshold) then failed for S75 and KE800 with "0
-insns @15s", and the browser gate began trapping with "memory access out
-of bounds" on every board and **every build, including ones that had
-passed hours earlier**.  Both were bisected against the pre-change
-revision and fail identically there, so neither is 0080.  What did pass:
-**native op-suite 1156/1156 on both backends with byte-identical serial,
-native JIT-vs-TCI lockstep 3/3 clean at 2.5 G**, and `boot-progress` +
-`no-exit` on all four native boards.  0080 is compiled out of native
-builds entirely (`CONFIG_TCG_WASM64` is not defined there), so those are
-the gates that could have caught it.
+The browser gate failed every board on every dist for an afternoon,
+including builds that had passed hours earlier, with `RuntimeError:
+memory access out of bounds`.  The host was simultaneously at 62 GB used
+and 23 GB of swap, so it was written off as memory pressure and bisected
+against the pre-change revision, where it reproduced — which fitted.
+**It was a crash, and the bisect "fitting" is exactly what made it easy
+to dismiss: the bug was older than either revision.**
+
+What settled it was refusing to accept the hypothesis without the stack:
+
+```
+HTMLButtonElement.release (app.js) → sendKey → _wasm_send_key
+  → wasm-function[24049]:0x80ddb6 → memory access out of bounds
+```
+
+`--emit-symbol-map` resolves those frames exactly — 12112 is
+`wasm_send_key`, 24049 is `qemu_bh_schedule` (which also sharpens the
+profiler finding above: the *map* is fine, it is the sampler's
+address→index resolution that is not).  Disassembling 0x80ddb6 named the
+faulting instruction: an `i64.load 184` on `bh->ctx`, immediately after
+an `i32.atomic.rmw.or 40` on `bh->flags` that had **not** faulted.  That
+pair is the signature of `bh == NULL`: offset 40 is a valid wasm address
+so the atomic quietly succeeds, `bh->ctx` then reads address 0, and the
+list insert at garbage+184 leaves the 2 GB memory.
+
+`wasm_send_key()` is exported the moment the module instantiates;
+`wasm_display_init()` creates `key_bh` much later; and the page's keypad
+is live from its first render.  A pointer resting where a key lands —
+which is precisely what a stationary Playwright pointer does when the
+keypad re-renders after Start — sends a release into a machine that does
+not exist yet.  A real user hits it by touching a key during the boot.
+
+The fix publishes a readiness flag with a release store and drops events
+taken before it.  `tools/earlykey.mjs` is the regression test (fires a
+key at the first instant the export exists, then checks the guest still
+runs and still takes keys): PASS on all four boards, FAIL on the build
+before.  The page also no longer sends a release for a key that was
+never pressed — `pointerleave` fires on a button the pointer merely
+moved over, or one that rendered underneath it.
+
+**The CX70 went from trapping at 203M instructions to 13442M with 2443
+framebuffer updates, its best boot recorded here.**
+
+### Gates
+
+All green after 0081: **native op-suite 1156/1156 on both backends with
+byte-identical serial**, **native JIT-vs-TCI lockstep 3/3 clean at
+2.5 G**, **native suite 4/4**, **browser bootcheck 4/4**, and
+**earlykey 4/4**.
+
+One real caveat remains, and it is the host: `/proc/loadavg` and `free`
+in this container are the *host's*, co-tenants are invisible, and it sat
+at 62–64 GB used with 23 GB swapped.  Native `boot-init` is a wall-clock
+liveness threshold (10M insns in the first 15 s) and under that load it
+fails on a rotating board — S75 and KE800 in one run, C81 in the next,
+none in the one after.  That one *is* host variance; `boot-progress` and
+`no-exit` never wavered.  Do not read a single `boot-init` failure as a
+regression, and do not read a hard wasm trap as host pressure.
+
+### Open at the end of round sixteen
+
+1. **Tiering is the only way past the module floor.**  Module count is
+   miss count; nothing that speculates harder can beat it.  Run a TB's
+   first executions on TCI and compile once a batch has filled or the TB
+   is hot, so "the guest needs this TB now" stops meaning "compile a
+   module now".  It is a large change and it is the one that would
+   answer the EL71 key lag.  Measure `specMiss` and `closeN`.
+
+2. **The `w64_speculate` trampoline heuristic has never run.**  Guarded
+   on `!CF_PCREL`, which is set on every system-mode ARM TB.  `qpc`-style
+   pc tracking is what it needs (`tb->pc` is unwritten under CF_PCREL).
+   Enabling it is a behaviour change with a known crash mode (the KE800
+   Prefetch_Abort that shaped its `!(target & 3)` guard), so it wants its
+   own A/B and its own bootcheck — but it is free to try.
+
+3. **Nothing has re-profiled since the profiler was discredited.**  Every
+   "where does the time go" statement older than this round rests on
+   wprof2 self-time.  The reliable pair is now `tools/counters.mjs` for
+   rates and a volatile-spin probe for cost.  The CX70's device layer is
+   clean by counters; the *generic* emulation path (lookups, MMIO
+   dispatch, TB execution) has never been priced by anything but the
+   profile.  Start there, and price before optimising.
+
+4. **`do_ld4_mmu` is the obvious next candidate and is unverified.**  The
+   profile put it at 10.2 % — a number now worth nothing on its own.  It
+   cannot be doubled safely (MMIO reads have side effects), so it needs a
+   different probe: count MMIO loads with a `WASM_DIAG_HOT_COUNTERS`
+   build (rates only, never a wall A/B) and price one dispatch, or probe
+   only the non-MMIO tail, which is idempotent.
+
+5. **The host is still not fully measurable.**  62–64 GB used, 23 GB
+   swapped, co-tenants invisible.  Native `boot-init` fails on a rotating
+   board under that load and means nothing by itself.  But note what this
+   round proved: **a hard wasm trap is never host pressure**, and a
+   bisect that "fits" can fit because the bug predates both revisions.
 
 ## Update (2026-09-15, round fifteen: 0078–0079 — SGOLD, and the v1 that never caught up)
 

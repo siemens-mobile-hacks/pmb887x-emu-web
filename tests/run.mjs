@@ -304,9 +304,14 @@ async function runInstance(flash, runDir, log) {
       initDone = true;
       const insns = s.insns ?? 0n;
       inst.mark("initSample", { insns: insns.toString(), cpu: s.cpuSecs });
+      // Two conditions, and the message must say which one went: reporting
+      // the instruction count for a pc-read failure prints "only 142.6M
+      // insns (need 10.0M)", which reads as a contradiction and sends the
+      // reader after the wrong thing.
       if (insns >= BigInt(INIT_MIN_INSNS) && s.pc !== null) pass("boot-init", `${fmt(insns)} insns @${INIT_SECS}s, pc=${s.pc}`);
       else if (inst.dead) fail("boot-init", "process exited during init");
-      else fail("boot-init", `only ${fmt(insns)} insns @${INIT_SECS}s (need ${fmt(INIT_MIN_INSNS)})`);
+      else if (insns < BigInt(INIT_MIN_INSNS)) fail("boot-init", `only ${fmt(insns)} insns @${INIT_SECS}s (need ${fmt(INIT_MIN_INSNS)})`);
+      else fail("boot-init", `no pc from the monitor @${INIT_SECS}s (${fmt(insns)} insns, so the guest is running)`);
     }
 
     // boot-progress verdict: as soon as we have LCD content or serial + lit LCD

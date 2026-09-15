@@ -379,6 +379,55 @@ the A/B.  `CF_PCREL` also means `tb->pc` is never written
 (`tb_gen_code` skips it), so anything in `accel/tcg` that wants a TB's
 guest pc has to carry it alongside rather than read it back.
 
+## A convenient hypothesis is the dangerous kind
+
+The browser gate failed every board on every dist for an afternoon with
+`RuntimeError: memory access out of bounds` — including builds that had
+passed hours earlier.  The host was at 62 GB used and 23 GB of swap at
+the same moment, so it was written off as memory pressure.  Two pieces of
+"evidence" agreed:
+
+- it reproduced on the **pre-change revision**, so "not my patch"; and
+- the boards trapped at different, repeatable instruction counts, which
+  is what a lazily-committed 2 GB heap running out would look like.
+
+Both were true and neither was the cause.  The bisect fitted *because
+the bug was older than either revision*, and the repeatability came from
+icount determinism, not from an allocator.  A wasm trap is not a
+resource failure: the heap was fully allocated (`HEAPU8.length` =
+2147483648) the whole time, which one `evaluate` would have shown.
+
+What broke it open was reading the actual stack instead of the summary
+line the gate prints:
+
+```
+HTMLButtonElement.release (app.js) → sendKey → _wasm_send_key
+  → wasm-function[24049]:0x80ddb6 → memory access out of bounds
+```
+
+Then: resolve the frames through the symbol map (`wasm_send_key`,
+`qemu_bh_schedule`), disassemble that byte offset with
+`emsdk/upstream/bin/llvm-objdump -d --start-address=`, and read the
+faulting instruction.  It was an `i64.load 184` on `bh->ctx` **after** an
+`i32.atomic.rmw.or 40` on `bh->flags` that had not faulted — the
+signature of a NULL pointer in wasm, where low addresses are ordinary
+memory and only the far side of the heap traps.  Ten minutes of
+disassembly against an afternoon of a plausible story.
+
+Rules earned:
+
+- **A hard trap is never "the host is busy".**  Slowness, timeouts and
+  rotating thresholds are host; a deterministic fault is code.
+- **`llvm-objdump` on the .wasm resolves a trap exactly**, and the
+  `--emit-symbol-map` sidecar resolves *stack* frames exactly even though
+  the sampling profiler's attribution through the same map does not.
+- **NULL does not trap in wasm.**  A NULL-pointer bug surfaces as an
+  out-of-bounds access at `NULL->field_far_away`, several frames from the
+  mistake, and any small-offset access on the way succeeds silently.
+- When a gate starts failing on builds that used to pass, suspect
+  something outside the build — but check the *page*, not just the host.
+  Here it was the keypad layout re-rendering under a stationary pointer.
+
 ## The wasm profile names the wrong function
 
 `tools/wprof2.mjs` resolves a CDP `wasm-function[N]` frame through the
