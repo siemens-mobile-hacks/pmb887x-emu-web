@@ -50,6 +50,9 @@ const BOARDS = [
   { id: "s75", file: "s75_working20060710172101.bin" },
   { id: "el71", file: "rr_ff_el71_stock.bin" },
   { id: "ke800", file: "KE800-v11b.bin", efa: "KE800-v11b.bin.cfi-efa", minInsns: 1.5e9 },
+  // the only SGOLD (PMB8875) board here, and the only one that exercises
+  // hw/arm/pmb887x/dif_v1.c at all - every other board is PMB8876/dif_v2
+  { id: "cx70", file: "CX70_FW56_clean.bin" },
 ].filter((b) => (ONLY.length ? ONLY.includes(b.id) : true));
 
 // Progress = executed instructions or a framebuffer update.  A board is

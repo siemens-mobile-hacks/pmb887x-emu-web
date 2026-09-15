@@ -6,6 +6,181 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-15, round fifteen: 0078–0079 — SGOLD, and the v1 that never caught up)
+
+This round starts from a new board.  The user added a **CX70 fullflash**
+(`fullflashes/CX70_FW56_clean.bin`) and reported SGOLD as terrible;
+every earlier round measured SGOLD2 (S75/EL71) or the LG.  It is the
+"board you measure is the board you fix" lesson again, and the answer
+was sitting in the tree: **`hw/arm/pmb887x/dif_v1.c` never got the work
+`dif_v2.c` got.**
+
+**How SGOLD differs, in one table.**  Same firmware job, same host:
+
+| | S75 idle (dif_v2) | CX70 idle (dif_v1) |
+|---|---|---|
+| v/wall | 58.7 | 1.07 |
+| halts/s | 27091 | 64 |
+| dmacBurst/s | 11660 | 84481 |
+| DMAC timer arms/s | 99 | ~72000 |
+
+The S75 idles by halting: the vCPU sleeps, the virtual clock warps, and
+the idle screen is nearly free.  **The CX70 never halts** — it burns
+~116 MIPS of real guest work to achieve 1.07× real time, so on a host
+five times slower than this desktop it is far below real time.  That is
+what "terrible" is.  The last row is the tell: two boards doing the same
+display work, three orders of magnitude apart in timer traffic.
+
+**What was wrong.**  A profile put ~17 % of the CX70's vCPU in the
+DIF/DMAC/SSI chain.  Three pieces, all of which v2 had already fixed:
+
+- `dif_mux()` looped over `p->bits` (16) with two divisions and two
+  modulos *per output bit*, once per transferred word.  v2 uses a 4×256
+  byte-lane table rebuilt only when its inputs change.  **+3.1 %**
+- `dif_trigger_dma()` drove both DMA request lines on every
+  `srb_set_isr`/`set_icr` — ~4 times per word — though the level almost
+  never changes.  The DMAC drops the repeat, but one indirect call and
+  two wrappers later.  v2 filters at source.  **+3.0 %**
+- Every word went through `timer_mod(transfer_timer, 0)` and its
+  callback.  The deadline is *zero*, so the timer bought nothing but a
+  list removal, a sorted insert and a dispatch — and because the DIF's
+  `breq` then reached the DMAC from outside the DMAC's own run loop, the
+  DMAC's `in_run` guard never applied and it armed its timer per burst
+  too.  v2 has never called `timer_mod` at all.  **+7.3 %**
+
+Together **+14 %** on a CX70, measured as wall time for a fixed 8 G guest
+instructions, every step winning every interleaved pair.
+
+**The meter had to be built first.**  `uibench --state idle` cannot
+resolve this board: the SGOLD idle screen animates and the GSM stack
+cycles through network-search phases, so idle MIPS swings ~15 % between
+runs of *one* build.  `tools/workbench.mjs` times the stretch between
+two instruction milestones instead.  Under icount the guest is a
+deterministic function of its instruction count — the same property the
+lockstep gate rests on — so that stretch is identical in every run of
+every build that does not change guest-visible behaviour, and the wall
+time across it is pure host speed.  Spread: **0.9 %**.  It prints the
+virtual time at each milestone as the check that the assumption held,
+and it prints guest-event counters (`lookup`, `jcFlush`, `tlbFlush`,
+`fill`, `tbGen`) which are load-independent.
+
+It is the right meter only for a board that does not halt.  On the S75,
+where the same window is mostly halted and wall time is wake latency, it
+read 41.3 then 31.1 MIPS for one build — use `uibench` idle there.
+
+**A regression the meters could not see.**  The synchronous conversion
+booted, rendered and menu-navigated correctly through several hundred
+runs at `rt=off` — which is what every meter here uses — and **stalled
+the CX70 at 140M instructions under the shipping `rt=banked`**.  Only
+`tools/bootcheck.mjs`, which uses the page default, caught it.  The cap
+changes when the vCPU sleeps and so changes the vCPU/main-loop
+interleaving, which is exactly what a device that has stopped deferring
+its work is sensitive to.  The fix keeps the timer as a backstop and
+arms it in one place: when the loop exits still holding a popped word.
+That is not the old per-word arm — a word is only held when the TX FIFO
+had a second one ready, and the DMAC feeds one word at a time, so on the
+display path the FIFO is empty there and the timer is never armed.
+Under `rt=banked`, 200 s: **9563M -> 11153M instructions**.
+
+**Correctness.**  The mux table was compared against the loop it replaces
+over 4.6M random configurations across every bits width, corner values
+included, with no disagreement.  For the whole display path the check
+is a value-level lockstep of this board between a native build of the
+*old* code and one of the *new* (`tools/lockstep.mjs --a-bin/--b-bin`,
+any `--flash`): clean over **5.02G instructions — 4784 epochs plus 598
+memory digests identical, serial identical**.  That is the check that
+decides, and it is minutes of work.  Screenshots at a fixed instruction
+count also matched, but do not rely on them: the milestone is only as
+precise as the poll that finds it, and shooting the *same* build twice
+on a CX70 already gives two different images.  Menu navigation renders
+correctly, which is what drives the path hardest.
+
+### Tried, verified, and not kept
+
+Both are in § REJECTED with their numbers; neither shipped.
+
+- **`cpsr_write` hflags skip.**  The rebuild is chosen from the
+  instruction's field mask, not from what changed, and the common
+  "msr cpsr_c" for interrupt masking carries `CPSR_M` while writing the
+  mode back unchanged.  Skipping when no bit hflags reads actually
+  changed removes **93.7 %** of the rebuilds `cpsr_write` asks for on a
+  CX70 (90 % of all of them) and 52 % on an S75, and a
+  `CPSR_HFLAGS_SKIP_VERIFY` build — take the skip, rebuild anyway,
+  compare — found **zero** disagreements over 74.8M skips.  It measured
+  **+0.6 %, 2/6 pairwise**.  The useful part is the negative result:
+  after 0071 the hflags fast path is close to free, so
+  `arm_rebuild_hflags`'s **3.3 % profile self-time is not 3.3 % of
+  recoverable work**.  For a small leaf function, self-time is an upper
+  bound, not a budget.
+- **`dacr_write` value guard.**  `dacr_write()` flushes the whole TLB
+  unconditionally where `fcse_write()` and `contextidr_write()` beside
+  it both guard on the value changing, and a full TLB flush also drops
+  the jump cache — which on wasm retires every TB's inline next-TB
+  cache.  Over an identical 5.1G-instruction window it changed
+  **nothing**: `tlbFlush` 15636 → 15635.  This firmware does not write
+  DACR idempotently.
+
+### Open at the end of this round
+
+1. **The EL71 key-press lag the user reported is wasm module
+   compilation, not slowness.**  `tools/keylag.mjs` measures it.  Per
+   press there is **no** `tb_flush` and **no** module re-creation — the
+   emulator is not redoing translation it already had — but on the later
+   presses `mods` tracks `tbs` essentially **one to one** (441 TBs / 440
+   modules, 296/297, 286/283).  Each newly reached TB is paying its own
+   synchronous `WebAssembly.Module` compile, a few hundred per press.
+   Rough slope across presses: **~0.2-0.3 ms per module** (on a loaded
+   host), i.e. most of a 100-250 ms response.
+
+   The cause is the batching policy.  `w64_batch_close_pending()`
+   assembles the open batch the moment any staged member first runs, so
+   a batch is only large if many TBs were translated before any of them
+   executed — which is exactly what the speculative successor BFS
+   (`w64_speculate`, `W64_SPEC_N`, default 32) provides during boot.  On
+   a newly reached interactive path the successors are not known yet:
+   with `W64_SPEC_N=0` the ratio is exactly 1:1 (914 TBs / 917 modules,
+   233/233, 2/2), and on the later presses the default is already
+   indistinguishable from that.  Press 1 still got 12:1, so speculation
+   works when there is something to follow.
+
+   Two directions, neither tried: **speculate along the return address**
+   (when the BFS runs out of `goto_tb` successors the unknown one is
+   usually `bx lr`, and `env->regs[14]` is right there in the CPU
+   context at speculation time — translation is already side-effect free
+   and bounded, so a wrong guess only wastes work), or **tier**: run a
+   TB's first executions on TCI and only compile once a batch has filled
+   or the TB is hot.  The second is the real answer and a large change.
+
+2. **The inline next-TB cache hits 85.1 %, so it is not the problem it
+   looked like.**  `lcFill` 248,137,662 against `lcCall` 248,153,578 is
+   a 99.994 % *fill-per-miss* rate, which reads like thrashing, but the
+   hit rate is what matters and the existing runtime knob measures it:
+   over one CX70 window, `lookup` is 56.8M normally and **380.2M** with
+   `W64_NOLC=1`, so 85.1 % of `goto_ptr` exits never call the helper.
+   That matches the 84 % the translator comment records.  A second cache
+   way would tax the 85 % to help the 15 %, which is why the earlier
+   attempt at a wider inline test measured *slower*.  Of the 56.8M
+   misses the jump cache serves 83 % and the qht 17 %.
+
+3. **The CX70 never halts, and nothing has looked at why.**  64 halts/s
+   against the S75's 27091, 116 MIPS burned to hold 1.07x real time.
+   `tools/haltprobe.mjs` was written for this and not yet run: it
+   samples `cs->interrupt_request` densely and reports how much of the
+   time each bit is set.  `arm_cpu_has_work()` tests that word alone, so
+   **a line left asserted — even one the guest has masked in CPSR or in
+   the VIC — makes `HELPER(wfi)` return without halting**.  If any part
+   of the CX70's wakefulness is that, it is worth more than everything
+   in this round put together.  If it is genuinely the firmware's
+   network search, the only lever is raw speed.
+
+4. **The host stopped being measurable half way through.**  Load average
+   went 3 → 55 and stayed; this is a container, `/proc/loadavg` is the
+   *host's*, and the other tenants are invisible.  A CX70 run that
+   normally takes 75 s did not reach its milestone in 800 s.  Anything
+   re-measured from here should check the `load=` field the tools print
+   and be re-run above ~10.  Guest-event counters stay valid at any load
+   (§ lessons).
+
 ## Update (2026-09-15, round fourteen: 0074–0076 — the cost of being unwindable)
 
 This round's win did not come from the code.  It came from a **build
@@ -161,7 +336,7 @@ A/B against such a build**.
   open) is already closed in the REJECTED table: binaryen's Asyncify pass
   crashes on it, and ASYNCIFY is not optional here.
 
-### What is left (round fourteen)
+### What is left (as of round fourteen; superseded above)
 
 **1. The MMIO dispatch path, still the top.**  0075 took the double swap
 and the size decode out of it, but the shape is unchanged: ~10 loads from

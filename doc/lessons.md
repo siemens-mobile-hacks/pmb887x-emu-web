@@ -117,6 +117,120 @@ file is the "why" behind them and behind the timing model.
   halted, not starved — check `halts/s` and the recompile counters before
   reading it as a problem.
 
+## Two generations of the same peripheral drift apart (round fifteen)
+
+- **SGOLD was slow because `dif_v1.c` never got the work `dif_v2.c`
+  got.**  The CX70 is the first SGOLD (PMB8875) board measured here;
+  every earlier round measured SGOLD2 (S75/EL71) or the LG.  A profile
+  put ~17 % of its vCPU in the DIF/DMAC/SSI chain, and three separate
+  pieces of that were things v2 had already solved and v1 had not: the
+  per-bit mux loop (v2 has a byte-lane table), the unconditional
+  `qemu_set_irq` on both DMA request lines (v2 filters on the level it
+  last drove), and a `timer_mod(timer, 0)` per transferred word (v2 runs
+  its transfers inline and has never armed its timer at all).  Together
+  **+14 %** on a CX70.
+- **So when a device has a `_v1` and a `_v2`, diff them before
+  profiling anything else.**  The optimised one is a written record of
+  which parts of that device are expensive, and the parts are usually
+  the same in both.  This is cheaper than rediscovering them.
+- **A deferred completion costs twice when two devices defer to each
+  other.**  v1's per-word timer was not just its own arm/fire pair: it
+  meant the DIF's `breq` reached the DMAC from outside the DMAC's run
+  loop, so the DMAC's `in_run` guard never applied and it armed *its*
+  timer per burst too — `dmacSchedTimer` 10.87M against 10.86M bursts.
+  The S75, whose DIF is synchronous, does the same display work with
+  **99 DMAC timer arms a second against 11660 bursts**.  A ratio like
+  that between two boards doing the same job is the signal.
+- **Removing a deferral needs the resume points, not just the loop.**
+  The transfer loop stops when a request is raised (the RX FIFO is four
+  words deep; draining a 32-word TX FIFO into it would overflow), so a
+  held word must be resumable.  Timers make that automatic; running
+  inline does not.  Each point that can drop the raised request has to
+  call back in — v2's list is the next FIFO write, the RX read, and the
+  event handler on a *cleared* request — plus, for v1, the `CON` read,
+  because BSY is v1's own and a CPU may spin on it touching nothing
+  else.
+
+## Measure at rt=off, but gate at rt=banked
+
+- **A change can be correct at `rt=off` and hang at `rt=banked`.**  Every
+  meter in this project runs `rt=off`, because the real-time cap's
+  pacing is not what an engine A/B is asking about.  Round fifteen's DIF
+  v1 conversion booted, rendered and menu-navigated correctly at
+  `rt=off` through several hundred runs — and stalled the CX70 at 140M
+  instructions under the shipping `rt=banked`, which `tools/bootcheck.mjs`
+  uses and which is the only reason it was caught.  The cap changes when
+  the vCPU sleeps, which changes the interleaving between it and the
+  main loop, which is exactly what a device that has stopped deferring
+  its work is sensitive to.  **Run bootcheck on the shipping
+  configuration before believing any device-timing change.**
+- **When you replace a deferral with a synchronous path, keep the
+  deferral as the backstop and arm it only where progress is not
+  otherwise guaranteed.**  The per-word `timer_mod` came back — but only
+  when the loop exits holding a word, which happens only when the TX
+  FIFO had a second word ready.  The DMAC feeds one word at a time, so
+  on the display path the FIFO is empty there and the timer is still
+  never armed; a CPU-driven burst gets its guarantee back.  The win
+  survived intact.
+
+## Prove a device change equivalent, do not argue it
+
+- **Two native builds and the lockstep plugin settle it.**
+  `tools/lockstep.mjs` takes `--a-bin`/`--b-bin` and any `--flash` path,
+  so building the *old* code and the *new* code natively and running
+  them against each other is a value-level proof: round fifteen's DIF
+  rewrite is clean over **5.02G instructions — 4784 epochs plus 598
+  memory digests identical, serial identical**.  That is minutes of
+  work and is worth more than any amount of screenshot comparison.
+  Build the second binary by checking the old file into the native
+  worktree (`git -C build/qemu-native checkout <rev> -- <file>`) and
+  re-running ninja; put the binaries aside before switching back.
+- **Do not trust a screenshot taken after a wall-clock settle.**  The
+  obvious deterministic-screenshot check — shoot at a fixed instruction
+  count, since icount makes the guest deterministic — is only as precise
+  as the poll that finds the milestone, and at 100 ms that is millions
+  of instructions.  Validate the instrument by shooting the *same build*
+  twice: on a CX70 those two shots differ, so a difference between
+  builds proves nothing.  A *match* is still strong evidence (an 8 KB
+  PNG does not collide by luck), which is why the early results in this
+  round were believable — but the check that decides is the lockstep.
+
+## Guest-event counters are the meter when the host is not yours
+
+- **Under icount the guest is a deterministic function of its
+  instruction count** — that is what makes the wasm-vs-native lockstep
+  gate possible — so the guest work between two instruction milestones
+  is identical in every run of every build that does not change
+  guest-visible behaviour.  `tools/workbench.mjs` times that stretch:
+  **0.9 % spread** on a CX70 where the idle meter swings ~15 %, because
+  none of the guest's own variability is in it.  It prints the virtual
+  time at each milestone as the check that the assumption held.
+- **It also prints counters, and those are load-independent.**  `lookup`,
+  `jcFlush`, `tlbFlush`, `fill` and `tbGen` count *guest* events, so a
+  change that removes work shows up in them at any host load.  When this
+  machine's load average went from 3 to 55 mid-session — it is a
+  container, `/proc/loadavg` is the host's and the other tenants are
+  invisible — wall-clock A/B stopped meaning anything (S75 idle read
+  32–40 MIPS against a 56 MIPS baseline, on the *unchanged* build), but
+  the mechanism could still be confirmed.
+- **Check `load=` in the result line before believing an A/B**, and
+  re-run anything measured above ~10.  Interleaving survives drift; it
+  does not survive the host being ten times busier for one leg.
+
+## A meter that suits one board can be wrong for another
+
+- **`workbench.mjs` is right for a board that never halts and wrong for
+  one that does.**  The CX70 spins (`halts/s` 64 against the S75's
+  27091, `v/wall` 1.07 against 58), so its wall time is guest work.  The
+  S75 spends the same window mostly halted, where wall time is wake
+  latency, and the same meter read 41.3 then 31.1 MIPS for one build.
+  Use `uibench.mjs` idle there, as before.
+- **An animated idle screen is not a steady state.**  The SGOLD idle
+  screen has a running clock and the GSM stack cycles through
+  network-search phases, so idle MIPS swings ~15 % between runs of one
+  build and `--settle` is mandatory (the rate detector never fires at
+  all).
+
 ## Asyncify instrumentation is not free, and the onlylist had stale frames (round fourteen)
 
 `-sASYNCIFY_ONLY=@configs/meson/asyncify-only.txt` names every function
