@@ -123,6 +123,7 @@ function untar(buf, writeFn) {
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
 let qemuModule = null;   // current emscripten module instance
+let running = false;     // a guest is live (the module object outlives it)
 let rafHandle = 0;
 let serialTimer = 0;
 let boards = [];         // [{id, file}] parsed from boards.tar
@@ -364,6 +365,7 @@ async function bootSuite(url) {
           window.__suiteReport?.(ser, code);
         } catch (e) { /* page going down anyway */ }
         setStatus("idle", `exited (${code})`);
+        running = false;
         showOverlay("stopped", `exited (${code})`);
         stopPainting();
         $("btn-start").disabled = false;
@@ -385,6 +387,7 @@ async function bootSuite(url) {
     hideOverlay();
     window.__qemu = qemuModule; // debugging hook (same as the phone boot)
     startSerialPoll();
+    running = true;
     setStatus("running", "running — tcg-isa op-suite");
   } catch (e) {
     console.error(e);
@@ -448,6 +451,7 @@ async function boot() {
 
   setStatus("booting", "loading…");
   showOverlay("loading…");
+  scrollToPhone();
   $("btn-start").disabled = true;
 
   // [[".cfi-efa", bytes], ...] — filled below, checked again after the boot
@@ -561,6 +565,7 @@ async function boot() {
       log: debug ? (t) => console.log("[log]", t) : undefined,
       onExit: (code) => {
         setStatus("idle", `exited (${code})`);
+        running = false;
         showOverlay("stopped", `exited (${code}) — press “Start” to boot again`);
         stopPainting();
         // hand the finished logs out before the runtime tears the page
@@ -665,6 +670,7 @@ async function boot() {
   startPainting();
   startSerialPoll();
   startHud();
+  running = true;
   setStatus("running", `running — ${device}` + (noEfa ? " (no EFA block — firmware may factory-reset)" : ""));
 }
 
@@ -769,13 +775,23 @@ recBtn.addEventListener("click", () => {
   setRecordLabel(true);
 });
 
-// the icon itself switches dot <-> square; the label has to follow for
-// anyone reading it by tooltip or screen reader
+// the icon switches dot <-> square and the button grows a running m:ss; the
+// accessible name has to follow, since neither is text a reader announces
+let recTimer = 0;
 function setRecordLabel(on) {
   recBtn.classList.toggle("recording", on);
   recBtn.title = on ? "Stop recording and save the .webm"
     : "Record the LCD to a .webm video";
   recBtn.setAttribute("aria-label", on ? "Stop recording" : "Record");
+  clearInterval(recTimer);
+  if (!on) { $("rec-time").textContent = ""; return; }
+  const startedAt = performance.now();
+  const tick = () => {
+    const s = Math.floor((performance.now() - startedAt) / 1000);
+    $("rec-time").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+  tick();
+  recTimer = setInterval(tick, 1000);
 }
 
 /* ------------------------------------------------------------------ */
@@ -940,6 +956,17 @@ function fitPhone() {
   if (got > availH - 2) set(applied * (availH - 2) / got);
 }
 
+// On the stacked layout the boot form sits above the phone, so pressing
+// Start would leave the screen — and the download progress drawn on it —
+// below the fold. Three columns need no scrolling at all.
+function scrollToPhone() {
+  if (sideBySide.matches) return;
+  phonePanel.scrollIntoView({
+    block: "start",
+    behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+  });
+}
+
 let fitPending = 0;
 function scheduleFit() {
   cancelAnimationFrame(fitPending);
@@ -961,6 +988,7 @@ scheduleFit();
 // real-time cap still owes), fps, halts/s and the page's own paint cost.
 // Tap the HUD to copy the last 60 s of samples as JSON.
 let hudTimer = 0;
+let hudHeight = 0;
 let paintMs = 0;
 const HUD_HALT_INDEX = 29;   // WASM_DIAG_HALT in include/qemu/wasm-diag.h
 function startHud() {
@@ -968,10 +996,19 @@ function startHud() {
   if (!$("opt-hud").checked) return;
   const el = $("hud");
   el.hidden = false;
-  el.textContent = "waiting for a run…";
+  // a rate needs two samples, so there is always a gap before the first
+  // line — say which kind of wait it is
+  el.textContent = running ? "Loading…" : "waiting for a run…";
+  scheduleFit(); // the band takes height off the phone's budget
   const t0 = performance.now();
   const samples = [];
   let last = null;
+  // virtual time already on the clock when the HUD was switched on: `lag` is
+  // wall minus virtual *since then*, which is the only thing this window can
+  // measure. Without it, enabling the HUD mid-run reports a negative lag,
+  // because it would be subtracting the whole run's virtual time from a wall
+  // clock that only just started.
+  let v0 = null;
   el.onclick = () => navigator.clipboard?.writeText(JSON.stringify({ ua: navigator.userAgent,
     cores: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory ?? null,
     isolated: crossOriginIsolated, samples }));
@@ -980,6 +1017,7 @@ function startHud() {
     if (!m?._wasm_insns) return;
     const s = { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
       fb: Number(m._wasm_fb_updates()), halts: Number(m._wasm_memstat(HUD_HALT_INDEX)), paint: paintMs };
+    v0 ??= s.v;
     if (last) {
       const dt = (s.t - last.t) / 1000;
       const r = { wall: +((s.t - t0) / 1000).toFixed(1), mips: +((s.insns - last.insns) / 1e6 / dt).toFixed(1),
@@ -990,13 +1028,19 @@ function startHud() {
       if (samples.length > 60) samples.shift();
       const win = samples.slice(-10);
       const avg = (k) => (win.reduce((a, x) => a + x[k], 0) / win.length).toFixed(k === "vratio" ? 2 : 1);
-      const lag = ((s.t - t0) / 1000 - s.v / 1e9).toFixed(1);
+      const lag = ((s.t - t0) / 1000 - (s.v - v0) / 1e9).toFixed(1);
       el.textContent =
         `MIPS ${r.mips} (10s ${avg("mips")})  v/wall ${r.vratio.toFixed(2)} (10s ${avg("vratio")})  ` +
         `fps ${r.fps}  halts/s ${r.halts}  paint ${r.paintMsPerS} ms/s\n` +
         `insns ${(s.insns / 1e9).toFixed(2)} G  v ${(s.v / 1e9).toFixed(1)} s  wall ${r.wall} s  lag ${lag} s  ` +
         `cores ${navigator.hardwareConcurrency}  mem ${navigator.deviceMemory ?? "?"} GB  isolated ${crossOriginIsolated}\n` +
         navigator.userAgent;
+      // the band grows from one line to three (and rewraps with the window),
+      // which is height the phone can no longer have
+      if (el.offsetHeight !== hudHeight) {
+        hudHeight = el.offsetHeight;
+        scheduleFit();
+      }
     }
     last = s;
   }, 1000);
@@ -1006,6 +1050,7 @@ function stopHud() {
   clearInterval(hudTimer);
   hudTimer = 0;
   $("hud").hidden = true;
+  scheduleFit();
 }
 
 // the toggle takes effect immediately, mid-run or before one

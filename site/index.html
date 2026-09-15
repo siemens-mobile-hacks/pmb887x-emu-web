@@ -10,9 +10,15 @@
 <header>
   <h1>Siemens / LG PMB887X <span>emulator</span></h1>
 </header>
+<!-- per-second guest rates, toggled from the Run panel. Full page width and
+     right under the header: its lines are wide, and on a phone that is the
+     only place they fit without wrapping into a paragraph. Click to copy the
+     last 60 s as JSON. -->
+<pre id="hud" class="hud" hidden title="click to copy the last 60 s as JSON"></pre>
 <!-- Three columns: what you set before Start on the left, the phone in the
      middle (dead centre of the page), what only matters once it runs on the
-     right. Narrow screens stack them with the phone hoisted to the top. -->
+     right. Narrow screens stack them in this order, and Start scrolls the
+     phone into view. -->
 <main>
   <!-- ============ left: pre-start ============ -->
   <section class="ctrl-panel pre-panel">
@@ -105,6 +111,7 @@
         title="Record the LCD to a .webm video" aria-label="Record">
         <svg class="rec-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/></svg>
         <svg class="rec-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg>
+        <span id="rec-time" class="rec-time"></span>
       </button>
     </div>
 
@@ -176,14 +183,6 @@
           <button data-key="hash" title="#">#<span class="key-sub"></span></button>
         </div>
       </div>
-
-      <!-- keypad + letter-variant pickers (populated + handled in app.js) -->
-      <div class="kbd-row">
-        <label for="kbd-keyboard">Keyboard</label>
-        <select id="kbd-keyboard"></select>
-        <select id="kbd-variant" aria-label="Keyboard variant"
-          title="Letters engraved on the keys"></select>
-      </div>
   </section>
 
   <!-- ============ right: post-start ============ -->
@@ -198,6 +197,15 @@
           title="EFA block (LG EEPROM) — appears once the firmware wrote it">Download EFA</button>
       </div>
 
+      <!-- which phone's keypad is drawn, and the letters engraved on it
+           (populated + handled in app.js) -->
+      <div class="kbd-row">
+        <label for="kbd-keyboard">Keyboard</label>
+        <select id="kbd-keyboard"></select>
+        <select id="kbd-variant" aria-label="Keyboard variant"
+          title="Letters engraved on the keys"></select>
+      </div>
+
       <!-- app.js ticks this by default on desktop (a hovering, fine pointer)
            and remembers the choice; it only toggles a body class -->
       <label class="checkbox-label kbd-row-hints" for="kbd-hints">
@@ -210,9 +218,6 @@
         show performance HUD <small>(guest speed, per second)</small>
       </label>
     </fieldset>
-
-    <!-- per-second guest rates; click to copy the last 60 s as JSON -->
-    <pre id="hud" class="hud" hidden title="click to copy the last 60 s as JSON"></pre>
 
     <!-- unhidden by the serial poller as soon as the guest prints something -->
     <details class="serial-box" id="serial-box" open hidden>

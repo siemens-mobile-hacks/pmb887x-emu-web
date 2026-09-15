@@ -42,11 +42,21 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .icon-btn svg { width: 1.05rem; height: 1.05rem; fill: currentColor; }
 .icon-btn:not(:disabled):hover { color: var(--accent); border-color: var(--accent); }
 #btn-record:not(:disabled) { color: var(--bad); }
-.rec-stop { display: none; }
-#btn-record.recording { background: #5c1a1a; border-color: var(--bad); }
+.rec-stop, .rec-time { display: none; }
+/* recording: the circle becomes a stop square and the button widens into a
+   pill carrying how much has been captured — a running number says more
+   than a blinking light */
+#btn-record.recording {
+  width: auto; padding: 0 0.55rem; border-radius: 1em;
+  grid-auto-flow: column; gap: 0.35rem;
+  background: #5c1a1a; border-color: var(--bad);
+}
 #btn-record.recording .rec-dot { display: none; }
 #btn-record.recording .rec-stop { display: block; }
-#btn-record.recording svg { animation: pulse 1.1s ease-in-out infinite; }
+#btn-record.recording .rec-time {
+  display: block; font-size: 0.72rem; color: #ffc4c4;
+  font-variant-numeric: tabular-nums;
+}
 .status-dot {
   flex: none; width: 0.55rem; height: 0.55rem; border-radius: 50%;
   background: currentColor;
@@ -69,15 +79,15 @@ main {
 .phone-panel { grid-column: 2; }
 .post-panel { grid-column: 3; justify-self: start; }
 
-/* too narrow for panels beside the phone: stack them, still centred, with
-   the phone first — the screen is what you came for, and the boot form goes
-   under it instead of pushing it below the fold */
+/* too narrow for panels beside the phone: stack them in source order, still
+   centred — Boot, phone, Run. Pressing Start scrolls the phone into view
+   (see scrollToPhone() in app.js), so the screen being below the form costs
+   nothing. */
 @media (max-width: 1100px) {
   main { grid-template-columns: minmax(0, 1fr); }
   .pre-panel, .phone-panel, .post-panel {
     grid-column: 1; justify-self: center;
   }
-  .phone-panel { order: -1; }
 }
 
 /* ---------------- phone panel ---------------- */
@@ -263,8 +273,11 @@ body.show-key-hints .key-hint { display: block; }
    character wide and still flank the LCD when space runs out */
 .aux-keys-left .key-short, .aux-keys-right .key-short { display: none; }
 
-/* keypad + letter-variant pickers (under the keypad) */
-.kbd-row { display: flex; align-items: center; gap: 0.6rem; width: 320px; }
+/* keypad + letter-variant pickers (in the Run panel) */
+.kbd-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  grid-column: 1 / -1; min-width: 0;
+}
 .kbd-row label { flex: none; font-size: 0.78rem; color: var(--muted); }
 .kbd-row select { flex: 1; min-width: 0; }
 /* keyboard + variant share the row; the phone names are the longer ones */
@@ -288,7 +301,6 @@ body.show-key-hints .key-hint { display: block; }
   .phone-panel > .status-row { grid-column: 1 / -1; }
   .phone-panel > .lcd-wrap { grid-column: 1; grid-row: 2; }
   .phone-panel > .keypad { grid-column: 2; grid-row: 2; }
-  .phone-panel > .kbd-row { grid-column: 1 / -1; }
 }
 
 /* touch screens: no pointer precision and no key travel, so every key gets
@@ -416,9 +428,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .btn-row button { flex: 1 1 auto; }
 }
 
+/* full-width band under the header — the HUD's lines are too wide for a
+   side panel, and on a phone this is the only place they fit */
 .hud {
-  margin: 0; padding: 0.5rem 0.7rem; cursor: copy;
-  border: 1px solid var(--border); border-radius: 10px;
+  margin: 0; padding: 0.4rem 1.2rem; cursor: copy;
+  border-bottom: 1px solid var(--border);
   background: #0d0f13; color: #9fe3a8;
   font: 0.7rem/1.45 ui-monospace, "Cascadia Mono", monospace;
   white-space: pre-wrap; word-break: break-word;
