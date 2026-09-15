@@ -94,6 +94,7 @@ for (const board of BOARDS) {
   await page.goto(`http://127.0.0.1:${PORT}/?dist=${DIST}${QUERY ? "&" + QUERY : ""}`,
                   { waitUntil: "domcontentloaded" });
   await page.selectOption("#startup", "ONLINE");
+  await page.click("#ff-mode-own");
   await page.setInputFiles("#fullflash", files);
   await page.click("#btn-start");
 

@@ -15,6 +15,7 @@ for (const w of workers) {
   await s.send("Profiler.enable");
   sessions.push({ s, w });
 }
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, 3000));

@@ -123,6 +123,7 @@ const fail = async (why) => {
 await p.goto(`http://127.0.0.1:${port}/?dist=${dist}&rt=${rt}${extraQ ? "&" + extraQ : ""}`,
              { waitUntil: "domcontentloaded", timeout: 120000 });
 await p.selectOption("#startup", "ONLINE");
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", [FLASH, ...SIDECARS]);
 const t0 = Date.now();
 await p.click("#btn-start");

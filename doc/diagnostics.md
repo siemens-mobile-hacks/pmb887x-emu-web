@@ -23,10 +23,20 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 | `?suite=<url>` | boot a bare-metal versatilepb image instead of a phone (`dist/tcgisa.bin`, `dist/tcgbench.bin`); with `?icount=1` the suite runs under the phones' stock timing model (the tcgbench icount-tax leg) |
 | `?lockstep=1` (+ `ls-*`) | built-in guest-state fold on the wasm64 backend — the b-side of `tools/lockstep-wasm.mjs`; `ls-*` params set the insn budget and grid |
 | `?iorewind=1` | force the stock io-recompile everywhere (0004's A/B escape hatch) |
-| `?hud=1` | per-second stats strip at the bottom of the page, for a device without a debugger (a phone): `MIPS` (guest insns/s; 125 = real time under the stock `shift=3`), `v/wall` (virtual seconds per wall second — 1.0 = real time, below it the guest is compute-bound), `lag` (wall − virtual since start: what the real-time cap still owes), `fps`, `halts/s`, the page's own paint cost, `cores`/`mem`/`isolated` and the UA; tap it to copy the last 60 s of samples as JSON |
 
-Fullflash, device, IMEI/ESN, SIM, operator, startup and rw are form
-controls, not params.
+Fullflash, device, IMEI/ESN, SIM, operator and startup are form controls in
+the Firmware panel, not params. The pflash drive is always writable (there
+is no longer a "writable flash" checkbox, and `tools/session.mjs` ignores a
+`rw=1` token) — the image only lives in this run's MEMFS, and **Export ▸
+Flash** in the Run panel hands that copy back. So is the stats HUD:
+**"Performance HUD"** in the page's Run panel (it used to be `?hud=1`) — per-second `MIPS` (guest
+insns/s; 125 = real time under the stock `shift=3`), `v/wall` (virtual
+seconds per wall second — 1.0 = real time, below it the guest is
+compute-bound), `lag` (wall − virtual since start: what the real-time cap
+still owes), `fps`, `halts/s`, the page's own paint cost, `cores`/`mem`/
+`isolated` and the UA; click it to copy the last 60 s of samples as JSON.
+The choice is remembered, so a phone without a debugger can report its own
+number.
 
 ## Exports on `window.__qemu` (the emscripten module)
 

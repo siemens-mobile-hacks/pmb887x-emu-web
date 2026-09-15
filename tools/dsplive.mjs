@@ -32,6 +32,7 @@ await page.addScriptTag({ content: `
     if (tail.includes(">>EXIT<<") && !window.__exited) { window.__exited = true; console.log("SERIAL_EXIT " + JSON.stringify(tail)); }
   }, 10000);
 `});
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted [" + extra + "]");

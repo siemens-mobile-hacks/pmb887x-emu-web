@@ -14,6 +14,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 page.on("pageerror", (e) => console.log(`[${tag}] [pageerror]`, String(e).slice(0, 300)));
 await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", "ONLINE");
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 

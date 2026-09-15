@@ -103,6 +103,7 @@ async function boot(params = []) {
   const q = params.length ? "?" + params.join("&") : "";
   await page.goto(URL_() + q, { waitUntil: "networkidle", timeout: 120000 });
   await page.selectOption("#startup", "ONLINE");
+  await page.click("#ff-mode-own");
   await page.setInputFiles("#fullflash", fullflashFiles); // + .cfi-efa sidecar if present (LG)
   await page.click("#btn-start");
   bootAt = Date.now();
@@ -119,7 +120,10 @@ const PROBE = `(() => {
   try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch (e) { serErr = String(e); }
   return { insns: g("_wasm_insns"), tbs: g("_wasm_tbs"), vclockMs: g("_wasm_vclock"),
            fb: g("_wasm_fb_updates"), serLen: ser.length, ser,
-           status: document.querySelector("#status")?.textContent || "" };
+           // window.__ui is the page's own run state (site/app.js): the pill
+           // text alone no longer says whether the guest exited
+           state: window.__ui?.state || "", exitCode: window.__ui?.exitCode ?? null,
+           status: document.querySelector("#status-text")?.textContent || "" };
 })()`;
 
 async function probe() {
@@ -139,8 +143,8 @@ async function status() {
   const up = bootAt ? ((now - bootAt) / 1000).toFixed(0) : "?";
   const exit = (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || "";
   return {
-    line: `up=${up}s insns=${fmtM(s.insns)}${rate} tbs=${fmtM(s.tbs)} vclock=${(s.vclockMs / 1e6).toFixed(1)}ms fb=${s.fb} serlen=${s.serLen} status="${s.status}"${exit ? " EXIT: " + exit : ""}`,
-    raw: { uptimeS: Number(up), insns: s.insns, tbs: s.tbs, vclockMs: s.vclockMs, fb: s.fb, serLen: s.serLen, status: s.status, exit },
+    line: `up=${up}s insns=${fmtM(s.insns)}${rate} tbs=${fmtM(s.tbs)} vclock=${(s.vclockMs / 1e6).toFixed(1)}ms fb=${s.fb} serlen=${s.serLen} state=${s.state}${s.exitCode != null ? `(${s.exitCode})` : ""}${exit ? " EXIT: " + exit : ""}`,
+    raw: { uptimeS: Number(up), insns: s.insns, tbs: s.tbs, vclockMs: s.vclockMs, fb: s.fb, serLen: s.serLen, state: s.state, exitCode: s.exitCode, status: s.status, exit },
   };
 }
 
@@ -155,8 +159,8 @@ async function wait(pred, timeoutMs = Number(process.env.WAIT_TIMEOUT || 300000)
     let done = false, why = "";
     if (kind === "exit") {
       const exit = (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || "";
-      done = !!exit || /exited/.test(s.status);
-      why = exit || s.status;
+      done = !!exit || s.exitCode != null;
+      why = exit || (s.exitCode != null ? `exited (${s.exitCode})` : s.status);
     } else if (kind === "splash") { done = s.fb > 100; why = `fb=${s.fb}`; }
     else if (kind === "fb") { done = s.fb >= Number(arg); why = `fb=${s.fb}`; }
     else if (kind === "insns") { done = s.insns >= Number(arg); why = `insns=${s.insns}`; }

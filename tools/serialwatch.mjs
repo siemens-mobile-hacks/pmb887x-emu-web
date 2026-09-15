@@ -30,6 +30,7 @@ await page.addScriptTag({ content: `
       " tail=" + JSON.stringify(tail.slice(-40)));
   }, 10000);
 `});
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted (untraced)" + (extra ? " [" + extra + "]" : ""));

@@ -36,6 +36,7 @@ await page.addScriptTag({ content: `
       " serial=" + sl);
   }, 2000);
 `});
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, waitS * 1000));

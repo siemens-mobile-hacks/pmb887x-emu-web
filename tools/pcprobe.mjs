@@ -3,6 +3,7 @@ import { fullflash } from "./testflash.mjs";
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 await page.goto("http://127.0.0.1:8080/", { waitUntil: "networkidle" });
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 for (let i = 0; i < 8; i++) {

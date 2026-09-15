@@ -367,6 +367,7 @@ async function runOne(dist, hashes, r) {
       // faster-than-realtime boot (RT=banked measures what users get)
       await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(dist)}${distQuery(dist) ? "&" + distQuery(dist) : ""}&rt=${rtMode}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
       await p.selectOption("#startup", "ONLINE");
+      await p.click("#ff-mode-own");
       await p.setInputFiles("#fullflash", [FLASH, ...SIDECARS]);
     } catch (e) {
       rec.cls = "CRASH"; rec.why = "setup: " + String(e).slice(0, 120);

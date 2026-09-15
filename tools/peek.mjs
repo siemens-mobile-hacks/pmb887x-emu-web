@@ -6,6 +6,7 @@ const b = await chromium.launch({ headless: true });
 const p = await b.newPage();
 await p.goto(`http://127.0.0.1:8080/?dist=${dist}${extra ? "&" + extra : ""}`, { waitUntil: "domcontentloaded" });
 await p.selectOption("#startup", "ONLINE");
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 await new Promise(r => setTimeout(r, wait * 1000));

@@ -49,14 +49,18 @@ const FULLFLASH_REPO =
 
 // One entry per bootable fullflash. files[0] is the main .bin; any further
 // files are its .cfi-* sidecars (see SIDE_CAR_RE) and are downloaded and
-// cached together with it. Extend this list as the repo grows.
+// cached together with it. `size` is the sum of the files' bytes — the page
+// says up front what a first Start will fetch, before anything is cached.
+// `short` is the name for the phone-width status pill, where the label plus
+// its cache state has to fit on one ellipsised line.
+// Extend this list as the repo grows.
 export const PRESET_FULLFLASHES = [
-  { id: "s75v40lg1", label: "Siemens S75 — v40 lg1",
-    files: ["S75v40lg1.bin"] },
-  { id: "el71v41lg91", label: "Siemens EL71 — v41 lg91",
-    files: ["EL71v41lg91.bin"] },
-  { id: "ke800v11b", label: "LG KE800 — v11b + EFA block",
-    files: ["KE800v11b.bin", "KE800v11b.bin.cfi-efa"] },
+  { id: "s75v40lg1", label: "Siemens S75 — v40 lg1", short: "S75 v40 lg1",
+    files: ["S75v40lg1.bin"], size: 67108864 },
+  { id: "el71v41lg91", label: "Siemens EL71 — v41 lg91", short: "EL71 v41 lg91",
+    files: ["EL71v41lg91.bin"], size: 67108864 },
+  { id: "ke800v11b", label: "LG KE800 — v11b + EFA block", short: "KE800 v11b",
+    files: ["KE800v11b.bin", "KE800v11b.bin.cfi-efa"], size: 134250496 },
 ];
 
 function fileUrl(file) {

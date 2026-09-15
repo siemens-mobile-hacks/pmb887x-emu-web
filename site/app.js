@@ -54,10 +54,10 @@ const CODE_TO_KEY = {
   Escape: "end",
 };
 
-// Physical-keyboard binding drawn on each key ("show key bindings" checkbox
-// under the keypad). Derived from CODE_TO_KEY so the two cannot drift: the
-// first code listed there for a key is the one shown. Digit keys are left
-// out — their own legend already names the key that presses them.
+// Physical-keyboard binding drawn on each key ("Show shortcuts on keys"
+// checkbox in the Run panel). Derived from CODE_TO_KEY so the two cannot
+// drift: the first code listed there for a key is the one shown. Digit keys
+// are left out — their own legend already names the key that presses them.
 const CODE_LABEL = {
   ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
   Enter: "Enter", Backspace: "⌫", Escape: "Esc",
@@ -121,7 +121,6 @@ function untar(buf, writeFn) {
 /* ------------------------------------------------------------------ */
 
 const $ = (id) => document.getElementById(id);
-const statusEl = $("status");
 let qemuModule = null;   // current emscripten module instance
 let running = false;     // a guest is live (the module object outlives it)
 let rafHandle = 0;
@@ -132,9 +131,43 @@ let boardsReady = null;   // loadBoards() promise — boot() awaits it
 let pendingDevice = null; // device inferred from a fullflash picked before
                           // boards.tar finished loading (slow links)
 
-function setStatus(cls, text) {
-  statusEl.className = "status " + cls;
-  $("status-text").textContent = text;
+// The one place the whole UI reads its run state from:
+//   idle | downloading | booting | running | paused
+// ("paused" has no trigger yet — qemu's wasm display backend exposes no
+// vm_stop; the pill, the export buttons and the lock all handle it, so
+// wiring one up is a one-liner here.)
+let emuState = "idle";
+let runStartedAt = 0;     // uptime origin, reset on every Start
+let uptimeTimer = 0;
+let dlLoaded = 0, dlTotal = 0; // preset download progress, for the pill
+let errorMsg = null;      // shown in place of the pill's state text
+let startBlocked = false; // a failure Start cannot recover from (isolation)
+// The exports read this run's MEMFS, which outlives the guest: once a boot
+// has got that far they stay available after Stop, until the next Start
+// replaces the image. ranDevice is the phone they belong to — only an LG
+// one has an EFA block to hand back.
+let exportsReady = false;
+let ranDevice = null;
+
+const statusEl = $("status");
+const statusTextEl = $("status-text");
+const pillActionEl = $("pill-action");
+const captionEl = $("status-caption");
+
+function fmtMiB(bytes) {
+  const m = bytes / (1024 * 1024);
+  return (m >= 10 ? Math.round(m) : m.toFixed(1)) + " MiB";
+}
+
+// "23 / 64 MiB" — only the total carries the unit
+function fmtProgress(loaded, total) {
+  const m = loaded / (1024 * 1024);
+  return `${m >= 10 ? Math.round(m) : m.toFixed(1)} / ${fmtMiB(total)}`;
+}
+
+function mmss(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -158,48 +191,634 @@ function hideOverlay() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Firmware panel: Preset | Own file                                    */
+/* ------------------------------------------------------------------ */
+
+const fwFieldset = $("firmware-panel");
+// the one focusable thing in the panel a `disabled` fieldset cannot reach
+const advSummary = $("advanced").querySelector("summary");
+const modeBody = $("ff-mode-body");
+const segButtons = [$("ff-mode-preset"), $("ff-mode-own")];
+// Both mode bodies are built once and swapped in and out, so the one that
+// is not showing keeps its values (and its file chips) in the detached
+// subtree — and the one that is showing is the only one in the DOM.
+const presetBody = $("tpl-ff-preset").content.firstElementChild;
+const ownBody = $("tpl-ff-own").content.firstElementChild;
+
+const P = {
+  sel: presetBody.querySelector("#ff-preset"),
+  status: presetBody.querySelector("#ff-preset-status"),
+  clear: presetBody.querySelector("#ff-preset-delete"),
+  bar: presetBody.querySelector("#ff-preset-bar"),
+  device: presetBody.querySelector("#ff-preset-device"),
+};
+const O = {
+  body: ownBody,
+  input: ownBody.querySelector("#fullflash"),
+  slot: ownBody.querySelector("#ff-bin-slot"),
+  zone: ownBody.querySelector("#ff-bin-zone"),
+  chip: ownBody.querySelector("#ff-bin-chip"),
+  name: ownBody.querySelector("#ff-bin-name"),
+  size: ownBody.querySelector("#ff-bin-size"),
+  clear: ownBody.querySelector("#ff-bin-clear"),
+  note: ownBody.querySelector("#ff-bin-note"),
+  device: ownBody.querySelector("#device"),
+  devNote: ownBody.querySelector("#ff-device-note"),
+  efaBlock: ownBody.querySelector("#ff-efa-block"),
+  efaInput: ownBody.querySelector("#ff-efa"),
+  efaSlot: ownBody.querySelector("#ff-efa-slot"),
+  efaZone: ownBody.querySelector("#ff-efa-zone"),
+  efaChip: ownBody.querySelector("#ff-efa-chip"),
+  efaName: ownBody.querySelector("#ff-efa-name"),
+  efaSize: ownBody.querySelector("#ff-efa-size"),
+  efaClear: ownBody.querySelector("#ff-efa-clear"),
+  efaNote: ownBody.querySelector("#ff-efa-note"),
+};
+O.efaBlock.remove(); // non-LG by default: the block is not in the DOM at all
+
+let ffMode = "preset";
+let selectedPreset = null;  // PRESET_FULLFLASHES entry
+let presetState = { complete: false, count: 0, totalSize: 0 };
+let ownBin = null, ownEfa = null; // the picked File objects
+let presetBusy = false;     // preset download in flight (during boot)
+let downloadAbort = null;   // its AbortController while it runs — Cancel uses it
+
+const BIN_RE = /\.bin$/i;
+const EFA_RE = /\.cfi-efa$/i;
+
+function presetById(id) {
+  return PRESET_FULLFLASHES.find((p) => p.id === id) ?? null;
+}
+
+function setNote(el, kind, text) {
+  el.className = "inline-note" + (kind ? " " + kind : "");
+  el.textContent = text;
+  el.hidden = !text;
+}
+
+function mountMode() {
+  modeBody.replaceChildren(ffMode === "preset" ? presetBody : ownBody);
+}
+
+function setMode(mode, moveFocus = false) {
+  ffMode = mode;
+  for (const b of segButtons) {
+    const on = b.dataset.mode === mode;
+    b.setAttribute("aria-checked", on ? "true" : "false");
+    b.tabIndex = on ? 0 : -1;
+    if (on && moveFocus) b.focus();
+  }
+  mountMode();
+  if (mode === "preset") refreshPresetUi(); else renderOwn();
+  render();
+}
+
+for (const b of segButtons) {
+  b.addEventListener("click", () => setMode(b.dataset.mode, true));
+  // a radiogroup moves with the arrow keys, and selection follows focus
+  b.addEventListener("keydown", (e) => {
+    const i = segButtons.indexOf(b);
+    let j = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") j = (i + 1) % segButtons.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") j = (i + segButtons.length - 1) % segButtons.length;
+    else if (e.key === "Home") j = 0;
+    else if (e.key === "End") j = segButtons.length - 1;
+    if (j == null) return;
+    e.preventDefault();
+    setMode(segButtons[j].dataset.mode, true);
+  });
+}
+
+/* ---- preset mode ---- */
+
+for (const entry of PRESET_FULLFLASHES) {
+  const opt = document.createElement("option");
+  opt.value = entry.id;
+  opt.textContent = entry.label;
+  P.sel.appendChild(opt);
+}
+// "was last used", else the first entry (§1.2)
+const lastPreset = presetById(localStorage.getItem("ff-preset") ?? "");
+selectedPreset = lastPreset ?? PRESET_FULLFLASHES[0] ?? null;
+if (selectedPreset) P.sel.value = selectedPreset.id;
+
+// The cache state of the selected preset, the one line that replaced the
+// two helper paragraphs and the "— cached" option suffix.
+async function refreshPresetUi() {
+  const entry = selectedPreset;
+  if (!cacheAvailable()) {
+    P.sel.disabled = true;
+    presetState = { complete: false, count: 0, totalSize: 0 };
+    P.status.className = "ff-status";
+    P.status.textContent = "Browser cache unavailable — pick Own file";
+    P.clear.hidden = true;
+    P.device.textContent = "";
+    render();
+    return;
+  }
+  presetState = entry ? await entryCacheState(entry)
+    : { complete: false, count: 0, totalSize: 0 };
+  P.clear.hidden = !entry || presetState.count === 0;
+  P.device.textContent = entry
+    ? `Device: ${inferDevice(entry.files[0]) ?? "unknown"} (from preset)` : "";
+  const downloading = presetBusy && emuState === "downloading";
+  P.bar.hidden = !downloading;
+  P.status.className = "ff-status" + (!downloading && presetState.complete ? " ok" : "");
+  if (!entry) P.status.textContent = "";
+  else if (downloading) {
+    P.status.textContent = `Downloading · ${fmtProgress(dlLoaded, dlTotal)}`;
+    P.bar.firstElementChild.style.width =
+      (dlTotal ? Math.min(100, (dlLoaded / dlTotal) * 100) : 0) + "%";
+  } else if (presetState.complete) {
+    P.status.textContent = `✓ Cached · ${fmtMiB(presetState.totalSize || entry.size)}`;
+  } else if (presetState.count) {
+    P.status.textContent = "Partly downloaded · fetches the rest on Start";
+  } else {
+    P.status.textContent = `Not downloaded · fetches ${fmtMiB(entry.size)} on Start`;
+  }
+  render();
+}
+
+P.sel.addEventListener("change", async () => {
+  selectedPreset = presetById(P.sel.value);
+  if (selectedPreset) {
+    localStorage.setItem("ff-preset", selectedPreset.id);
+    syncKeyboardToDevice(inferDevice(selectedPreset.files[0]));
+  }
+  await refreshPresetUi();
+  scheduleFit(); // a different phone, a different screen ratio
+});
+
+P.clear.addEventListener("click", async () => {
+  if (!selectedPreset || presetBusy) return;
+  await deleteEntry(selectedPreset);
+  await refreshPresetUi();
+});
+
+/* ---- own-file mode ---- */
+
+// Rendered from ownBin/ownEfa, never from the <input>: the picked File
+// objects outlive the input (a mode switch detaches it) and a FileList
+// cannot be written back into one.
+function renderOwn() {
+  O.zone.hidden = !!ownBin;
+  O.chip.hidden = !ownBin;
+  if (ownBin) {
+    O.name.textContent = ownBin.name;
+    O.name.title = ownBin.name;
+    O.size.textContent = fmtMiB(ownBin.size);
+  }
+  const dev = O.device.value;
+  const lg = dev.startsWith("lg-");
+  // §1.4.5: the EFA block exists only for LG devices — a sidecar picked
+  // for one is remembered in ownEfa and comes back with the block
+  if (lg && !O.efaBlock.isConnected) O.body.appendChild(O.efaBlock);
+  else if (!lg && O.efaBlock.isConnected) O.efaBlock.remove();
+  O.efaZone.hidden = !!ownEfa;
+  O.efaChip.hidden = !ownEfa;
+  if (ownEfa) {
+    O.efaName.textContent = ownEfa.name;
+    O.efaName.title = ownEfa.name;
+    O.efaSize.textContent = fmtMiB(ownEfa.size);
+  }
+  if (lg) setNote(O.devNote, null, "");
+}
+
+// §1.5 — one selection can carry both slots. The rules are applied in
+// order; a rejected selection leaves both slots exactly as they were.
+function applyPicked(list) {
+  const files = [...list];
+  if (!files.length) return;
+  const bins = files.filter((f) => BIN_RE.test(f.name));
+  const efas = files.filter((f) => EFA_RE.test(f.name));
+  const others = files.filter((f) => !BIN_RE.test(f.name) && !EFA_RE.test(f.name));
+  const tooMany = "Choose one .bin and, optionally, one .cfi-efa.";
+
+  setNote(O.note, null, "");
+  setNote(O.devNote, null, "");
+  if (bins.length > 1 || efas.length > 1) { setNote(O.note, "err", tooMany); return; }
+  if (!bins.length) {
+    // only sidecars (or nothing usable): fills the sidecar slot, but only
+    // on top of a fullflash that is already loaded
+    if (efas.length === 1 && ownBin) ownEfa = efas[0];
+    else { setNote(O.note, "err", tooMany); return; }
+  } else {
+    ownBin = bins[0];
+    applyFullflashName(ownBin.name);
+    if (efas.length === 1) ownEfa = efas[0];
+    else if (others.length) setNote(O.note, null, `Ignored ${others.length} other file(s).`);
+  }
+  if (ownEfa && O.device.value && !O.device.value.startsWith("lg-")) {
+    setNote(O.devNote, "warn",
+      "An EFA sidecar was provided but this device doesn't use one.");
+  }
+  renderOwn();
+  render();
+}
+
+function applyEfaPicked(list) {
+  const f = [...list][0];
+  if (!f) return;
+  if (!EFA_RE.test(f.name)) { setNote(O.efaNote, "err", "Expected a .cfi-efa file."); return; }
+  ownEfa = f;
+  setNote(O.efaNote, null, "");
+  renderOwn();
+  render();
+}
+
+O.input.addEventListener("change", (e) => applyPicked(e.target.files));
+O.efaInput.addEventListener("change", (e) => applyEfaPicked(e.target.files));
+
+O.clear.addEventListener("click", () => {
+  ownBin = null;
+  O.input.value = "";
+  setNote(O.note, null, "");
+  renderOwn();
+  render();
+});
+O.efaClear.addEventListener("click", () => {
+  ownEfa = null;
+  O.efaInput.value = "";
+  setNote(O.efaNote, null, "");
+  renderOwn();
+  render();
+});
+
+// drag-and-drop onto either slot (the zone or the chip that replaced it)
+function wireDrop(slot, zone, handler) {
+  slot.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (!fwFieldset.disabled) zone.classList.add("drag");
+  });
+  for (const t of ["dragleave", "dragend"]) {
+    slot.addEventListener(t, () => zone.classList.remove("drag"));
+  }
+  slot.addEventListener("drop", (e) => {
+    e.preventDefault();
+    zone.classList.remove("drag");
+    if (fwFieldset.disabled) return;
+    handler(e.dataTransfer?.files ?? []);
+  });
+}
+wireDrop(O.slot, O.zone, applyPicked);
+wireDrop(O.efaSlot, O.efaZone, applyEfaPicked);
+// dropping anywhere else must not navigate the page away to the file
+for (const t of ["dragover", "drop"]) {
+  document.addEventListener(t, (e) => e.preventDefault());
+}
+
+O.device.addEventListener("change", () => {
+  setNote(O.devNote, null, "");
+  syncKeyboardToDevice(O.device.value);
+  renderOwn();
+  render();
+  scheduleFit(); // a different phone, a different screen ratio
+});
+
+/* ------------------------------------------------------------------ */
+/* run state: the pill is the only Start/Stop (§2)                      */
+/* ------------------------------------------------------------------ */
+
+function currentDevice() {
+  if (ffMode === "preset") {
+    return selectedPreset ? inferDevice(selectedPreset.files[0]) : null;
+  }
+  return O.device.value || null;
+}
+
+// §2.2: preset mode needs a preset, own-file mode a .bin and a device.
+// The sidecar never gates Start.
+function firmwareReady() {
+  if (startBlocked) return false;
+  if (ffMode === "preset") return !!selectedPreset && cacheAvailable();
+  // pendingDevice counts: boot() awaits boards.tar before reading the
+  // dropdown, so a device inferred while the list was still loading is as
+  // good as one already in it
+  return !!ownBin && !!(O.device.value || pendingDevice);
+}
+
+// What the phone-width pill says while idle: which firmware is loaded, and
+// whether it is here yet. Doubles as the Firmware sheet's opener.
+function firmwareLine() {
+  if (ffMode === "own") return ownBin?.name ?? "No file chosen";
+  if (!selectedPreset) return "No preset";
+  return `${selectedPreset.short ?? selectedPreset.label}`
+    + ` · ${presetState.complete ? "cached" : "not downloaded"}`;
+}
+
+function pillText() {
+  if (errorMsg) return "Error";
+  if (emuState === "idle" && phoneLayout.matches) return firmwareLine();
+  // while the recording pill is up the two have to share one 32px row:
+  // the uptime alone, no "Running · " in front of it
+  const bare = !!recorder && phoneLayout.matches;
+  switch (emuState) {
+    case "downloading": return `Downloading · ${fmtProgress(dlLoaded, dlTotal)}`;
+    case "booting": return "Booting";
+    case "running": return (bare ? "" : "Running · ") + mmss(Date.now() - runStartedAt);
+    case "paused": return (bare ? "" : "Paused · ") + mmss(Date.now() - runStartedAt);
+    default: return "Idle";
+  }
+}
+
+// exactly one of Start / Stop / Cancel is ever in the DOM
+let actionKind = null;
+function renderAction() {
+  const kind = emuState === "idle" ? "start"
+    : emuState === "downloading" ? "cancel" : "stop";
+  if (kind !== actionKind) {
+    actionKind = kind;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.kind = kind;
+    // the drivers in tools/ click #btn-start and #btn-stop; Cancel is the
+    // stop action of the download phase and keeps that id
+    b.id = kind === "start" ? "btn-start" : "btn-stop";
+    b.className = "pill-btn " + (kind === "start" ? "primary" : "outline");
+    if (kind !== "cancel") {
+      b.innerHTML = kind === "start"
+        ? '<svg class="ico" viewBox="0 0 24 24"><path d="M8.5 5.6 18 12l-9.5 6.4Z"/></svg>'
+        : '<svg class="ico" viewBox="0 0 24 24"><rect x="6.8" y="6.8" width="10.4" height="10.4" rx="2"/></svg>';
+    }
+    b.append(kind === "start" ? "Start" : kind === "stop" ? "Stop" : "Cancel");
+    b.addEventListener("click", kind === "start" ? () => boot() : stop);
+    pillActionEl.replaceChildren(b);
+  }
+  const btn = pillActionEl.firstElementChild;
+  if (btn && kind === "start") btn.disabled = !firmwareReady();
+}
+
+function captionText() {
+  if (errorMsg) return errorMsg;
+  if (emuState !== "idle" || firmwareReady()) return "";
+  if (ffMode === "own") return "Choose a file and device to start";
+  return cacheAvailable() ? "Choose a firmware to start"
+    : "Browser cache unavailable — switch to Own file";
+}
+
+// one place every part of the UI that depends on the run state is drawn
+function render() {
+  const locked = emuState === "booting" || emuState === "running" || emuState === "paused";
+  const live = emuState === "running" || emuState === "paused";
+
+  statusEl.dataset.state = emuState;
+  statusEl.className = "status" + (errorMsg ? " error" : "");
+  statusTextEl.textContent = pillText();
+  renderAction();
+  const cap = captionText();
+  captionEl.textContent = cap;
+  captionEl.hidden = !cap;
+
+  // §1.7 — nothing in the Firmware panel can be touched while it is live.
+  // The fieldset alone would do it, but only as a computed state: the
+  // attribute goes on every control too, and the two things a `disabled`
+  // fieldset cannot reach (the disclosure, the roving segmented tabindex)
+  // lose their tab stop by hand.
+  fwFieldset.disabled = locked;
+  for (const el of fwFieldset.querySelectorAll("input, select, button")) el.disabled = locked;
+  if (!cacheAvailable()) P.sel.disabled = true;
+  for (const b of segButtons) {
+    b.tabIndex = locked ? -1 : (b.getAttribute("aria-checked") === "true" ? 0 : -1);
+  }
+  $("ff-lock-note").hidden = !locked;
+  advSummary.tabIndex = locked ? -1 : 0;
+
+  // The exports need a guest image to read: live, or the one the last run
+  // left behind. The EFA block only exists on LG phones, so the button for
+  // it is only there for one.
+  const canExport = live || exportsReady;
+  const exportDev = ranDevice ?? currentDevice();
+  $("btn-save-flash").disabled = !canExport;
+  $("btn-save-efa").disabled = !canExport;
+  $("btn-save-efa").hidden = !exportDev?.startsWith("lg-");
+  $("export-caption").textContent = "Available once running";
+  $("export-caption").hidden = canExport;
+
+  $("btn-shot").disabled = !live;
+  // §1 of the recording criteria: a capture can start as soon as there is
+  // something on the screen to capture. Off the phone layout the button
+  // keeps the rule it always had.
+  const canRecord = (phoneLayout.matches ? emuState === "booting" || live : live)
+    && !recBtn.dataset.unsupported;
+  recBtn.disabled = !canRecord && !recorder;
+  // while a capture runs the pill takes the button's place (phone widths),
+  // and the button behind it is back to being the way to start one
+  const pillRec = !!recorder && phoneLayout.matches;
+  $("rec-pill").hidden = !pillRec;
+  recBtn.hidden = pillRec;
+  const finishing = !!recorder && !pillRec;
+  recBtn.title = finishing ? "Finish recording and save the .webm"
+    : recBtn.dataset.unsupported ? "this browser has no MediaRecorder"
+    : "Record the LCD to a .webm video";
+  recBtn.setAttribute("aria-label", finishing ? "Finish recording"
+    : canRecord ? "Start recording" : "Start recording (emulator not running)");
+
+  // the pill text opens the Firmware sheet, but only where there is one and
+  // only while the panel is not locked
+  $("status-open").disabled = !phoneLayout.matches || emuState !== "idle";
+  window.__ui = {
+    state: emuState, mode: ffMode, device: currentDevice(),
+    ready: firmwareReady(), error: errorMsg, exitCode,
+  };
+}
+
+function setEmuState(next) {
+  emuState = next;
+  if (next === "running" || next === "paused") startUptime();
+  else stopUptime();
+  render();
+}
+
+function startUptime() {
+  if (uptimeTimer) return;
+  uptimeTimer = setInterval(() => {
+    if (emuState === "running" || emuState === "paused") statusTextEl.textContent = pillText();
+  }, 1000);
+}
+function stopUptime() { clearInterval(uptimeTimer); uptimeTimer = 0; }
+
+// The pill has room for "Error" and no more; the screen is where the page
+// has always said what went wrong, and it is the one surface both layouts
+// give the whole width to.
+function setError(msg, { block = false } = {}) {
+  errorMsg = msg;
+  if (block) startBlocked = true;
+  showOverlay("Failed", msg);
+  render();
+}
+
+/* ------------------------------------------------------------------ */
+/* bottom sheets (§5.4)                                                 */
+/* ------------------------------------------------------------------ */
+
+const scrim = $("sheet-scrim");
+let openSheetEl = null, sheetOpener = null;
+
+const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), ' +
+  'select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])';
+
+function openSheet(el, opener) {
+  if (openSheetEl) closeSheet(true);
+  openSheetEl = el;
+  sheetOpener = opener ?? null;
+  el.hidden = false;
+  scrim.hidden = false;
+  requestAnimationFrame(() => {
+    el.classList.add("open");
+    scrim.classList.add("open");
+  });
+  (el.querySelector(FOCUSABLE) ?? el).focus?.();
+}
+
+function closeSheet(immediate = false) {
+  const el = openSheetEl;
+  if (!el) return;
+  openSheetEl = null;
+  el.classList.remove("open");
+  scrim.classList.remove("open");
+  el.style.transform = "";
+  const done = () => { el.hidden = true; scrim.hidden = true; };
+  if (immediate) done(); else setTimeout(done, 240);
+  sheetOpener?.focus?.();
+  sheetOpener = null;
+}
+
+scrim.addEventListener("click", () => closeSheet());
+for (const el of document.querySelectorAll(".sheet [data-close]")) {
+  el.addEventListener("click", () => closeSheet());
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!openSheetEl) return;
+  if (e.key === "Escape") { e.preventDefault(); closeSheet(); return; }
+  if (e.key !== "Tab") return;
+  const items = [...openSheetEl.querySelectorAll(FOCUSABLE)].filter((n) => n.offsetParent !== null);
+  if (!items.length) return;
+  const first = items[0], last = items[items.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+// swipe the sheet down to close it (the handle and the title are the grip;
+// the body scrolls instead)
+for (const sheet of document.querySelectorAll(".sheet")) {
+  let y0 = null;
+  const grip = (e) => e.target.closest(".sheet-handle, .sheet-title") || e.target === sheet;
+  sheet.addEventListener("pointerdown", (e) => {
+    if (!grip(e)) return;
+    y0 = e.clientY;
+    sheet.style.transition = "none";
+  });
+  sheet.addEventListener("pointermove", (e) => {
+    if (y0 == null) return;
+    const dy = Math.max(0, e.clientY - y0);
+    sheet.style.transform = `translateY(${dy}px)`;
+  });
+  for (const t of ["pointerup", "pointercancel", "pointerleave"]) {
+    sheet.addEventListener(t, (e) => {
+      if (y0 == null) return;
+      const dy = Math.max(0, e.clientY - y0);
+      y0 = null;
+      sheet.style.transition = "";
+      sheet.style.transform = "";
+      if (dy > 80) closeSheet();
+    });
+  }
+}
+
+$("status-open").addEventListener("click", (e) => openSheet($("sheet-firmware"), e.currentTarget));
+$("btn-settings").addEventListener("click", (e) => openSheet($("sheet-settings"), e.currentTarget));
+
+/* ------------------------------------------------------------------ */
+/* layout: the two panels flank the phone, or live in the sheets        */
+/* ------------------------------------------------------------------ */
+
+const phoneLayout = matchMedia("(max-width: 599px)");
+const mainEl = document.querySelector("main");
+const phonePanel = document.querySelector(".phone-panel");
+
+function applyLayout() {
+  if (phoneLayout.matches) {
+    $("sheet-firmware-body").appendChild($("pre-panel"));
+    $("sheet-settings-body").appendChild($("post-panel"));
+  } else {
+    closeSheet(true);
+    mainEl.insertBefore($("pre-panel"), phonePanel);
+    mainEl.appendChild($("post-panel"));
+  }
+  render(); // the pill says different things in the two layouts
+  scheduleFit();
+}
+phoneLayout.addEventListener("change", applyLayout);
+
+/* ------------------------------------------------------------------ */
 /* device list                                                          */
 /* ------------------------------------------------------------------ */
+
+// board id -> its LCD0 panel size, read out of the board configs (they are
+// the device profile: `[peripheral.LCD0] width/height`, possibly on the
+// include the board `extends`). The phone layout sizes the screen box to
+// this ratio, so the canvas fills it without letterboxing.
+const boardText = new Map();   // "siemens-s75.toml" -> file contents
+const panelCache = new Map();
+
+function readPanel(file, depth = 0) {
+  const txt = boardText.get(file);
+  if (!txt || depth > 4) return null;
+  const sec = txt.match(/\[peripheral\.LCD0\]([\s\S]*?)(?=\n\[|$)/);
+  if (sec) {
+    const w = sec[1].match(/^[ \t]*width[ \t]*=[ \t]*(\d+)/m);
+    const h = sec[1].match(/^[ \t]*height[ \t]*=[ \t]*(\d+)/m);
+    if (w && h) return { w: +w[1], h: +h[1] };
+  }
+  const ext = txt.match(/^[ \t]*extends[ \t]*=[ \t]*"([^"]+)"/m);
+  return ext ? readPanel(ext[1], depth + 1) : null;
+}
+
+function panelFor(dev) {
+  if (!dev) return null;
+  if (!panelCache.has(dev)) panelCache.set(dev, readPanel(dev + ".toml"));
+  return panelCache.get(dev);
+}
 
 async function loadBoards() {
   boardsBuf = await (await fetch("dist/boards.tar")).arrayBuffer();
   const files = [];
   untar(boardsBuf, (name, data) => files.push({ name, data }));
+  const dec = new TextDecoder();
+  for (const f of files) {
+    if (f.name.endsWith(".toml")) boardText.set(f.name, dec.decode(f.data));
+  }
   boards = files
     .filter((f) => /^[^/]+\.toml$/.test(f.name))
     .map((f) => ({ id: f.name.replace(/\.toml$/, ""), file: f }));
-  const sel = $("device");
-  sel.innerHTML = "";
-  for (const b of boards
+  const sel = O.device;
+  // §1.4.4: the placeholder stays selected — no device is picked for the user
+  const placeholder = sel.querySelector('option[value=""]');
+  sel.replaceChildren(placeholder, ...boards
     .slice()
-    .sort((a, z) => a.id.localeCompare(z.id))) {
-    const opt = document.createElement("option");
-    opt.value = b.id;
-    opt.textContent = b.id;
-    sel.appendChild(opt);
-  }
+    .sort((a, z) => a.id.localeCompare(z.id))
+    .map((b) => {
+      const opt = document.createElement("option");
+      opt.value = b.id;
+      opt.textContent = b.id;
+      return opt;
+    }));
   // A fullflash picked before boards.tar arrived (slow link) could not set
   // the device — apply the deferred inference now that the options exist.
   if (pendingDevice && boards.some((b) => b.id === pendingDevice)) {
     sel.value = pendingDevice;
     pendingDevice = null;
+    renderOwn();
   }
+  render();
+  scheduleFit(); // the panel size (and so the screen box) is known now
 }
 
 // Fullflash sidecars (SIDE_CAR_RE) are documented in fullflashes.js:
 // qemu derives <fullflash>.cfi-{efa,otp0,otp1} paths from the pflash
 // filename (in MEMFS: /data/fullflash.bin.cfi-*).
 const FULLFLASH_PATH = "/data/fullflash.bin";
-
-// The main fullflash plus its picked .cfi-* sidecars; the largest non-sidecar
-// file wins so a directory pick cannot accidentally swap main and sidecar.
-function pickFiles(fileList) {
-  const files = [...fileList];
-  const sidecars = files.filter((f) => SIDE_CAR_RE.test(f.name));
-  const mains = files.filter((f) => !SIDE_CAR_RE.test(f.name));
-  const main = mains.sort((a, z) => z.size - a.size)[0] || null;
-  return { main, sidecars };
-}
 
 // device id -> on-screen keyboard (ids from DEVICE_RULES): phones with a
 // keypad of their own get it, the rest fall back to the family board — the
@@ -223,99 +842,16 @@ function syncKeyboardToDevice(dev) {
   }
 }
 
-// Device + on-screen keyboard inference from a fullflash filename — shared
-// by the file picker and the preset picker below.
+// Device + on-screen keyboard inference from a fullflash filename (§1.4.4
+// allows it; the user can still change the dropdown).
 function applyFullflashName(name) {
   const dev = inferDevice(name);
   if (dev) {
-    if (boards.some((b) => b.id === dev)) $("device").value = dev;
+    if (boards.some((b) => b.id === dev)) O.device.value = dev;
     else if (boardsReady) pendingDevice = dev; // boards.tar still loading
   }
   syncKeyboardToDevice(dev);
 }
-
-/* ------------------------------------------------------------------ */
-/* preset fullflashes (fullflashes.js inventory, cached in the browser) */
-/* ------------------------------------------------------------------ */
-
-const presetSel = $("ff-preset");
-const presetStatus = $("ff-preset-status");
-const presetTrash = $("ff-preset-delete");
-const fileInput = $("fullflash");
-let selectedPreset = null; // PRESET_FULLFLASHES entry, or null = own file
-let presetBusy = false;    // preset download in flight (during boot)
-let downloadAbort = null;  // its AbortController while it runs — Stop uses it
-
-function presetById(id) {
-  return PRESET_FULLFLASHES.find((p) => p.id === id) ?? null;
-}
-
-function fmtMiB(bytes) {
-  const m = bytes / (1024 * 1024);
-  return (m >= 10 ? Math.round(m) : m.toFixed(1)) + " MiB";
-}
-
-// Reflect selectedPreset + cache state: the option texts ("— cached"
-// markers), the trash button, the Browse input (disabled while a preset is
-// chosen) and the status line under the dropdown.
-async function refreshPresetUi() {
-  for (const opt of presetSel.options) {
-    const entry = presetById(opt.value);
-    if (!entry) continue; // the "own file" placeholder
-    const st = await entryCacheState(entry);
-    opt.textContent = entry.label + (st.complete ? " — cached" : "");
-  }
-  if (!cacheAvailable()) {
-    presetSel.disabled = presetTrash.disabled = true;
-    presetStatus.textContent = "browser cache unavailable — use your own file below";
-    return;
-  }
-  presetSel.disabled = false;
-  fileInput.disabled = !!selectedPreset;
-  const entry = selectedPreset;
-  if (!entry) {
-    presetTrash.disabled = true;
-    presetStatus.textContent = "";
-    return;
-  }
-  const st = await entryCacheState(entry);
-  presetTrash.disabled = presetBusy || st.count === 0;
-  presetStatus.textContent =
-    st.complete ? `cached (${fmtMiB(st.totalSize)}) — boots from the local cache`
-    : st.count ? `partially cached (${st.count}/${entry.files.length}) — finishes on Start`
-    : "not downloaded yet — downloads when you press Start";
-}
-
-for (const entry of PRESET_FULLFLASHES) {
-  const opt = document.createElement("option");
-  opt.value = entry.id;
-  opt.textContent = entry.label;
-  presetSel.appendChild(opt);
-}
-refreshPresetUi();
-
-presetSel.addEventListener("change", async () => {
-  selectedPreset = presetById(presetSel.value);
-  if (selectedPreset) {
-    applyFullflashName(selectedPreset.files[0]);
-  } else if (fileInput.files.length) {
-    // back to "my own file": re-apply the inference of the picked files
-    const { main } = pickFiles(fileInput.files);
-    if (main) applyFullflashName(main.name);
-  }
-  await refreshPresetUi();
-});
-
-presetTrash.addEventListener("click", async () => {
-  if (!selectedPreset || presetBusy) return;
-  await deleteEntry(selectedPreset);
-  await refreshPresetUi();
-});
-
-fileInput.addEventListener("change", (e) => {
-  const { main } = pickFiles(e.target.files);
-  if (main) applyFullflashName(main.name);
-});
 
 /* ------------------------------------------------------------------ */
 /* boot / stop                                                          */
@@ -334,9 +870,13 @@ const DIST = new URLSearchParams(location.search).get("dist") ||
              (new URLSearchParams(location.search).has("dist") ? "dist" : null);
 const DIST_DEFAULT = "dist-jit";
 
+let exitCode = null;
+
 async function bootSuite(url) {
-  setStatus("booting", "loading suite…");
-  $("btn-start").disabled = true;
+  errorMsg = null;
+  exitCode = null;
+  setEmuState("booting");
+  showOverlay("Loading suite…");
   try {
     const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
     const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
@@ -364,12 +904,7 @@ async function bootSuite(url) {
             .decode(modRef.FS.readFile("/serial.log"));
           window.__suiteReport?.(ser, code);
         } catch (e) { /* page going down anyway */ }
-        setStatus("idle", `exited (${code})`);
-        running = false;
-        showOverlay("stopped", `exited (${code})`);
-        stopPainting();
-        $("btn-start").disabled = false;
-        $("btn-stop").disabled = true;
+        onGuestExit(code);
       },
       preRun: (mod) => {
         modRef = mod;
@@ -388,11 +923,12 @@ async function bootSuite(url) {
     window.__qemu = qemuModule; // debugging hook (same as the phone boot)
     startSerialPoll();
     running = true;
-    setStatus("running", "running — tcg-isa op-suite");
+    runStartedAt = Date.now();
+    setEmuState("running");
   } catch (e) {
     console.error(e);
-    setStatus("error", String(e));
-    $("btn-start").disabled = false;
+    setEmuState("idle");
+    setError(String(e));
   }
 }
 
@@ -407,52 +943,40 @@ async function boot() {
     }
   }
 
-  if (!selectedPreset && !fileInput.files.length) {
-    alert("pick a preset fullflash or your own .bin first");
-    return;
-  }
-  if (selectedPreset && !cacheAvailable()) {
-    alert("the browser cache is unavailable — presets cannot be stored; use your own file");
-    return;
-  }
+  if (!firmwareReady()) { render(); return; }
 
   // boards.tar populates the device list and feeds preRun's untar — never
   // start a boot that could race it (device inference would be lost and
   // qemu would get an empty board dir).
   if (boardsReady) await boardsReady;
   if (!boardsBuf) {
-    setStatus("error", "boards.tar failed to load — reload the page");
+    setError("boards.tar failed to load — reload the page", { block: true });
     return;
   }
 
-
-  // Own-file boots are resolved up front; preset boots resolve inside the
-  // try below, after a possible first-use download into the browser cache.
-  let picked = null;
-  if (!selectedPreset) {
-    picked = pickFiles(fileInput.files);
-    if (!picked.main) { alert("no fullflash .bin among the picked files"); return; }
-  }
-  const device = $("device").value;
+  const device = currentDevice();
   const imei = $("imei").value.trim();
   const esn = $("esn").value.trim();
   const sim = $("sim").value;
   const operator = $("operator").value.trim();
   const startup = $("startup").value;
 
-  if (!/^\d{15}$/.test(imei)) { alert("IMEI must be 15 digits"); return; }
-  if (!/^[0-9A-Fa-f]{8}$/.test(esn)) { alert("ESN must be 8 hex chars"); return; }
-
-  const otp0 = esnToOtp0(esn);
-  const otp1 = imeiToOtp1(imei);
+  if (!/^\d{15}$/.test(imei)) { setError("IMEI must be 15 digits"); return; }
+  if (!/^[0-9A-Fa-f]{8}$/.test(esn)) { setError("ESN must be 8 hex chars"); return; }
 
   const qsp = new URLSearchParams(location.search);
   const debug = qsp.get("debug") === "1";
 
-  setStatus("booting", "loading…");
-  showOverlay("loading…");
+  const otp0 = esnToOtp0(esn);
+  const otp1 = imeiToOtp1(imei);
+
+  errorMsg = null;
+  exitCode = null;
+  exportsReady = false;   // this run is about to replace the MEMFS image
+  ranDevice = device;
+  setEmuState("booting");
+  showOverlay("Loading…");
   scrollToPhone();
-  $("btn-start").disabled = true;
 
   // [[".cfi-efa", bytes], ...] — filled below, checked again after the boot
   let sidecarBytes = [];
@@ -462,55 +986,66 @@ async function boot() {
     // picked local files. Both yield { name, arrayBuffer() } objects (the
     // preset one wraps the cached bytes).
     let file, sidecars;
-    if (selectedPreset) {
+    if (ffMode === "preset") {
       // First Start with this preset: download it into the browser cache
       // (live progress; later boots come straight from the cache).
       const st = await entryCacheState(selectedPreset);
       if (!st.complete) {
         presetBusy = true;
-        // a 64 MiB fullflash is a long wait — Stop cancels it (the catch
+        // a 64 MiB fullflash is a long wait — Cancel stops it (the catch
         // below turns the AbortError into a plain "cancelled")
         downloadAbort = new AbortController();
-        $("btn-stop").disabled = false;
+        dlLoaded = 0;
+        dlTotal = selectedPreset.size;
+        setEmuState("downloading");
+        await refreshPresetUi(); // say so on the preset line before byte one
+        let doneBytes = 0, curFile = null, curTotal = 0;
         try {
           await downloadEntry(selectedPreset, (name, loaded, total) => {
-            const pct = total ? Math.round((loaded / total) * 100) : null;
-            const size = fmtMiB(loaded) + (total ? ` of ${fmtMiB(total)}` : "");
-            setStatus("booting", "downloading fullflash" + (pct != null ? ` — ${pct}%` : "…"));
-            showOverlay("downloading fullflash", `${name}\n${size}`, pct);
-            presetStatus.textContent = `downloading ${name}: ${size}`
-              + (pct != null ? ` — ${pct}%` : "");
+            if (name !== curFile) { doneBytes += curTotal; curFile = name; }
+            curTotal = total;
+            dlLoaded = doneBytes + loaded;
+            dlTotal = selectedPreset.size || (doneBytes + total);
+            const pct = dlTotal ? Math.round((dlLoaded / dlTotal) * 100) : null;
+            // straight to the three elements that move: this fires once per
+            // stream chunk, far too often for a cache-state refresh
+            statusTextEl.textContent = pillText();
+            P.status.className = "ff-status";
+            P.status.textContent = `Downloading · ${fmtProgress(dlLoaded, dlTotal)}`;
+            P.bar.hidden = false;
+            P.bar.firstElementChild.style.width = (pct ?? 0) + "%";
+            showOverlay("Downloading fullflash",
+              `${name}\n${fmtProgress(dlLoaded, dlTotal)}`, pct);
           }, downloadAbort.signal);
         } finally {
           presetBusy = false;
           downloadAbort = null;
-          $("btn-stop").disabled = true;
         }
+        setEmuState("booting");
         await refreshPresetUi();
       }
-      showOverlay("reading fullflash…");
+      showOverlay("Reading fullflash…");
       const cached = await readCachedEntry(selectedPreset); // main .bin first
       const shim = (f) => ({ name: f.name, arrayBuffer: async () => f.bytes.buffer });
       file = shim(cached[0]);
       sidecars = cached.slice(1).map(shim);
     } else {
-      file = picked.main;
-      sidecars = picked.sidecars;
+      file = ownBin;
+      // §1.5: a sidecar picked for a non-LG device is kept in the UI but
+      // never handed to the emulator
+      sidecars = ownEfa && device.startsWith("lg-") ? [ownEfa] : [];
     }
 
     // Compile the factory fresh per boot (the emscripten ES6 factory is
     // single-use once main() has run through exit()).
-    showOverlay("loading emulator…");
+    showOverlay("Loading emulator…");
     const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
-    showOverlay("booting…", device);
+    showOverlay("Booting…", device);
 
     const flashBytes = new Uint8Array(await file.arrayBuffer());
     for (const sc of sidecars) {
       const suffix = sc.name.match(SIDE_CAR_RE)[0].toLowerCase();
-      if (sidecarBytes.some(([s]) => s === suffix)) {
-        alert(`duplicate ${suffix} sidecar picked — keeping the first`);
-        continue;
-      }
+      if (sidecarBytes.some(([s]) => s === suffix)) continue; // first one wins
       sidecarBytes.push([suffix, new Uint8Array(await sc.arrayBuffer())]);
     }
 
@@ -550,7 +1085,7 @@ async function boot() {
       ...(icount === "none" ? [] : ["-icount", icount]),
       "-machine", "pmb887x",
       // always writable: the image lives in MEMFS, so the firmware's writes
-      // only ever touch this run's copy — and "Download flash" hands that
+      // only ever touch this run's copy — and "Export flash" hands that
       // copy back
       "-drive", `if=pflash,format=raw,file=${FULLFLASH_PATH}`,
       "-serial", "file:/serial.log",
@@ -564,10 +1099,6 @@ async function boot() {
       printErr,
       log: debug ? (t) => console.log("[log]", t) : undefined,
       onExit: (code) => {
-        setStatus("idle", `exited (${code})`);
-        running = false;
-        showOverlay("stopped", `exited (${code}) — press “Start” to boot again`);
-        stopPainting();
         // hand the finished logs out before the runtime tears the page
         // down (the lockstep driver installs window.__lockstepReport)
         if (window.__lockstepReport && modRef) {
@@ -579,13 +1110,7 @@ async function boot() {
             window.__lockstepReport(rd("/serial.log"), rd("/lockstep.log"), code);
           } catch (e) { /* page going down anyway */ }
         }
-        $("btn-start").disabled = false;
-        $("btn-stop").disabled = true;
-        $("btn-save-flash").disabled = true;
-        $("btn-save-efa").disabled = true;
-        $("btn-shot").disabled = true;
-        stopRecording();          // flushes whatever was captured
-        $("btn-record").disabled = true;
+        onGuestExit(code);
       },
       preRun: (mod) => {
         modRef = mod;
@@ -644,25 +1169,18 @@ async function boot() {
       },
     });
   } catch (e) {
+    setEmuState("idle");
     if (e?.name === "AbortError") {
-      setStatus("idle", "download cancelled");
-      showOverlay("download cancelled",
-        "press “Start” to resume — whatever finished stays cached");
+      showOverlay("Ready to boot",
+        "Download cancelled — whatever finished stays cached");
     } else {
       console.error(e);
-      setStatus("error", String(e));
-      showOverlay("failed", String(e));
+      setError(String(e));
     }
-    $("btn-start").disabled = false;
     refreshPresetUi(); // a failed preset download changed the cache state
     return;
   }
 
-  $("btn-stop").disabled = false;
-  $("btn-save-flash").disabled = false;
-  $("btn-save-efa").disabled = true;
-  $("btn-shot").disabled = false;
-  $("btn-record").disabled = !!recBtn.dataset.unsupported;
   // LG firmware without the EFA block factory-resets its EEPROM; warn but boot.
   const noEfa = device.startsWith("lg-") && !sidecarBytes.some(([s]) => s === ".cfi-efa");
   hideOverlay();
@@ -671,41 +1189,52 @@ async function boot() {
   startSerialPoll();
   startHud();
   running = true;
-  setStatus("running", `running — ${device}` + (noEfa ? " (no EFA block — firmware may factory-reset)" : ""));
+  exportsReady = true;
+  runStartedAt = Date.now();
+  setEmuState("running");
+  if (noEfa) {
+    captionEl.textContent = "No EFA block — the firmware may factory-reset.";
+    captionEl.hidden = false;
+  }
+}
+
+function onGuestExit(code) {
+  running = false;
+  exitCode = code;
+  stopPainting();
+  stopRecording();          // flushes whatever was captured
+  setEmuState("idle");
+  showOverlay("Ready to boot", `Exited (${code})`);
 }
 
 function stop() {
-  // before the guest exists, Stop means "cancel the fullflash download"
+  // before the guest exists, the action is "cancel the fullflash download"
   if (downloadAbort) {
     downloadAbort.abort();
     return; // boot()'s catch reports it and re-arms Start
   }
-  if (qemuModule && qemuModule._wasm_quit) qemuModule._wasm_quit();
-  setStatus("idle", "stopping…");
-  showOverlay("stopping…");
+  // a capture in flight is finished and saved first — the frames stop
+  // arriving the moment the guest goes away
+  finishRecording(() => {
+    if (qemuModule && qemuModule._wasm_quit) qemuModule._wasm_quit();
+    showOverlay("Stopping…");
+  });
 }
 
 $("boot-form").addEventListener("submit", (e) => { e.preventDefault(); boot(); });
 
-// ?suite= runs headlessly (phase-0a runner): submit the boot form once
-// the document is complete — same path as pressing Start
-if (new URLSearchParams(location.search).get("suite")) {
-  const go = () => document.getElementById("boot-form")?.requestSubmit();
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", go);
-  } else {
-    go();
-  }
-}
-$("btn-stop").addEventListener("click", stop);
 $("btn-save-flash").addEventListener("click", () => {
   downloadMemfs(FULLFLASH_PATH, "fullflash-modified.bin");
 });
 
 // EFA blocks are written lazily (only once the firmware actually programs
-// the EFA), so the button is enabled by the poller when the file appears.
+// the EFA), so there is nothing to hand out until it appears.
 $("btn-save-efa").addEventListener("click", () => {
-  downloadMemfs(FULLFLASH_PATH + ".cfi-efa", "fullflash-modified.bin.cfi-efa");
+  if (!downloadMemfs(FULLFLASH_PATH + ".cfi-efa", "fullflash-modified.bin.cfi-efa")) {
+    const cap = $("export-caption");
+    cap.textContent = "The firmware has not written an EFA block yet.";
+    cap.hidden = false;
+  }
 });
 
 function downloadBlob(blob, name) {
@@ -718,12 +1247,9 @@ function downloadBlob(blob, name) {
 
 function downloadMemfs(path, name) {
   const m = qemuModule;
-  if (!m?.FS?.analyzePath(path)?.exists) return;
-  downloadMemfsAs(m.FS.readFile(path), name);
-}
-
-function downloadMemfsAs(data, name) {
-  downloadBlob(new Blob([data], { type: "application/octet-stream" }), name);
+  if (!m?.FS?.analyzePath(path)?.exists) return false;
+  downloadBlob(new Blob([m.FS.readFile(path)], { type: "application/octet-stream" }), name);
+  return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -734,7 +1260,7 @@ function downloadMemfsAs(data, name) {
 function captureName() {
   const t = new Date();
   const p = (n) => String(n).padStart(2, "0");
-  return `pmb887x-${$("device").value}-${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}`
+  return `pmb887x-${currentDevice() ?? "phone"}-${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}`
     + `-${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}`;
 }
 
@@ -744,21 +1270,28 @@ $("btn-shot").addEventListener("click", () => {
 
 // MediaRecorder over canvas.captureStream: the same frames the guest paints,
 // at a fixed 30 fps so a still screen still produces a playable file.
+// "Finish" is the only verb for ending a capture — "Stop" belongs to the
+// emulator, and on a phone the two controls sit side by side.
 const REC_TYPES = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
 let recorder = null;
+let recDone = null;   // ran after the file has been handed over
 const recBtn = $("btn-record");
-if (typeof MediaRecorder === "undefined") {
-  recBtn.title = "this browser has no MediaRecorder";
-  recBtn.dataset.unsupported = "1";
-}
+if (typeof MediaRecorder === "undefined") recBtn.dataset.unsupported = "1";
 
-function stopRecording() {
-  if (recorder && recorder.state !== "inactive") recorder.stop();
-}
+function say(msg) { $("live-region").textContent = msg; }
 
-recBtn.addEventListener("click", () => {
-  if (recorder) { stopRecording(); return; }
-  if (recBtn.dataset.unsupported) return;
+// after = what to do once the capture has been saved (Stop finishes the
+// recording before it takes the guest down)
+function finishRecording(after = null) {
+  if (!recorder) { after?.(); return; }
+  recDone = after;
+  if (recorder.state !== "inactive") recorder.stop();
+}
+// the guest going away mid-capture: flush whatever was recorded
+const stopRecording = () => finishRecording();
+
+function startRecording() {
+  if (recorder || recBtn.dataset.unsupported) return;
   const mimeType = REC_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
   const stream = canvas.captureStream(30);
   const chunks = [];
@@ -770,28 +1303,44 @@ recBtn.addEventListener("click", () => {
     setRecordLabel(false);
     if (chunks.length) downloadBlob(new Blob(chunks, { type: mimeType || "video/webm" }),
       captureName() + ".webm");
+    say("Recording saved");
+    const after = recDone;
+    recDone = null;
+    after?.();
   };
   recorder.start();
   setRecordLabel(true);
-});
+  say("Recording started");
+}
 
-// the icon switches dot <-> square and the button grows a running m:ss; the
-// accessible name has to follow, since neither is text a reader announces
+recBtn.addEventListener("click", () => {
+  if (recorder) finishRecording(); else startRecording();
+});
+$("btn-rec-finish").addEventListener("click", () => finishRecording());
+
+// Off the phone layout the button itself becomes the capture pill (icon
+// dot -> square, plus a running m:ss); at phone widths .rec-pill takes its
+// place instead. render() carries the labels for both.
 let recTimer = 0;
 function setRecordLabel(on) {
   recBtn.classList.toggle("recording", on);
-  recBtn.title = on ? "Stop recording and save the .webm"
-    : "Record the LCD to a .webm video";
-  recBtn.setAttribute("aria-label", on ? "Stop recording" : "Record");
   clearInterval(recTimer);
-  if (!on) { $("rec-time").textContent = ""; return; }
+  if (!on) {
+    $("rec-time").textContent = "";
+    $("rec-pill-time").textContent = "0:00";
+    render();
+    return;
+  }
   const startedAt = performance.now();
   const tick = () => {
     const s = Math.floor((performance.now() - startedAt) / 1000);
-    $("rec-time").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    const t = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    $("rec-time").textContent = t;
+    $("rec-pill-time").textContent = t;
   };
   tick();
   recTimer = setInterval(tick, 1000);
+  render();
 }
 
 /* ------------------------------------------------------------------ */
@@ -856,6 +1405,7 @@ function startPainting() {
     if (w <= 0 || h <= 0) return;
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w; canvas.height = h;
+      scheduleFit(); // the guest's panel ratio is the real one
     }
     const addr = m._wasm_fb_ptr();
     const tPaint = performance.now();
@@ -892,9 +1442,10 @@ function stopPainting() {
 
 // At the browser's own zoom level the phone column is scaled (CSS `zoom`,
 // so it takes real layout space and the grid keeps centring it) to exactly
-// fill the window height: no scrollbar, no wasted height. It grows only
-// into the room the side panels leave, and never shrinks below natural
-// width because of them.
+// fill the window height: no scrollbar, no wasted height. It only ever
+// takes the room the side panels leave — width is as much a cap as height,
+// or a window barely past the three-column breakpoint would scale the phone
+// to the height it has and slide it over the panels beside it.
 //
 // Browser zoom is left alone. The devicePixelRatio this page loaded at is
 // the baseline; while it differs the user is zoomed, so we stop refitting
@@ -902,14 +1453,14 @@ function stopPainting() {
 // should. Ctrl+0 comes back to the baseline and the fit resumes.
 const SCALE_MIN = 0.55, SCALE_MAX = 2.5;
 const baseDpr = window.devicePixelRatio;
-const phonePanel = document.querySelector(".phone-panel");
-const mainEl = document.querySelector("main");
 // Two layouts are fitted: the three-column one, where the phone must share
 // the window with the panels beside it, and the compact landscape one (LCD
-// left, keypad right), where height is the scarce dimension. Portrait
-// stacking is meant to scroll, so it is left alone.
-const sideBySide = matchMedia("(min-width: 1101px)");
-const landscapeFit = matchMedia("(max-width: 1100px) and (orientation: landscape)");
+// left, keypad right), where height is the scarce dimension. The stacked
+// and phone layouts are left alone (the phone layout sizes the screen with
+// flexbox instead).
+const sideBySide = matchMedia("(min-width: 900px)");
+const landscapeFit =
+  matchMedia("(min-width: 600px) and (max-width: 899px) and (orientation: landscape)");
 
 function fitPhone() {
   // the user is zoomed: keep the scale they were fitted at, so their zoom
@@ -941,7 +1492,7 @@ function fitPhone() {
     availW = inner;
   }
 
-  const scale = Math.min((availH - 2) / nat.height, Math.max(nat.width, availW) / nat.width);
+  const scale = Math.min((availH - 2) / nat.height, availW / nat.width);
   // floored, never rounded up: rounding up is what puts a scrollbar back
   const set = (s) => {
     const v = Math.floor(Math.max(SCALE_MIN, Math.min(SCALE_MAX, s)) * 1000) / 1000;
@@ -956,29 +1507,63 @@ function fitPhone() {
   if (got > availH - 2) set(applied * (availH - 2) / got);
 }
 
-// On the stacked layout the boot form sits above the phone, so pressing
+// On the stacked layout the Firmware panel sits above the phone, so pressing
 // Start would leave the screen — and the download progress drawn on it —
-// below the fold. Three columns need no scrolling at all.
+// below the fold. Three columns need no scrolling at all, and the phone
+// layout has none to do.
 function scrollToPhone() {
-  if (sideBySide.matches) return;
+  if (sideBySide.matches || phoneLayout.matches) return;
   phonePanel.scrollIntoView({
     block: "start",
     behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
   });
 }
 
+/* ---- the phone layout's screen box ---- */
+// The box is the device's own panel ratio, as large as fits in what the row
+// leaves once the control row and the keypad have taken their height — so
+// the canvas fills it exactly, with no letterbox inside and no bars around.
+const lcdWrap = document.querySelector(".lcd-wrap");
+const screenCell = document.querySelector(".screen-cell");
+
+function screenAspect() {
+  // a live guest's framebuffer beats the board config
+  if (running && canvas.width > 0 && canvas.height > 0) return canvas.width / canvas.height;
+  const p = panelFor(currentDevice());
+  return p ? p.w / p.h : 132 / 176;
+}
+
+function fitScreen() {
+  if (!phoneLayout.matches) {
+    lcdWrap.style.removeProperty("width");
+    lcdWrap.style.removeProperty("height");
+    return;
+  }
+  const cell = screenCell.getBoundingClientRect();
+  if (!cell.width || !cell.height) return;
+  const ar = screenAspect();
+  let w = cell.width, h = w / ar;
+  if (h > cell.height) { h = cell.height; w = h * ar; } // height is tighter
+  lcdWrap.style.width = Math.floor(w) + "px";
+  lcdWrap.style.height = Math.floor(h) + "px";
+}
+
 let fitPending = 0;
 function scheduleFit() {
   cancelAnimationFrame(fitPending);
-  fitPending = requestAnimationFrame(fitPhone);
+  fitPending = requestAnimationFrame(() => { fitPhone(); fitScreen(); });
 }
 window.addEventListener("resize", scheduleFit);
-for (const mq of [sideBySide, landscapeFit]) mq.addEventListener("change", scheduleFit);
+// the URL bar sliding in and out changes dvh without a window resize event
+window.visualViewport?.addEventListener("resize", scheduleFit);
+for (const mq of [sideBySide, landscapeFit, phoneLayout]) mq.addEventListener("change", scheduleFit);
+// whatever moves the row's height (keypad board, HUD band, sheets) ends up
+// here, so the box never has to be re-fitted by hand
+new ResizeObserver(() => fitScreen()).observe(screenCell);
 document.fonts?.ready.then(scheduleFit);
-scheduleFit();
 
 /* ------------------------------------------------------------------ */
-/* Stats HUD ("show performance HUD"): what "realtime" is on this device */
+/* Stats HUD ("Performance HUD"): what "realtime" is on this device     */
 /* ------------------------------------------------------------------ */
 
 // Per-second guest rates, on the page itself so a phone can report them
@@ -1072,10 +1657,6 @@ function startSerialPoll() {
   serialTimer = setInterval(() => {
     const m = qemuModule;
     if (!m?.FS) return;
-    // firmware writes the EFA lazily — offer the download once it exists
-    try {
-      $("btn-save-efa").disabled = !m.FS.analyzePath(FULLFLASH_PATH + ".cfi-efa").exists;
-    } catch { /* not there yet */ }
     try {
       if (!m.FS.analyzePath("/serial.log").exists) return;
       const data = m.FS.readFile("/serial.log", { encoding: "binary" });
@@ -1140,7 +1721,7 @@ for (const id of ["keypad", "aux-keys-left", "aux-keys-right"]) {
 }
 
 // label each key with the physical key that presses it; the labels stay in
-// the DOM and the "show key bindings" checkbox only toggles a body class
+// the DOM and the "Show shortcuts on keys" checkbox only toggles a body class
 function renderKeyHints() {
   for (const btn of document.querySelectorAll(KEY_SELECTOR)) {
     const hint = KEY_HINT[btn.dataset.key];
@@ -1198,15 +1779,15 @@ selectKeyboard(localStorage.getItem("kbd-variant")
   ?? (legacy.endsWith("ru") ? "ru" : "en"));
 
 for (const sel of [kbdSel, varSel]) sel.addEventListener("change", () => selectKeyboard());
-$("device").addEventListener("change", (e) => syncKeyboardToDevice(e.target.value));
 
 // key-binding hints: on by default on a desktop (a pointer that hovers and
-// can point precisely => a real keyboard is attached), off on touch screens;
-// the remembered choice wins over that default
+// can point precisely => a real keyboard is attached, and a window wide
+// enough to be one), off on phone-sized screens; the remembered choice wins
+// over that default
 const hintsChk = $("kbd-hints");
 const storedHints = localStorage.getItem("kbd-hints");
 hintsChk.checked = storedHints == null
-  ? matchMedia("(hover: hover) and (pointer: fine)").matches
+  ? matchMedia("(hover: hover) and (pointer: fine) and (min-width: 640px)").matches
   : storedHints === "1";
 const showKeyHints = () =>
   document.body.classList.toggle("show-key-hints", hintsChk.checked);
@@ -1259,6 +1840,8 @@ refreshAdvancedSummary();
 if (navigator.webdriver) $("advanced").open = true;
 
 /* ------------------------------------------------------------------ */
+/* start-up                                                             */
+/* ------------------------------------------------------------------ */
 
 // Cross-origin isolation is required for SharedArrayBuffer (pthread build).
 // "not isolated" has several distinct causes — say which one this is.
@@ -1282,12 +1865,23 @@ async function diagnoseIsolation() {
     else why.push("browser ignored COOP/COEP — in-app browser/WebView? open in Chrome/Firefox/Safari");
   }
   if (/\bwv\b/.test(navigator.userAgent)) why.push("Android WebView cannot isolate — open in Chrome");
-  setStatus("error", "page not cross-origin isolated — SharedArrayBuffer unavailable: " + why.join("; "));
-  $("btn-start").disabled = true;
+  setError("Page not cross-origin isolated — SharedArrayBuffer unavailable: " + why.join("; "),
+    { block: true });
 }
+
+setMode("preset");   // §1.2 — Preset, with the last-used entry selected
+applyLayout();
+if (selectedPreset) syncKeyboardToDevice(inferDevice(selectedPreset.files[0]));
+scheduleFit();
 
 if (!crossOriginIsolated) diagnoseIsolation();
 boardsReady = loadBoards().catch((e) => {
-  setStatus("error", "boards.tar: " + e);
+  setError("boards.tar: " + e, { block: true });
   return null; // resolved-with-null: boot() re-checks boardsBuf below
 });
+
+// ?suite= runs headlessly (phase-0a runner): submit the boot form — the same
+// path as pressing Start. Last, so the whole UI is wired before it fires.
+if (new URLSearchParams(location.search).get("suite")) {
+  $("boot-form").requestSubmit();
+}

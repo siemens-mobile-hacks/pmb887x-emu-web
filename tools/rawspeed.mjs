@@ -18,6 +18,7 @@ await p.addScriptTag({ content: `
   }, 3000);
   window.__lt = 0;
 `});
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 await new Promise((r) => setTimeout(r, secs * 1000));

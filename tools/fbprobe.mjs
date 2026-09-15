@@ -5,6 +5,7 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 300)));
 await page.goto("http://127.0.0.1:8080/", { waitUntil: "networkidle", timeout: 120000 });
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 for (let i = 0; i < 6; i++) {

@@ -11,6 +11,7 @@ page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)))
 const q = process.env.QARGS ? "?" + process.env.QARGS : "";
 await page.goto(`http://127.0.0.1:${process.env.PORT || "8080"}/` + q, { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", startup);
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted with startup=" + startup);

@@ -17,6 +17,7 @@ await p.addScriptTag({ content: `
       " flip=" + f(g(10)) + " topC=" + f(g(11)) + " reuse=" + f(g(12)));
   }, 2000);
 ` });
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 await new Promise((r) => setTimeout(r, secs * 1000));

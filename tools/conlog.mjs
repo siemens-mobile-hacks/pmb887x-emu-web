@@ -14,6 +14,7 @@ p.on("console", m => {
     console.log(((Date.now() - t0) / 1000).toFixed(1) + "s " + t);
 });
 await p.goto(`http://127.0.0.1:${port}/?dist=${process.env.DIST || "dist-jit"}${process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : ""}`, { waitUntil: "domcontentloaded" });
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 await p.addScriptTag({ content: `

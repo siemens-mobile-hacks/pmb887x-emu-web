@@ -119,6 +119,7 @@ class WasmSide {
     await this.page.goto(`http://127.0.0.1:${port}/?${q}`,
       { waitUntil: "domcontentloaded", timeout: 120000 });
     await this.page.selectOption("#startup", "ONLINE");
+    await this.page.click("#ff-mode-own");
     await this.page.setInputFiles("#fullflash", flashPath);
     await this.page.click("#btn-start");
   }
@@ -223,9 +224,9 @@ class WasmSide {
     for (;;) {
       const st = await this.page.evaluate(() => {
         const el = document.querySelector("#status");
-        return el ? { text: el.textContent || "", cls: el.className || "" } : null;
+        return el ? { exitCode: window.__ui?.exitCode ?? null, cls: el.className || "" } : null;
       }).catch(() => null);
-      if (!st || st.text.includes("exited") || /error/i.test(st.cls)) break;
+      if (!st || st.exitCode != null || /error/i.test(st.cls)) break;
       await new Promise((r) => setTimeout(r, 500));
     }
     for (let i = 0; i < 40 && !this.grabbed; i++) {

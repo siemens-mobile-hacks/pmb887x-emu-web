@@ -8,6 +8,7 @@ const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)));
 await page.goto(`http://127.0.0.1:8080/?trace=${encodeURIComponent(channels)}&tracebuf=1`,
   { waitUntil: "networkidle", timeout: 120000 });
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted; waiting", waitS, "s…");

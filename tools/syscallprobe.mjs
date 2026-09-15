@@ -10,6 +10,7 @@ const server = await chromium.launch({ headless: true, args: [`--remote-debuggin
 try {
   const page = await server.newPage();
   await page.goto("http://127.0.0.1:8080/", { waitUntil: "networkidle" });
+  await page.click("#ff-mode-own");
   await page.setInputFiles("#fullflash", fullflash);
   await page.click("#btn-start");
 

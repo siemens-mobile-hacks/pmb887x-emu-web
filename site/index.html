@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>qemu-pmb887x — Siemens/LG phone emulator (WASM)</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -15,44 +15,37 @@
      only place they fit without wrapping into a paragraph. Click to copy the
      last 60 s as JSON. -->
 <pre id="hud" class="hud" hidden title="click to copy the last 60 s as JSON"></pre>
+
 <!-- Three columns: what you set before Start on the left, the phone in the
      middle (dead centre of the page), what only matters once it runs on the
-     right. Narrow screens stack them in this order, and Start scrolls the
-     phone into view. -->
+     right. Phone-width screens keep only the phone here and move the two
+     panels into the sheets below. -->
 <main>
   <!-- ============ left: pre-start ============ -->
-  <section class="ctrl-panel pre-panel">
+  <section class="ctrl-panel pre-panel" id="pre-panel">
     <form id="boot-form">
-      <fieldset>
-        <legend>Boot</legend>
+      <fieldset id="firmware-panel">
+        <legend>Firmware</legend>
 
-        <!-- a plain <div>, not a <label>: a <label for> forwards clicks on
-             anything inside it to the select, which would pop the dropdown
-             open on top of the trash button instead of deleting -->
-        <div class="file-label">
-          <label for="ff-preset">Fullflash</label>
-          <span class="ff-preset-line">
-            <select id="ff-preset" size="1">
-              <option value="">— my own file (below) —</option>
-            </select>
-            <button type="button" id="ff-preset-delete" class="ff-trash" disabled
-              title="Delete the cached copy" aria-label="Delete the cached copy">
-              <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-            </button>
-          </span>
-          <small class="file-hint">preset fullflashes download when you press Start, then stay cached in the browser</small>
-          <small class="file-hint" id="ff-preset-status"></small>
+        <!-- Preset | Own file. A radiogroup, not two buttons: arrow keys
+             move between the two the way a segmented control should. -->
+        <div class="segmented" role="radiogroup" aria-label="Firmware source">
+          <button type="button" class="seg" id="ff-mode-preset" role="radio"
+            data-mode="preset" aria-checked="true" tabindex="0">Preset</button>
+          <button type="button" class="seg" id="ff-mode-own" role="radio"
+            data-mode="own" aria-checked="false" tabindex="-1">Own file</button>
         </div>
 
-        <label class="file-label" for="fullflash">My own file (.bin)
-          <input type="file" id="fullflash" accept=".bin,.cfi-efa,.cfi-otp0,.cfi-otp1" multiple>
-          <small class="file-hint">LG phones: also pick the <code>.cfi-efa</code> sidecar
-            (their EEPROM lives in the EFA block)</small>
-        </label>
+        <!-- only the selected mode's controls live here; the other mode's
+             subtree is detached (values and all) until it is picked again -->
+        <div id="ff-mode-body" class="ff-mode-body"></div>
 
-        <label class="file-label">Device
-          <select id="device" size="1"></select>
-        </label>
+        <p class="lock-note" id="ff-lock-note" hidden>
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M17 10.5V7.8a5 5 0 0 0-10 0v2.7"/><rect x="4.8" y="10.5" width="14.4" height="9.7" rx="2"/>
+          </svg>
+          Locked while running. Stop to change firmware.
+        </p>
 
         <!-- identity/radio/flash knobs: sane defaults boot every phone, so
              they stay folded away until someone needs them -->
@@ -87,48 +80,68 @@
             </label>
           </div>
         </details>
-
-        <div class="btn-row">
-          <button type="submit" id="btn-start">Start</button>
-          <button type="button" id="btn-stop" disabled>Stop</button>
-        </div>
       </fieldset>
     </form>
   </section>
 
   <!-- ============ centre: phone — LCD + on-screen keypad ============ -->
   <section class="phone-panel">
-    <!-- run state, right above the LCD so it is in view wherever the
-         controls happen to sit (beside the phone, or scrolled off on a
-         narrow screen), with the two capture actions on the same row -->
-    <div class="status-row">
-      <div id="status" class="status idle"><span class="status-dot"></span><span id="status-text">idle</span></div>
-      <button type="button" id="btn-shot" class="icon-btn" disabled
-        title="Screenshot — save the LCD as a PNG" aria-label="Screenshot">
-        <svg viewBox="0 0 24 24"><path d="M9.2 2.5 7.6 4.5H4.2A2.2 2.2 0 0 0 2 6.7v11.1a2.2 2.2 0 0 0 2.2 2.2h15.6a2.2 2.2 0 0 0 2.2-2.2V6.7a2.2 2.2 0 0 0-2.2-2.2h-3.4l-1.6-2H9.2zM12 7.6a4.9 4.9 0 1 1 0 9.8 4.9 4.9 0 0 1 0-9.8zm0 2a2.9 2.9 0 1 0 0 5.8 2.9 2.9 0 0 0 0-5.8z"/></svg>
-      </button>
-      <button type="button" id="btn-record" class="icon-btn" disabled
-        title="Record the LCD to a .webm video" aria-label="Record">
-        <svg class="rec-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/></svg>
-        <svg class="rec-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg>
-        <span id="rec-time" class="rec-time"></span>
-      </button>
+    <!-- run state and the only Start/Stop there is, right above the LCD so
+         both are in view wherever the panels happen to sit, with the two
+         capture actions on the same row -->
+    <div class="status-block">
+      <div class="status-row">
+        <div id="status" class="status idle" data-state="idle">
+          <span class="status-dot"></span>
+          <!-- at phone widths the state text doubles as the way into the
+               Firmware sheet while idle; on desktop it is inert text -->
+          <button type="button" id="status-open" class="status-open"
+            aria-haspopup="dialog" disabled>
+            <span id="status-text">Idle</span>
+            <svg class="ico status-chev" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 9.5 12 15.5 18 9.5"/>
+            </svg>
+          </button>
+          <!-- app.js renders exactly one of Start/Stop/Cancel in here -->
+          <span id="pill-action" class="pill-action"></span>
+        </div>
+        <button type="button" id="btn-shot" class="icon-btn" disabled
+          title="Screenshot — save the LCD as a PNG" aria-label="Screenshot">
+          <svg viewBox="0 0 24 24"><path d="M9.2 2.5 7.6 4.5H4.2A2.2 2.2 0 0 0 2 6.7v11.1a2.2 2.2 0 0 0 2.2 2.2h15.6a2.2 2.2 0 0 0 2.2-2.2V6.7a2.2 2.2 0 0 0-2.2-2.2h-3.4l-1.6-2H9.2zM12 7.6a4.9 4.9 0 1 1 0 9.8 4.9 4.9 0 0 1 0-9.8zm0 2a2.9 2.9 0 1 0 0 5.8 2.9 2.9 0 0 0 0-5.8z"/></svg>
+        </button>
+        <button type="button" id="btn-record" class="icon-btn" disabled
+          title="Record the LCD to a .webm video" aria-label="Start recording">
+          <svg class="rec-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/></svg>
+          <!-- phone widths: a neutral camcorder, so nothing but the
+               emulator's own Stop reads as "stop" (see .rec-pill) -->
+          <svg class="rec-cam" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="2.6" y="6.6" width="12.6" height="10.8" rx="2.4"/>
+            <path d="M15.2 11 21 8.1v7.8l-5.8-2.9z"/>
+          </svg>
+          <svg class="rec-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg>
+          <span id="rec-time" class="rec-time"></span>
+        </button>
+        <!-- takes the record button's place while a capture runs (phone
+             widths only); "Finish" is the only verb for ending one -->
+        <div id="rec-pill" class="rec-pill" hidden>
+          <span class="rec-pill-dot"></span>
+          <span id="rec-pill-time" class="rec-pill-time">0:00</span>
+          <button type="button" id="btn-rec-finish" class="pill-btn outline danger"
+            aria-label="Finish recording">Finish</button>
+        </div>
+        <!-- phone widths only: the Run panel lives in a sheet there -->
+        <button type="button" id="btn-settings" class="icon-btn"
+          aria-haspopup="dialog" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.49.49 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.25.41.48.41h3.84c.23 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"/></svg>
+        </button>
+      </div>
+      <!-- the one-line reason whenever the pill's action is disabled -->
+      <p id="status-caption" class="status-caption" hidden></p>
     </div>
 
-    <div class="lcd-wrap">
-      <canvas id="lcd" width="132" height="176"></canvas>
-      <!-- the LCD doubles as the progress surface before the guest owns it:
-           fullflash download, boot, exit -->
-      <div id="lcd-overlay" class="lcd-overlay">
-        <div class="ov-body">
-          <div id="ov-msg" class="ov-msg">press “Start” to boot</div>
-          <div id="ov-bar" class="ov-bar" hidden><i></i></div>
-          <div id="ov-sub" class="ov-sub"></div>
-        </div>
-      </div>
-
-      <!-- side columns: float to the left/right of the LCD, vertically
-           centered on it — keyboards.js fills them per phone layout -->
+    <!-- side-key column | screen | side-key column -->
+    <div class="screen-row">
+      <!-- keyboards.js fills these per phone layout -->
       <div id="aux-keys-left" class="aux-keys-left">
         <button data-key="music"   title="Media key (note)">♪</button>
         <button data-key="play"    title="Play / pause">▶</button>
@@ -138,6 +151,25 @@
         <button data-key="vol_up"   title="Volume up">Vol+</button>
         <button data-key="vol_down" title="Volume down">Vol−</button>
       </div>
+
+      <!-- display:contents off the phone layout, so the screen sits in the
+           row exactly as it always did; a centring cell at phone widths,
+           where app.js sizes the box to the device's own aspect ratio -->
+      <div class="screen-cell">
+        <div class="lcd-wrap">
+          <canvas id="lcd" width="132" height="176"></canvas>
+          <!-- the LCD doubles as the progress surface before the guest owns
+               it: fullflash download, boot, exit -->
+          <div id="lcd-overlay" class="lcd-overlay">
+            <div class="ov-body">
+              <div id="ov-msg" class="ov-msg">Ready to boot</div>
+              <div id="ov-bar" class="ov-bar" hidden><i></i></div>
+              <div id="ov-sub" class="ov-sub"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- right-side twin (e.g. KE800 power/camera/MP3); stays empty and
            hidden until a board with auxRight keys is applied -->
       <div id="aux-keys-right" class="aux-keys-right"></div>
@@ -186,38 +218,47 @@
   </section>
 
   <!-- ============ right: post-start ============ -->
-  <section class="ctrl-panel post-panel">
-    <fieldset>
-      <legend>Run</legend>
-
-      <div class="btn-row">
-        <button type="button" id="btn-save-flash" disabled
-          title="The fullflash as the firmware left it">Download flash</button>
-        <button type="button" id="btn-save-efa" disabled
-          title="EFA block (LG EEPROM) — appears once the firmware wrote it">Download EFA</button>
-      </div>
-
-      <!-- which phone's keypad is drawn, and the letters engraved on it
-           (populated + handled in app.js) -->
-      <div class="kbd-row">
-        <label for="kbd-keyboard">Keyboard</label>
-        <select id="kbd-keyboard"></select>
-        <select id="kbd-variant" aria-label="Keyboard variant"
+  <section class="ctrl-panel post-panel" id="post-panel">
+    <div class="panel-card">
+      <div class="group">
+        <h2 class="group-title">Keyboard</h2>
+        <!-- which phone's keypad is drawn, and the letters engraved on it
+             (populated + handled in app.js) -->
+        <select id="kbd-keyboard" aria-label="Keyboard layout"
+          title="Which phone's keypad is drawn"></select>
+        <select id="kbd-variant" aria-label="Keyboard language"
           title="Letters engraved on the keys"></select>
+
+        <!-- app.js ticks this by default on desktop (a hovering, fine pointer)
+             and remembers the choice; it only toggles a body class -->
+        <label class="checkbox-label kbd-row-hints" for="kbd-hints">
+          <input type="checkbox" id="kbd-hints">
+          Show shortcuts on keys
+        </label>
+
+        <label class="checkbox-label" for="opt-hud" title="Guest speed, per second">
+          <input type="checkbox" id="opt-hud">
+          Performance HUD
+        </label>
       </div>
 
-      <!-- app.js ticks this by default on desktop (a hovering, fine pointer)
-           and remembers the choice; it only toggles a body class -->
-      <label class="checkbox-label kbd-row-hints" for="kbd-hints">
-        <input type="checkbox" id="kbd-hints">
-        show keyboard shortcuts on the keys
-      </label>
-
-      <label class="checkbox-label" for="opt-hud">
-        <input type="checkbox" id="opt-hud">
-        show performance HUD <small>(guest speed, per second)</small>
-      </label>
-    </fieldset>
+      <div class="group">
+        <h2 class="group-title">Export</h2>
+        <div class="export-row">
+          <button type="button" id="btn-save-flash" class="btn" disabled
+            title="The fullflash as the firmware left it">
+            <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
+            Flash
+          </button>
+          <button type="button" id="btn-save-efa" class="btn" disabled
+            title="EFA block (LG EEPROM) — what the firmware wrote to it">
+            <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
+            EFA
+          </button>
+        </div>
+        <p class="caption" id="export-caption">Available once running</p>
+      </div>
+    </div>
 
     <!-- unhidden by the serial poller as soon as the guest prints something -->
     <details class="serial-box" id="serial-box" open hidden>
@@ -235,6 +276,98 @@
   </section>
 
 </main>
+
+<!-- what a screen reader is told about things that have no visible text of
+     their own (a capture starting and being saved) -->
+<div id="live-region" class="sr-only" role="status" aria-live="polite"></div>
+
+<!-- ============ bottom sheets (phone widths) ============ -->
+<div id="sheet-scrim" class="sheet-scrim" hidden></div>
+
+<div id="sheet-firmware" class="sheet" role="dialog" aria-modal="true"
+  aria-labelledby="sheet-firmware-title" hidden>
+  <div class="sheet-handle" aria-hidden="true"></div>
+  <h2 class="sheet-title" id="sheet-firmware-title">Firmware</h2>
+  <div class="sheet-body" id="sheet-firmware-body"></div>
+  <button type="button" class="sheet-done" data-close>Done</button>
+</div>
+
+<div id="sheet-settings" class="sheet" role="dialog" aria-modal="true"
+  aria-labelledby="sheet-settings-title" hidden>
+  <div class="sheet-handle" aria-hidden="true"></div>
+  <h2 class="sheet-title" id="sheet-settings-title">Settings</h2>
+  <div class="sheet-body" id="sheet-settings-body"></div>
+  <button type="button" class="sheet-done" data-close>Done</button>
+</div>
+
+<!-- ============ the two Firmware modes (§1.3, §1.4) ============ -->
+<!-- Built once at startup and swapped in and out of #ff-mode-body, so the
+     mode that is not showing keeps its values in its detached subtree. -->
+<template id="tpl-ff-preset">
+  <div class="ff-body">
+    <select id="ff-preset" size="1" aria-label="Preset firmware"></select>
+    <div class="ff-status-row">
+      <span id="ff-preset-status" class="ff-status"></span>
+      <button type="button" id="ff-preset-delete" class="linkbtn" hidden>Clear cache</button>
+    </div>
+    <div id="ff-preset-bar" class="thin-bar" hidden><i></i></div>
+    <p id="ff-preset-device" class="ff-device"></p>
+  </div>
+</template>
+
+<template id="tpl-ff-own">
+  <div class="ff-body">
+    <span class="ff-label" id="ff-bin-label">Fullflash (.bin)</span>
+    <div class="ff-slot" id="ff-bin-slot">
+      <input type="file" id="fullflash" class="file-input" accept=".bin,.cfi-efa" multiple>
+      <label class="dropzone" id="ff-bin-zone" for="fullflash">
+        <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+        <span>Choose file or drop here</span>
+      </label>
+      <div class="chip" id="ff-bin-chip" hidden>
+        <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
+        <span class="chip-text">
+          <span class="chip-name" id="ff-bin-name"></span>
+          <span class="chip-size" id="ff-bin-size"></span>
+        </span>
+        <button type="button" class="chip-x" id="ff-bin-clear" aria-label="Remove the fullflash">
+          <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.71 12 12.01l-6.3-6.3-1.41 1.42 6.3 6.29-6.3 6.29 1.41 1.42 6.3-6.3 6.3 6.3 1.41-1.42-6.3-6.29 6.3-6.29z"/></svg>
+        </button>
+      </div>
+    </div>
+    <p class="inline-note" id="ff-bin-note" hidden></p>
+
+    <label class="ff-label" for="device">Device</label>
+    <select id="device" size="1">
+      <option value="" disabled selected>Select a device</option>
+    </select>
+    <p class="inline-note" id="ff-device-note" hidden></p>
+
+    <!-- app.js attaches this block only while an LG device is selected -->
+    <div class="ff-efa" id="ff-efa-block">
+      <span class="ff-label">EFA sidecar (.cfi-efa)</span>
+      <div class="ff-slot" id="ff-efa-slot">
+        <input type="file" id="ff-efa" class="file-input" accept=".cfi-efa">
+        <label class="dropzone dropzone-slim" id="ff-efa-zone" for="ff-efa">
+          <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+          <span>Choose file</span>
+        </label>
+        <div class="chip" id="ff-efa-chip" hidden>
+          <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
+          <span class="chip-text">
+            <span class="chip-name" id="ff-efa-name"></span>
+            <span class="chip-size" id="ff-efa-size"></span>
+          </span>
+          <button type="button" class="chip-x" id="ff-efa-clear" aria-label="Remove the EFA sidecar">
+            <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.71 12 12.01l-6.3-6.3-1.41 1.42 6.3 6.29-6.3 6.29 1.41 1.42 6.3-6.3 6.3 6.3 1.41-1.42-6.3-6.29 6.3-6.29z"/></svg>
+          </button>
+        </div>
+      </div>
+      <p class="inline-note" id="ff-efa-note" hidden></p>
+      <p class="hint">LG phones keep their EEPROM in the EFA block.</p>
+    </div>
+  </div>
+</template>
 
 <script type="module" src="app.js"></script>
 </body>

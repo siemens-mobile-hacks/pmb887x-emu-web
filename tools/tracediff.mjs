@@ -5,6 +5,7 @@ async function run(port) {
   const b = await chromium.launch({ headless: true });
   const p = await b.newPage();
   await p.goto(`http://127.0.0.1:${port}/?qargs=-d exec,nochain -D /e.log`, { waitUntil: "domcontentloaded" });
+  await p.click("#ff-mode-own");
   await p.setInputFiles("#fullflash", fullflash);
   await p.click("#btn-start");
   await new Promise((r) => setTimeout(r, port === "8082" ? 40000 : 45000));

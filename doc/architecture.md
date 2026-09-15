@@ -151,10 +151,23 @@ packed calendar).
 
 ### Page (site/)
 
-- Fullflash picker (own file or preset — `fullflashes.js` inventory, Cache
-  API storage) → file bytes written into the emscripten MEMFS; options
-  (IMEI/ESN→OTP, SIM, operator, startup, rw) become `PMB887X_*` env vars —
-  the exact set the pmb887x-emu `load` tool uses.
+- Firmware panel: a Preset/Own file mode switch (presets come from the
+  `fullflashes.js` inventory and live in Cache API storage; own files are
+  picked or dropped, `.bin` plus an optional `.cfi-efa` for LG) → file
+  bytes written into the emscripten MEMFS; Advanced options (IMEI/ESN→OTP,
+  SIM, operator, startup) become `PMB887X_*` env vars — the exact set the
+  pmb887x-emu `load` tool uses. The panel is `disabled` while a guest runs.
+- The status pill above the screen carries the run state and the only
+  Start/Stop/Cancel there is (`window.__ui` mirrors that state for the
+  drivers in `tools/`). A capture in progress is a second pill beside it,
+  ended with **Finish** — "Stop" only ever means the emulator.
+- At phone widths (< 600px) the page is one `100dvh` column with no scroll:
+  a single 32px row (state/firmware pill, screenshot, record, settings),
+  the screen at the board's own `[peripheral.LCD0]` aspect ratio flanked by
+  thin edge tabs for the side keys, and the keypad pinned to the bottom
+  (`--key-h: clamp(30px, 6.5dvh, 44px)`, never clipped). The Firmware and
+  Run panels move into two bottom sheets. `tools/ui-acceptance.mjs` checks
+  all of this, `tools/uidiff.mjs` that the keypad itself did not move.
 - `boards.tar` unpacked into `/boards`; qemu args mirror the native
   launcher (`-display wasm -icount shift=3,sleep=off -machine pmb887x
   -drive if=pflash… -serial file:/serial.log`; no `-icount` for `lg-*`

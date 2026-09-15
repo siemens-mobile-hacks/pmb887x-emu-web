@@ -71,7 +71,7 @@ const WATCH = `
       window.__mx.v = Number(m._wasm_vclock()) / 1e9;
       window.__mx.insns = Number(m._wasm_insns());
       window.__mx.fb = Number(m._wasm_fb_updates());
-      window.__mx.status = document.querySelector("#status")?.textContent || "";
+      window.__mx.status = window.__ui?.state || "";
     } catch {}
   }, 3000);
 `;
@@ -83,6 +83,7 @@ for (const r of runs) {
   await page.goto(`http://127.0.0.1:${PORT}/${r.query ? "?" + r.query : ""}`, { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.addScriptTag({ content: WATCH });
   await page.selectOption("#startup", "ONLINE");
+  await page.click("#ff-mode-own");
   await page.setInputFiles("#fullflash", r.files);
   await page.click("#btn-start");
   pages.push({ ...r, page });

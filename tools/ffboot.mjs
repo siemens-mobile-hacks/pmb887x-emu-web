@@ -44,6 +44,7 @@ p.on("crash", () => { errs.push("PAGE CRASH"); console.log("  [crash] page crash
 
 await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
 await p.selectOption("#startup", "ONLINE");
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 const t0 = Date.now();
 await p.click("#btn-start");

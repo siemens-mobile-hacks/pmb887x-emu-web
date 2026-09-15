@@ -28,6 +28,7 @@ await p.addScriptTag({ content: `
       spec.map((s) => s.n + "=" + (s.n.startsWith("x") ? "0x" + g(s.i).toString(16) : g(s.i))).join(" "));
   }, ${iv * 1000});
 ` });
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 await new Promise((r) => setTimeout(r, secs * 1000));

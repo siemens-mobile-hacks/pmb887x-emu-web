@@ -10,6 +10,7 @@ const mode = process.argv[5] === "thumb" ? "-Mforce-thumb" : "";
 const b = await chromium.launch({ headless: true });
 const p = await b.newPage();
 await p.goto(`http://127.0.0.1:${process.env.PORT || 8080}/?dist=${dist}`, { waitUntil: "domcontentloaded" });
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 await new Promise(r => setTimeout(r, wait * 1000));

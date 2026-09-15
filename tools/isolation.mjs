@@ -19,7 +19,7 @@ const check = async (url) => {
   const r = await page.evaluate(() => ({
     isolated: crossOriginIsolated,
     sab: typeof SharedArrayBuffer,
-    status: document.getElementById("status").textContent,
+    status: document.getElementById("status-text").textContent,
   }));
   await page.close();
   console.log(url, JSON.stringify(r));

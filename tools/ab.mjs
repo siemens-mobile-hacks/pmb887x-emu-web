@@ -49,6 +49,7 @@ async function runVariant(browser, tag, q) {
   try {
     await page.goto(`http://127.0.0.1:${PORT}/?${q}`, { waitUntil: "networkidle", timeout: 120000 });
     await page.selectOption("#startup", "ONLINE");
+    await page.click("#ff-mode-own");
     await page.setInputFiles("#fullflash", fullflash);
     await page.click("#btn-start");
   } catch (e) {
@@ -69,7 +70,7 @@ async function runVariant(browser, tag, q) {
         try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch {}
         return {
           insns: g("_wasm_insns"), tbs: g("_wasm_tbs"), fb: g("_wasm_fb_updates"),
-          ser, status: document.querySelector("#status")?.textContent || "",
+          ser, status: document.querySelector("#status-text")?.textContent || "",
         };
       })
       .catch((e) => ({ evalErr: String(e).slice(0, 150) }));

@@ -67,6 +67,7 @@ let tPage = null, tModule = null, tV05 = null, tV2 = null, lastV = null;
 let lastStatus = "";
 await p.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
 tPage = (Date.now() - t0) / 1000;
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 
@@ -80,7 +81,7 @@ while ((Date.now() - t0) / 1000 < secs) {
     .catch(() => null);
   if (v !== null) lastV = v;
   lastStatus = await p
-    .evaluate(() => document.querySelector("#status")?.textContent || "")
+    .evaluate(() => document.querySelector("#status-text")?.textContent || "")
     .catch(() => lastStatus);
   const t = (Date.now() - t0) / 1000;
   if (v !== null && tModule === null) tModule = t;

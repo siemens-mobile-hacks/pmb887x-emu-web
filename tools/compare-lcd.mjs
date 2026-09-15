@@ -16,6 +16,7 @@ let exitSeen = false;
 page.on("console", (m) => { if (m.text().includes(">>EXIT<<")) exitSeen = true; });
 await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/`, { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", "ONLINE");
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 

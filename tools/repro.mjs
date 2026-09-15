@@ -43,6 +43,7 @@ for (let a = 1; a <= attempts && captured < 1; a++) {
           " insns=" + (m._wasm_insns ? Number(m._wasm_insns()) : 0) + " serial=" + sl);
       }, 10000);
     `});
+    await p.click("#ff-mode-own");
     await p.setInputFiles("#fullflash", fullflash);
     await p.click("#btn-start");
     await new Promise((r) => setTimeout(r, secs * 1000));

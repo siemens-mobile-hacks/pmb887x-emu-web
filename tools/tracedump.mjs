@@ -10,6 +10,7 @@ const page = await browser.newPage();
 const lines = [];
 page.on("console", (m) => { if (m.type() === "log") lines.push(m.text()); });
 await page.goto("http://127.0.0.1:8080/?" + q, { waitUntil: "networkidle", timeout: 120000 });
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, waitS * 1000));

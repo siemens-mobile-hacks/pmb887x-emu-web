@@ -117,6 +117,7 @@ await p.addScriptTag({ content: `
       " insns=" + (m._wasm_insns ? Number(m._wasm_insns()) : 0));
   }, 10000);
 ` });
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 const tEnd = Date.now() + secs * 1000;

@@ -74,6 +74,7 @@ await p.addScriptTag({ content: `
     }));
   }, ${iv * 1000});
 ` });
+await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
 await new Promise((r) => setTimeout(r, secs * 1000));

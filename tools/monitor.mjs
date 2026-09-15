@@ -17,6 +17,7 @@ page.on("console", (m) => {
   console.log("[page]", m.type(), t.slice(0, 200));
 });
 await page.goto("http://127.0.0.1:8080/", { waitUntil: "networkidle", timeout: 120000 });
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 console.log("booted; monitoring for", totalS, "s");
@@ -27,7 +28,7 @@ for (let t = 0; t < totalS; t += everyS) {
     const m = window.__qemu ?? null;
     const el = document.getElementById("serial");
     return {
-      status: document.getElementById("status").textContent,
+      status: document.getElementById("status-text").textContent,
       serialLen: el.textContent.length,
       serialTail: el.textContent.slice(-80).replace(/\n/g, "\\n"),
     };

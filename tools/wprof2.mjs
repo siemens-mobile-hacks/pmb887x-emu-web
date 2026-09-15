@@ -66,6 +66,7 @@ try {
     }, 10000);
   `});
   if (!query.includes("suite=")) {
+    await page.click("#ff-mode-own");
     await page.setInputFiles("#fullflash", fullflash);
     await page.click("#btn-start");
   }

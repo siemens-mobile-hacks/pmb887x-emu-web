@@ -6,6 +6,7 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 page.on("console", (m) => { const t = m.text(); if (t.startsWith("WATCH")) console.log("[page]", t.slice(0, 120)); });
 await page.goto("http://127.0.0.1:8080/?qargs=-d exec -D /exec.log", { waitUntil: "networkidle" });
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, waitS * 1000));

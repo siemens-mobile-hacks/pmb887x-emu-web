@@ -12,18 +12,22 @@ runtime, ~7.4× TCI on compute, ~28 MB download) and the TCI interpreter
 only with `TCI=1`). See [doc/lessons.md](doc/lessons.md) +
 [doc/performance-handoff.md](doc/performance-handoff.md).
 
-The page has a fullflash file picker (multi-select: LG fullflashes can be
-picked together with their `.cfi-efa` sidecar — the EFA block holding the
-LG EEPROM; a missing EFA makes LG firmware factory-reset) plus a dropdown
-of predefined fullflashes (inventory: `site/fullflashes.js`; currently
-S75 v40, EL71 v41 and KE800 v11b + EFA, fetched from `git.siepatch.dev`):
-pressing Start with one selected downloads it on first use (live progress;
-the trash icon next to the dropdown drops the cached copy) and keeps it in
-the browser's Cache API storage — later boots come straight from the cache,
-an alternative to uploading your own file. Then all `load` options (device
-inference, IMEI/ESN→OTP, SIM, operator, startup scenario, writable-flash)
-and an on-screen keypad with every phone key as its own `<button>` (plus
-physical-keyboard mapping).
+The page's **Firmware** panel is a two-way switch: **Preset** picks from a
+dropdown of predefined fullflashes (inventory: `site/fullflashes.js`;
+currently S75 v40, EL71 v41 and KE800 v11b + EFA, fetched from
+`git.siepatch.dev`) — pressing Start downloads it on first use (live
+progress; one status line says whether it is cached, and a **Clear cache**
+link drops the local copy) and keeps it in the browser's Cache API storage,
+so later boots come straight from the cache. **Own file** takes a `.bin` of
+your own, dropped or picked; LG fullflashes can be picked together with
+their `.cfi-efa` sidecar in one go — the EFA block holding the LG EEPROM, a
+missing one makes LG firmware factory-reset — and the sidecar picker only
+appears once an LG device is selected. Start/Stop live in the status pill
+above the screen, the **Run** panel holds the keypad/HUD settings and the
+flash + EFA exports, and the on-screen keypad has every phone key as its
+own `<button>` (plus physical-keyboard mapping). `load` options (device
+inference, IMEI/ESN→OTP, SIM, operator, startup scenario) are under
+**Advanced**.
 
 ## Running it (experimental)
 

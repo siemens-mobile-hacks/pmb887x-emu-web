@@ -17,6 +17,7 @@ await page.goto(
   `http://127.0.0.1:${port}/?dist=${dist}&lockstep=1&ls-insns=2000000` +
   `&qargs=` + encodeURIComponent("-accel tcg,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,clock=vm"),
   { waitUntil: "domcontentloaded", timeout: 60000 });
+await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", "/workspace/fullflashes/s75_working20060710172101.bin");
 await page.click("#btn-start");
 console.log("started");
@@ -29,7 +30,7 @@ for (let t = 0; t < secs; t += 10) {
       ls = m && m.FS ? m.FS.readFile("/lockstep.log", { encoding: "utf8" }) : null;
     } catch (e) { ls = "n/a"; }
     return {
-      status: document.querySelector("#status")?.textContent || "?",
+      status: document.querySelector("#status-text")?.textContent || "?",
       lsLines: ls ? ls.split("\n").length : 0,
       lsHead: ls ? ls.split("\n")[0] : null,
       lsTail: ls ? ls.split("\n").slice(-2, -1)[0] : null,
