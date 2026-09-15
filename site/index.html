@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- deliberately NOT viewport-fit=cover: that lets the viewport run behind the
+     system bars, and Chrome for Android then reports safe-area-inset-bottom as
+     0 anyway, so the phone column's last keypad row ends up under the gesture
+     bar with nothing to subtract. Without it the viewport is the safe area. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>qemu-pmb887x — Siemens/LG phone emulator (WASM)</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -157,6 +161,16 @@
           <button type="button" id="btn-rec-finish" class="pill-btn outline danger"
             aria-label="Finish recording">Finish</button>
         </div>
+        <!-- The browser and system bars are most of the height the keypad is
+             competing for on a phone, and fullscreen is the only way to get
+             them back. app.js hides this where the Fullscreen API is not
+             available (iOS Safari). -->
+        <button type="button" id="btn-fullscreen" class="icon-btn"
+          title="Fullscreen — hide the browser and navigation bars"
+          aria-label="Enter fullscreen" aria-pressed="false" hidden>
+          <svg class="fs-in" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4v2H6v3H4zm11-5h4a1 1 0 0 1 1 1v4h-2V6h-3V4zM4 15h2v3h3v2H5a1 1 0 0 1-1-1v-4zm16 0v4a1 1 0 0 1-1 1h-4v-2h3v-3h2z"/></svg>
+          <svg class="fs-out" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v3H6v2H4V5a1 1 0 0 1 1-1h4zm6 0h4a1 1 0 0 1 1 1v4h-2V7h-3V4zM4 15h2v3h3v2H5a1 1 0 0 1-1-1v-4zm16 0v4a1 1 0 0 1-1 1h-4v-2h3v-3h2z"/></svg>
+        </button>
         <!-- phone widths only: the Run panel lives in a sheet there -->
         <button type="button" id="btn-settings" class="icon-btn"
           aria-haspopup="dialog" aria-label="Settings">
@@ -389,10 +403,11 @@
       </label>
       <div class="chip" id="ff-bin-chip" hidden>
         <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
-        <span class="chip-text">
+        <button type="button" class="chip-text chip-open" id="ff-bin-pick"
+          aria-label="Choose a different fullflash">
           <span class="chip-name" id="ff-bin-name"></span>
           <span class="chip-size" id="ff-bin-size"></span>
-        </span>
+        </button>
         <button type="button" class="chip-x" id="ff-bin-clear" aria-label="Remove the fullflash">
           <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.71 12 12.01l-6.3-6.3-1.41 1.42 6.3 6.29-6.3 6.29 1.41 1.42 6.3-6.3 6.3 6.3 1.41-1.42-6.3-6.29 6.3-6.29z"/></svg>
         </button>
@@ -417,10 +432,11 @@
         </label>
         <div class="chip" id="ff-efa-chip" hidden>
           <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
-          <span class="chip-text">
+          <button type="button" class="chip-text chip-open" id="ff-efa-pick"
+            aria-label="Choose a different EFA sidecar">
             <span class="chip-name" id="ff-efa-name"></span>
             <span class="chip-size" id="ff-efa-size"></span>
-          </span>
+          </button>
           <button type="button" class="chip-x" id="ff-efa-clear" aria-label="Remove the EFA sidecar">
             <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.71 12 12.01l-6.3-6.3-1.41 1.42 6.3 6.29-6.3 6.29 1.41 1.42 6.3-6.3 6.3 6.3 1.41-1.42-6.3-6.29 6.3-6.29z"/></svg>
           </button>

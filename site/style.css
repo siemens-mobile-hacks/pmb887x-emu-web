@@ -536,6 +536,12 @@ label:has(> input:disabled), label:has(> select:disabled) { color: var(--muted);
   padding: 0.5rem 0.55rem; border: 1px solid var(--border);
   border-radius: 8px; background: var(--bg); color: var(--muted);
 }
+/* one icon, two states: the second arrow set only while actually fullscreen */
+#btn-fullscreen .fs-out { display: none; }
+body.is-fullscreen #btn-fullscreen .fs-in { display: none; }
+body.is-fullscreen #btn-fullscreen .fs-out { display: block; }
+body.is-fullscreen #btn-fullscreen { color: var(--accent); }
+
 .chip-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 /* the name doubles as the way back to the file picker, so it is a real button
    — which the fieldset also disables for free while a guest runs */
@@ -709,16 +715,23 @@ fieldset:disabled .advanced summary { pointer-events: none; }
      100dvh is not the area actually on screen on Chrome for Android while the
      URL bar is showing, and the column's last rows — the keypad — end up under
      the browser chrome. 100dvh stays as the pre-JS fallback. */
-  html, body { height: var(--app-h, 100dvh); overflow: hidden; }
+  /* `min-height: 0` is not redundant: the base rule gives body
+     `min-height: 100vh`, min-height beats height, and Chrome for Android keeps
+     100vh at the URL-bar-*retracted* height. The column was therefore floored
+     at ~80px taller than the viewport it had to fit in, which is what pushed
+     the keypad's last row off the bottom. Headless never shows it — there
+     100vh == innerHeight and the floor is a no-op. */
+  html, body { height: var(--app-h, 100dvh); min-height: 0; overflow: hidden; }
   body { display: flex; flex-direction: column; }
   header { display: none; }
   /* 8px each side is what §2's 48px of non-screen width is measured from;
      the block padding and the gaps are trimmed to 6px so the screen box
      gets every pixel the control row and the keypad do not need.
-     The page is `viewport-fit=cover`, so the viewport runs *behind* the
-     system bars: without the safe-area insets the bottom of the column —
-     the keypad's last row — sits under Android's gesture bar. The insets
-     are 0 wherever there are no such bars, and 0 in fullscreen. */
+     The insets are belt-and-braces: the page is deliberately not
+     `viewport-fit=cover` (see index.html), so the viewport already stops
+     above the system bars and every inset reads 0 — but if that meta ever
+     comes back, these keep the keypad's last row off Android's gesture
+     bar instead of under it. */
   main {
     flex: 1; min-height: 0; display: flex; flex-direction: column;
     gap: 0;
@@ -759,18 +772,17 @@ fieldset:disabled .advanced summary { pointer-events: none; }
   .status-caption { display: none; }
 
   /* screen row: edge keys | screen box | edge keys, 2px gaps (§2).
-     The row is exactly as tall as the box fitScreen() sized (flex: none, not
-     flex: 1) — growing it would only push slack between the screen and the
-     keypad. `margin-top: auto` here and `margin-bottom: auto` on the keypad
-     are a facing pair, so the free space splits evenly above the screen and
-     below the keypad instead of piling up in the middle. */
+     `flex: 1; min-height: 0` is what makes the column correct by
+     construction: the status row and the keypad keep their natural heights,
+     the row is handed exactly what is left, and the three can never add up to
+     more than the column. The screen box is then fitted *inside* the row, so
+     no arithmetic of ours can push the keypad off the bottom. */
   .screen-row {
-    position: static; flex: none; min-height: 0; width: 100%;
-    margin-top: auto;
+    position: static; flex: 1; min-height: 0; width: 100%;
     display: flex; align-items: flex-start; gap: 2px;
   }
   .screen-cell {
-    display: flex; flex: 1; min-width: 0;
+    display: flex; flex: 1; min-width: 0; height: 100%;
     align-items: flex-start; justify-content: center;
   }
   /* thin edge tabs, top-aligned 34px below the top of the screen box */
@@ -831,7 +843,7 @@ fieldset:disabled .advanced summary { pointer-events: none; }
      is never the thing that gets clipped */
   .keypad {
     --key-h: clamp(30px, calc(var(--app-h, 100dvh) * 0.065), 44px);
-    flex: none; margin-bottom: auto; width: 320px; max-width: 100%;
+    flex: none; margin-top: auto; width: 320px; max-width: 100%;
   }
   .keypad .krow > button { min-height: var(--key-h); }
   .keypad button { padding-block: 0; justify-content: center; }

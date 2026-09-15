@@ -213,13 +213,55 @@ packed calendar).
   Start/Stop/Cancel there is (`window.__ui` mirrors that state for the
   drivers in `tools/`). A capture in progress is a second pill beside it,
   ended with **Finish** — "Stop" only ever means the emulator.
-- At phone widths (< 600px) the page is one `100dvh` column with no scroll:
-  a single 32px row (state/firmware pill, screenshot, record, settings),
-  the screen at the board's own `[peripheral.LCD0]` aspect ratio flanked by
-  thin edge tabs for the side keys, and the keypad pinned to the bottom
-  (`--key-h: clamp(30px, 6.5dvh, 44px)`, never clipped). The Firmware and
-  Run panels move into two bottom sheets. `tools/ui-acceptance.mjs` checks
-  all of this, `tools/uidiff.mjs` that the keypad itself did not move.
+- At phone widths (< 600px) the page is one column with no scroll: a single
+  32px row (state/firmware pill, screenshot, record, settings), the screen at
+  the board's own `[peripheral.LCD0]` aspect ratio flanked by thin edge tabs
+  for the side keys, and the keypad, which keeps its natural height
+  (`--key-h`) while `fitScreen()` gives the screen box whatever is left. The
+  Firmware and Run panels move into two bottom sheets.
+  `tools/ui-acceptance.mjs` checks all of this, `tools/uidiff.mjs` that the
+  keypad itself did not move. Three things about the height are not obvious,
+  and headless Chromium shows none of them — only a real phone does:
+  - `100dvh` is not what is on screen on Chrome for Android while the URL bar
+    is showing, so the column's height is `--app-h`, published from
+    `visualViewport.height` by `syncAppHeight()` (ignored while pinch-zoomed;
+    `100dvh` is the pre-JS fallback).
+  - **`min-height: 0` on `html, body` is load-bearing.** The base rule floors
+    body at `min-height: 100vh`, min-height beats height, and Chrome for
+    Android resolves `100vh` to the URL-bar-*retracted* height — so without the
+    reset the column is floored ~80px taller than the viewport it must fit in,
+    and the keypad's last row goes under the bottom edge. This was the actual
+    cause of "the keypad does not fit", and headless cannot see it: there
+    `100vh == innerHeight` and the floor is a no-op. `?vp=1` named it — the
+    phone reported `screen 559` where flex should have given 479, and a row
+    that overshoots its flex share means an ancestor is taller than the
+    viewport, not that the viewport was mis-measured. Reproduce it in a
+    headless phone context with `:where(body){min-height:947px}`.
+  - **The column is correct by construction, and `fitScreen()` must never
+    compute a height budget of its own.** `.screen-row` is `flex: 1;
+    min-height: 0`: the status row and the keypad keep their natural heights,
+    the browser hands the row exactly what is left, and `fitScreen()` only
+    fits the box *inside* the flex-resolved `.screen-cell` rect. Deriving a
+    budget in JS instead (from `.phone-panel`'s rect, or `innerHeight` minus
+    padding) is self-concealing: a box that is too tall grows the very
+    measurement the next fit reads, so it never converges. Three viewport
+    theories — `dvh`, `visualViewport`, safe-area insets — and a `--sysbar`
+    fudge constant were spent on the `min-height` bug above before this was
+    restored. If the keypad is ever clipped again, check the body floor first.
+  - `viewport-fit=cover` is deliberately not set, so the viewport stops above
+    the system bars and the `env(safe-area-inset-*)` on `main` read 0; they
+    are kept only in case that meta returns.
+  - `#btn-fullscreen`, the control row's third icon (after the recorder), is
+    the only way to get the browser and system bars back — worth ~80px on a
+    phone. It needs a user gesture, syncs
+    on `fullscreenchange` (swipe/Back/Esc never go through the button), and is
+    hidden where the Fullscreen API is not available (iOS Safari).
+  - `?vp=1` draws that budget on the page, since this class of bug is reported
+    with a screenshot and the numbers have to be inside it.
+  `diagnostics()` reports the resulting budget under `viewport` (`inner`,
+  `visual`, `appH`, `safeAreaBottom`, the three column heights and `fits`), so
+  a "the keypad does not fit" report carries numbers rather than a
+  description.
 - `boards.tar` unpacked into `/boards`; qemu args mirror the native
   launcher (`-display wasm -icount shift=3,sleep=off -machine pmb887x
   -drive if=pflash… -serial file:/serial.log`; no `-icount` for `lg-*`

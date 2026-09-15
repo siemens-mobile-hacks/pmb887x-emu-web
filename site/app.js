@@ -189,6 +189,11 @@ const hudChk = $("opt-hud");
 // render() reaches the HUD, and render() runs while the HUD section further
 // down is still in its temporal dead zone
 let hudReady = false;
+// render() hides this one while a capture runs, and render() likewise runs
+// before the fullscreen section further down — so it is declared up here.
+// iOS Safari has no Fullscreen API on anything but a <video>.
+const fsBtn = $("btn-fullscreen");
+const fsSupported = !!document.documentElement.requestFullscreen;
 
 function fmtMiB(bytes) {
   const m = bytes / (1024 * 1024);
@@ -771,6 +776,11 @@ function render() {
   const pillRec = !!recorder && phoneLayout.matches;
   $("rec-pill").hidden = !pillRec;
   recBtn.hidden = pillRec;
+  // The recording pill needs the record button's width and a little more: at
+  // 320px the two pills plus four icons no longer fit the one 32px row. So
+  // fullscreen stands down while a capture runs — it is not something to
+  // toggle mid-capture anyway, since it resizes the canvas under the recorder.
+  if (fsSupported) fsBtn.hidden = pillRec;
   const finishing = !!recorder && !pillRec;
   recBtn.title = finishing ? "Finish recording and save the .webm"
     : recBtn.dataset.unsupported ? "this browser has no MediaRecorder"
@@ -2211,7 +2221,6 @@ function scrollToPhone() {
 const lcdWrap = document.querySelector(".lcd-wrap");
 const screenCell = document.querySelector(".screen-cell");
 const keypadEl = document.getElementById("keypad");
-const screenRow = document.querySelector(".screen-row");
 
 function screenAspect() {
   // a live guest's framebuffer beats the board config
@@ -2224,34 +2233,21 @@ function fitScreen() {
   if (!phoneLayout.matches) {
     lcdWrap.style.removeProperty("width");
     lcdWrap.style.removeProperty("height");
-    screenRow.style.removeProperty("height");
     return;
   }
-  const availW = screenCell.getBoundingClientRect().width;
-  if (!availW) return;
-  // The row is content-sized now, so its own height cannot be the budget —
-  // that would be circular. The keypad is the floor: it keeps its natural
-  // height and the box takes only what the column has left over.
-  const panelH = phonePanel.getBoundingClientRect().height;
-  if (!panelH) return;
-  const gap = parseFloat(getComputedStyle(phonePanel).rowGap) || 0;
-  const availH = Math.max(
-    panelH - statusBlock.getBoundingClientRect().height
-      - keypadEl.getBoundingClientRect().height - gap * 2,
-    80); // a viewport too short for both shrinks the box, never clips the keypad
+  // The row is `flex: 1; min-height: 0`, so this rect is exactly what the
+  // column has left once the status row and the keypad have taken their
+  // natural heights — the browser has already done the constraint solving.
+  // Fitting the box inside it is the whole job; there is no budget to compute
+  // and nothing here can make the column taller than the viewport.
+  const cell = screenCell.getBoundingClientRect();
+  if (!cell.width || !cell.height) return;
   const ar = screenAspect();
-  let w = availW, h = w / ar;
-  if (h > availH) { h = availH; w = h * ar; } // height is tighter
-  // only write on a real change: this function sets the height of the element
-  // the ResizeObserver below watches
+  let w = cell.width, h = w / ar;
+  if (h > cell.height) { h = cell.height; w = h * ar; } // height is tighter
   const wPx = Math.floor(w) + "px", hPx = Math.floor(h) + "px";
   if (lcdWrap.style.width !== wPx) lcdWrap.style.width = wPx;
   if (lcdWrap.style.height !== hPx) lcdWrap.style.height = hPx;
-  // The row is as tall as the box, never as tall as its tallest child: on a
-  // short viewport the edge-key columns are taller than the box, and letting
-  // them set the height would push the keypad off the bottom. They overflow
-  // the row instead, which is what the flex layout used to do implicitly.
-  if (screenRow.style.height !== hPx) screenRow.style.height = hPx;
 }
 
 // 100dvh is not the visible area on Chrome for Android while the URL bar is
@@ -2269,7 +2265,7 @@ let fitPending = 0;
 function scheduleFit() {
   cancelAnimationFrame(fitPending);
   fitPending = requestAnimationFrame(() => {
-    syncAppHeight(); fitPhone(); fitScreen(); refitHud();
+    syncAppHeight(); fitPhone(); fitScreen(); refitHud(); drawVpProbe();
   });
 }
 window.addEventListener("resize", scheduleFit);
@@ -2593,28 +2589,64 @@ hudChk.addEventListener("change", () => {
    biggest competitor for height, and the only way to get them back is to ask
    for the whole screen. Requires a user gesture, which the tick is. ---- */
 
-const fsChk = $("opt-fullscreen");
-const fsRow = $("opt-fullscreen-row");
-// iOS Safari has no Fullscreen API on anything but a <video>: no row there
-// rather than a tick that does nothing
-if (document.documentElement.requestFullscreen) fsRow.hidden = false;
+// no button where the API is missing, rather than one that does nothing
+if (fsSupported) fsBtn.hidden = false;
 
-fsChk.addEventListener("change", async () => {
+fsBtn.addEventListener("click", async () => {
   try {
-    if (fsChk.checked) await document.documentElement.requestFullscreen({ navigationUI: "hide" });
-    else if (document.fullscreenElement) await document.exitFullscreen();
-  } catch {
-    // a refused request (no gesture, or the browser says no) must not leave
-    // the tick claiming something that did not happen
-    fsChk.checked = !!document.fullscreenElement;
-  }
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+  } catch { /* refused (no gesture, or the browser says no): syncFsBtn stands */ }
+  syncFsBtn();
 });
 
-// leaving fullscreen by swipe, Back or Esc never goes through the tick
+function syncFsBtn() {
+  const on = !!document.fullscreenElement;
+  fsBtn.setAttribute("aria-pressed", String(on));
+  fsBtn.setAttribute("aria-label", on ? "Leave fullscreen" : "Enter fullscreen");
+  document.body.classList.toggle("is-fullscreen", on);
+}
+
+// leaving fullscreen by swipe, Back or Esc never goes through the button
 document.addEventListener("fullscreenchange", () => {
-  fsChk.checked = !!document.fullscreenElement;
+  syncFsBtn();
   scheduleFit();   // the visible viewport just changed by the height of two bars
 });
+
+/* ?vp=1 — the height budget drawn on the page, because "the keypad does not
+ * fit" is reported with a screenshot and the numbers have to be in it. The
+ * browsers disagree about which of inner/visual/client is the area actually
+ * on screen; this is what says which one to believe. */
+let vpEl = null;
+const vpForced = new URLSearchParams(location.search).get("vp") === "1";
+
+function vpProbeEl() {
+  if (vpEl) return vpEl;
+  vpEl = document.createElement("pre");
+  vpEl.id = "vp-probe";
+  vpEl.style.cssText = "position:fixed;left:0;top:0;z-index:9999;margin:0;"
+    + "padding:3px 5px;background:rgba(0,0,0,.82);color:#7ef2a0;font:10px/1.35 "
+    + "ui-monospace,monospace;pointer-events:none;white-space:pre;max-width:100%";
+  document.body.appendChild(vpEl);
+  return vpEl;
+}
+
+function drawVpProbe() {
+  if (!phoneLayout.matches) { if (vpEl) vpEl.hidden = true; return; }
+  const v = viewportReport();
+  // Self-shows only when the browser's *own* numbers say the column
+  // overflows. That will not catch the edge-to-edge case this exists for —
+  // there the numbers claim it fits — so ?vp=1 stays the way to ask for it.
+  if (!vpForced && v.fits) { if (vpEl) vpEl.hidden = true; return; }
+  vpEl = vpProbeEl();
+  vpEl.hidden = false;
+  vpEl.textContent =
+    `inner ${v.inner}  visual ${v.visual}  client ${v.client}\n`
+    + `appH ${v.appH}  outer ${v.outer}  screen ${v.screenH}  dpr ${v.dpr}\n`
+    + `safeBottom ${v.safeAreaBottom}  fs ${v.fullscreen ? 1 : 0}\n`
+    + `status ${v.status}  screen ${v.screen}  keypad ${v.keypad}\n`
+    + `used ${v.used}  budget ${v.budget}  fits ${v.fits ? "YES" : "NO"}`;
+}
 
 // What the column had to divide up, so a "the keypad does not fit" report
 // carries the numbers instead of a description.
@@ -2622,16 +2654,21 @@ function viewportReport() {
   const px = (v) => Math.round(parseFloat(v) || 0);
   const cs = getComputedStyle(document.querySelector("main"));
   const R = (s) => Math.round(document.querySelector(s)?.getBoundingClientRect().height ?? 0);
+  const used = R(".status-block") + R(".screen-row") + R("#keypad") + 12;
   return {
     inner: window.innerHeight,
     visual: Math.round(window.visualViewport?.height ?? 0),
     appH: px(getComputedStyle(document.documentElement).getPropertyValue("--app-h")),
+    // the three the browser disagrees about when it lays out edge-to-edge
+    client: document.documentElement.clientHeight,
+    screenH: window.screen?.height ?? null,
+    outer: window.outerHeight,
     safeAreaBottom: px(cs.paddingBottom) - 6,
     dpr: +devicePixelRatio.toFixed(2),
     fullscreen: !!document.fullscreenElement,
     status: R(".status-block"), screen: R(".screen-row"), keypad: R("#keypad"),
-    fits: R(".status-block") + R(".screen-row") + R("#keypad") + 12
-      <= window.innerHeight - px(cs.paddingTop) - px(cs.paddingBottom) + 1,
+    used, budget: window.innerHeight - px(cs.paddingTop) - px(cs.paddingBottom),
+    fits: used <= window.innerHeight - px(cs.paddingTop) - px(cs.paddingBottom) + 1,
   };
 }
 

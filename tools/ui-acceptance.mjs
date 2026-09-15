@@ -374,7 +374,7 @@ ok("v2.1 exactly one row above the screen", await page.evaluate(() => {
 }));
 ok("v2.1 row is 32px tall", await page.$eval(".status-row", (e) =>
   Math.round(e.getBoundingClientRect().height) === 32));
-ok("v2.1 pill + three 28px buttons", await page.evaluate(() => {
+ok("v2.1 pill + four 28px buttons", await page.evaluate(() => {
   const row = document.querySelector(".status-row");
   const ids = [...row.children].map((e) => e.id);
   const sq = (id) => {
@@ -382,10 +382,10 @@ ok("v2.1 pill + three 28px buttons", await page.evaluate(() => {
     return Math.round(r.width) === 28 && Math.round(r.height) === 28;
   };
   // rec-pill sits in the record button's place and is hidden until a
-  // capture runs (recording criteria §2)
-  return ids.join() === "status,btn-shot,btn-record,rec-pill,btn-settings"
+  // capture runs (recording criteria §2); fullscreen follows the recorder
+  return ids.join() === "status,btn-shot,btn-record,rec-pill,btn-fullscreen,btn-settings"
     && document.getElementById("rec-pill").hidden
-    && sq("btn-shot") && sq("btn-record") && sq("btn-settings")
+    && sq("btn-shot") && sq("btn-record") && sq("btn-fullscreen") && sq("btn-settings")
     && document.getElementById("btn-settings").getAttribute("aria-label") === "Settings";
 }), await page.evaluate(() => [...document.querySelector(".status-row").children].map((e) => e.id).join()));
 
@@ -583,11 +583,13 @@ for (const [w, h] of [[320, 568], [320, 490], [360, 640], [360, 560], [390, 844]
     `scroll=${r.scroll}/${r.inner} kpBottom=${r.kpBottom} clipped=${r.clipped}`);
 }
 
-/* ------ the screen and the keypad are one group, with the slack split ------ */
-// The keypad keeps its natural height and the box takes what is left, so the
-// gap between them is the panel's own 6px and never a pile of leftover space.
-// Headless Chromium has no retractable URL bar, so this is necessary but not
-// sufficient — the real check is a phone (see doc/architecture.md).
+/* ------ the column is correct by construction, not by arithmetic ------ */
+// `.screen-row` is `flex: 1; min-height: 0`, so the status row and the keypad
+// take their natural heights and the row gets exactly what is left: the box is
+// fitted *inside* that and can never push the keypad past the bottom. What
+// this pins is that the box stays within its row and the row sits the panel's
+// own 6px above the keypad — the failure mode when fitScreen() sizes the box
+// from anything other than the flex-resolved row.
 for (const [w, h] of [[360, 640], [390, 750], [320, 900]]) {
   await page.setViewportSize({ width: w, height: h });
   await page.waitForTimeout(300);
@@ -597,14 +599,23 @@ for (const [w, h] of [[360, 640], [390, 750], [320, 900]]) {
     return {
       gap: Math.round(kp.top - row.bottom),
       above: Math.round(row.top - st.bottom),
-      below: Math.round(window.innerHeight - 6 - kp.bottom),
       rowH: Math.round(row.height), boxH: Math.round(R(".lcd-wrap").height),
+      kpBottom: Math.round(kp.bottom), inner: window.innerHeight,
+      tail: Math.round(window.innerHeight - kp.bottom),
     };
   });
-  // above includes the 6px panel gap that `below` does not
-  ok(`v5.1 ${w}x${h}: 6px to the keypad, slack split (${r.above - 6}/${r.below})`,
-    r.gap === 6 && Math.abs((r.above - 6) - r.below) <= 2 && r.rowH === r.boxH,
-    `gap=${r.gap} above=${r.above} below=${r.below} row=${r.rowH} box=${r.boxH}`);
+  ok(`v5.1 ${w}x${h}: box within its row, 6px to the keypad (tail ${r.tail})`,
+    r.gap === 6 && r.above === 6 && r.boxH <= r.rowH && r.kpBottom <= r.inner + 1,
+    `gap=${r.gap} above=${r.above} row=${r.rowH} box=${r.boxH} kpBottom=${r.kpBottom}/${r.inner}`);
+  // The base rule floors body at `min-height: 100vh`, and min-height beats
+  // height. Headless resolves 100vh to innerHeight so the floor is harmless
+  // here, but Chrome for Android keeps 100vh at the URL-bar-retracted height:
+  // left unreset it floors the column ~80px taller than the viewport and the
+  // keypad's last row goes off the bottom. This is the cheap half of that —
+  // that nothing floors body above the viewport at all.
+  ok(`v5.1 ${w}x${h}: body is not floored above the viewport`, await page.evaluate(() =>
+    (parseFloat(getComputedStyle(document.body).minHeight) || 0) <= window.innerHeight),
+    await page.$eval("body", (e) => "min-height " + getComputedStyle(e).minHeight));
 }
 
 await page.setViewportSize({ width: 1770, height: 1000 });
@@ -932,7 +943,8 @@ if (!process.env.SKIP_BOOT) {
     const row = [...document.querySelector(".status-row").children]
       .filter((e) => !e.hidden).map((e) => e.id);
     const b = document.getElementById("btn-record");
-    return row.join() === "status,btn-shot,btn-record,btn-settings"
+    // fullscreen is back too: it stands down only while a capture runs
+    return row.join() === "status,btn-shot,btn-record,btn-fullscreen,btn-settings"
       && b.getAttribute("aria-label") === "Start recording"
       && Math.round(b.getBoundingClientRect().width) === 28;
   }));
