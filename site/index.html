@@ -8,11 +8,11 @@
 </head>
 <body>
 <header>
-  <h1>Siemens / LG PMB887X <span>emulator — qemu compiled to WebAssembly</span></h1>
+  <h1>Siemens / LG PMB887X <span>emulator</span></h1>
 </header>
 <!-- Three columns: what you set before Start on the left, the phone in the
      middle (dead centre of the page), what only matters once it runs on the
-     right. Narrow screens stack them in this order. -->
+     right. Narrow screens stack them with the phone hoisted to the top. -->
 <main>
   <!-- ============ left: pre-start ============ -->
   <section class="ctrl-panel pre-panel">
@@ -79,11 +79,6 @@
                 <option value="OFFLINE">OFFLINE</option>
               </select>
             </label>
-
-            <label class="checkbox-label">
-              <input type="checkbox" id="rw">
-              writable flash <small>(lets firmware modify the .bin in memory)</small>
-            </label>
           </div>
         </details>
 
@@ -99,8 +94,19 @@
   <section class="phone-panel">
     <!-- run state, right above the LCD so it is in view wherever the
          controls happen to sit (beside the phone, or scrolled off on a
-         narrow screen) -->
-    <div id="status" class="status idle"><span class="status-dot"></span><span id="status-text">idle</span></div>
+         narrow screen), with the two capture actions on the same row -->
+    <div class="status-row">
+      <div id="status" class="status idle"><span class="status-dot"></span><span id="status-text">idle</span></div>
+      <button type="button" id="btn-shot" class="icon-btn" disabled
+        title="Screenshot — save the LCD as a PNG" aria-label="Screenshot">
+        <svg viewBox="0 0 24 24"><path d="M9.2 2.5 7.6 4.5H4.2A2.2 2.2 0 0 0 2 6.7v11.1a2.2 2.2 0 0 0 2.2 2.2h15.6a2.2 2.2 0 0 0 2.2-2.2V6.7a2.2 2.2 0 0 0-2.2-2.2h-3.4l-1.6-2H9.2zM12 7.6a4.9 4.9 0 1 1 0 9.8 4.9 4.9 0 0 1 0-9.8zm0 2a2.9 2.9 0 1 0 0 5.8 2.9 2.9 0 0 0 0-5.8z"/></svg>
+      </button>
+      <button type="button" id="btn-record" class="icon-btn" disabled
+        title="Record the LCD to a .webm video" aria-label="Record">
+        <svg class="rec-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/></svg>
+        <svg class="rec-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg>
+      </button>
+    </div>
 
     <div class="lcd-wrap">
       <canvas id="lcd" width="132" height="176"></canvas>
@@ -187,7 +193,7 @@
 
       <div class="btn-row">
         <button type="button" id="btn-save-flash" disabled
-          title="The fullflash as the firmware left it — needs “writable flash”">Download flash</button>
+          title="The fullflash as the firmware left it">Download flash</button>
         <button type="button" id="btn-save-efa" disabled
           title="EFA block (LG EEPROM) — appears once the firmware wrote it">Download EFA</button>
       </div>
@@ -211,6 +217,14 @@
     <!-- unhidden by the serial poller as soon as the guest prints something -->
     <details class="serial-box" id="serial-box" open hidden>
       <summary>Serial log</summary>
+      <!-- the <pre> only holds the last 16 KiB; Download writes the whole
+           log straight out of the guest's MEMFS -->
+      <div class="serial-tools">
+        <button type="button" id="ser-copy">Copy</button>
+        <button type="button" id="ser-save">Download</button>
+        <label class="ser-check" for="ser-wrap"><input type="checkbox" id="ser-wrap" checked> wrap</label>
+        <label class="ser-check" for="ser-tail"><input type="checkbox" id="ser-tail" checked> follow</label>
+      </div>
       <pre id="serial"></pre>
     </details>
   </section>

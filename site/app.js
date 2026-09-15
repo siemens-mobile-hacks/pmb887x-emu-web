@@ -436,7 +436,6 @@ async function boot() {
   const sim = $("sim").value;
   const operator = $("operator").value.trim();
   const startup = $("startup").value;
-  const rw = $("rw").checked;
 
   if (!/^\d{15}$/.test(imei)) { alert("IMEI must be 15 digits"); return; }
   if (!/^[0-9A-Fa-f]{8}$/.test(esn)) { alert("ESN must be 8 hex chars"); return; }
@@ -546,7 +545,10 @@ async function boot() {
       "-display", "wasm",
       ...(icount === "none" ? [] : ["-icount", icount]),
       "-machine", "pmb887x",
-      "-drive", `if=pflash,format=raw,file=${FULLFLASH_PATH}${rw ? "" : ",readonly=on"}`,
+      // always writable: the image lives in MEMFS, so the firmware's writes
+      // only ever touch this run's copy — and "Download flash" hands that
+      // copy back
+      "-drive", `if=pflash,format=raw,file=${FULLFLASH_PATH}`,
       "-serial", "file:/serial.log",
       "-monitor", "none",
       ...extraArgs,
@@ -576,6 +578,9 @@ async function boot() {
         $("btn-stop").disabled = true;
         $("btn-save-flash").disabled = true;
         $("btn-save-efa").disabled = true;
+        $("btn-shot").disabled = true;
+        stopRecording();          // flushes whatever was captured
+        $("btn-record").disabled = true;
       },
       preRun: (mod) => {
         modRef = mod;
@@ -649,8 +654,10 @@ async function boot() {
   }
 
   $("btn-stop").disabled = false;
-  $("btn-save-flash").disabled = !rw;
+  $("btn-save-flash").disabled = false;
   $("btn-save-efa").disabled = true;
+  $("btn-shot").disabled = false;
+  $("btn-record").disabled = !!recBtn.dataset.unsupported;
   // LG firmware without the EFA block factory-resets its EEPROM; warn but boot.
   const noEfa = device.startsWith("lg-") && !sidecarBytes.some(([s]) => s === ".cfi-efa");
   hideOverlay();
@@ -695,15 +702,124 @@ $("btn-save-efa").addEventListener("click", () => {
   downloadMemfs(FULLFLASH_PATH + ".cfi-efa", "fullflash-modified.bin.cfi-efa");
 });
 
-function downloadMemfs(path, name) {
-  const m = qemuModule;
-  if (!m?.FS?.analyzePath(path)?.exists) return;
-  const data = m.FS.readFile(path);
+function downloadBlob(blob, name) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([data], { type: "application/octet-stream" }));
+  a.href = URL.createObjectURL(blob);
   a.download = name;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+function downloadMemfs(path, name) {
+  const m = qemuModule;
+  if (!m?.FS?.analyzePath(path)?.exists) return;
+  downloadMemfsAs(m.FS.readFile(path), name);
+}
+
+function downloadMemfsAs(data, name) {
+  downloadBlob(new Blob([data], { type: "application/octet-stream" }), name);
+}
+
+/* ------------------------------------------------------------------ */
+/* LCD capture: a PNG of the screen, or a .webm of it                   */
+/* ------------------------------------------------------------------ */
+
+// "pmb887x-siemens-s75-20260915-023000" — the run this file came from
+function captureName() {
+  const t = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `pmb887x-${$("device").value}-${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}`
+    + `-${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}`;
+}
+
+$("btn-shot").addEventListener("click", () => {
+  canvas.toBlob((b) => b && downloadBlob(b, captureName() + ".png"), "image/png");
+});
+
+// MediaRecorder over canvas.captureStream: the same frames the guest paints,
+// at a fixed 30 fps so a still screen still produces a playable file.
+const REC_TYPES = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+let recorder = null;
+const recBtn = $("btn-record");
+if (typeof MediaRecorder === "undefined") {
+  recBtn.title = "this browser has no MediaRecorder";
+  recBtn.dataset.unsupported = "1";
+}
+
+function stopRecording() {
+  if (recorder && recorder.state !== "inactive") recorder.stop();
+}
+
+recBtn.addEventListener("click", () => {
+  if (recorder) { stopRecording(); return; }
+  if (recBtn.dataset.unsupported) return;
+  const mimeType = REC_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
+  const stream = canvas.captureStream(30);
+  const chunks = [];
+  recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  recorder.onstop = () => {
+    for (const t of stream.getTracks()) t.stop();
+    recorder = null;
+    setRecordLabel(false);
+    if (chunks.length) downloadBlob(new Blob(chunks, { type: mimeType || "video/webm" }),
+      captureName() + ".webm");
+  };
+  recorder.start();
+  setRecordLabel(true);
+});
+
+// the icon itself switches dot <-> square; the label has to follow for
+// anyone reading it by tooltip or screen reader
+function setRecordLabel(on) {
+  recBtn.classList.toggle("recording", on);
+  recBtn.title = on ? "Stop recording and save the .webm"
+    : "Record the LCD to a .webm video";
+  recBtn.setAttribute("aria-label", on ? "Stop recording" : "Record");
+}
+
+/* ------------------------------------------------------------------ */
+/* serial log tools                                                     */
+/* ------------------------------------------------------------------ */
+
+// The <pre> only ever holds the last 16 KiB (see startSerialPoll); Download
+// goes back to MEMFS for the whole thing.
+function serialBytes() {
+  try { return qemuModule?.FS?.readFile("/serial.log", { encoding: "binary" }) ?? null; }
+  catch { return null; }
+}
+
+$("ser-copy").addEventListener("click", async (e) => {
+  const bytes = serialBytes();
+  const text = bytes ? new TextDecoder("latin1").decode(bytes) : $("serial").textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = e.currentTarget;
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = "Copy"; }, 1200);
+  } catch { /* clipboard denied — nothing useful to say */ }
+});
+
+$("ser-save").addEventListener("click", () => {
+  const bytes = serialBytes();
+  downloadBlob(new Blob([bytes ?? $("serial").textContent], { type: "text/plain" }),
+    captureName() + "-serial.log");
+});
+
+// wrap: long lines fold instead of scrolling sideways.
+// follow: stick to the newest line; off lets you read back while it grows.
+const serWrap = $("ser-wrap"), serTail = $("ser-tail");
+for (const [chk, key, apply] of [
+  [serWrap, "ser-wrap", () => $("serial").classList.toggle("nowrap", !serWrap.checked)],
+  [serTail, "ser-tail", () => { if (serTail.checked) $("serial").scrollTop = $("serial").scrollHeight; }],
+]) {
+  const stored = localStorage.getItem(key);
+  if (stored != null) chk.checked = stored === "1";
+  apply();
+  chk.addEventListener("change", () => {
+    localStorage.setItem(key, chk.checked ? "1" : "0");
+    apply();
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -753,6 +869,86 @@ function stopPainting() {
   clearInterval(serialTimer);
   clearInterval(hudTimer);
 }
+
+/* ------------------------------------------------------------------ */
+/* fit the phone to the window height                                   */
+/* ------------------------------------------------------------------ */
+
+// At the browser's own zoom level the phone column is scaled (CSS `zoom`,
+// so it takes real layout space and the grid keeps centring it) to exactly
+// fill the window height: no scrollbar, no wasted height. It grows only
+// into the room the side panels leave, and never shrinks below natural
+// width because of them.
+//
+// Browser zoom is left alone. The devicePixelRatio this page loaded at is
+// the baseline; while it differs the user is zoomed, so we stop refitting
+// and Ctrl+ simply makes everything bigger and the page scroll, as it
+// should. Ctrl+0 comes back to the baseline and the fit resumes.
+const SCALE_MIN = 0.55, SCALE_MAX = 2.5;
+const baseDpr = window.devicePixelRatio;
+const phonePanel = document.querySelector(".phone-panel");
+const mainEl = document.querySelector("main");
+// Two layouts are fitted: the three-column one, where the phone must share
+// the window with the panels beside it, and the compact landscape one (LCD
+// left, keypad right), where height is the scarce dimension. Portrait
+// stacking is meant to scroll, so it is left alone.
+const sideBySide = matchMedia("(min-width: 1101px)");
+const landscapeFit = matchMedia("(max-width: 1100px) and (orientation: landscape)");
+
+function fitPhone() {
+  // the user is zoomed: keep the scale they were fitted at, so their zoom
+  // multiplies on top of it instead of being cancelled out by a refit
+  if (Math.abs(window.devicePixelRatio - baseDpr) > 0.01) return;
+  if (!(sideBySide.matches || landscapeFit.matches)) {
+    phonePanel.style.removeProperty("--ui-scale");
+    return;
+  }
+  phonePanel.style.setProperty("--ui-scale", "1"); // measure it unscaled
+  const nat = phonePanel.getBoundingClientRect();
+  if (!nat.height) return;
+
+  const cs = getComputedStyle(mainEl);
+  const px = (v) => parseFloat(v) || 0;
+  const padY = px(cs.paddingTop) + px(cs.paddingBottom);
+  const inner = mainEl.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight);
+  let availH, availW;
+  if (sideBySide.matches) {
+    availH = window.innerHeight - mainEl.getBoundingClientRect().top - padY;
+    // whatever the side panels do not use is the phone's to grow into
+    const sides = [...mainEl.children]
+      .filter((el) => el !== phonePanel)
+      .reduce((w, el) => w + el.getBoundingClientRect().width + px(cs.columnGap), 0);
+    availW = inner - sides;
+  } else {
+    // stacked: the phone gets a whole screenful once it is scrolled to
+    availH = window.innerHeight - padY;
+    availW = inner;
+  }
+
+  const scale = Math.min((availH - 2) / nat.height, Math.max(nat.width, availW) / nat.width);
+  // floored, never rounded up: rounding up is what puts a scrollbar back
+  const set = (s) => {
+    const v = Math.floor(Math.max(SCALE_MIN, Math.min(SCALE_MAX, s)) * 1000) / 1000;
+    phonePanel.style.setProperty("--ui-scale", String(v));
+    return v;
+  };
+  const applied = set(scale);
+  // `zoom` rounds each box it scales, and over a keypad's worth of nested
+  // boxes that rounding adds up to a few pixels — correct against the real
+  // height rather than trusting the multiplication
+  const got = phonePanel.getBoundingClientRect().height;
+  if (got > availH - 2) set(applied * (availH - 2) / got);
+}
+
+let fitPending = 0;
+function scheduleFit() {
+  cancelAnimationFrame(fitPending);
+  fitPending = requestAnimationFrame(fitPhone);
+}
+window.addEventListener("resize", scheduleFit);
+for (const mq of [sideBySide, landscapeFit]) mq.addEventListener("change", scheduleFit);
+document.fonts?.ready.then(scheduleFit);
+scheduleFit();
 
 /* ------------------------------------------------------------------ */
 /* Stats HUD ("show performance HUD"): what "realtime" is on this device */
@@ -843,7 +1039,7 @@ function startSerialPoll() {
       const text = new TextDecoder("latin1").decode(tail);
       if (el.textContent !== text) {
         el.textContent = text;
-        el.scrollTop = el.scrollHeight;
+        if (serTail.checked) el.scrollTop = el.scrollHeight;
       }
       if (text) $("serial-box").hidden = false;
     } catch { /* not there yet */ }
@@ -872,6 +1068,8 @@ function bindKeypad() {
     const key = btn.dataset.key;
     const press = (ev) => {
       ev.preventDefault();
+      // a touch has no travel and no click to feel — give it one
+      if (ev.pointerType === "touch") navigator.vibrate?.(10);
       btn.classList.add("pressed");
       sendKey(key, true);
     };
@@ -883,7 +1081,16 @@ function bindKeypad() {
     btn.addEventListener("pointerup", release);
     btn.addEventListener("pointerleave", release);
     btn.addEventListener("pointercancel", release);
-    btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
+}
+
+// Holding a key must not turn into a gesture on the page. These are
+// delegated on the containers, which keyboards.js only ever replaceChildren()
+// on, so a layout switch cannot leave a rebuilt key uncovered.
+for (const id of ["keypad", "aux-keys-left", "aux-keys-right"]) {
+  const box = $(id);
+  for (const type of ["contextmenu", "selectstart", "dragstart"]) {
+    box.addEventListener(type, (e) => { if (e.target.closest("button")) e.preventDefault(); });
   }
 }
 
@@ -931,6 +1138,7 @@ function selectKeyboard(wanted = varSel.value) {
   const variant = pickVariant(kbdSel.value, wanted);
   fillSelect(varSel, Object.entries(kbd.variants), variant);
   applyKbdLayout(kbdSel.value, variant, renderKeypad);
+  scheduleFit(); // boards differ in keypad height
   localStorage.setItem("kbd-keyboard", kbdSel.value);
   localStorage.setItem("kbd-variant", variant);
 }
@@ -987,7 +1195,7 @@ window.addEventListener("keyup", (e) => {
 
 // Defaults come from the markup, so the two cannot drift.
 const ADV_FIELDS = [["imei", "IMEI"], ["esn", "ESN"], ["sim", "SIM"],
-  ["operator", "operator"], ["startup", "startup"], ["rw", "writable flash"]];
+  ["operator", "operator"], ["startup", "startup"]];
 const advDefaults = new Map(
   ADV_FIELDS.map(([id]) => [id, $(id).type === "checkbox" ? $(id).checked : $(id).value]));
 

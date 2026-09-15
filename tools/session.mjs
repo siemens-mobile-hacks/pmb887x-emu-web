@@ -97,13 +97,12 @@ async function boot(params = []) {
     consoleLines.push(((Date.now() - bootAt) / 1000).toFixed(1) + "s " + m.text());
     if (consoleLines.length > 50000) consoleLines.splice(0, 10000);
   });
-  // rw=1 is a page checkbox (writable flash), not a query param
-  const rw = params.includes("rw=1");
+  // rw=1 used to tick a "writable flash" checkbox; the pflash drive is
+  // always writable now, so the token is accepted and ignored
   params = params.filter((p) => p !== "rw=1");
   const q = params.length ? "?" + params.join("&") : "";
   await page.goto(URL_() + q, { waitUntil: "networkidle", timeout: 120000 });
   await page.selectOption("#startup", "ONLINE");
-  if (rw) await page.check("#rw");
   await page.setInputFiles("#fullflash", fullflashFiles); // + .cfi-efa sidecar if present (LG)
   await page.click("#btn-start");
   bootAt = Date.now();

@@ -19,14 +19,34 @@ header {
 }
 header h1 { font-size: 1.15rem; margin: 0; }
 header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
-/* run state, pinned above the LCD (see .phone-panel) */
+/* run state + the capture actions, pinned above the LCD (see .phone-panel);
+   the row is exactly as wide as the LCD and its bezel */
+.status-row {
+  display: flex; align-items: center; gap: 0.4rem;
+  width: 276px; max-width: 100%;
+}
 .status {
-  display: flex; align-items: center; gap: 0.45rem;
-  justify-content: center;
-  width: 276px; max-width: 100%; padding: 0.3rem 0.8rem;   /* = the LCD + its bezel */
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; justify-content: center; gap: 0.45rem;
+  padding: 0.3rem 0.8rem;
   border: 1px solid var(--border); border-radius: 1em;
   font-size: 0.85rem;
 }
+/* a long status ("running — … no EFA block …") must not widen the row */
+#status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-btn {
+  flex: none; display: grid; place-items: center; width: 1.9rem; height: 1.9rem;
+  padding: 0; cursor: pointer; color: var(--muted); background: var(--panel2);
+  border: 1px solid var(--border); border-radius: 50%;
+}
+.icon-btn svg { width: 1.05rem; height: 1.05rem; fill: currentColor; }
+.icon-btn:not(:disabled):hover { color: var(--accent); border-color: var(--accent); }
+#btn-record:not(:disabled) { color: var(--bad); }
+.rec-stop { display: none; }
+#btn-record.recording { background: #5c1a1a; border-color: var(--bad); }
+#btn-record.recording .rec-dot { display: none; }
+#btn-record.recording .rec-stop { display: block; }
+#btn-record.recording svg { animation: pulse 1.1s ease-in-out infinite; }
 .status-dot {
   flex: none; width: 0.55rem; height: 0.55rem; border-radius: 50%;
   background: currentColor;
@@ -49,12 +69,15 @@ main {
 .phone-panel { grid-column: 2; }
 .post-panel { grid-column: 3; justify-self: start; }
 
-/* too narrow for panels beside the phone: stack them, still centred */
+/* too narrow for panels beside the phone: stack them, still centred, with
+   the phone first — the screen is what you came for, and the boot form goes
+   under it instead of pushing it below the fold */
 @media (max-width: 1100px) {
   main { grid-template-columns: minmax(0, 1fr); }
   .pre-panel, .phone-panel, .post-panel {
     grid-column: 1; justify-self: center;
   }
+  .phone-panel { order: -1; }
 }
 
 /* ---------------- phone panel ---------------- */
@@ -63,9 +86,12 @@ main {
    and can never be clipped by the viewport when the window gets narrow. It
    stays symmetric even for boards with no right-hand column, so the LCD sits
    in the middle of the panel — and thus of the page. */
+/* --ui-scale is set by fitPhone() in app.js. `zoom` (not `transform`) so the
+   scaled column still occupies its real size in the grid and stays centred */
 .phone-panel {
   display: flex; flex-direction: column; align-items: center; gap: 1rem;
   padding-inline: 74px;
+  zoom: var(--ui-scale, 1);
 }
 
 .lcd-wrap { position: relative; }
@@ -146,6 +172,15 @@ body.show-key-hints .kpad .key-nav .key-hint { display: none; }
   padding: 0.55rem 0.2rem; cursor: pointer; user-select: none;
   display: flex; flex-direction: column; align-items: center; line-height: 1.15;
   touch-action: none; position: relative;
+}
+/* Holding a phone key is a key press, not a gesture on a document: no iOS
+   callout sheet, no selection, no tap flash. (-webkit-touch-callout is the
+   only way to suppress the iOS long-press sheet; preventing `contextmenu`
+   does not reach it.) */
+button {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .key-sub {
   font-size: 0.6rem; color: var(--muted); letter-spacing: .08em; text-transform: lowercase;
@@ -242,6 +277,29 @@ body.show-key-hints .key-hint { display: block; }
   body.show-key-hints .key-hint { display: none; }
 }
 
+/* Landscape on a stacked (phone/small-tablet) layout: height is the scarce
+   dimension, so put the keypad beside the LCD instead of under it. app.js
+   scales the whole block to the window height on top of this. */
+@media (max-width: 1100px) and (orientation: landscape) {
+  .phone-panel {
+    display: grid; align-items: center; justify-items: center;
+    grid-template-columns: auto auto; column-gap: 1.4rem; row-gap: 0.6rem;
+  }
+  .phone-panel > .status-row { grid-column: 1 / -1; }
+  .phone-panel > .lcd-wrap { grid-column: 1; grid-row: 2; }
+  .phone-panel > .keypad { grid-column: 2; grid-row: 2; }
+  .phone-panel > .kbd-row { grid-column: 1 / -1; }
+}
+
+/* touch screens: no pointer precision and no key travel, so every key gets
+   at least the 44px the platform guidelines ask for */
+@media (pointer: coarse) {
+  .keypad .krow > button, .keypad .kflank > button,
+  .aux-keys-left button, .aux-keys-right button { min-height: 44px; }
+  .keypad .kpad { min-height: 132px; }
+  .keypad .kpad button { min-height: 0; }
+}
+
 /* very narrow screens: the padded panel no longer fits — keep the side
    columns flanking the LCD, but shrink them to one-character keys */
 @media (max-width: 420px) {
@@ -314,7 +372,6 @@ input:invalid { border-color: var(--bad); }
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem 1rem;
   padding: 0.8rem;
 }
-.adv-grid .checkbox-label { grid-column: 1 / -1; }
 
 .btn-row { grid-column: 1 / -1; display: flex; gap: 0.6rem; flex-wrap: wrap; }
 .btn-row button {
@@ -331,11 +388,27 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .serial-box { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
 .serial-box summary { padding: 0.5rem 0.9rem; cursor: pointer; color: var(--muted); font-size: 0.85rem; }
 .serial-box summary small { opacity: .7; }
+.serial-tools {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem;
+  padding: 0 0.9rem 0.4rem;
+}
+.serial-tools button {
+  font: inherit; font-size: 0.75rem; color: var(--text); background: var(--panel2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.2rem 0.6rem; cursor: pointer;
+}
+.serial-tools button:hover { border-color: var(--accent); }
+.ser-check {
+  flex-direction: row; align-items: center; gap: 0.3rem;
+  font-size: 0.75rem; color: var(--muted); cursor: pointer;
+}
 #serial {
   margin: 0; padding: 0.4rem 0.9rem 0.8rem; max-height: 220px; overflow-y: auto;
   font: 0.72rem/1.35 ui-monospace, "Cascadia Mono", monospace;
   color: #9fe3a8; white-space: pre-wrap; word-break: break-all;
 }
+/* "wrap" off: long lines keep their shape and scroll sideways instead */
+#serial.nowrap { white-space: pre; word-break: normal; overflow-x: auto; }
 
 /* narrow screens: the two-column form no longer fits beside itself */
 @media (max-width: 560px) {
