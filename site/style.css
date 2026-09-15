@@ -537,6 +537,15 @@ label:has(> input:disabled), label:has(> select:disabled) { color: var(--muted);
   border-radius: 8px; background: var(--bg); color: var(--muted);
 }
 .chip-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* the name doubles as the way back to the file picker, so it is a real button
+   — which the fieldset also disables for free while a guest runs */
+.chip-open {
+  border: 0; background: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.chip-open:not(:disabled):hover .chip-name { color: var(--accent); }
+.chip-open:disabled { cursor: not-allowed; }
+.chip-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .chip-name { color: var(--text); font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-size { font-size: 0.7rem; }
 .chip-x {
@@ -690,20 +699,32 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 }
 
 /* ---------------- phone layout ---------------- */
-/* One column the height of the viewport and no page scroll: a single 32px
-   control row, the screen with the two edge-key columns taking every pixel
-   that is left, and the keypad pinned to the bottom — never clipped, never
-   scrolled. */
+/* One column the height of the visible viewport and no page scroll: a single
+   32px control row, then the screen and the keypad as one group, 6px apart,
+   taking every pixel that is left. The keypad keeps its natural height and the
+   screen box gets the remainder, so the keypad is never clipped or scrolled;
+   any space neither of them can use splits evenly above and below the group. */
 @media (max-width: 599px) {
-  html, body { height: 100dvh; overflow: hidden; }
+  /* --app-h is visualViewport.height, published by syncAppHeight() in app.js:
+     100dvh is not the area actually on screen on Chrome for Android while the
+     URL bar is showing, and the column's last rows — the keypad — end up under
+     the browser chrome. 100dvh stays as the pre-JS fallback. */
+  html, body { height: var(--app-h, 100dvh); overflow: hidden; }
   body { display: flex; flex-direction: column; }
   header { display: none; }
   /* 8px each side is what §2's 48px of non-screen width is measured from;
      the block padding and the gaps are trimmed to 6px so the screen box
-     gets every pixel the control row and the keypad do not need */
+     gets every pixel the control row and the keypad do not need.
+     The page is `viewport-fit=cover`, so the viewport runs *behind* the
+     system bars: without the safe-area insets the bottom of the column —
+     the keypad's last row — sits under Android's gesture bar. The insets
+     are 0 wherever there are no such bars, and 0 in fullscreen. */
   main {
     flex: 1; min-height: 0; display: flex; flex-direction: column;
-    gap: 0; padding: 6px 8px;
+    gap: 0;
+    padding:
+      calc(6px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right))
+      calc(6px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
   }
   .phone-panel {
     --flank: 0px;                /* no side-key gutters to spill into */
@@ -737,13 +758,19 @@ fieldset:disabled .advanced summary { pointer-events: none; }
   /* the pill's own text is the reason; a caption would be a second row */
   .status-caption { display: none; }
 
-  /* screen row: edge keys | screen box | edge keys, 2px gaps (§2) */
+  /* screen row: edge keys | screen box | edge keys, 2px gaps (§2).
+     The row is exactly as tall as the box fitScreen() sized (flex: none, not
+     flex: 1) — growing it would only push slack between the screen and the
+     keypad. `margin-top: auto` here and `margin-bottom: auto` on the keypad
+     are a facing pair, so the free space splits evenly above the screen and
+     below the keypad instead of piling up in the middle. */
   .screen-row {
-    position: static; flex: 1; min-height: 0; width: 100%;
+    position: static; flex: none; min-height: 0; width: 100%;
+    margin-top: auto;
     display: flex; align-items: flex-start; gap: 2px;
   }
   .screen-cell {
-    display: flex; flex: 1; min-width: 0; height: 100%;
+    display: flex; flex: 1; min-width: 0;
     align-items: flex-start; justify-content: center;
   }
   /* thin edge tabs, top-aligned 34px below the top of the screen box */
@@ -803,8 +830,8 @@ fieldset:disabled .advanced summary { pointer-events: none; }
   /* the keypad is the floor of the layout: it scales with the viewport and
      is never the thing that gets clipped */
   .keypad {
-    --key-h: clamp(30px, 6.5dvh, 44px);
-    flex: none; margin-top: auto; width: 320px; max-width: 100%;
+    --key-h: clamp(30px, calc(var(--app-h, 100dvh) * 0.065), 44px);
+    flex: none; margin-bottom: auto; width: 320px; max-width: 100%;
   }
   .keypad .krow > button { min-height: var(--key-h); }
   .keypad button { padding-block: 0; justify-content: center; }

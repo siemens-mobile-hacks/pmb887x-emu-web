@@ -12,7 +12,7 @@
 
 import { KBD_KEYBOARDS, DEFAULT_KEYBOARD, pickVariant, applyKbdLayout } from "./keyboards.js";
 import {
-  PRESET_FULLFLASHES, SIDE_CAR_RE, inferDevice,
+  PRESET_FULLFLASHES, SIDE_CAR_RE, inferDevice, detectDevice,
   cacheAvailable, entryCacheState, downloadEntry, deleteEntry, readCachedEntry,
 } from "./fullflashes.js";
 import {
@@ -159,6 +159,8 @@ let startBlocked = false; // a failure Start cannot recover from (isolation)
 // one has an EFA block to hand back.
 let exportsReady = false;
 let ranDevice = null;
+// The filename the image came in under, so a saved dump is named after it.
+let ranFlashName = null;
 // What Advanced ▸ Siemens keys did to this run's image, for Copy diagnostics.
 let keyReport = null;
 // The ESN sweep's AbortController while it runs — Cancel uses it, the way
@@ -255,6 +257,7 @@ const O = {
   name: ownBody.querySelector("#ff-bin-name"),
   size: ownBody.querySelector("#ff-bin-size"),
   clear: ownBody.querySelector("#ff-bin-clear"),
+  pick: ownBody.querySelector("#ff-bin-pick"),
   note: ownBody.querySelector("#ff-bin-note"),
   device: ownBody.querySelector("#device"),
   devNote: ownBody.querySelector("#ff-device-note"),
@@ -266,6 +269,7 @@ const O = {
   efaName: ownBody.querySelector("#ff-efa-name"),
   efaSize: ownBody.querySelector("#ff-efa-size"),
   efaClear: ownBody.querySelector("#ff-efa-clear"),
+  efaPick: ownBody.querySelector("#ff-efa-pick"),
   efaNote: ownBody.querySelector("#ff-efa-note"),
 };
 O.efaBlock.remove(); // non-LG by default: the block is not in the DOM at all
@@ -539,16 +543,25 @@ function applyPicked(list) {
     else { setNote(O.note, "err", tooMany); return; }
   } else {
     ownBin = bins[0];
-    applyFullflashName(ownBin.name);
+    // async: reading the image to name the device settles after this returns
+    applyFullflashFile(ownBin).catch(() => {});
     if (efas.length === 1) ownEfa = efas[0];
     else if (others.length) setNote(O.note, null, `Ignored ${others.length} other file(s).`);
   }
+  warnEfaDevice();
+  renderOwn();
+  render();
+}
+
+// An EFA sidecar only means something on an LG board. Re-checked after an
+// async detection too, since that is what settles the device.
+function warnEfaDevice() {
   if (ownEfa && O.device.value && !O.device.value.startsWith("lg-")) {
     setNote(O.devNote, "warn",
       "An EFA sidecar was provided but this device doesn't use one.");
+    return true;
   }
-  renderOwn();
-  render();
+  return false;
 }
 
 function applyEfaPicked(list) {
@@ -578,6 +591,12 @@ O.efaClear.addEventListener("click", () => {
   renderOwn();
   render();
 });
+
+// The chip is the way back to the picker once a file is chosen — the drop zone
+// that carries the <label> is hidden by then. Clearing value first so that
+// re-picking the very same file still fires `change`.
+O.pick.addEventListener("click", () => { O.input.value = ""; O.input.click(); });
+O.efaPick.addEventListener("click", () => { O.efaInput.value = ""; O.efaInput.click(); });
 
 // drag-and-drop onto either slot (the zone or the chip that replaced it)
 function wireDrop(slot, zone, handler) {
@@ -941,6 +960,29 @@ function panelFor(dev) {
   return panelCache.get(dev);
 }
 
+// Upstream siemens-el71.toml declares model = "E71", the same as
+// siemens-e71.toml, so the two boards would render under one name.
+const BOARD_NAME_FIXUPS = { "siemens-el71": "BenQ-Siemens EL71" };
+
+// The same configs carry the device's real name in `[board] vendor/model`,
+// which is what qemu itself prints at boot ("Board: Siemens S75").
+function readBoardName(file, depth = 0) {
+  const txt = boardText.get(file);
+  if (!txt || depth > 4) return null;
+  const sec = txt.match(/\[board\]([\s\S]*?)(?=\n\[|$)/);
+  if (sec) {
+    const v = sec[1].match(/^[ \t]*vendor[ \t]*=[ \t]*"([^"]+)"/m);
+    const m = sec[1].match(/^[ \t]*model[ \t]*=[ \t]*"([^"]+)"/m);
+    if (v && m) return `${v[1]} ${m[1]}`;
+  }
+  const ext = txt.match(/^[ \t]*extends[ \t]*=[ \t]*"([^"]+)"/m);
+  return ext ? readBoardName(ext[1], depth + 1) : null;
+}
+
+function boardLabel(dev) {
+  return BOARD_NAME_FIXUPS[dev] ?? readBoardName(dev + ".toml") ?? dev;
+}
+
 async function loadBoards() {
   boardsBuf = await (await fetch("dist/boards.tar")).arrayBuffer();
   const files = [];
@@ -955,13 +997,16 @@ async function loadBoards() {
   const sel = O.device;
   // §1.4.4: the placeholder stays selected — no device is picked for the user
   const placeholder = sel.querySelector('option[value=""]');
+  // the value stays the board id (every tool and test keys off it); only what
+  // the user reads changes, and the order follows what they read
   sel.replaceChildren(placeholder, ...boards
     .slice()
-    .sort((a, z) => a.id.localeCompare(z.id))
+    .map((b) => ({ id: b.id, label: boardLabel(b.id) }))
+    .sort((a, z) => a.label.localeCompare(z.label))
     .map((b) => {
       const opt = document.createElement("option");
       opt.value = b.id;
-      opt.textContent = b.id;
+      opt.textContent = b.label;
       return opt;
     }));
   // A fullflash picked before boards.tar arrived (slow link) could not set
@@ -1006,12 +1051,44 @@ function syncKeyboardToDevice(dev) {
 // allows it; the user can still change the dropdown).
 function applyFullflashName(name) {
   const dev = inferDevice(name);
+  applyDevice(dev);
+  return !!dev;
+}
+
+function applyDevice(dev) {
   if (dev) {
     if (boards.some((b) => b.id === dev)) O.device.value = dev;
     else if (boardsReady) pendingDevice = dev; // boards.tar still loading
   }
   syncKeyboardToDevice(dev);
   refreshSiemensKeys();
+}
+
+// The filename is the cheap answer; when it gives nothing away (dump.bin,
+// backup_2006.bin) the image itself says which phone it came off. Only ever
+// fills the picker in — it never overrides a device already chosen by hand.
+async function applyFullflashFile(file) {
+  if (applyFullflashName(file.name)) return;
+  setNote(O.devNote, null, "Detecting device…");
+  const hit = await detectDevice(file);
+  if (ownBin !== file) return;   // the user moved on while we were reading
+  if (!hit) {
+    setNote(O.devNote, null, "Couldn't detect the device — please choose it below.");
+    return;
+  }
+  if (!hit.device) {
+    setNote(O.devNote, "warn",
+      `Detected ${hit.model}, which has no board yet — please choose the closest device below.`);
+    return;
+  }
+  applyDevice(hit.device);
+  // the sidecar warning outranks a detection note: it is about a mistake
+  if (!warnEfaDevice()) {
+    setNote(O.devNote, hit.exact ? null : "warn",
+      hit.exact ? "" : `Detected ${hit.model} — running it as ${boardLabel(hit.device)}.`);
+  }
+  renderOwn();
+  render();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1039,6 +1116,7 @@ async function bootSuite(url) {
   clearExit();
   serialTapped = false;
   ranDevice = null;       // not a phone: nothing here can EXIT
+  ranFlashName = null;
   setEmuState("booting");
   showOverlay("Loading suite…");
   try {
@@ -1184,6 +1262,9 @@ async function boot() {
   exportsReady = false;   // this run is about to replace the MEMFS image
   keyReport = null;
   ranDevice = device;
+  ranFlashName = ffMode === "own"
+    ? ownBin?.name ?? null
+    : selectedPreset?.files[0] ?? null;
   setEmuState("booting");
   showOverlay("Loading…");
   scrollToPhone();
@@ -1484,14 +1565,29 @@ function stop() {
 
 $("boot-form").addEventListener("submit", (e) => { e.preventDefault(); boot(); });
 
+// "S75v40lg1.bin" -> "S75v40lg1 modified.bin": the suffix goes on the name, not
+// after the extension, so the file still opens as a .bin
+function modifiedName(orig) {
+  const i = orig.lastIndexOf(".");
+  return i > 0 ? orig.slice(0, i) + " modified" + orig.slice(i) : orig + " modified";
+}
+
+// the name of the flash this run was booted from — read at boot, so changing
+// the selection after stopping cannot rename a dump that is already out
+function savedFlashName() {
+  return modifiedName(ranFlashName ?? "fullflash.bin");
+}
+
 $("btn-save-flash").addEventListener("click", () => {
-  downloadMemfs(FULLFLASH_PATH, "fullflash-modified.bin");
+  downloadMemfs(FULLFLASH_PATH, savedFlashName());
 });
 
 // EFA blocks are written lazily (only once the firmware actually programs
 // the EFA), so there is nothing to hand out until it appears.
 $("btn-save-efa").addEventListener("click", () => {
-  if (!downloadMemfs(FULLFLASH_PATH + ".cfi-efa", "fullflash-modified.bin.cfi-efa")) {
+  // derived from the base name, not by running modifiedName() on the sidecar —
+  // that would land the suffix before .cfi-efa instead of after the .bin
+  if (!downloadMemfs(FULLFLASH_PATH + ".cfi-efa", savedFlashName() + ".cfi-efa")) {
     const cap = $("export-caption");
     cap.textContent = "The firmware has not written an EFA block yet.";
     cap.hidden = false;
@@ -2114,6 +2210,8 @@ function scrollToPhone() {
 // the canvas fills it exactly, with no letterbox inside and no bars around.
 const lcdWrap = document.querySelector(".lcd-wrap");
 const screenCell = document.querySelector(".screen-cell");
+const keypadEl = document.getElementById("keypad");
+const screenRow = document.querySelector(".screen-row");
 
 function screenAspect() {
   // a live guest's framebuffer beats the board config
@@ -2126,30 +2224,68 @@ function fitScreen() {
   if (!phoneLayout.matches) {
     lcdWrap.style.removeProperty("width");
     lcdWrap.style.removeProperty("height");
+    screenRow.style.removeProperty("height");
     return;
   }
-  const cell = screenCell.getBoundingClientRect();
-  if (!cell.width || !cell.height) return;
+  const availW = screenCell.getBoundingClientRect().width;
+  if (!availW) return;
+  // The row is content-sized now, so its own height cannot be the budget —
+  // that would be circular. The keypad is the floor: it keeps its natural
+  // height and the box takes only what the column has left over.
+  const panelH = phonePanel.getBoundingClientRect().height;
+  if (!panelH) return;
+  const gap = parseFloat(getComputedStyle(phonePanel).rowGap) || 0;
+  const availH = Math.max(
+    panelH - statusBlock.getBoundingClientRect().height
+      - keypadEl.getBoundingClientRect().height - gap * 2,
+    80); // a viewport too short for both shrinks the box, never clips the keypad
   const ar = screenAspect();
-  let w = cell.width, h = w / ar;
-  if (h > cell.height) { h = cell.height; w = h * ar; } // height is tighter
-  lcdWrap.style.width = Math.floor(w) + "px";
-  lcdWrap.style.height = Math.floor(h) + "px";
+  let w = availW, h = w / ar;
+  if (h > availH) { h = availH; w = h * ar; } // height is tighter
+  // only write on a real change: this function sets the height of the element
+  // the ResizeObserver below watches
+  const wPx = Math.floor(w) + "px", hPx = Math.floor(h) + "px";
+  if (lcdWrap.style.width !== wPx) lcdWrap.style.width = wPx;
+  if (lcdWrap.style.height !== hPx) lcdWrap.style.height = hPx;
+  // The row is as tall as the box, never as tall as its tallest child: on a
+  // short viewport the edge-key columns are taller than the box, and letting
+  // them set the height would push the keypad off the bottom. They overflow
+  // the row instead, which is what the flex layout used to do implicitly.
+  if (screenRow.style.height !== hPx) screenRow.style.height = hPx;
+}
+
+// 100dvh is not the visible area on Chrome for Android while the URL bar is
+// showing — the bottom of the column ends up under the browser chrome.
+function syncAppHeight() {
+  const vv = window.visualViewport;
+  if (!vv?.height) return;
+  // a pinch-zoom shrinks the visual viewport too, and rebuilding the layout
+  // around it would fight the user's zoom — keep the last unzoomed height
+  if (vv.scale > 1.01) return;
+  document.documentElement.style.setProperty("--app-h", Math.round(vv.height) + "px");
 }
 
 let fitPending = 0;
 function scheduleFit() {
   cancelAnimationFrame(fitPending);
-  fitPending = requestAnimationFrame(() => { fitPhone(); fitScreen(); refitHud(); });
+  fitPending = requestAnimationFrame(() => {
+    syncAppHeight(); fitPhone(); fitScreen(); refitHud();
+  });
 }
 window.addEventListener("resize", scheduleFit);
 // the URL bar sliding in and out changes dvh without a window resize event
 window.visualViewport?.addEventListener("resize", scheduleFit);
+// ...and on Android it retracts on scroll, which fires neither resize event
+window.visualViewport?.addEventListener("scroll", scheduleFit);
 for (const mq of [sideBySide, landscapeFit, phoneLayout]) mq.addEventListener("change", scheduleFit);
-// whatever moves the row's height (keypad board, sheets) ends up here, so
-// the box never has to be re-fitted by hand — and the HUD, which is as wide
-// as the box it sits on at phone widths, is re-fitted with it
-new ResizeObserver(() => { fitScreen(); refitHud(); }).observe(screenCell);
+// The box is sized from what the keypad and the control row leave, so a change
+// in either has to re-fit it — a taller keypad (switching to a phone with more
+// rows) would otherwise leave a box measured against the old one and push the
+// bottom rows off screen. The HUD is as wide as the box it sits on, so it
+// follows. fitScreen() only writes on a real change, which keeps observing an
+// element it resizes from looping.
+const refit = new ResizeObserver(() => { fitScreen(); refitHud(); });
+for (const el of [screenCell, keypadEl, statusBlock]) refit.observe(el);
 // the token budget follows the container width, wherever that came from
 function refitHud() { if (!hudEl.hidden) drawHud(); }
 document.fonts?.ready.then(scheduleFit);
@@ -2453,6 +2589,52 @@ hudChk.addEventListener("change", () => {
   syncHud();
 });
 
+/* ---- Fullscreen: the browser and navigation bars are the phone layout's
+   biggest competitor for height, and the only way to get them back is to ask
+   for the whole screen. Requires a user gesture, which the tick is. ---- */
+
+const fsChk = $("opt-fullscreen");
+const fsRow = $("opt-fullscreen-row");
+// iOS Safari has no Fullscreen API on anything but a <video>: no row there
+// rather than a tick that does nothing
+if (document.documentElement.requestFullscreen) fsRow.hidden = false;
+
+fsChk.addEventListener("change", async () => {
+  try {
+    if (fsChk.checked) await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+    else if (document.fullscreenElement) await document.exitFullscreen();
+  } catch {
+    // a refused request (no gesture, or the browser says no) must not leave
+    // the tick claiming something that did not happen
+    fsChk.checked = !!document.fullscreenElement;
+  }
+});
+
+// leaving fullscreen by swipe, Back or Esc never goes through the tick
+document.addEventListener("fullscreenchange", () => {
+  fsChk.checked = !!document.fullscreenElement;
+  scheduleFit();   // the visible viewport just changed by the height of two bars
+});
+
+// What the column had to divide up, so a "the keypad does not fit" report
+// carries the numbers instead of a description.
+function viewportReport() {
+  const px = (v) => Math.round(parseFloat(v) || 0);
+  const cs = getComputedStyle(document.querySelector("main"));
+  const R = (s) => Math.round(document.querySelector(s)?.getBoundingClientRect().height ?? 0);
+  return {
+    inner: window.innerHeight,
+    visual: Math.round(window.visualViewport?.height ?? 0),
+    appH: px(getComputedStyle(document.documentElement).getPropertyValue("--app-h")),
+    safeAreaBottom: px(cs.paddingBottom) - 6,
+    dpr: +devicePixelRatio.toFixed(2),
+    fullscreen: !!document.fullscreenElement,
+    status: R(".status-block"), screen: R(".screen-row"), keypad: R("#keypad"),
+    fits: R(".status-block") + R(".screen-row") + R("#keypad") + 12
+      <= window.innerHeight - px(cs.paddingTop) - px(cs.paddingBottom) + 1,
+  };
+}
+
 /* ---- Copy diagnostics ---- */
 
 // Everything the HUD drops to fit, plus what it never had room for: the
@@ -2469,6 +2651,10 @@ function diagnostics() {
     // rtcap makes vratio readable: 0.6x is a slow host under strict, but a
     // guest still catching up under banked
     device: currentDevice(), state: emuState, slow, exitCode,
+    // the phone layout's height budget, for "the keypad does not fit" reports:
+    // the viewport runs behind the system bars, so `inner` can exceed what is
+    // actually on screen by `safeArea` (Android's gesture bar)
+    viewport: phoneLayout.matches ? viewportReport() : null,
     // what Advanced ▸ Siemens keys was set to, and what it did to this image
     siemensMode: currentDevice()?.startsWith("siemens-") ? siemensMode() : null,
     siemensKeys: keyReport,
@@ -2527,7 +2713,7 @@ function bindKeypad() {
     const press = (ev) => {
       ev.preventDefault();
       // a touch has no travel and no click to feel — give it one
-      if (ev.pointerType === "touch") navigator.vibrate?.(10);
+      if (ev.pointerType === "touch") navigator.vibrate?.(20);
       btn.classList.add("pressed");
       sendKey(key, true);
     };
