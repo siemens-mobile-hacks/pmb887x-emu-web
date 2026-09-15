@@ -62,6 +62,22 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .status-chev { display: none; width: 0.8rem; height: 0.8rem; opacity: .7; }
 .status-caption { margin: 0; font-size: 0.72rem; color: var(--muted); text-align: center; }
 
+/* Off the phone layout the pill row sits dead centre of the phone column and
+   stays there: the disabled-reason caption gets a track of its own beside
+   it, so switching Preset <-> Own file (which is what makes the reason come
+   and go) moves nothing above the screen. */
+@media (min-width: 600px) {
+  .status-block {
+    display: grid; align-items: center; gap: 0.35rem 0.5rem;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+  .status-row { grid-column: 2; }
+  .status-caption {
+    grid-column: 3; justify-self: start; text-align: left; white-space: nowrap;
+  }
+  .hud { grid-column: 1 / -1; }
+}
+
 .status-dot {
   flex: none; width: 0.55rem; height: 0.55rem; border-radius: 50%;
   background: var(--muted);
@@ -73,6 +89,10 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .status[data-state="running"] .status-dot { background: var(--good); }
 .status[data-state="paused"] { background: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
 .status[data-state="paused"] .status-dot { background: var(--warn); }
+/* the guest has been slower than 0.80x for three seconds (§6): amber until
+   it has been back up for three. After the green rules, before the red one */
+.status.warn { background: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
+.status.warn .status-dot { background: var(--warn); }
 .status.error { background: #5c1a1a; color: #ffc4c4; border-color: #8a2b2b; }
 .status.error .status-dot { background: var(--bad); }
 /* the two waiting states spin instead of sitting still */
@@ -178,8 +198,9 @@ main {
 /* --ui-scale is set by fitPhone() in app.js. `zoom` (not `transform`) so the
    scaled column still occupies its real size in the grid and stays centred */
 .phone-panel {
+  --flank: 74px;
   display: flex; flex-direction: column; align-items: center; gap: 1rem;
-  padding-inline: 74px;
+  padding-inline: var(--flank);
   zoom: var(--ui-scale, 1);
 }
 
@@ -548,14 +569,34 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 /* "wrap" off: long lines keep their shape and scroll sideways instead */
 #serial.nowrap { white-space: pre; word-break: normal; overflow-x: auto; }
 
-/* full-width band under the header — the HUD's lines are too wide for a
-   side panel, and on a phone this is the only place they fit */
+/* ---------------- performance HUD ---------------- */
+/* Two lines and never a third: under the status pill on desktop, and an
+   overlay strip on the top edge of the screen box at phone widths. Both
+   drop whole tokens off the end rather than wrap or shrink (app.js), so the
+   height here is fixed whatever the width is. */
 .hud {
-  margin: 0; padding: 0.4rem 1.2rem; cursor: copy;
-  border-bottom: 1px solid var(--border);
-  background: #0d0f13; color: #9fe3a8;
-  font: 0.7rem/1.45 ui-monospace, "Cascadia Mono", monospace;
-  white-space: pre-wrap; word-break: break-word;
+  position: relative;
+  /* the phone column is only as wide as the keypad; the strip spills into
+     the empty flanks the side keys are reserved in, which is 148px more of
+     line and still dead centre under the pill */
+  width: calc(100% + 2 * var(--flank, 0px)); margin-inline: calc(-1 * var(--flank, 0px));
+  font: 11px/1.4 ui-monospace, "Cascadia Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: center; color: var(--text);
+}
+/* `pre`, not `nowrap`: the tokens are padded to a fixed width so the line
+   does not jitter, and `nowrap` would collapse that padding away.
+   min-height keeps the strip two lines tall before the first sample lands */
+.hud-line { white-space: pre; overflow: hidden; min-height: 1.4em; }
+.hud-env { color: var(--muted); }
+.hud-speed.good { color: var(--good); }
+.hud-speed.warn, .hud-lag.warn { color: var(--warn); }
+.hud-speed.bad, .hud-lag.bad { color: var(--bad); }
+/* the character the budget is measured from — in the lines' own font, and
+   out of the flow so it never adds a pixel of its own */
+.hud-ruler {
+  position: absolute; visibility: hidden; pointer-events: none;
+  top: 0; left: 0; white-space: pre;
 }
 
 /* The narrowest phones, with a capture running: the status pill, the
@@ -608,7 +649,6 @@ fieldset:disabled .advanced summary { pointer-events: none; }
   html, body { height: 100dvh; overflow: hidden; }
   body { display: flex; flex-direction: column; }
   header { display: none; }
-  .hud { flex: none; max-height: 26dvh; overflow: auto; }
   /* 8px each side is what §2's 48px of non-screen width is measured from;
      the block padding and the gaps are trimmed to 6px so the screen box
      gets every pixel the control row and the keypad do not need */
@@ -617,6 +657,7 @@ fieldset:disabled .advanced summary { pointer-events: none; }
     gap: 0; padding: 6px 8px;
   }
   .phone-panel {
+    --flank: 0px;                /* no side-key gutters to spill into */
     flex: 1; min-height: 0; width: 100%; gap: 6px;
     padding-inline: 0; zoom: 1;
   }
@@ -694,6 +735,19 @@ fieldset:disabled .advanced summary { pointer-events: none; }
     box-shadow: 0 0 0 1px var(--border);
   }
   .lcd-overlay { inset: 0; border-radius: 6px; }
+
+  /* app.js moves the HUD in here: an overlay on the top edge of the screen
+     box, so it costs the layout column no height at all and the keypad-fit
+     rule above is untouched. 9px is what makes the full six-token line fit
+     a 342px box — the fitting rule drops tokens, it never shrinks type. */
+  .hud {
+    position: absolute; top: 0; left: 0; right: 0; width: auto; z-index: 2;
+    padding: 3px 6px; text-align: left; pointer-events: none;
+    background: rgba(0, 0, 0, 0.6); border-radius: 6px 6px 0 0;
+    font-size: 9px; color: #d7f0dd;
+  }
+  /* the toggle has no effect here (§4) */
+  .hud-toggle { display: none; }
 
   /* the keypad is the floor of the layout: it scales with the viewport and
      is never the thing that gets clipped */

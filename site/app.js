@@ -148,11 +148,25 @@ let startBlocked = false; // a failure Start cannot recover from (isolation)
 // one has an EFA block to hand back.
 let exportsReady = false;
 let ranDevice = null;
+// §6 of the HUD criteria: the guest has been slower than 0.80x for three
+// seconds. Drawn on the pill whether or not the HUD itself is shown.
+let slow = false;
 
 const statusEl = $("status");
 const statusTextEl = $("status-text");
 const pillActionEl = $("pill-action");
 const captionEl = $("status-caption");
+const statusBlock = document.querySelector(".status-block");
+// declared here, with the rest of the pill, because render() reaches the
+// HUD and render() runs long before the HUD section further down
+const hudEl = $("hud");
+const hudMetricsEl = $("hud-metrics");
+const hudEnvEl = $("hud-env");
+const hudRuler = $("hud-ruler");
+const hudChk = $("opt-hud");
+// render() reaches the HUD, and render() runs while the HUD section further
+// down is still in its temporal dead zone
+let hudReady = false;
 
 function fmtMiB(bytes) {
   const m = bytes / (1024 * 1024);
@@ -512,11 +526,14 @@ function pillText() {
   // while the recording pill is up the two have to share one 32px row:
   // the uptime alone, no "Running · " in front of it
   const bare = !!recorder && phoneLayout.matches;
+  // "· slow" is the pill's half of §6: the amber colour says something is
+  // wrong, the word says what
+  const tail = slow ? " · slow" : "";
   switch (emuState) {
     case "downloading": return `Downloading · ${fmtProgress(dlLoaded, dlTotal)}`;
-    case "booting": return "Booting";
-    case "running": return (bare ? "" : "Running · ") + mmss(Date.now() - runStartedAt);
-    case "paused": return (bare ? "" : "Paused · ") + mmss(Date.now() - runStartedAt);
+    case "booting": return "Booting" + tail;
+    case "running": return (bare ? "" : "Running · ") + mmss(Date.now() - runStartedAt) + tail;
+    case "paused": return (bare ? "" : "Paused · ") + mmss(Date.now() - runStartedAt) + tail;
     default: return "Idle";
   }
 }
@@ -562,7 +579,7 @@ function render() {
   const live = emuState === "running" || emuState === "paused";
 
   statusEl.dataset.state = emuState;
-  statusEl.className = "status" + (errorMsg ? " error" : "");
+  statusEl.className = "status" + (errorMsg ? " error" : slow && locked ? " warn" : "");
   statusTextEl.textContent = pillText();
   renderAction();
   const cap = captionText();
@@ -616,13 +633,17 @@ function render() {
   // the pill text opens the Firmware sheet, but only where there is one and
   // only while the panel is not locked
   $("status-open").disabled = !phoneLayout.matches || emuState !== "idle";
+  syncHud();
   window.__ui = {
     state: emuState, mode: ffMode, device: currentDevice(),
-    ready: firmwareReady(), error: errorMsg, exitCode,
+    ready: firmwareReady(), error: errorMsg, exitCode, slow,
   };
 }
 
 function setEmuState(next) {
+  // every run gets its own metrics window: wall, virtual time and the slow
+  // warning all start counting from the moment the guest does
+  if (next === "booting" && emuState !== "booting") hudReset();
   emuState = next;
   if (next === "running" || next === "paused") startUptime();
   else stopUptime();
@@ -741,10 +762,14 @@ function applyLayout() {
   if (phoneLayout.matches) {
     $("sheet-firmware-body").appendChild($("pre-panel"));
     $("sheet-settings-body").appendChild($("post-panel"));
+    // §4 — an overlay on the top edge of the screen box, so the strip costs
+    // the column no height and the keypad keeps every pixel it had
+    document.querySelector(".lcd-wrap").appendChild(hudEl);
   } else {
     closeSheet(true);
     mainEl.insertBefore($("pre-panel"), phonePanel);
     mainEl.appendChild($("post-panel"));
+    statusBlock.appendChild(hudEl);   // §5 — two lines under the pill
   }
   render(); // the pill says different things in the two layouts
   scheduleFit();
@@ -1187,7 +1212,6 @@ async function boot() {
   window.__qemu = qemuModule; // debugging hook
   startPainting();
   startSerialPoll();
-  startHud();
   running = true;
   exportsReady = true;
   runStartedAt = Date.now();
@@ -1433,7 +1457,7 @@ function startPainting() {
 function stopPainting() {
   cancelAnimationFrame(rafHandle);
   clearInterval(serialTimer);
-  clearInterval(hudTimer);
+  stopHudTimer();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1551,102 +1575,326 @@ function fitScreen() {
 let fitPending = 0;
 function scheduleFit() {
   cancelAnimationFrame(fitPending);
-  fitPending = requestAnimationFrame(() => { fitPhone(); fitScreen(); });
+  fitPending = requestAnimationFrame(() => { fitPhone(); fitScreen(); refitHud(); });
 }
 window.addEventListener("resize", scheduleFit);
 // the URL bar sliding in and out changes dvh without a window resize event
 window.visualViewport?.addEventListener("resize", scheduleFit);
 for (const mq of [sideBySide, landscapeFit, phoneLayout]) mq.addEventListener("change", scheduleFit);
-// whatever moves the row's height (keypad board, HUD band, sheets) ends up
-// here, so the box never has to be re-fitted by hand
-new ResizeObserver(() => fitScreen()).observe(screenCell);
+// whatever moves the row's height (keypad board, sheets) ends up here, so
+// the box never has to be re-fitted by hand — and the HUD, which is as wide
+// as the box it sits on at phone widths, is re-fitted with it
+new ResizeObserver(() => { fitScreen(); refitHud(); }).observe(screenCell);
+// the token budget follows the container width, wherever that came from
+function refitHud() { if (!hudEl.hidden) drawHud(); }
 document.fonts?.ready.then(scheduleFit);
 
 /* ------------------------------------------------------------------ */
-/* Stats HUD ("Performance HUD"): what "realtime" is on this device     */
+/* Performance HUD: two lines, and never a third                        */
 /* ------------------------------------------------------------------ */
 
 // Per-second guest rates, on the page itself so a phone can report them
-// without a debugger: MIPS (guest insns/s; 125 = real time under the stock
-// icount shift=3), v/wall (virtual seconds per wall second while the guest
-// is busy — 1.0 = real time), lag (wall − virtual since start: what the
-// real-time cap still owes), fps, halts/s and the page's own paint cost.
-// Tap the HUD to copy the last 60 s of samples as JSON.
-let hudTimer = 0;
-let hudHeight = 0;
+// without a debugger. Line 1: speed (virtual seconds per wall second — 1.0
+// is real time), MIPS (guest insns/s; 125 = real time under the stock icount
+// shift=3), fps, the page's own paint cost, lag (wall − virtual since the
+// run started: what the real-time cap still owes) and halts/s. Line 2: the
+// machine they were measured on. Whatever the width, it is exactly two
+// lines: tokens are dropped off the line, never wrapped or shrunk.
 let paintMs = 0;
+let hudTimer = 0;
 const HUD_HALT_INDEX = 29;   // WASM_DIAG_HALT in include/qemu/wasm-diag.h
-function startHud() {
-  clearInterval(hudTimer);
-  if (!$("opt-hud").checked) return;
-  const el = $("hud");
-  el.hidden = false;
-  // a rate needs two samples, so there is always a gap before the first
-  // line — say which kind of wait it is
-  el.textContent = running ? "Loading…" : "waiting for a run…";
-  scheduleFit(); // the band takes height off the phone's budget
-  const t0 = performance.now();
-  const samples = [];
-  let last = null;
-  // virtual time already on the clock when the HUD was switched on: `lag` is
-  // wall minus virtual *since then*, which is the only thing this window can
-  // measure. Without it, enabling the HUD mid-run reports a negative lag,
-  // because it would be subtracting the whole run's virtual time from a wall
-  // clock that only just started.
-  let v0 = null;
-  el.onclick = () => navigator.clipboard?.writeText(JSON.stringify({ ua: navigator.userAgent,
-    cores: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory ?? null,
-    isolated: crossOriginIsolated, samples }));
-  hudTimer = setInterval(() => {
-    const m = qemuModule;
-    if (!m?._wasm_insns) return;
-    const s = { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
-      fb: Number(m._wasm_fb_updates()), halts: Number(m._wasm_memstat(HUD_HALT_INDEX)), paint: paintMs };
-    v0 ??= s.v;
-    if (last) {
-      const dt = (s.t - last.t) / 1000;
-      const r = { wall: +((s.t - t0) / 1000).toFixed(1), mips: +((s.insns - last.insns) / 1e6 / dt).toFixed(1),
-        vratio: +((s.v - last.v) / 1e9 / dt).toFixed(3), fps: +((s.fb - last.fb) / dt).toFixed(1),
-        halts: Math.round((s.halts - last.halts) / dt), paintMsPerS: +((s.paint - last.paint) / dt).toFixed(1),
-        insns: s.insns, v: +(s.v / 1e9).toFixed(2) };
-      samples.push(r);
-      if (samples.length > 60) samples.shift();
-      const win = samples.slice(-10);
-      const avg = (k) => (win.reduce((a, x) => a + x[k], 0) / win.length).toFixed(k === "vratio" ? 2 : 1);
-      const lag = ((s.t - t0) / 1000 - (s.v - v0) / 1e9).toFixed(1);
-      el.textContent =
-        `MIPS ${r.mips} (10s ${avg("mips")})  v/wall ${r.vratio.toFixed(2)} (10s ${avg("vratio")})  ` +
-        `fps ${r.fps}  halts/s ${r.halts}  paint ${r.paintMsPerS} ms/s\n` +
-        `insns ${(s.insns / 1e9).toFixed(2)} G  v ${(s.v / 1e9).toFixed(1)} s  wall ${r.wall} s  lag ${lag} s  ` +
-        `cores ${navigator.hardwareConcurrency}  mem ${navigator.deviceMemory ?? "?"} GB  isolated ${crossOriginIsolated}\n` +
-        navigator.userAgent;
-      // the band grows from one line to three (and rewraps with the window),
-      // which is height the phone can no longer have
-      if (el.offsetHeight !== hudHeight) {
-        hudHeight = el.offsetHeight;
-        scheduleFit();
-      }
-    }
-    last = s;
-  }, 1000);
+const HUD_MS = 500;          // 2 Hz — a readable number, not a per-frame one
+const HUD_KEEP = 120;        // 60 s of samples for "Copy diagnostics"
+const HUD_AVG = 20;          // the 10 s averages it still carries
+
+let hudSamples = [];
+let hudLast = null, hudNow = null, hudT0 = 0, hudV0 = null;
+let slowSince = 0, fastSince = 0;
+
+/* ---- shortUserAgent(): "Android 8 · Chrome 147 · SM-G955U" ---- */
+
+let uaShort = null;   // built once per page load
+
+function uaOS(platform, platformVersion) {
+  const ua = navigator.userAgent;
+  if (platform) {
+    const major = platformVersion ? String(platformVersion).split(".")[0] : null;
+    // only the platforms whose release number anyone quotes carry one
+    return major && (platform === "Android" || platform === "iOS")
+      ? `${platform} ${major}` : platform;
+  }
+  let m;
+  if ((m = ua.match(/Android (\d+)/))) return `Android ${m[1]}`;
+  if ((m = ua.match(/(?:iPhone|CPU) OS (\d+)/))) return `iOS ${m[1]}`;
+  if (/Windows NT/.test(ua)) return "Windows";
+  if (/Mac OS X/.test(ua)) return "macOS";
+  if (/Linux/.test(ua)) return "Linux";
+  return null;
 }
 
-function stopHud() {
-  clearInterval(hudTimer);
-  hudTimer = 0;
-  $("hud").hidden = true;
-  scheduleFit();
+// Chromium shuffles navigator.userAgentData.brands on purpose (the "Not"
+// entry is there to break naive parsers), so "the first one" is whichever it
+// felt like this morning: take the specific brand over the generic engine
+// one, and give it the name people call it by.
+const UA_BRAND = {
+  "Google Chrome": "Chrome", HeadlessChrome: "Chrome", Chromium: "Chrome",
+  "Microsoft Edge": "Edge", Edg: "Edge", OPR: "Opera",
+};
+function uaBrowser() {
+  const brands = navigator.userAgentData?.brands?.filter((b) => !/not/i.test(b.brand)) ?? [];
+  const pick = brands.find((b) => b.brand !== "Chromium") ?? brands[0];
+  if (pick) return `${UA_BRAND[pick.brand] ?? pick.brand} ${String(pick.version).split(".")[0]}`;
+  const m = navigator.userAgent.match(/(Edg|OPR|Chrome|Firefox|Safari)\/(\d+)/);
+  return m ? `${UA_BRAND[m[1]] ?? m[1]} ${m[2]}` : null;
 }
+
+function uaModel(mobile, hiModel) {
+  if (!mobile) return null;
+  // the reduced user agent calls every phone "K"; only UA-CH has the real one
+  const fromUa = navigator.userAgent.match(/Android [\d.]+;\s*([^;)]+?)(?:\s+Build\/|\))/)?.[1];
+  const model = (hiModel || fromUa || "").trim();
+  return model && model !== "K" ? model : null;
+}
+
+function buildShortUA(hi) {
+  const d = navigator.userAgentData;
+  const mobile = d?.mobile ?? /Mobi|Android/.test(navigator.userAgent);
+  let os = uaOS(d?.platform, hi?.platformVersion);
+  if (!mobile) {
+    // §2's desktop line is "Linux x86_64 · Chrome 147": with no model to
+    // name, the architecture rides with the OS rather than being a token
+    const m = navigator.userAgent.match(/\b(x86_64|aarch64|arm64|Win64|WOW64)\b/);
+    const arch = m && (m[1] === "Win64" || m[1] === "WOW64" ? "x64" : m[1]);
+    if (arch && !(os ?? "").includes(arch)) os = os ? `${os} ${arch}` : arch;
+  }
+  // anything this browser will not say is left out, never printed as
+  // "undefined"
+  return [os, uaBrowser(), uaModel(mobile, hi?.model)].filter(Boolean).join(" · ");
+}
+
+function shortUserAgent() { return uaShort ??= buildShortUA(null); }
+
+// the model and the platform version only come asynchronously: take the
+// synchronous answer now and refine it the moment they land
+navigator.userAgentData?.getHighEntropyValues?.(["platformVersion", "model"])
+  .then((hi) => {
+    uaShort = buildShortUA(hi);
+    hudEnvCache = null;
+    if (!hudEl.hidden) drawHud();
+  })
+  .catch(() => {});
+
+/* ---- the two lines ---- */
+
+const HUD_SEP = " · ";
+const hudPad = (s, n) => String(s).padStart(n);
+
+// Every token is padded to a fixed width, so a line does not jitter as its
+// numbers move. `drop` is the order they leave in when the line will not
+// fit, lowest first: paint goes before halts because §3's two narrow cases
+// pin it that way (272px keeps speed, MIPS, fps and lag; 312px keeps
+// halt/s too).
+function metricTokens(r) {
+  if (!r) return [];
+  const lag = Math.max(0, r.lag);
+  return [
+    { t: `${r.vratio.toFixed(2)}×`, drop: 6,
+      cls: "hud-speed " + (r.vratio >= 0.95 ? "good" : r.vratio >= 0.8 ? "warn" : "bad") },
+    { t: `${hudPad(r.mips.toFixed(1), 4)} MIPS`, drop: 5 },
+    { t: `${hudPad(Math.round(r.fps), 2)} fps`, drop: 4 },
+    { t: `${hudPad(Math.round(r.paint), 3)} ms`, drop: 1 },
+    { t: `lag ${hudPad(lag.toFixed(1), 3)}s`, drop: 3,
+      cls: lag >= 3 ? "hud-lag bad" : lag >= 1 ? "hud-lag warn" : "" },
+    { t: `${hudPad(Math.round(r.halts), 3)} halt/s`, drop: 2 },
+  ];
+}
+
+let hudEnvCache = null;
+function envTokens() {
+  if (hudEnvCache) return hudEnvCache;
+  const t = [{ t: shortUserAgent(), drop: 4 }];
+  if (navigator.hardwareConcurrency) t.push({ t: `${navigator.hardwareConcurrency}c`, drop: 3 });
+  if (navigator.deviceMemory) t.push({ t: `${navigator.deviceMemory} GB`, drop: 2 });
+  if (crossOriginIsolated) t.push({ t: "isolated", drop: 1 });
+  return (hudEnvCache = t);
+}
+
+// The budget in characters: how many glyphs of the lines' own monospace font
+// fit the container, less two. Measured from a hidden "0" — once per font,
+// which is what changes when the strip moves between the two layouts.
+let hudCharW = 0, hudCharFont = "";
+function hudCharWidth() {
+  // not the `font` shorthand: Chrome serializes it to "" as soon as
+  // font-variant-numeric is set, which would make every font look the same
+  const s = getComputedStyle(hudRuler);
+  const font = `${s.fontSize} ${s.fontWeight} ${s.fontFamily}`;
+  if (font !== hudCharFont) {
+    hudRuler.textContent = "0".repeat(20);   // 20 of them: sub-pixel advances
+    const w = hudRuler.getBoundingClientRect().width / 20;
+    hudRuler.textContent = "0";
+    if (w > 0) { hudCharW = w; hudCharFont = font; }
+  }
+  return hudCharW;
+}
+
+function hudBudget() {
+  const w = hudEl.getBoundingClientRect().width;
+  const cw = hudCharWidth();
+  return cw > 0 && w > 0 ? Math.floor(w / cw) - 2 : Infinity;
+}
+
+function drawLine(el, tokens, budget) {
+  const keep = tokens.slice();
+  const width = () => keep.reduce((n, k) => n + k.t.length, 0)
+    + Math.max(0, keep.length - 1) * HUD_SEP.length;
+  while (keep.length > 1 && width() > budget) {
+    let worst = 0;
+    for (let i = 1; i < keep.length; i++) if (keep[i].drop < keep[worst].drop) worst = i;
+    keep.splice(worst, 1);
+  }
+  const out = [];
+  for (const k of keep) {
+    if (out.length) out.push(document.createTextNode(HUD_SEP));
+    const s = document.createElement("span");
+    if (k.cls) s.className = k.cls;
+    s.textContent = k.t;
+    out.push(s);
+  }
+  el.replaceChildren(...out);
+}
+
+function drawHud() {
+  const budget = hudBudget();
+  drawLine(hudMetricsEl, metricTokens(hudNow), budget);
+  drawLine(hudEnvEl, envTokens(), budget);
+}
+
+/* ---- sampling ---- */
+
+function hudTick() {
+  const m = qemuModule;
+  if (!m?._wasm_insns) return;
+  const s = { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
+    fb: Number(m._wasm_fb_updates()), halts: Number(m._wasm_memstat(HUD_HALT_INDEX)), paint: paintMs };
+  // virtual time already on the clock when this window opened: lag is wall
+  // minus virtual *since then*, the only thing this window can measure
+  hudV0 ??= s.v;
+  if (hudLast) {
+    const dt = (s.t - hudLast.t) / 1000;
+    hudNow = {
+      wall: (s.t - hudT0) / 1000,
+      mips: (s.insns - hudLast.insns) / 1e6 / dt,
+      vratio: (s.v - hudLast.v) / 1e9 / dt,
+      fps: (s.fb - hudLast.fb) / dt,
+      halts: (s.halts - hudLast.halts) / dt,
+      paint: (s.paint - hudLast.paint) / dt,      // ms of page paint per second
+      lag: (s.t - hudT0) / 1000 - (s.v - hudV0) / 1e9,
+    };
+    hudSamples.push({
+      wall: +hudNow.wall.toFixed(1), mips: +hudNow.mips.toFixed(1),
+      vratio: +hudNow.vratio.toFixed(3), fps: +hudNow.fps.toFixed(1),
+      halts: Math.round(hudNow.halts), paintMsPerS: +hudNow.paint.toFixed(1),
+      lag: +hudNow.lag.toFixed(1), insns: s.insns, v: +(s.v / 1e9).toFixed(2),
+    });
+    if (hudSamples.length > HUD_KEEP) hudSamples.shift();
+    trackSpeed(hudNow.vratio, s.t);
+    if (!hudEl.hidden) drawHud();
+  }
+  hudLast = s;
+}
+
+// §6: three consecutive seconds under 0.80x turn the pill amber, three back
+// over it turn it green again. The hysteresis is the point — one slow sample
+// (a GC pause, a tab coming back) must not flicker the pill.
+function trackSpeed(vratio, now) {
+  if (vratio < 0.8) {
+    fastSince = 0;
+    slowSince ||= now;
+    if (!slow && now - slowSince > 3000) { slow = true; render(); }
+  } else {
+    slowSince = 0;
+    fastSince ||= now;
+    if (slow && now - fastSince >= 3000) { slow = false; render(); }
+  }
+}
+
+// every run gets its own window: wall, virtual time and the slow warning all
+// start counting when the guest does
+function hudReset() {
+  hudSamples = [];
+  hudLast = null; hudNow = null; hudV0 = null; hudT0 = performance.now();
+  slowSince = 0; fastSince = 0; slow = false;
+  if (!hudEl.hidden) drawHud();
+}
+
+const hudLive = () => emuState === "booting" || emuState === "running" || emuState === "paused";
+
+// Phone widths draw the strip whenever there is a guest, toggle or no toggle
+// (§4); desktop only with the toggle on (§5). The sampler runs for any live
+// guest either way — the pill's slow warning does not wait for the strip.
+function syncHud() {
+  if (!hudReady) return;
+  const show = phoneLayout.matches ? hudLive() : hudChk.checked;
+  const changed = hudEl.hidden === show;   // it was the other way a moment ago
+  hudEl.hidden = !show;
+  if (show || hudLive()) { if (!hudTimer) hudTimer = setInterval(hudTick, HUD_MS); }
+  else stopHudTimer();
+  if (show) drawHud();
+  // off the phone layout the two lines are real height in the phone column
+  if (changed && !phoneLayout.matches) scheduleFit();
+}
+
+function stopHudTimer() { clearInterval(hudTimer); hudTimer = 0; }
 
 // the toggle takes effect immediately, mid-run or before one
-const hudChk = $("opt-hud");
 hudChk.checked = localStorage.getItem("opt-hud") === "1";
 hudChk.addEventListener("change", () => {
   localStorage.setItem("opt-hud", hudChk.checked ? "1" : "0");
-  if (hudChk.checked) startHud();
-  else stopHud();
+  syncHud();
 });
-if (hudChk.checked) startHud();
+
+/* ---- Copy diagnostics ---- */
+
+// Everything the HUD drops to fit, plus what it never had room for: the
+// averages, the full unmodified user agent and the last 60 s of samples.
+function diagnostics() {
+  const win = hudSamples.slice(-HUD_AVG);
+  const avg = (k) => (win.length
+    ? +(win.reduce((a, x) => a + x[k], 0) / win.length).toFixed(2) : null);
+  return {
+    ua: navigator.userAgent, uaShort: shortUserAgent(),
+    cores: navigator.hardwareConcurrency ?? null,
+    deviceMemory: navigator.deviceMemory ?? null,
+    isolated: crossOriginIsolated,
+    device: currentDevice(), state: emuState, slow, exitCode,
+    avg10s: {
+      mips: avg("mips"), vratio: avg("vratio"), fps: avg("fps"),
+      halts: avg("halts"), paintMsPerS: avg("paintMsPerS"),
+    },
+    samples: hudSamples,
+  };
+}
+
+let diagFlash = 0;
+$("btn-diag").addEventListener("click", async () => {
+  const label = $("btn-diag-text");
+  let word = "Copied";
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(diagnostics(), null, 1));
+    say("Diagnostics copied to the clipboard");
+  } catch {
+    word = "Clipboard blocked";
+    say("Could not reach the clipboard");
+  }
+  clearTimeout(diagFlash);
+  label.textContent = word;
+  diagFlash = setTimeout(() => { label.textContent = "Copy diagnostics"; }, 1600);
+});
+
+window.__hud = { shortUserAgent, diagnostics };
+
+hudReady = true;
+syncHud();   // applies the remembered toggle, and nothing above could
 
 function startSerialPoll() {
   clearInterval(serialTimer);

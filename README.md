@@ -23,8 +23,11 @@ your own, dropped or picked; LG fullflashes can be picked together with
 their `.cfi-efa` sidecar in one go — the EFA block holding the LG EEPROM, a
 missing one makes LG firmware factory-reset — and the sidecar picker only
 appears once an LG device is selected. Start/Stop live in the status pill
-above the screen, the **Run** panel holds the keypad/HUD settings and the
-flash + EFA exports, and the on-screen keypad has every phone key as its
+above the screen — amber with a `· slow` suffix while the guest is running
+under 0.80× real time — the **Run** panel holds the keypad/HUD settings,
+**Copy diagnostics** and the flash + EFA exports, a two-line performance
+strip sits under the pill (on a phone, on the top edge of the screen, always
+on while the guest is), and the on-screen keypad has every phone key as its
 own `<button>` (plus physical-keyboard mapping). `load` options (device
 inference, IMEI/ESN→OTP, SIM, operator, startup scenario) are under
 **Advanced**.

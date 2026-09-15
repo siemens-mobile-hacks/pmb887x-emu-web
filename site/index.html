@@ -10,12 +10,6 @@
 <header>
   <h1>Siemens / LG PMB887X <span>emulator</span></h1>
 </header>
-<!-- per-second guest rates, toggled from the Run panel. Full page width and
-     right under the header: its lines are wide, and on a phone that is the
-     only place they fit without wrapping into a paragraph. Click to copy the
-     last 60 s as JSON. -->
-<pre id="hud" class="hud" hidden title="click to copy the last 60 s as JSON"></pre>
-
 <!-- Three columns: what you set before Start on the left, the phone in the
      middle (dead centre of the page), what only matters once it runs on the
      right. Phone-width screens keep only the phone here and move the two
@@ -137,6 +131,19 @@
       </div>
       <!-- the one-line reason whenever the pill's action is disabled -->
       <p id="status-caption" class="status-caption" hidden></p>
+
+      <!-- Two fixed lines of run metrics, never more: under the pill on
+           desktop (with "Performance HUD" on), and moved onto the top edge
+           of the screen box at phone widths, where it is always on while the
+           guest runs. aria-hidden because it is a 2 Hz ticker no screen
+           reader should read out — "Copy diagnostics" is the accessible
+           route to the same numbers. -->
+      <div id="hud" class="hud" aria-hidden="true" hidden>
+        <div id="hud-metrics" class="hud-line"></div>
+        <div id="hud-env" class="hud-line hud-env"></div>
+        <!-- the fitting rule's ruler: one glyph of the line's own font -->
+        <span id="hud-ruler" class="hud-ruler" aria-hidden="true">0</span>
+      </div>
     </div>
 
     <!-- side-key column | screen | side-key column -->
@@ -236,10 +243,20 @@
           Show shortcuts on keys
         </label>
 
-        <label class="checkbox-label" for="opt-hud" title="Guest speed, per second">
+        <!-- phone widths draw the HUD whenever the guest runs, so the
+             toggle has nothing to say there (§4) -->
+        <label class="checkbox-label hud-toggle" for="opt-hud" title="Guest speed, per second">
           <input type="checkbox" id="opt-hud">
           Performance HUD
         </label>
+
+        <!-- the numbers the HUD drops, plus the full user agent and the last
+             60 s of samples, as JSON on the clipboard -->
+        <button type="button" id="btn-diag" class="btn"
+          title="Environment, the last 60 s of metrics and the full user agent, as JSON">
+          <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>
+          <span id="btn-diag-text">Copy diagnostics</span>
+        </button>
       </div>
 
       <div class="group">

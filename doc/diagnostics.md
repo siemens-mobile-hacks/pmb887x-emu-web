@@ -29,14 +29,26 @@ the Firmware panel, not params. The pflash drive is always writable (there
 is no longer a "writable flash" checkbox, and `tools/session.mjs` ignores a
 `rw=1` token) — the image only lives in this run's MEMFS, and **Export ▸
 Flash** in the Run panel hands that copy back. So is the stats HUD:
-**"Performance HUD"** in the page's Run panel (it used to be `?hud=1`) — per-second `MIPS` (guest
-insns/s; 125 = real time under the stock `shift=3`), `v/wall` (virtual
-seconds per wall second — 1.0 = real time, below it the guest is
-compute-bound), `lag` (wall − virtual since start: what the real-time cap
-still owes), `fps`, `halts/s`, the page's own paint cost, `cores`/`mem`/
-`isolated` and the UA; click it to copy the last 60 s of samples as JSON.
-The choice is remembered, so a phone without a debugger can report its own
-number.
+a two-line strip sampled at 2 Hz. Line 1 is this second's guest: speed
+(`1.00×` — virtual seconds per wall second, 1.0 = real time, below it the
+guest is compute-bound; green ≥ 0.95, amber ≥ 0.80, red under), `MIPS`
+(guest insns/s; 125 = real time under the stock `shift=3`), `fps`, the
+page's own paint cost in `ms`, `lag` (wall − virtual since the run started:
+what the real-time cap still owes) and `halt/s`. Line 2 is the machine:
+a short user agent (`Android 8 · Chrome 147 · SM-G955U`), cores, memory and
+`isolated`. Narrow screens drop whole tokens off the line rather than wrap
+or shrink, paint first.
+
+On a phone the strip is an overlay on the top edge of the screen box and is
+always on while the guest is; on desktop **"Performance HUD"** in the Run
+panel draws it under the status pill (it used to be `?hud=1`, then a band
+across the top of the page) and the choice is remembered. Either way the
+pill itself turns amber and gains `· slow` after three seconds under 0.80×.
+
+**"Copy diagnostics"**, beside the toggle, puts the last 60 s of samples,
+the 10 s averages, the environment and the full unmodified user agent on the
+clipboard as JSON — which is how a phone without a debugger reports its own
+number. `window.__hud.diagnostics()` returns the same object.
 
 ## Exports on `window.__qemu` (the emscripten module)
 
