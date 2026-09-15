@@ -6,6 +6,167 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-15, round fourteen: 0074–0076 — the cost of being unwindable)
+
+This round's win did not come from the code.  It came from a **build
+setting that had gone stale**, and it was found by accident: a patch that
+should have been worth a few percent measured **-2.5 %** instead, 0/4
+pairwise.  The patch was fine.  What went with it was not.
+
+`-sASYNCIFY_ONLY=@configs/meson/asyncify-only.txt` lists every function
+Asyncify must instrument because it may be on the stack at a coroutine
+switch.  Inlining `do_ld_mmio_1p()`/`do_st_mmio_1p()` into their callers
+moved instrumented code into hosts that were not on the list, so the
+first cut *added* the hosts — the conservative move, preserving coverage.
+Rebuilding without that one change turned the same patch into **+4.1 %**.
+Seven functions' worth of instrumentation was 6.6 percentage points.
+
+**The list was wrong in the other direction, and the tree already proved
+it.**  `rr_cpu_thread_fn()` calls `qemu_coroutine_forbid_current_thread()`
+and `qemu_coroutine_switch()` *aborts* if reached on the vCPU thread —
+because the JIT'd TB frame and the `invoke_*` wrapper below a helper
+cannot be instrumented at all.  A coroutine switch under guest execution
+is therefore impossible by construction, and every entry reachable only
+from the vCPU was paying instrumentation for an unwind that can never
+happen.  Eighteen of them came out:
+
+    cpu_exec  cpu_exec_loop  cpu_exec_setjmp  cpu_tb_exec
+    tcg_cpu_exec  tcg_qemu_tb_exec  rr_cpu_thread_fn
+    do_ld_*  do_st_*  do_st_mmio_leN
+    helper_ld*_mmu  helper_st*_mmu  helper_stb_mmu
+    int_ld_*  int_st_*  int_st_mmio_leN  io_readx  io_writex
+
+They were not wrong when they were written: they are the stack of a flash
+write issued from the vCPU — the exact case `hw/arm/pmb887x/flash-blk.c`
+later removed by recording the dirty range and writing it from a main-loop
+bottom half.  The fix deleted the stack; nothing deleted the entries.
+
+| what | measured |
+|---|---|
+| 0074 trim the Asyncify onlylist to what a coroutine switch can reach | the mechanism behind 0075's +4.1 %; on its own, past the MMIO body, under this meter's floor |
+| 0075 fold the MMIO fast path into its callers, one bswap instead of two | **+4.1 % MIPS and v/wall, 3/4** vs the round-thirteen tip |
+| 0076 gate the hot-path diagnostic counters | ~14M read-modify-writes a second removed; below the wall meter, see below |
+
+End to end against the round-thirteen tip, interleaved A/B, `--state idle`,
+host load ~5:
+
+| board | metric | round thirteen | round fourteen | |
+|---|---|---|---|---|
+| S75 idle | MIPS | 52.9, 54.0, 51.8, 52.6 | 56.5, 59.0, 56.6, 57.1 | **+8.5 %** (4/4) |
+| S75 idle | v/wall | 55.6, 56.7, 54.2, 55.1 | 59.2, 61.6, 59.4, 60.0 | **+8.4 %** (4/4) |
+| EL71 idle | MIPS | 65.3, 61.7, 58.7 | 67.6, 62.8, 61.7 | **+3.4 %** (3/3) |
+| EL71 idle | v/wall | 24.7, 23.3, 22.2 | 25.5, 23.7, 23.3 | **+3.1 %** (3/3) |
+
+The build is also **28.6 KB smaller** (27,826,320 → 27,797,736 bytes).
+
+EL71 gains far less than S75, and that is the expected shape rather than
+a disappointment: EL71 is compute-bound (v/wall ~26 against the S75's
+~60) and makes ~0.6M MMIO accesses a second against the S75's 3.2M, so
+it spends proportionally little time in the helper and loop functions
+this round un-instrumented.  Its remaining cost is generated TB code —
+see "What is left" below.
+
+**Gates, all green on the shipping build:** native op-suite 1156/1156 on
+JIT and TCI with serial byte-identical; native lockstep 3/3 clean over
+full 2.5 G S75 boots; native suite 4/4; bootcheck 3/3 boards; Firefox
+`errors=0 temp=0` over 180 s; **wasm-vs-native lockstep 2/2 clean at the
+full 2.5 G budget with serial identical**.  Worth stating for this round
+in particular: the boards run `-drive if=pflash,...` with no
+`readonly=on`, so every one of those runs had a **writable flash** and
+exercised the vCPU flash write/erase path — the very stack 0074's removed
+entries were added for.  `qemu_coroutine_switch()`'s abort never fired.
+
+Two harness traps cost time here and are worth knowing:
+`tools/idlebench.mjs` takes its dist list as the **first positional
+argument**, so `idlebench.mjs --board ke800` silently reads "ke800" as
+the dist and every run dies with "module never loaded"; write
+`idlebench.mjs dist-a,dist-b --board ke800`.  And **never redeploy
+`site/dist-jit` while a gate is running against it** — a relink mid-run
+produced exactly the same "module never loaded" failure and looked like a
+regression.
+
+### Evidence, not argument: QEMU_COSTACK and the audit tool
+
+`QEMU_COSTACK=1` logs every distinct call stack at a coroutine switch —
+the mechanism the list was originally built from.  New in this round,
+`tools/asyncify-audit.mjs` resolves those frames through the `.symbols`
+sidecar and reports both directions:
+
+    EXTRA_Q="env=QEMU_COSTACK=1" DIST=dist-jit MATCH=COSTACK \
+      node tools/conlog.mjs 120 > costack.txt
+    node tools/asyncify-audit.mjs costack.txt dist-jit-<snapshot>
+
+A 120 s S75 boot produced **67 distinct frames**, every one of them block
+layer, device realize, main loop or monitor; the trimmed list still
+covered all 67, and none of the eighteen appeared.  Two cautions the tool
+prints but cannot enforce:
+
+- **UNUSED is a candidate, not a verdict.**  96 entries went unobserved in
+  that run and most are needed for paths it did not exercise (the pwrite
+  path, shutdown, thread creation).  Every removal here rests on *why the
+  frame cannot appear*, not on its absence from one log.
+- **Resolve against the dist the log came from.**  The log stores wasm
+  function *indices*; any relink renumbers them, and resolving against a
+  later build silently renames every frame (it cost one bogus "19 frames
+  missing" scare mid-round).
+
+### 0075: what the inlining itself does
+
+`helper_ld*_mmu` already assert the access size, so each `do_ld?_mmu`
+knows it statically; passing it as a literal into an `always_inline`
+`do_ld_mmio_1p()` folds the size-mask test, the alignment tests, the
+value mask and the swap.  The swap is the one that mattered: the fast
+path applied the device's byte order and then the *caller* applied the
+op's, and for a little-endian device read by a little-endian guest —
+every hot MMIO register on these boards — those were two real `bswap32`
+calls that cancelled, one of them through the out-of-line
+`io_fast_bswap()` and its `br_table`.  They are now the single swap that
+is left over, `((io_swap & 1) != 0) ^ caller_le`.
+
+### 0076: the counters were on the hot path
+
+`wasm_diag_stat[]` began as cold-path diagnostics — its own header said
+"hot paths deliberately carry no counters" — but `IO_LD`, `IO_ST`, the
+two `*_FAST`, `VCLOCK_READ`, `HFLAGS`, `HFLAGS_FAST`, `TPU_RAM_W`,
+`TPU_RAM_SKIP`, `LC_CALL` and `LC_FILL` had all migrated onto it: about
+**14M read-modify-writes a second** on an idle S75, across four cache
+lines.  `WASM_DIAG_HOT()` gates those; the cold ones are untouched, so
+tb/flush/fill/warp diagnostics still work in the shipping build.  To get
+the hot rates back, add `#define WASM_DIAG_HOT_COUNTERS 1` at the top of
+`include/qemu/wasm-diag.h` and rebuild — and **never take a wall-clock
+A/B against such a build**.
+
+### What this round did not find
+
+- **The TPU event RAM as its own MemoryRegion** — the obvious next move
+  after round thirteen, since 1.7M of the S75's 2.0M MMIO stores a second
+  land there — measured **-2.3 %, 1/4**.  Details and the post-mortem are
+  in the playbook's REJECTED table.  Its `disable_reentrancy_guard` half
+  was never separated and is worth ~0.3 %, which needs a profile.
+- **`-sSUPPORT_LONGJMP=wasm`** (the `invoke_ijj` item round thirteen left
+  open) is already closed in the REJECTED table: binaryen's Asyncify pass
+  crashes on it, and ASYNCIFY is not optional here.
+
+### What is left (round fourteen)
+
+**1. The MMIO dispatch path, still the top.**  0075 took the double swap
+and the size decode out of it, but the shape is unchanged: ~10 loads from
+a large `CPUTLBEntryFull`, a `bql_lock_mmio()` pair, and an indirect
+call.  Packing `io_rmask`/`io_wmask`/`io_swap`/`io_check_align`/
+`io_rom_device` into one word is still untried.
+
+**2. `helper_lookup_tb_ptr_lc`, ~2.9 % and still never measured.**
+`lcCall/s` and `lcFill/s` now need a `WASM_DIAG_HOT_COUNTERS` build — get
+them before touching it.  A fill rate near the call rate means the
+one-entry-per-TB inline cache is thrashing and wants a second way.
+
+**3. The meter's floor is the binding constraint.**  At host load 4–7 an
+interleaved 4-pair A/B resolves ~3 %; three of this round's questions
+(the last three onlylist entries, the reentrancy guard, the counters) are
+smaller than that and were decided on structure and size instead.  For
+anything under 3 %, use back-to-back profiles and self-time shares, as
+round thirteen did.
+
 ## Update (2026-09-15, round thirteen: 0070–0073 — what a wasm atomic costs)
 
 Three of this round's four patches turned out to be the same patch.
@@ -151,7 +312,7 @@ virtual-clock timers run on the main loop, the thread this keeps out.
   be probed by deleting the thing — 0073 had to be built properly and
   then measured.
 
-### What is left
+### What is left (as of round thirteen; superseded above)
 
 A fresh S75 idle profile after 0073:
 

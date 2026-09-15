@@ -108,6 +108,59 @@ file is the "why" behind them and behind the timing model.
   halted, not starved — check `halts/s` and the recompile counters before
   reading it as a problem.
 
+## Asyncify instrumentation is not free, and the onlylist had stale frames (round fourteen)
+
+`-sASYNCIFY_ONLY=@configs/meson/asyncify-only.txt` names every function
+that may be on the stack at a coroutine switch.  It is easy to read that
+list as harmless if a little generous.  It is not: the instrumentation
+puts a state test at function entry and around every call and spills
+locals to the asyncify stack, so on a function entered millions of times
+a second it costs about what the function costs.  Adding seven hot
+cputlb functions to the list turned a **+4.1 %** patch into a **-2.5 %**
+one — the same code, 4/4 pairwise either way.
+
+**The vCPU thread can never be on such a stack, and the tree already says
+so.**  `rr_cpu_thread_fn()` calls `qemu_coroutine_forbid_current_thread()`,
+and `qemu_coroutine_switch()` in `util/coroutine-wasm.c` *aborts* if it is
+ever reached there, because the JIT'd TB frame and the `invoke_*` wrapper
+beneath a helper cannot be instrumented at all — unwinding through them
+is impossible in principle, not merely unsupported.  So everything
+reachable only from the vCPU was pure cost: `cpu_exec`, `cpu_exec_loop`,
+`cpu_exec_setjmp`, `cpu_tb_exec`, `tcg_cpu_exec`, `tcg_qemu_tb_exec`,
+`rr_cpu_thread_fn`, `do_ld_*`, `do_st_*`, `helper_ld*_mmu`,
+`helper_st*_mmu`, `int_ld_*`, `int_st_*`.
+
+Those entries were not wrong when written — they are the stack of a flash
+write issued from the vCPU, exactly the case `hw/arm/pmb887x/flash-blk.c`
+later removed by recording the dirty range and writing it from a
+main-loop bottom half.  **The fix deleted the stack; nothing deleted the
+list entries.**  Removing work does not remove the scaffolding built for
+it; go back and check what the scaffolding was for.
+
+**Verify with the tool, not with the argument.**  `QEMU_COSTACK=1` logs
+every distinct stack at a coroutine switch, and
+`tools/asyncify-audit.mjs` resolves those frames through the `.symbols`
+sidecar and reports MISSING (observed but not covered — a real bug) and
+UNUSED (listed but not observed — only a *candidate*).  A 120 s S75 boot
+produced 67 distinct frames, every one of them block layer, device
+realize, main loop or monitor; the trimmed list still covered all 67.
+UNUSED is never sufficient on its own: 96 entries were unobserved in that
+run and most are needed for paths it did not exercise (the pwrite path,
+shutdown, thread creation).  The trim was justified by *why the frame
+cannot appear*; the audit only confirmed it.  The log stores wasm
+function *indices*, so resolve it against the dist it was captured from —
+any relink renumbers them and every name silently becomes wrong.
+
+**Prefer a change whose failure mode is an abort.**  Get this wrong for a
+vCPU frame and `qemu_coroutine_switch()` aborts with a message; get it
+wrong elsewhere and the boot, lockstep and Firefox gates run the block
+layer hard.  That asymmetry is what made a change to a correctness-shaped
+setting worth attempting at all.
+
+**And when a patch that should win loses, suspect what you changed
+alongside it.**  The wasm had grown 21 KB and 20.6 KB of that was
+instrumentation, not the inlining — splitting the two was one relink.
+
 ## wasm has no relaxed atomic and no acquire fence (round thirteen)
 
 QEMU's `qatomic_read`/`qatomic_set` are `__ATOMIC_RELAXED` and
