@@ -538,6 +538,48 @@ for translation and module compilation.  Rules learned doing it:
   `workbench.mjs` exists.  What the timer does support is the narrow
   claim: the pipeline is 19.5 % of boot wall, so ~80 % is execution and
   devices, and that 80 % is unpriced.
+- **Calibrate the timer, or the floor will masquerade as the finding.**
+  The browser's clock is quantized to 1 ms, so a short interval measures
+  0 or 1 ms and the mean is a straddle-probability estimate — unbiased,
+  and fine.  What is *not* fine is that the two clock reads bounding the
+  interval have their own latency inside it, so a zero-length phase still
+  prices at **~66-75 ns**.  Time an *empty* interval the same sampled way
+  (`CAL_NS`) and subtract.  Before doing that, round eighteen "found" a
+  94 ns BQL acquire (really ~16 ns) and a 26 % MMIO share of wall; the
+  A/B of a patch built on the first of those won 1 run in 3.  Corollary:
+  **time the innermost thing you can reach.**  Wrapping the device
+  callback needed no subtraction model and gave the number that survived
+  — 3.6 ns for an MMIO read against 330 ns for a write.
+- **Sample the address, not just the duration.**  Once a phase is known
+  to be expensive, the same 1 ms straddle that makes the timer work also
+  makes it a *sampler*: a nonzero sample is drawn in proportion to
+  duration, so the `full->phys_addr` distribution of nonzero samples is
+  the duration-weighted one.  Histogramming those named the EBU as 68 %
+  of device-write time in one build, after two builds of guessing had
+  named the wrong device twice.
+
+## Normalize before you compare, or the counter will point backwards
+
+Round seventeen concluded "MMIO is not the cost" from two numbers: CX70
+does 100x the `ioLd` per Mi that EL71 does, and boots 3x faster.  Round
+eighteen found MMIO *was* essentially the whole cost.  Both readings came
+off real counters.  What went wrong:
+
+- **It compared one half of the quantity.**  EL71 is store-heavy and CX70
+  load-heavy; `ioLd + ioSt` on matched windows gives 14 357 vs 5 602 per
+  Mi — the fast board doing *less*, in almost exactly the MIPS ratio.
+- **It compared unmatched windows.**  A board's MMIO density varies by an
+  order of magnitude between boot phases, so a per-Mi number from one
+  window says nothing about another.
+- **It normalized per second where the question was per unit of work.**
+  The same round reported EL71 making *fewer* helper calls per second
+  than CX70; per TB it makes 2.6x *more*.  Per second is a statement
+  about the host, per Mi a statement about the guest, and only the second
+  one compares boards.
+
+The rule: normalize per Mi, on the same guest work, or do not compare.
+And when a counter says the slow thing is doing less of the suspected
+work, suspect the normalization before believing the counter.
 
 ## Read the symbol map before believing a cost model
 

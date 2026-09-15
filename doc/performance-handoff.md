@@ -6,6 +6,77 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-15, round eighteen: the 80 % had one name on it)
+
+Round seventeen closed four candidates and left one question: the pipeline
+is 19.5 % of the boot, so **what is the other 80 %?**  It is, to a first
+approximation, one thing — and it was never a CPU-emulation problem at all.
+
+### MMIO stores, and only stores
+
+The chain, each step a counter rather than a guess:
+
+1. **Guest memory ops were entirely uncounted.**  `W64_LDSTCOUNT=2` emits a
+   bump into the generated code itself.  EL71 does **0.476 memops per guest
+   instruction**, CX70 0.329, and **3.38 % / 1.83 % of them miss the inline
+   TLB probe**.
+2. **The misses are MMIO, not TLB pressure.**  Decomposing `mmu_lookup1`:
+   92.5 % (EL71) / 96.8 % (CX70) of probe misses are MMIO.  `slowClean` —
+   the probe rejecting something it could have served — is **0**.  The
+   inline probe is not the problem.
+3. **MMIO per instruction tracks the board speed gap exactly.**  14 357 vs
+   5 602 per Mi, a 2.56x ratio, against a 2.66x MIPS ratio.  This *inverts*
+   round seventeen's "MMIO is not the cost", which compared `ioLd` alone on
+   an unmatched window and so missed that EL71 is store-heavy.
+4. **Loads are already free; stores are not.**  Timing the device callback
+   itself: **3.6 ns for a read, 330 ns for a write** on EL71.  Rounds 11-13
+   did their job on the read path.
+5. **68 % of the write time was the EBU**, found by histogramming the
+   duration-weighted samples on `full->phys_addr`.  17.4k EBU writes/s at
+   **7.7 us each = 13 % of EL71's wall**.
+6. **100 % of the EBU remaps were readonly flips.**  Size, base and enable
+   moved 14, 10 and 14 times in an entire boot; `readonly` flipped 41 358.
+
+The fix is 0083 and it is small: a readonly change alters the rendered
+`FlatRange`, not the region tree, so it is a flat-view *variant* in exactly
+the sense romd mode already is.  Fold the readonly set into the stash
+signature and stop bumping `topo_gen`.  The EBU's open-flash/close-flash
+toggle is then A-B-A and hits the stash.
+
+**Boot window, fixed guest work: el71 +55.6 %, cx70 +31.5 %, s75 +15.1 %.**
+
+### What this round says about method
+
+- **Normalize before you compare.**  Round seventeen's per-*second* helper
+  rates hid a 2.6x per-*TB* difference, and its `ioLd`-only comparison
+  pointed the opposite way from `ioLd + ioSt` on matched windows.  Per-Mi,
+  on the same guest work, or not at all.
+- **Calibrate a timer before believing it.**  The browser clock is
+  quantized to 1 ms, so a timed interval is a straddle-probability
+  estimate — unbiased, but with a **floor of ~66-75 ns** that is just the
+  two clock reads.  Before that floor was measured (`CAL_NS`, an empty
+  interval sampled the same way) this round "found" a 94 ns BQL acquire and
+  a 26 % MMIO share.  Both dissolved: the BQL is ~16 ns and the A/B of a
+  change to it was 1 win in 3.  *Subtract the floor, and time the innermost
+  thing you can reach* — `DEV_W_NS` around the callback needed no model at
+  all, and it was the number that held up.
+- **Pick the window the mechanism lives in.**  The first A/B ran 2000-8000
+  Mi and read a tie, because the EBU toggling is a boot-phase behaviour.
+  The same patch is +55.6 % over 100-1400 Mi.  A tie is evidence about the
+  window, not only about the patch.
+
+### Open at the end of round eighteen
+
+1. **ke800 saw -2.1 %** (2 pairs, within noise) — the LG board does not
+   toggle EBU readonly.  Worth a longer run to confirm it is a wash.
+2. **`topoCommit` is still 665/s** on EL71 after the fix, and the counter
+   does not separate a full rebuild from a variant adoption.  Split it, and
+   see what the remainder is — `romdFlip` is only 305/s.
+3. **CX70's device *writes* cost 645 ns each**, twice EL71's 330 ns, on
+   only 56k/s.  Nobody has looked at which device that is.
+4. The measurement build now has `W64_LDSTCOUNT`, `DEV_R_NS`/`DEV_W_NS`,
+   `CAL_NS` and the `SLOWW_*` phys_addr histogram.  **Use `CAL_NS`.**
+
 ## Update (2026-09-15, round seventeen: what the pipeline actually costs)
 
 Round sixteen took the profiler away.  This round builds the replacement
