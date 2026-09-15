@@ -10,7 +10,7 @@
 //     MCP `press_key` tool uses (converted to linux keycodes, which is what
 //     this qemu fork's input layer consumes).
 
-import { KBD_LAYOUTS, applyKbdLayout } from "./keyboards.js";
+import { KBD_KEYBOARDS, DEFAULT_KEYBOARD, pickVariant, applyKbdLayout } from "./keyboards.js";
 import {
   PRESET_FULLFLASHES, SIDE_CAR_RE, inferDevice,
   cacheAvailable, entryCacheState, downloadEntry, deleteEntry, readCachedEntry,
@@ -180,13 +180,13 @@ function pickFiles(fileList) {
   return { main, sidecars };
 }
 
-// device id -> on-screen keyboard layout (ids from DEVICE_RULES): every LG
-// phone shares the KE800 board (side keys, no joystick block), every Siemens
-// phone the S75 board. English legends are the auto-picked default; Russian
-// stays one dropdown click away and is kept while the board does not change.
-function inferKbdLayout(dev) {
-  if (dev?.startsWith("lg-")) return "ke800_en";
-  if (dev?.startsWith("siemens-")) return "en";
+// device id -> on-screen keyboard (ids from DEVICE_RULES): every LG phone
+// shares the KE800 board (side keys, no joystick block), every Siemens phone
+// the S75 board. Only the keyboard is inferred — the letter variant is the
+// user's own choice and rides along unchanged.
+function inferKeyboard(dev) {
+  if (dev?.startsWith("lg-")) return "ke800";
+  if (dev?.startsWith("siemens-")) return "siemens";
   return null;
 }
 
@@ -198,12 +198,10 @@ function applyFullflashName(name) {
     if (boards.some((b) => b.id === dev)) $("device").value = dev;
     else if (boardsReady) pendingDevice = dev; // boards.tar still loading
   }
-  const kbd = inferKbdLayout(dev);
-  if (kbd && kbd in KBD_LAYOUTS
-      && KBD_LAYOUTS[kbdSel.value]?.board !== KBD_LAYOUTS[kbd].board) {
+  const kbd = inferKeyboard(dev);
+  if (kbd && kbd in KBD_KEYBOARDS && kbd !== kbdSel.value) {
     kbdSel.value = kbd;
-    applyKbdLayout(kbd, renderKeypad);
-    localStorage.setItem("kbd-layout", kbd);
+    selectKeyboard();
   }
 }
 
@@ -831,23 +829,44 @@ function renderKeypad() {
 }
 
 /* ------------------------------------------------------------------ */
-/* on-screen keyboard layout picker (definitions live in keyboards.js)   */
+/* on-screen keyboard pickers (definitions live in keyboards.js): which     */
+/* phone's keypad, and which letter variant is printed on it               */
 /* ------------------------------------------------------------------ */
 
-const kbdSel = $("kbd-layout");
-for (const [id, layout] of Object.entries(KBD_LAYOUTS)) {
-  const opt = document.createElement("option");
-  opt.value = id;
-  opt.textContent = layout.name;
-  kbdSel.appendChild(opt);
+const kbdSel = $("kbd-keyboard");
+const varSel = $("kbd-variant");
+
+function fillSelect(sel, entries, value) {
+  sel.replaceChildren(...entries.map(([id, { name }]) => {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = name;
+    return opt;
+  }));
+  sel.value = value;
 }
-kbdSel.value = localStorage.getItem("kbd-layout");
-if (!(kbdSel.value in KBD_LAYOUTS)) kbdSel.value = "en";
-applyKbdLayout(kbdSel.value, renderKeypad);
-kbdSel.addEventListener("change", () => {
-  applyKbdLayout(kbdSel.value, renderKeypad);
-  localStorage.setItem("kbd-layout", kbdSel.value);
-});
+
+// apply the pickers and remember them; keeps the chosen variant across a
+// keyboard switch whenever the new keyboard also has it (see pickVariant)
+function selectKeyboard(wanted = varSel.value) {
+  const kbd = KBD_KEYBOARDS[kbdSel.value];
+  const variant = pickVariant(kbdSel.value, wanted);
+  fillSelect(varSel, Object.entries(kbd.variants), variant);
+  applyKbdLayout(kbdSel.value, variant, renderKeypad);
+  localStorage.setItem("kbd-keyboard", kbdSel.value);
+  localStorage.setItem("kbd-variant", variant);
+}
+
+fillSelect(kbdSel, Object.entries(KBD_KEYBOARDS), DEFAULT_KEYBOARD);
+// the pre-split picker remembered one id per keyboard+variant ("ke800_ru")
+const legacy = localStorage.getItem("kbd-layout") ?? "";
+kbdSel.value = localStorage.getItem("kbd-keyboard")
+  ?? (legacy.startsWith("ke800") ? "ke800" : DEFAULT_KEYBOARD);
+if (!(kbdSel.value in KBD_KEYBOARDS)) kbdSel.value = DEFAULT_KEYBOARD;
+selectKeyboard(localStorage.getItem("kbd-variant")
+  ?? (legacy.endsWith("ru") ? "ru" : "en"));
+
+for (const sel of [kbdSel, varSel]) sel.addEventListener("change", () => selectKeyboard());
 
 // key-binding hints: on by default on a desktop (a pointer that hovers and
 // can point precisely => a real keyboard is attached), off on touch screens;

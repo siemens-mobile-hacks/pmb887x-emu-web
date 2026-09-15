@@ -148,10 +148,12 @@ body.show-key-hints .key-hint { display: block; }
    character wide and still flank the LCD when space runs out */
 .aux-keys-left .key-short, .aux-keys-right .key-short { display: none; }
 
-/* keyboard letter layout picker (under the keypad) */
+/* keypad + letter-variant pickers (under the keypad) */
 .kbd-row { display: flex; align-items: center; gap: 0.6rem; width: 320px; }
 .kbd-row label { flex: none; font-size: 0.78rem; color: var(--muted); }
 .kbd-row select { flex: 1; min-width: 0; }
+/* keyboard + variant share the row; the phone names are the longer ones */
+.kbd-row #kbd-keyboard { flex: 1.4; }
 .kbd-row .kbd-check { flex-direction: row; align-items: center; gap: 0.4rem; cursor: pointer; }
 
 /* phone-sized screens have no physical keyboard to bind to: drop the hints

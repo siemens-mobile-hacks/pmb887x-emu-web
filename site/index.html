@@ -62,7 +62,7 @@
         </div>
         <div class="krow krow-digits">
         <!-- static S75 English default below; app.js rebuilds the whole
-             keypad from KBD_BOARDS/KBD_LAYOUTS on layout switches -->
+             keypad from KBD_BOARDS/KBD_KEYBOARDS on layout switches -->
           <button data-key="1">1<span class="key-sub">␣</span></button>
           <button data-key="2">2<span class="key-sub">abc</span></button>
           <button data-key="3">3<span class="key-sub">def</span></button>
@@ -78,10 +78,12 @@
         </div>
       </div>
 
-      <!-- keyboard letter layout picker (populated + handled in app.js) -->
+      <!-- keypad + letter-variant pickers (populated + handled in app.js) -->
       <div class="kbd-row">
-        <label for="kbd-layout">Keyboard</label>
-        <select id="kbd-layout"></select>
+        <label for="kbd-keyboard">Keyboard</label>
+        <select id="kbd-keyboard"></select>
+        <select id="kbd-variant" aria-label="Keyboard variant"
+          title="Letters engraved on the keys"></select>
       </div>
       <!-- app.js ticks this by default on desktop (a hovering, fine pointer)
            and remembers the choice; it only toggles a body class -->

@@ -17,7 +17,8 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(0, r));
 const port = server.address().port;
 
-// harness page: renders aux + keypad for a given layout id (?layout=)
+// harness page: renders aux + keypad for a given keyboard/variant
+// (?keyboard=&variant=)
 const harness = `<!doctype html><html><head><link rel="stylesheet" href="/style.css">
 <style>body { margin: 20px; background: var(--bg); } .phone-panel { padding-left: 74px; }</style>
 </head><body>
@@ -28,8 +29,8 @@ const harness = `<!doctype html><html><head><link rel="stylesheet" href="/style.
 </section>
 <script type="module">
   import { applyKbdLayout } from "/keyboards.js";
-  const id = new URLSearchParams(location.search).get("layout") ?? "ke800_en";
-  applyKbdLayout(id);
+  const q = new URLSearchParams(location.search);
+  applyKbdLayout(q.get("keyboard") ?? "ke800", q.get("variant") ?? "en");
 </script>
 </body></html>`;
 fs.writeFileSync(path.join(root, "__kbdtest.html"), harness);
@@ -37,11 +38,11 @@ fs.writeFileSync(path.join(root, "__kbdtest.html"), harness);
 const browser = await puppeteer.launch({ executablePath: "/tmp/browsers/chrome-headless-shell/linux-155.0.8043.0/chrome-headless-shell-linux64/chrome-headless-shell", args: ["--no-sandbox"] });
 const page = await browser.newPage();
 await page.setViewport({ width: 480, height: 1000, deviceScaleFactor: 2 });
-for (const layout of ["ke800_en", "ke800_ru"]) {
-  await page.goto(`http://127.0.0.1:${port}/__kbdtest.html?layout=${layout}`, { waitUntil: "networkidle0" });
+for (const variant of ["en", "ru"]) {
+  await page.goto(`http://127.0.0.1:${port}/__kbdtest.html?keyboard=ke800&variant=${variant}`, { waitUntil: "networkidle0" });
   await new Promise((r) => setTimeout(r, 300));
-  await page.screenshot({ path: `/tmp/kbd-${layout}.png` });
-  console.log("shot", layout);
+  await page.screenshot({ path: `/tmp/kbd-ke800-${variant}.png` });
+  console.log("shot", variant);
 }
 await browser.close();
 server.close();

@@ -1,9 +1,9 @@
 // On-screen keyboard definitions: "boards" describe the physical button
 // arrangement (any number of rows/columns/keys + optional auxLeft/auxRight
-// columns for the phone's side keys), "layouts" the legends shown on a
-// board, and applyKbdLayout() renders both into
-// #keypad/#aux-keys-left/#aux-keys-right. app.js imports this module and hooks
-// up input handling + the layout dropdown.
+// columns for the phone's side keys), "keyboards" pair a board with the
+// letter variants (English/Russian/...) engraved on it, and applyKbdLayout()
+// renders both into #keypad/#aux-keys-left/#aux-keys-right. app.js imports
+// this module and hooks up input handling + the two dropdowns.
 
 // small line-art icons matching the engraved S75 key legends
 export const KBD_ICONS = {
@@ -140,54 +140,73 @@ const KE800_STAR_SUB = `<span class="sub-stack">${KBD_ICONS.timer}<span>.,</span
 const KE800_ZERO_SUB = '<span class="sub-stack">+<span>␣</span></span>';
 const KE800_HASH_SUB = `<span class="sub-pair">${KBD_ICONS.flash_down}${KBD_ICONS.arrow_up}</span>`;
 
-// a "layout" = a board + the legends shown on it (sub-labels, keyed by
-// data-key). Add an entry here — or a whole new board for a phone with
-// different keys/arrangement — and the dropdown picks it up automatically.
-export const KBD_LAYOUTS = {
-  en: {
-    name: "Siemens Generic English",
+// a "keyboard" = a board + one variant per letter set engraved on it; a
+// variant carries the sub-labels (keyed by data-key) printed under the
+// digits. Add a variant here — or a whole new keyboard, with its own board
+// when the phone's keys/arrangement differ — and the two dropdowns pick it
+// up automatically. The first variant of a keyboard is its default.
+export const KBD_KEYBOARDS = {
+  siemens: {
+    name: "Siemens Generic",
     board: "s75",
-    subs: {
-      1: `␣ ${KBD_ICONS.voicemail}`,
-      2: "abc", 3: "def", 4: "ghi", 5: "jkl", 6: "mno",
-      7: "pqrs", 8: "tuv", 9: "wxyz",
-      0: "+", star: KBD_ICONS.bell, hash: KBD_ICONS.key,
-    },
-  },
-  ru: {
-    name: "Siemens Generic Russian",
-    board: "s75",
-    subs: {
-      1: `␣ ${KBD_ICONS.voicemail}`,
-      2: "abc абвг", 3: "def дежз", 4: "ghi ийкл", 5: "jkl мно",
-      6: "mno прс", 7: "pqrs туфх", 8: "tuv цчшщь", 9: "wxyz ъыэюя",
-      0: "+", star: KBD_ICONS.bell, hash: KBD_ICONS.key,
+    variants: {
+      en: {
+        name: "English",
+        subs: {
+          1: `␣ ${KBD_ICONS.voicemail}`,
+          2: "abc", 3: "def", 4: "ghi", 5: "jkl", 6: "mno",
+          7: "pqrs", 8: "tuv", 9: "wxyz",
+          0: "+", star: KBD_ICONS.bell, hash: KBD_ICONS.key,
+        },
+      },
+      ru: {
+        name: "Russian",
+        subs: {
+          1: `␣ ${KBD_ICONS.voicemail}`,
+          2: "abc абвг", 3: "def дежз", 4: "ghi ийкл", 5: "jkl мно",
+          6: "mno прс", 7: "pqrs туфх", 8: "tuv цчшщь", 9: "wxyz ъыэюя",
+          0: "+", star: KBD_ICONS.bell, hash: KBD_ICONS.key,
+        },
+      },
     },
   },
 
   // LG KE800 (keyboards/LG KE800.png): space sits on 0, * carries the clock
   // icon, # the up-arrow + flash icons, 1 the voicemail icon
-  ke800_en: {
-    name: "LG KE800 English",
+  ke800: {
+    name: "LG KE800",
     board: "ke800",
-    subs: {
-      1: KBD_ICONS.voicemail,
-      2: "abc", 3: "def", 4: "ghi", 5: "jkl", 6: "mno",
-      7: "pqrs", 8: "tuv", 9: "wxyz",
-      0: KE800_ZERO_SUB, star: KE800_STAR_SUB, hash: KE800_HASH_SUB,
-    },
-  },
-  ke800_ru: {
-    name: "LG KE800 Russian",
-    board: "ke800",
-    subs: {
-      1: KBD_ICONS.voicemail,
-      2: "abc абвг", 3: "def дежз", 4: "ghi ийкл", 5: "jkl мноп",
-      6: "mno рсту", 7: "pqrs фхцч", 8: "tuv шщъы", 9: "wxyz ьэюя",
-      0: KE800_ZERO_SUB, star: KE800_STAR_SUB, hash: KE800_HASH_SUB,
+    variants: {
+      en: {
+        name: "English",
+        subs: {
+          1: KBD_ICONS.voicemail,
+          2: "abc", 3: "def", 4: "ghi", 5: "jkl", 6: "mno",
+          7: "pqrs", 8: "tuv", 9: "wxyz",
+          0: KE800_ZERO_SUB, star: KE800_STAR_SUB, hash: KE800_HASH_SUB,
+        },
+      },
+      ru: {
+        name: "Russian",
+        subs: {
+          1: KBD_ICONS.voicemail,
+          2: "abc абвг", 3: "def дежз", 4: "ghi ийкл", 5: "jkl мноп",
+          6: "mno рсту", 7: "pqrs фхцч", 8: "tuv шщъы", 9: "wxyz ьэюя",
+          0: KE800_ZERO_SUB, star: KE800_STAR_SUB, hash: KE800_HASH_SUB,
+        },
+      },
     },
   },
 };
+
+export const DEFAULT_KEYBOARD = "siemens";
+
+// the variant to show for a keyboard: the asked-for one if it has it (so
+// Russian survives a phone switch), else the keyboard's first
+export function pickVariant(keyboardId, variantId) {
+  const variants = KBD_KEYBOARDS[keyboardId]?.variants ?? {};
+  return variantId in variants ? variantId : Object.keys(variants)[0];
+}
 
 function keyButton(def, sub) {
   const btn = document.createElement("button");
@@ -214,24 +233,26 @@ function keyButton(def, sub) {
   return btn;
 }
 
-// rebuild the on-screen keyboard from a layout; onRender runs once the DOM
-// is in place (app.js re-binds input handling there)
-export function applyKbdLayout(id, onRender) {
-  const layout = KBD_LAYOUTS[id] ?? KBD_LAYOUTS.en;
-  const board = KBD_BOARDS[layout.board] ?? KBD_BOARDS.s75;
+// rebuild the on-screen keyboard from a keyboard + letter variant; onRender
+// runs once the DOM is in place (app.js re-binds input handling there)
+export function applyKbdLayout(keyboardId, variantId, onRender) {
+  const id = keyboardId in KBD_KEYBOARDS ? keyboardId : DEFAULT_KEYBOARD;
+  const kbd = KBD_KEYBOARDS[id];
+  const variant = kbd.variants[pickVariant(id, variantId)];
+  const board = KBD_BOARDS[kbd.board] ?? KBD_BOARDS.s75;
   const keypad = document.getElementById("keypad");
   keypad.replaceChildren();
   for (const row of board.rows) {
     const rowEl = document.createElement("div");
     rowEl.className = row.cls ?? "krow";
     rowEl.style.gridTemplateColumns = row.cols;
-    for (const def of row.keys) rowEl.appendChild(keyButton(def, layout.subs[def.key]));
+    for (const def of row.keys) rowEl.appendChild(keyButton(def, variant.subs[def.key]));
     keypad.appendChild(rowEl);
   }
   // side columns: auxLeft = left flank, auxRight = right flank (if the board
   // has one); hidden entirely when a board defines no keys for a side
-  for (const [id, defs] of [["aux-keys-left", board.auxLeft], ["aux-keys-right", board.auxRight]]) {
-    const el = document.getElementById(id);
+  for (const [elId, defs] of [["aux-keys-left", board.auxLeft], ["aux-keys-right", board.auxRight]]) {
+    const el = document.getElementById(elId);
     el.replaceChildren(...(defs ?? []).map((def) => keyButton(def)));
     el.style.display = defs?.length ? "" : "none";
   }

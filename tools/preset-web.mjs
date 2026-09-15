@@ -45,7 +45,7 @@ assert("Browse disabled while preset selected",
 assert("trash disabled (nothing cached)",
   await page.$eval("#ff-preset-delete", (b) => b.disabled));
 assert("device inferred", (await page.$eval("#device", (s) => s.value)) === "lg-ke800");
-assert("keyboard layout inferred", (await page.$eval("#kbd-layout", (s) => s.value)) === "ke800_en");
+assert("keyboard inferred", (await page.$eval("#kbd-keyboard", (s) => s.value)) === "ke800");
 
 // 2. Start triggers the download (progress visible), then boots from it
 await page.click("#btn-start");
