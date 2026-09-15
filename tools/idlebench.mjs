@@ -111,7 +111,18 @@ const opt = (name, dflt) => {
   if (p) return p.slice(name.length + 3);
   return dflt;
 };
-const dists = (argv.find((a) => !a.startsWith("--")) || "dist,dist-jit").split(",");
+// The dist list is the first positional argument — which means an option
+// *value* must not be mistaken for it.  "idlebench.mjs --board ke800"
+// used to read "ke800" as the dist and then every run died with "module
+// never loaded" after the full timeout.
+const VALUE_OPTS = new Set(["board", "runs", "max", "regress", "stall",
+  "noconv", "floor", "cmpinsns", "window", "rows", "pct", "flash", "ref"]);
+const positional = argv.filter((a, i) => {
+  if (a.startsWith("--")) return false;
+  const prev = argv[i - 1];
+  return !(prev && prev.startsWith("--") && VALUE_OPTS.has(prev.slice(2)));
+});
+const dists = (positional[0] || "dist,dist-jit").split(",");
 // A dist may be written "<dir>@<query>" to append per-dist query parameters
 // (e.g. "dist-jit@env=W64_COMPACT_MEMBERS=100000000").  That makes a KNOB
 // A/B interleavable the way a two-build A/B is: EXTRA_Q applies to every
@@ -132,10 +143,17 @@ const BOARDS = {
     insnMilestones: [0.1e9, 0.25e9, 0.5e9, 0.75e9, 1.0e9, 1.2e9, 1.3e9],
     cmpInsns: 1.2e9, icount: true,
   },
+  // The LG idle screen prints the host date and time ("03 : 38 / 15/9
+  // [Fri]"), so it can never match a reference captured at another
+  // moment: the clock and date glyphs alone are ~1.8 % of the compared
+  // rows, which silently turned every ke800 run into a full-timeout
+  // NOIDLE.  3 % clears the text and stays far below a real failure —
+  // a boot that has not arrived differs by 80-90 %.  The Siemens idle
+  // screens carry no clock and keep the tight default.
   ke800: {
     flash: "KE800-v11b.bin", sidecars: ["KE800-v11b.bin.cfi-efa"], ref: "KE800-v11b_idle.png", rows: 150,
     insnMilestones: [0.5e9, 1.0e9, 1.5e9, 1.8e9],
-    cmpInsns: 1.6e9, icount: false,
+    cmpInsns: 1.6e9, icount: false, pct: 3.0,
   },
 };
 const boardId = opt("board", "s75");
@@ -143,10 +161,21 @@ const board = BOARDS[boardId];
 if (!board) { console.error(`unknown --board ${boardId} (${Object.keys(BOARDS).join(", ")})`); process.exit(2); }
 const quick = argv.includes("--quick");
 const runs = Number(opt("runs", quick ? 1 : 3));
-const maxSecs = Number(opt("max", quick ? 60 : 1500));
+// A healthy boot to idle is 30-60 s.  The old 1500 s ceiling meant a run
+// whose LCD never matched the reference sat silent for 25 minutes, and a
+// default two-dist invocation could take over two hours to tell you
+// nothing; 300 s is still 5-10x headroom.  Raise it with --max when a
+// board really is that slow.
+const maxSecs = Number(opt("max", quick ? 60 : 300));
 const parallel = argv.includes("--parallel");
 const regressPct = Number(opt("regress", 5));
-const stallSecs = Number(opt("stall", 300));
+const stallSecs = Number(opt("stall", 120));
+// Once the LCD comparison is running, give up if the best mismatch seen
+// has not improved for this long: the screen has settled on something
+// that is not the reference, and waiting for --max cannot change that.
+// The NOIDLE reason carries the best pct, which is what you need to tell
+// "stale reference image" from "guest really did not get there".
+const noConvSecs = Number(opt("noconv", 90));
 const STALL_INSNS = 1e6;
 // idle detection starts at the floor OR once the deterministic boot work
 // is nearly done (insns >= --cmpinsns), whichever is first: boots are now
@@ -155,7 +184,7 @@ const floorSecs = Number(opt("floor", 15));
 const cmpInsns = Number(opt("cmpinsns", board.cmpInsns));
 const [winLo, winHi] = String(opt("window", "2:7")).split(":").map(Number);
 const rows = Number(opt("rows", board.rows));
-const pctMax = Number(opt("pct", 0.5));
+const pctMax = Number(opt("pct", board.pct ?? 0.5));
 const port = process.env.PORT || "8080";
 const noref = argv.includes("--noref") || quick;
 const jsFlags = process.env.JS_FLAGS || "";
@@ -364,10 +393,18 @@ async function runOne(dist, hashes, r) {
     let lastSample = null, rssPeak = 0;
     let cmpOn = false;
     let lastProgress = { t: 0, insns: 0 };
+    // Heartbeat + convergence tracking.  Without these a run that is not
+    // going to reach idle prints nothing at all until --max expires.
+    let nextBeat = 0, bestPct = Infinity, bestPctAt = null;
 
     while (true) {
       const t = (Date.now() - t0) / 1000;
-      if (t >= maxSecs) { rec.cls = "NOIDLE"; break; }
+      if (t >= maxSecs) {
+        rec.cls = "NOIDLE";
+        rec.why = `no LCD match in ${maxSecs}s` +
+          (bestPct < Infinity ? ` (best mismatch ${bestPct.toFixed(2)}% vs --pct ${pctMax})` : "");
+        break;
+      }
       let s = null;
       cmpOn = cmpOn || (!noref && (t >= floorSecs || (lastSample && lastSample.insns >= cmpInsns)));
       try {
@@ -399,6 +436,23 @@ async function runOne(dist, hashes, r) {
           rec.tIdle = +t.toFixed(1);
           rec.at = { v: +s.v.toFixed(1), pct: +s.pct.toFixed(3), insns: s.insns, tbs: s.tbs };
           break;
+        }
+        if (t >= nextBeat) {
+          nextBeat = t + 15;
+          console.log(`  [${tag}] [t=${t.toFixed(0)}s] v=${s.v.toFixed(1)} ` +
+            `insns=${(s.insns / 1e6).toFixed(0)}M` +
+            (cmpOn ? ` lcd=${s.pct.toFixed(2)}% (need <=${pctMax})` : " lcd=off"));
+        }
+        if (cmpOn) {
+          if (s.pct < bestPct - 0.01) { bestPct = s.pct; bestPctAt = t; }
+          else if (bestPctAt !== null && t - bestPctAt >= noConvSecs) {
+            rec.cls = "NOIDLE";
+            rec.why = `LCD settled ${bestPct.toFixed(2)}% off the reference ` +
+              `for ${noConvSecs}s (need <=${pctMax}) — stale ref, or the guest ` +
+              `stopped somewhere else`;
+            rec.at = { v: +s.v.toFixed(1), pct: +s.pct.toFixed(3), insns: s.insns, tbs: s.tbs };
+            break;
+          }
         }
         if (s.stallSince !== undefined && t - s.stallSince >= stallSecs) {
           rec.cls = "STALL";
@@ -477,6 +531,15 @@ const hashesOf = (dist) => ({
   wasm: sha256(here + `../site/${distDir(dist)}/qemu-system-arm.wasm`),
   js: sha256(here + `../site/${distDir(dist)}/qemu-system-arm.js`),
 });
+// Fail now, not after a browser launch and a four-minute module timeout.
+for (const d of dists) {
+  if (hashesOf(d).wasm === "MISSING") {
+    console.error(`no such dist: site/${distDir(d)}/qemu-system-arm.wasm is missing.\n` +
+      `The dist list is the first positional argument, e.g.\n` +
+      `  node tools/idlebench.mjs dist-jit-a,dist-jit-b --board ke800`);
+    process.exit(2);
+  }
+}
 if (parallel) {
   // all dists at once (runs within a dist sequential) — smoke only, the
   // dists pace each other (see header)
@@ -511,7 +574,7 @@ const out = {
   ts: new Date().toISOString(), chromeVer, board: boardId,
   flash: FLASH.split("/").pop(), flashSha: sha256(FLASH),
   ref: REF.split("/").pop(), refSha: sha256(REF),
-  config: { maxSecs, stallSecs, floorSecs, rows, pctMax, sampleMs: SAMPLE_MS, sampleMsIdle: SAMPLE_MS_IDLE, startup: "ONLINE", noref, parallel, window: `${winLo}:${winHi}`, jsFlags, extraQ },
+  config: { maxSecs, stallSecs, noConvSecs, floorSecs, rows, pctMax, sampleMs: SAMPLE_MS, sampleMsIdle: SAMPLE_MS_IDLE, startup: "ONLINE", noref, parallel, window: `${winLo}:${winHi}`, jsFlags, extraQ },
   summary, results,
 };
 // "latest" aliases: full runs -> idlebench-latest.json, --quick runs ->
