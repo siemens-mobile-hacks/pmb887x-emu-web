@@ -25,7 +25,10 @@ The CX70 numbers were re-taken at load 2.9–4.3 (the originals spanned
 | idle halts/s | 676 | 1322 | |
 
 Take **+11.8 %** as the throughput number (the +14 % sum of three
-separately-measured steps overstated it, as such sums do).  But the
+separately-measured steps overstated it, as such sums do).  Re-confirmed
+end to end after 0080/0081 at **+8.6 %, 3/3** (load 4.9–6.4, and the one
+low run was the first, while the load was still falling) — so the
+instrumentation and the key-path guard cost nothing measurable.  But the
 throughput number is the *small* half.  `tools/haltprobe.mjs` shows the
 DIF/DMAC timer storm was not merely costing cycles, it was **keeping the
 vCPU awake**: the idle screen now warps instead of spinning, which is
