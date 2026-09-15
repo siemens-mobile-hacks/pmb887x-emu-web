@@ -60,6 +60,45 @@ main {
 .krow-call    { grid-template-columns: 1fr 1.2fr 1fr; }
 .krow-digits  { grid-template-columns: repeat(3, 1fr); }
 
+/* S75 middle block (keyboards/S75-ru.webp): the joystick is one square pad —
+   four arrow marks around the OK button, inside its own frame — and the keys
+   beside it sit in two-column flanks, soft key across the top, call/media
+   (left) and browser/hang-up (right) level with the middle of the pad */
+.kflank {
+  display: grid; gap: 6px;
+  grid-template-columns: 1fr 1fr; grid-template-rows: 0.8fr 2.2fr;
+}
+/* legends sit in the middle of these keys, not at the top */
+.keypad .kflank button { justify-content: center; }
+/* the soft keys are thin bars on the real phone, and since they set the
+   floor for the whole block (0.8fr of it), trimming them shortens the
+   call/media row too */
+.keypad .kflank .kspan2 { grid-column: 1 / -1; padding-block: 0.3rem; }
+/* the arrows are marks on the pad's frame, so they get thin edge strips and
+   the OK button the whole middle — as the engraving has it */
+.kpad {
+  display: grid; gap: 2px; padding: 5px;
+  grid-template-columns: 0.9fr 2.6fr 0.9fr;
+  grid-template-rows: 0.9fr 2.6fr 0.9fr;
+  background: var(--panel); border: 2px solid var(--border); border-radius: 14px;
+}
+.keypad .kpad button {
+  background: none; border: none; border-radius: 8px;
+  padding: 0.1rem; justify-content: center; font-size: 0.6rem;
+}
+.keypad .kpad .key-center {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 1rem;
+}
+/* the pad's arrow marks are too small to carry a hint under them, and the
+   binding is the matching arrow key anyway — only the OK button keeps one */
+body.show-key-hints .kpad .key-nav .key-hint { display: none; }
+.kpad-up    { grid-area: 1 / 2; }
+.kpad-left  { grid-area: 2 / 1; }
+.kpad-ok    { grid-area: 2 / 2; }
+.kpad-right { grid-area: 2 / 3; }
+.kpad-down  { grid-area: 3 / 2; }
+
 .keypad button, .aux-keys-left button, .aux-keys-right button {
   font: inherit; color: var(--text); background: var(--panel2);
   border: 1px solid var(--border); border-radius: 8px;
@@ -117,6 +156,8 @@ body.show-key-hints .key-hint { display: block; }
   stroke-linecap: round; stroke-linejoin: round;
 }
 .key-icon-stack { width: 1.05rem; height: auto; }
+/* a wide legend (the S75 ringed planet) reads too small in the 1.1rem box */
+.key-icon-line.icon-wide { width: 1.45rem; height: auto; }
 .key-end .icon-hangup { fill: #9b2d2e; }
 .key-end .icon-power { fill: #d7dce4; }
 /* keys whose legend is glyph + icon side by side (*, 0, #) */

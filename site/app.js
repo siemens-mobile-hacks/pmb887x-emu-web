@@ -180,14 +180,26 @@ function pickFiles(fileList) {
   return { main, sidecars };
 }
 
-// device id -> on-screen keyboard (ids from DEVICE_RULES): every LG phone
-// shares the KE800 board (side keys, no joystick block), every Siemens phone
-// the S75 board. Only the keyboard is inferred — the letter variant is the
-// user's own choice and rides along unchanged.
+// device id -> on-screen keyboard (ids from DEVICE_RULES): phones with a
+// keypad of their own get it, the rest fall back to the family board — the
+// KE800 one for LG (side keys, no joystick block), the generic Siemens one
+// for everything Siemens. Only the keyboard is inferred — the letter variant
+// is the user's own choice and rides along unchanged.
 function inferKeyboard(dev) {
+  if (dev === "siemens-s75") return "s75";
   if (dev?.startsWith("lg-")) return "ke800";
   if (dev?.startsWith("siemens-")) return "siemens";
   return null;
+}
+
+// follow the device: picking one in the dropdown (or having it inferred from
+// a fullflash) switches the on-screen keypad to that phone's
+function syncKeyboardToDevice(dev) {
+  const kbd = inferKeyboard(dev);
+  if (kbd && kbd in KBD_KEYBOARDS && kbd !== kbdSel.value) {
+    kbdSel.value = kbd;
+    selectKeyboard();
+  }
 }
 
 // Device + on-screen keyboard inference from a fullflash filename — shared
@@ -198,11 +210,7 @@ function applyFullflashName(name) {
     if (boards.some((b) => b.id === dev)) $("device").value = dev;
     else if (boardsReady) pendingDevice = dev; // boards.tar still loading
   }
-  const kbd = inferKeyboard(dev);
-  if (kbd && kbd in KBD_KEYBOARDS && kbd !== kbdSel.value) {
-    kbdSel.value = kbd;
-    selectKeyboard();
-  }
+  syncKeyboardToDevice(dev);
 }
 
 /* ------------------------------------------------------------------ */
@@ -867,6 +875,7 @@ selectKeyboard(localStorage.getItem("kbd-variant")
   ?? (legacy.endsWith("ru") ? "ru" : "en"));
 
 for (const sel of [kbdSel, varSel]) sel.addEventListener("change", () => selectKeyboard());
+$("device").addEventListener("change", (e) => syncKeyboardToDevice(e.target.value));
 
 // key-binding hints: on by default on a desktop (a pointer that hovers and
 // can point precisely => a real keyboard is attached), off on touch screens;
