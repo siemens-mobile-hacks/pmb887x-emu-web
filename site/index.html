@@ -9,17 +9,110 @@
 <body>
 <header>
   <h1>Siemens / LG PMB887X <span>emulator — qemu compiled to WebAssembly</span></h1>
-  <div id="status" class="status idle">idle</div>
 </header>
-<!-- ?hud=1: per-second guest rates (tap to copy the last 60 s as JSON) -->
-<pre id="hud" class="hud" hidden></pre>
-
+<!-- Three columns: what you set before Start on the left, the phone in the
+     middle (dead centre of the page), what only matters once it runs on the
+     right. Narrow screens stack them in this order. -->
 <main>
-  <!-- ============ phone: LCD + on-screen keypad ============ -->
+  <!-- ============ left: pre-start ============ -->
+  <section class="ctrl-panel pre-panel">
+    <form id="boot-form">
+      <fieldset>
+        <legend>Boot</legend>
+
+        <!-- a plain <div>, not a <label>: a <label for> forwards clicks on
+             anything inside it to the select, which would pop the dropdown
+             open on top of the trash button instead of deleting -->
+        <div class="file-label">
+          <label for="ff-preset">Fullflash</label>
+          <span class="ff-preset-line">
+            <select id="ff-preset" size="1">
+              <option value="">— my own file (below) —</option>
+            </select>
+            <button type="button" id="ff-preset-delete" class="ff-trash" disabled
+              title="Delete the cached copy" aria-label="Delete the cached copy">
+              <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+            </button>
+          </span>
+          <small class="file-hint">preset fullflashes download when you press Start, then stay cached in the browser</small>
+          <small class="file-hint" id="ff-preset-status"></small>
+        </div>
+
+        <label class="file-label" for="fullflash">My own file (.bin)
+          <input type="file" id="fullflash" accept=".bin,.cfi-efa,.cfi-otp0,.cfi-otp1" multiple>
+          <small class="file-hint">LG phones: also pick the <code>.cfi-efa</code> sidecar
+            (their EEPROM lives in the EFA block)</small>
+        </label>
+
+        <label class="file-label">Device
+          <select id="device" size="1"></select>
+        </label>
+
+        <!-- identity/radio/flash knobs: sane defaults boot every phone, so
+             they stay folded away until someone needs them -->
+        <details class="advanced" id="advanced">
+          <summary>Advanced <small id="adv-summary"></small></summary>
+          <div class="adv-grid">
+            <label>IMEI <small>(15 digits → OTP1)</small>
+              <input type="text" id="imei" value="490154203237518" pattern="\d{15}" maxlength="15">
+            </label>
+
+            <label>ESN <small>(8 hex → OTP0)</small>
+              <input type="text" id="esn" value="12345678" pattern="[0-9a-fA-F]{8}" maxlength="8">
+            </label>
+
+            <label>SIM
+              <select id="sim" size="1">
+                <option value="virtual" selected>virtual</option>
+                <option value="none">none</option>
+              </select>
+            </label>
+
+            <label>Operator <small>(MCC+MNC)</small>
+              <input type="text" id="operator" value="00101" pattern="\d{5,6}" maxlength="6">
+            </label>
+
+            <label>Startup
+              <select id="startup" size="1">
+                <option value="ONLINE" selected>ONLINE</option>
+                <option value="PTEST">PTEST</option>
+                <option value="OFFLINE">OFFLINE</option>
+              </select>
+            </label>
+
+            <label class="checkbox-label">
+              <input type="checkbox" id="rw">
+              writable flash <small>(lets firmware modify the .bin in memory)</small>
+            </label>
+          </div>
+        </details>
+
+        <div class="btn-row">
+          <button type="submit" id="btn-start">Start</button>
+          <button type="button" id="btn-stop" disabled>Stop</button>
+        </div>
+      </fieldset>
+    </form>
+  </section>
+
+  <!-- ============ centre: phone — LCD + on-screen keypad ============ -->
   <section class="phone-panel">
+    <!-- run state, right above the LCD so it is in view wherever the
+         controls happen to sit (beside the phone, or scrolled off on a
+         narrow screen) -->
+    <div id="status" class="status idle"><span class="status-dot"></span><span id="status-text">idle</span></div>
+
     <div class="lcd-wrap">
       <canvas id="lcd" width="132" height="176"></canvas>
-      <div id="lcd-overlay" class="lcd-overlay">press “Start” to boot</div>
+      <!-- the LCD doubles as the progress surface before the guest owns it:
+           fullflash download, boot, exit -->
+      <div id="lcd-overlay" class="lcd-overlay">
+        <div class="ov-body">
+          <div id="ov-msg" class="ov-msg">press “Start” to boot</div>
+          <div id="ov-bar" class="ov-bar" hidden><i></i></div>
+          <div id="ov-sub" class="ov-sub"></div>
+        </div>
+      </div>
 
       <!-- side columns: float to the left/right of the LCD, vertically
            centered on it — keyboards.js fills them per phone layout -->
@@ -85,100 +178,43 @@
         <select id="kbd-variant" aria-label="Keyboard variant"
           title="Letters engraved on the keys"></select>
       </div>
+  </section>
+
+  <!-- ============ right: post-start ============ -->
+  <section class="ctrl-panel post-panel">
+    <fieldset>
+      <legend>Run</legend>
+
+      <div class="btn-row">
+        <button type="button" id="btn-save-flash" disabled
+          title="The fullflash as the firmware left it — needs “writable flash”">Download flash</button>
+        <button type="button" id="btn-save-efa" disabled
+          title="EFA block (LG EEPROM) — appears once the firmware wrote it">Download EFA</button>
+      </div>
+
       <!-- app.js ticks this by default on desktop (a hovering, fine pointer)
            and remembers the choice; it only toggles a body class -->
-      <div class="kbd-row kbd-row-hints">
-        <label class="kbd-check" for="kbd-hints">
-          <input type="checkbox" id="kbd-hints">
-          show keyboard shortcuts on the keys
-        </label>
-      </div>
-  </section>
+      <label class="checkbox-label kbd-row-hints" for="kbd-hints">
+        <input type="checkbox" id="kbd-hints">
+        show keyboard shortcuts on the keys
+      </label>
 
-  <!-- ============ controls ============ -->
-  <section class="ctrl-panel">
-    <form id="boot-form">
-      <fieldset>
-        <legend>Boot</legend>
+      <label class="checkbox-label" for="opt-hud">
+        <input type="checkbox" id="opt-hud">
+        show performance HUD <small>(guest speed, per second)</small>
+      </label>
+    </fieldset>
 
-        <label class="file-label" for="ff-preset">Fullflash
-          <span class="ff-preset-line">
-            <select id="ff-preset" size="1">
-              <option value="">— my own file (below) —</option>
-            </select>
-            <button type="button" id="ff-preset-delete" class="ff-trash" disabled
-              title="Delete the cached copy" aria-label="Delete the cached copy">
-              <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-            </button>
-          </span>
-          <small class="file-hint">preset fullflashes download when you press Start, then stay cached in the browser</small>
-          <small class="file-hint" id="ff-preset-status"></small>
-        </label>
+    <!-- per-second guest rates; click to copy the last 60 s as JSON -->
+    <pre id="hud" class="hud" hidden title="click to copy the last 60 s as JSON"></pre>
 
-        <label class="file-label" for="fullflash">My own file (.bin)
-          <input type="file" id="fullflash" accept=".bin,.cfi-efa,.cfi-otp0,.cfi-otp1" multiple>
-          <small class="file-hint">LG phones: also pick the <code>.cfi-efa</code> sidecar
-            (their EEPROM lives in the EFA block)</small>
-        </label>
-
-        <label>Device
-          <select id="device" size="1"></select>
-        </label>
-
-        <label>IMEI <small>(15 digits → OTP1)</small>
-          <input type="text" id="imei" value="490154203237518" pattern="\d{15}" maxlength="15">
-        </label>
-
-        <label>ESN <small>(8 hex → OTP0)</small>
-          <input type="text" id="esn" value="12345678" pattern="[0-9a-fA-F]{8}" maxlength="8">
-        </label>
-
-        <label>SIM
-          <select id="sim" size="1">
-            <option value="virtual" selected>virtual</option>
-            <option value="none">none</option>
-          </select>
-        </label>
-
-        <label>Operator <small>(MCC+MNC)</small>
-          <input type="text" id="operator" value="00101" pattern="\d{5,6}" maxlength="6">
-        </label>
-
-        <label>Startup
-          <select id="startup" size="1">
-            <option value="ONLINE" selected>ONLINE</option>
-            <option value="PTEST">PTEST</option>
-            <option value="OFFLINE">OFFLINE</option>
-          </select>
-        </label>
-
-        <label class="checkbox-label">
-          <input type="checkbox" id="rw">
-          writable flash <small>(lets firmware modify the .bin in memory)</small>
-        </label>
-
-        <div class="btn-row">
-          <button type="submit" id="btn-start">Start</button>
-          <button type="button" id="btn-stop" disabled>Stop</button>
-          <button type="button" id="btn-save-flash" disabled>Download flash</button>
-          <button type="button" id="btn-save-efa" disabled title="EFA block (LG EEPROM) — appears once the firmware wrote it">Download EFA</button>
-        </div>
-      </fieldset>
-    </form>
-
-    <details class="serial-box" open>
-      <summary>Serial log <small>(-serial file:/serial.log)</small></summary>
+    <!-- unhidden by the serial poller as soon as the guest prints something -->
+    <details class="serial-box" id="serial-box" open hidden>
+      <summary>Serial log</summary>
       <pre id="serial"></pre>
     </details>
-
-    <p class="hint">
-      Everything runs locally in your browser: qemu (arm-softmmu, TCG interpreter)
-      compiled to wasm64 with emscripten, driven by a small
-      <code>-display wasm</code> backend. The physical keyboard works too:
-      arrows / Enter / F1–F9 / digits / numpad +−*/ / Backspace. The numpad
-      digits go by position, so its 7-8-9 row presses the phone's 1-2-3.
-    </p>
   </section>
+
 </main>
 
 <script type="module" src="app.js"></script>

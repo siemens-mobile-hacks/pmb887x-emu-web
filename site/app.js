@@ -133,7 +133,27 @@ let pendingDevice = null; // device inferred from a fullflash picked before
 
 function setStatus(cls, text) {
   statusEl.className = "status " + cls;
-  statusEl.textContent = text;
+  $("status-text").textContent = text;
+}
+
+/* ------------------------------------------------------------------ */
+/* LCD overlay: the progress surface until the guest owns the screen    */
+/* ------------------------------------------------------------------ */
+
+const overlayEl = $("lcd-overlay");
+const overlayBar = $("ov-bar");
+
+// pct === null keeps the bar hidden (an indeterminate or instant step)
+function showOverlay(msg, sub = "", pct = null) {
+  overlayEl.classList.remove("hidden");
+  $("ov-msg").textContent = msg;
+  $("ov-sub").textContent = sub;
+  overlayBar.hidden = pct == null;
+  if (pct != null) overlayBar.firstElementChild.style.width = pct + "%";
+}
+
+function hideOverlay() {
+  overlayEl.classList.add("hidden");
 }
 
 /* ------------------------------------------------------------------ */
@@ -223,6 +243,7 @@ const presetTrash = $("ff-preset-delete");
 const fileInput = $("fullflash");
 let selectedPreset = null; // PRESET_FULLFLASHES entry, or null = own file
 let presetBusy = false;    // preset download in flight (during boot)
+let downloadAbort = null;  // its AbortController while it runs — Stop uses it
 
 function presetById(id) {
   return PRESET_FULLFLASHES.find((p) => p.id === id) ?? null;
@@ -343,6 +364,7 @@ async function bootSuite(url) {
           window.__suiteReport?.(ser, code);
         } catch (e) { /* page going down anyway */ }
         setStatus("idle", `exited (${code})`);
+        showOverlay("stopped", `exited (${code})`);
         stopPainting();
         $("btn-start").disabled = false;
         $("btn-stop").disabled = true;
@@ -360,7 +382,7 @@ async function bootSuite(url) {
         mod.FS.writeFile("/data/tcgisa.bin", bytes);
       },
     });
-    $("lcd-overlay").classList.add("hidden");
+    hideOverlay();
     window.__qemu = qemuModule; // debugging hook (same as the phone boot)
     startSerialPoll();
     setStatus("running", "running — tcg-isa op-suite");
@@ -426,6 +448,7 @@ async function boot() {
   const debug = qsp.get("debug") === "1";
 
   setStatus("booting", "loading…");
+  showOverlay("loading…");
   $("btn-start").disabled = true;
 
   // [[".cfi-efa", bytes], ...] — filled below, checked again after the boot
@@ -442,18 +465,27 @@ async function boot() {
       const st = await entryCacheState(selectedPreset);
       if (!st.complete) {
         presetBusy = true;
+        // a 64 MiB fullflash is a long wait — Stop cancels it (the catch
+        // below turns the AbortError into a plain "cancelled")
+        downloadAbort = new AbortController();
+        $("btn-stop").disabled = false;
         try {
           await downloadEntry(selectedPreset, (name, loaded, total) => {
             const pct = total ? Math.round((loaded / total) * 100) : null;
+            const size = fmtMiB(loaded) + (total ? ` of ${fmtMiB(total)}` : "");
             setStatus("booting", "downloading fullflash" + (pct != null ? ` — ${pct}%` : "…"));
-            presetStatus.textContent = `downloading ${name}: ${fmtMiB(loaded)}`
-              + (total ? ` of ${fmtMiB(total)}` : "") + (pct != null ? ` — ${pct}%` : "");
-          });
+            showOverlay("downloading fullflash", `${name}\n${size}`, pct);
+            presetStatus.textContent = `downloading ${name}: ${size}`
+              + (pct != null ? ` — ${pct}%` : "");
+          }, downloadAbort.signal);
         } finally {
           presetBusy = false;
+          downloadAbort = null;
+          $("btn-stop").disabled = true;
         }
         await refreshPresetUi();
       }
+      showOverlay("reading fullflash…");
       const cached = await readCachedEntry(selectedPreset); // main .bin first
       const shim = (f) => ({ name: f.name, arrayBuffer: async () => f.bytes.buffer });
       file = shim(cached[0]);
@@ -465,7 +497,9 @@ async function boot() {
 
     // Compile the factory fresh per boot (the emscripten ES6 factory is
     // single-use once main() has run through exit()).
+    showOverlay("loading emulator…");
     const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
+    showOverlay("booting…", device);
 
     const flashBytes = new Uint8Array(await file.arrayBuffer());
     for (const sc of sidecars) {
@@ -525,6 +559,7 @@ async function boot() {
       log: debug ? (t) => console.log("[log]", t) : undefined,
       onExit: (code) => {
         setStatus("idle", `exited (${code})`);
+        showOverlay("stopped", `exited (${code}) — press “Start” to boot again`);
         stopPainting();
         // hand the finished logs out before the runtime tears the page
         // down (the lockstep driver installs window.__lockstepReport)
@@ -599,8 +634,15 @@ async function boot() {
       },
     });
   } catch (e) {
-    console.error(e);
-    setStatus("error", String(e));
+    if (e?.name === "AbortError") {
+      setStatus("idle", "download cancelled");
+      showOverlay("download cancelled",
+        "press “Start” to resume — whatever finished stays cached");
+    } else {
+      console.error(e);
+      setStatus("error", String(e));
+      showOverlay("failed", String(e));
+    }
     $("btn-start").disabled = false;
     refreshPresetUi(); // a failed preset download changed the cache state
     return;
@@ -611,7 +653,7 @@ async function boot() {
   $("btn-save-efa").disabled = true;
   // LG firmware without the EFA block factory-resets its EEPROM; warn but boot.
   const noEfa = device.startsWith("lg-") && !sidecarBytes.some(([s]) => s === ".cfi-efa");
-  $("lcd-overlay").classList.add("hidden");
+  hideOverlay();
   window.__qemu = qemuModule; // debugging hook
   startPainting();
   startSerialPoll();
@@ -620,8 +662,14 @@ async function boot() {
 }
 
 function stop() {
+  // before the guest exists, Stop means "cancel the fullflash download"
+  if (downloadAbort) {
+    downloadAbort.abort();
+    return; // boot()'s catch reports it and re-arms Start
+  }
   if (qemuModule && qemuModule._wasm_quit) qemuModule._wasm_quit();
   setStatus("idle", "stopping…");
+  showOverlay("stopping…");
 }
 
 $("boot-form").addEventListener("submit", (e) => { e.preventDefault(); boot(); });
@@ -707,7 +755,7 @@ function stopPainting() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Stats HUD (?hud=1): what "realtime" is on this device                */
+/* Stats HUD ("show performance HUD"): what "realtime" is on this device */
 /* ------------------------------------------------------------------ */
 
 // Per-second guest rates, on the page itself so a phone can report them
@@ -720,10 +768,11 @@ let hudTimer = 0;
 let paintMs = 0;
 const HUD_HALT_INDEX = 29;   // WASM_DIAG_HALT in include/qemu/wasm-diag.h
 function startHud() {
-  if (new URLSearchParams(location.search).get("hud") !== "1") return;
+  clearInterval(hudTimer);
+  if (!$("opt-hud").checked) return;
   const el = $("hud");
   el.hidden = false;
-  clearInterval(hudTimer);
+  el.textContent = "waiting for a run…";
   const t0 = performance.now();
   const samples = [];
   let last = null;
@@ -757,8 +806,28 @@ function startHud() {
   }, 1000);
 }
 
+function stopHud() {
+  clearInterval(hudTimer);
+  hudTimer = 0;
+  $("hud").hidden = true;
+}
+
+// the toggle takes effect immediately, mid-run or before one
+const hudChk = $("opt-hud");
+hudChk.checked = localStorage.getItem("opt-hud") === "1";
+hudChk.addEventListener("change", () => {
+  localStorage.setItem("opt-hud", hudChk.checked ? "1" : "0");
+  if (hudChk.checked) startHud();
+  else stopHud();
+});
+if (hudChk.checked) startHud();
+
 function startSerialPoll() {
   clearInterval(serialTimer);
+  // a fresh run starts with an empty log: drop the previous one and fold the
+  // box away again until this guest prints its first line
+  $("serial").textContent = "";
+  $("serial-box").hidden = true;
   serialTimer = setInterval(() => {
     const m = qemuModule;
     if (!m?.FS) return;
@@ -776,6 +845,7 @@ function startSerialPoll() {
         el.textContent = text;
         el.scrollTop = el.scrollHeight;
       }
+      if (text) $("serial-box").hidden = false;
     } catch { /* not there yet */ }
   }, 1000);
 }
@@ -910,6 +980,30 @@ window.addEventListener("keyup", (e) => {
   const key = CODE_TO_KEY[e.code];
   if (key) sendKey(key, false);
 });
+
+/* ------------------------------------------------------------------ */
+/* Advanced fieldset: say on the folded summary what was changed inside  */
+/* ------------------------------------------------------------------ */
+
+// Defaults come from the markup, so the two cannot drift.
+const ADV_FIELDS = [["imei", "IMEI"], ["esn", "ESN"], ["sim", "SIM"],
+  ["operator", "operator"], ["startup", "startup"], ["rw", "writable flash"]];
+const advDefaults = new Map(
+  ADV_FIELDS.map(([id]) => [id, $(id).type === "checkbox" ? $(id).checked : $(id).value]));
+
+function refreshAdvancedSummary() {
+  const changed = ADV_FIELDS
+    .filter(([id]) => (($(id).type === "checkbox" ? $(id).checked : $(id).value)) !== advDefaults.get(id))
+    .map(([, name]) => name);
+  $("adv-summary").textContent = changed.length ? `— ${changed.join(", ")}` : "";
+}
+
+for (const [id] of ADV_FIELDS) $(id).addEventListener("input", refreshAdvancedSummary);
+refreshAdvancedSummary();
+
+// The tools/ drivers set these fields straight from Playwright, whose
+// actionability checks fail on anything a folded <details> keeps hidden.
+if (navigator.webdriver) $("advanced").open = true;
 
 /* ------------------------------------------------------------------ */
 

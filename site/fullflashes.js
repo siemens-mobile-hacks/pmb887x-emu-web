@@ -95,9 +95,10 @@ export async function entryCacheState(entry) {
 // fetch -> Response, reporting (file, loadedBytes, totalBytes) while the
 // body streams in. Returns a Response built from the collected chunks
 // (cache.put stores constructed responses fine; it only rejects opaque ones).
-async function fetchWithProgress(file, onProgress) {
+// An aborted signal rejects the pending read with AbortError.
+async function fetchWithProgress(file, onProgress, signal) {
   const url = fileUrl(file);
-  const res = await fetch(url, { mode: "cors" });
+  const res = await fetch(url, { mode: "cors", signal });
   if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
   const total = Number(res.headers.get("content-length")) || 0;
   if (!res.body) { // no streaming support: nothing to report, put as-is
@@ -124,13 +125,16 @@ async function fetchWithProgress(file, onProgress) {
 
 // Download every not-yet-cached file of the entry (already-cached files are
 // skipped, so a retry after a partial failure only fetches what's missing —
-// cache.put is atomic per file, a cached file is always complete).
-export async function downloadEntry(entry, onProgress) {
+// cache.put is atomic per file, a cached file is always complete). Aborting
+// the optional signal throws AbortError; whatever finished stays cached, so
+// pressing Start again resumes at the next file.
+export async function downloadEntry(entry, onProgress, signal) {
   const cache = await caches.open(CACHE_NAME);
   for (const file of entry.files) {
+    signal?.throwIfAborted();
     const url = fileUrl(file);
     if (await cache.match(url)) continue;
-    await cache.put(url, await fetchWithProgress(file, onProgress));
+    await cache.put(url, await fetchWithProgress(file, onProgress, signal));
   }
 }
 
