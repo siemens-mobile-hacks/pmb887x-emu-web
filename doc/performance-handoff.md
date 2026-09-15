@@ -6,7 +6,7 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
-## Update (2026-09-15, round eighteen: the 80 % had one name on it)
+## Update (2026-09-15, round eighteen: the 80 % had one name on it; 0083-0084)
 
 Round seventeen closed four candidates and left one question: the pipeline
 is 19.5 % of the boot, so **what is the other 80 %?**  It is, to a first
@@ -65,6 +65,34 @@ toggle is then A-B-A and hits the stash.
   The same patch is +55.6 % over 100-1400 Mi.  A tie is evidence about the
   window, not only about the patch.
 
+### Then the lookup helper, which is what the 80 % mostly is
+
+With MMIO closed, EL71's budget was re-taken on the same instrument.  The
+pipeline is now 3.7 % of wall and MMIO 3.8 %; `tlbFill` fell 33.8k/s ->
+4.6k/s all by itself, because the topology commits had been flushing the
+TLB.  What is left, timed directly and with the `CAL_NS` floor removed:
+
+| | rate | ns each | share of wall |
+|---|---|---|---|
+| `helper_lookup_tb_ptr_lc` | 811k/s | **102** | **8.3 %** |
+| `arm_rebuild_hflags` | 809k/s | 32.6 | 2.6 % |
+| module compile (`modNs`) | | | 2.5 % |
+| MMIO store callback | 671k/s | 42 | 2.8 % |
+| `tb_gen_code` | 641/s | | 1.2 % |
+
+The 102 ns is confirmed independently: `W64_LC_VERIFY` routes *every*
+goto_ptr exit through the helper, and the delta between that build and
+the normal one is 9.1 ms per Mi over 81 334 extra calls — **112 ns a
+call**, from a completely different arithmetic.  Two methods, one number.
+
+Verify mode also gives the hit rate free: the inline cache **hits 84.0 %**
+and `LC_VBAD` is 0, so the inline test is correct and the misses are real.
+0084 attacks the miss *cost* (the qht fall-through); the miss *count* is
+still open, and `W64_LC2` — a software ceiling probe that simulates a
+second way — says a 2-way cache would catch **42.3 % of el71 misses and
+34.2 % of cx70's**, worth roughly 3 % of wall for a generated-code change
+plus 32 bytes per TB.  Measured, not built.
+
 ### Open at the end of round eighteen
 
 1. **ke800 saw -2.1 %** (2 pairs, within noise) — the LG board does not
@@ -75,7 +103,14 @@ toggle is then A-B-A and hits the stash.
 3. **CX70's device *writes* cost 645 ns each**, twice EL71's 330 ns, on
    only 56k/s.  Nobody has looked at which device that is.
 4. The measurement build now has `W64_LDSTCOUNT`, `DEV_R_NS`/`DEV_W_NS`,
-   `CAL_NS` and the `SLOWW_*` phys_addr histogram.  **Use `CAL_NS`.**
+   `CAL_NS`, the `SLOWW_*` phys_addr histogram, `HFLAGS_NS`/`LC_NS` and
+   the `W64_LC2` two-way ceiling probe.  **Use `CAL_NS`.**
+5. **The 2-way inline cache is measured and unbuilt** — 42 % of el71
+   misses, ~3 % of wall.  It needs a second slot in `TranslationBlock`
+   and a second compare chain on the miss path in `gen_goto_ptr`.
+6. **`arm_rebuild_hflags` runs 809k/s**, one per 67 guest instructions,
+   and nobody has found the caller doing that.  It is only 2.6 %, but
+   the rate is odd enough to be worth ten minutes.
 
 ## Update (2026-09-15, round seventeen: what the pipeline actually costs)
 
