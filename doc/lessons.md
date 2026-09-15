@@ -379,6 +379,19 @@ the A/B.  `CF_PCREL` also means `tb->pc` is never written
 (`tb_gen_code` skips it), so anything in `accel/tcg` that wants a TB's
 guest pc has to carry it alongside rather than read it back.
 
+The trampoline one was then woken up and measured, and the ending is
+worth keeping: it fires on **about one walked node in 35,000**, four
+boards agreeing, so it never had anything to offer.  Which is the
+second half of the rule — *a counter that reads zero has two
+explanations*, "the thing is rare" and "my probe never ran", and they
+look identical.  Separate them by counting one step earlier: here the
+first counter went on the tail probe (141 per Mi — every node) and only
+the second on the pattern match (0.004 per Mi).  Without the first, a
+broken `tbpc` would have produced exactly the same zero and the honest
+conclusion would have been unreachable.  Then **delete what the counter
+condemns**: this one had been read as a live optimization by two
+separate rounds.
+
 ## A convenient hypothesis is the dangerous kind
 
 The browser gate failed every board on every dist for an afternoon with
@@ -493,6 +506,38 @@ Two traps, both hit in one afternoon:
 Also: the vCPU is not a fixed worker index.  It was #4 in one profile and
 #1 in the next on the same board and build — identify it by content (the
 `wasm://wasm/` TB frames land there), never by number.
+
+### Price a *phase* with a timer, not a profile
+
+A volatile-spin probe prices one function; a whole phase is easier.  Put
+`get_clock_realtime()` around it, accumulate into a `wasm_diag_stat`
+slot, and read it with `_wasm_memstat` — `tools/modcost.mjs` does this
+for translation and module compilation.  Rules learned doing it:
+
+- **Charge the time in C, not in the EM_JS body.**  The JS half of
+  `w64_batch_instantiate` already kept `__w64tM`/`__w64tI` globals, but
+  they live in the vCPU worker, and that worker runs the guest without
+  yielding — a page-side `evaluate()` to read them is never scheduled and
+  hangs the tool.  (Same shape as the `iotrace2.mjs` hang.)  In
+  `wasm_diag_stat` the number reaches the page like any other counter.
+- **Gate anything hotter than a few thousand calls a second.**
+  emscripten's `gettimeofday` is a call out to JS.  Module compiles
+  (~1k/s) can carry it always; `tb_gen_code` (~4k/s) is behind
+  `WASM_DIAG_TIME_PHASES` and is a measurement build, not an A/B build.
+- **A phase timer retires folklore cheaply.**  "The early boot is
+  compile-bound" had been repeated since the profiler era.  It is not:
+  the translate+compile pipeline is **19.5 %** of EL71 boot wall at its
+  densest and 8 % late, with compile alone never above ~10 %.  That is
+  also the ceiling on tiering, which is what made it measurable before it
+  was buildable — *price the prize before building the machine.*
+- **Don't let the phase timer tempt you into a bad comparison.**  EL71
+  boots at 27.8 MIPS and runs warm at 73.6, and it is very tempting to
+  call the 2.65x "overhead the pipeline doesn't explain".  It is not:
+  those windows execute *different guest code*, and MIPS is only
+  comparable across identical guest work — which is the whole reason
+  `workbench.mjs` exists.  What the timer does support is the narrow
+  claim: the pipeline is 19.5 % of boot wall, so ~80 % is execution and
+  devices, and that 80 % is unpriced.
 
 ## Read the symbol map before believing a cost model
 

@@ -25,27 +25,9 @@ const extraQ = process.env.EXTRA_Q || "";
 // engine's own speed, not against the real-time cap's pacing.
 const rt = process.env.RT || "off";
 
-// index -> name, in wasm-diag.h order
-const NAMES = [
-  "ldHelper", "stHelper", "ioLd", "ioSt", "tlbFill", "txnFailed", "txnNoexit",
-  "tbGen", "tbFlush", "ioRewind", "romdFlip", "topoCommit", "topoReused",
-  "lookup", "lookupJc", "lookupQht", "jcFlush", "tbGenCounted",
-  "tlbFlush", "tlbFlushRange", "fillFetch", "fillProbe", "fillSamepage",
-  "fillInvalid", "fillLarge", "fillIdx", "fillEvict", "tlbSize0", "tlbUsed0",
-  "halt", "physCall", "physScan", "physDrop",
-  "modBytes", "modCount", "tbBytes",
-  "warpNs", "warpB0", "warpB1", "warpB2", "warpB3", "warpB4", "warpB5", "warpB6",
-  "modSrc", "closeBytes", "compactBytes", "ensureBytes",
-  "closeN", "compactN", "ensureN",
-  "lcFill", "lcVhit", "lcVbad", "keyGen",
-  "lcCall", "keyGenFlush", "keyGenInval", "keyGenPage","difMuxRebuild","difTxWord","dmacBurst","dmacSchedTimer","dmacXlatFill","gptuTimer",
-  "ioRecomp", "ioBarrierEvict", "ioBarrierSplit",
-  "ioLdFast", "vclockRead", "ioStFast", "tpuTimer", "tpuRearm",
-  "mlWake", "mlWakeDup", "tpuRamW", "tpuRamSkip",
-  "hflags", "hflagsFast", "hflagsBad",
-  "specMiss", "specNosucc", "specExists", "specNotram", "specMade", "specRet",
-  "hflagsCalls", "lookupConfl",
-];
+// index -> name, parsed from wasm-diag.h (a transcribed list drifts: this one
+// carried a stale "specRet" that shifted hflagsCalls and lookupConfl by one)
+import { NAMES } from "./diagnames.mjs";
 
 const b = await chromium.launch({ headless: true });
 const p = await b.newPage();

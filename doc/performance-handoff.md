@@ -6,6 +6,100 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-15, round seventeen: what the pipeline actually costs)
+
+Round sixteen took the profiler away.  This round builds the replacement
+for the one question the profiler was still being trusted on — *where
+does the boot's time go* — and the first answer retires a belief this
+document has repeated since round nine.
+
+### The translate-and-compile pipeline is 19.5 %, not "the boot"
+
+`tools/modcost.mjs` times the two halves directly: `tb_gen_code` in C
+(behind `WASM_DIAG_TIME_PHASES`, a measurement build) and the browser's
+`WebAssembly.Module` + `Instance` per batch (`modNs`, always on — ~1k
+modules/s at boot makes two clock reads noise).  EL71, `dist-jit`:
+
+| window | insns | compile | translate | **pipeline** |
+|---|---|---|---|---|
+| 0–12 s | 285 M | 10.04 % | 9.45 % | **19.49 %** |
+| 12–27 s | 396 M | 10.06 % | 7.98 % | **18.04 %** |
+| 30–45 s | 559 M | 5.28 % | 2.77 % | **8.05 %** |
+
+So **the early boot is not compile-bound.**  That claim traces back to
+the profiler and should not be repeated.  Compile alone never exceeds
+~10 %, and the whole pipeline peaks under a fifth of wall time.
+
+**This is also the ceiling on tiering**, which is why it was worth
+measuring before building: running first executions on TCI can only ever
+win back part of the compile slice, while adding interpretation cost on
+cold TBs and re-translation on hot ones.  Roughly 10 % gross, at the
+densest part of the boot, for a change that needs a second execution
+tier and doubles the lockstep gate's surface.  *Price the prize before
+building the machine.*
+
+### What the other 80 % is, is still unknown
+
+EL71 boots (0 → 1000 Mi) at **27.8 MIPS** and runs warm at **73.6 MIPS**,
+while deleting the pipeline entirely would buy only 1.24x.  **Do not read
+that 2.65x as overhead**: the two windows run *different guest code*, and
+boot code does more per instruction (flash, MMIO, device setup) than the
+idle loop does.  The honest statement is narrower — the pipeline is 19.5 %
+of boot wall, so ~80 % is execution and devices, and **that 80 % has never
+been priced by anything but wprof2.**
+
+**This is now the top open item.**  The method is the one above: a
+`get_clock_realtime()` pair around a phase, charged in C, read through
+`_wasm_memstat`; sample 1-in-N for anything hotter than a few thousand
+calls a second.  Start with MMIO dispatch and `tlb_fill_align`, whose
+rates are already known.  To separate "boot code is expensive" from "cold
+state is expensive", price the *same* guest window twice — the counters
+are per-Mi and comparable; MIPS across different code is not.
+
+### Four directions measured and closed
+
+With the hot counters on and phase timers around `tb_gen_code`,
+`tlb_fill_align` and the batch instantiate, the EL71 boot accounts for
+**20.9 %** of its wall — compile 10.85, translate 7.25, TLB fill 2.79 —
+and CX70 for 12.6 %.  Against that, four candidates died:
+
+- **MMIO is not the cost.**  CX70 does **100x** the MMIO per Mi that EL71
+  does (`ioLd` 26 478 vs 836 per Mi) and boots **3x faster**.  `hflags`
+  likewise: 4x more on the fast board.  Stop looking at device rates.
+- **TLB fills cost ~520 ns each** and 2.8 % of EL71 wall (1.2 % CX70),
+  even at EL71's 8x-higher 2071 per Mi.
+- **The inline cache's global generation is not what's missing it.**
+  Ceiling probe `W64_NOGENBUMP=1` (unsound: stops retiring slots
+  entirely) cut helper calls only **17 %**, 14 644 -> 12 112 per Mi, with
+  MIPS unmoved.  The misses are genuinely megamorphic return sites, as
+  the 0047 note guessed.  ~1 % of wall; not worth a sound scheme.
+- **TB length is not board-specific.**  Mean guest insns per TB is
+  **3.79 / 3.79 / 3.80 / 4.66** (el71/cx70/s75/ke800).  All four
+  firmwares are equally branchy; EL71's slowness is not shorter blocks.
+
+### The question for round eighteen
+
+EL71 executes **7.1M TB/s**, CX70 **23.6M TB/s** — 141 ns vs 42 ns for a
+block of the *same* 3.8 instructions, with EL71 making *fewer* helper
+calls per second (389 k vs 499 k) and doing *less* MMIO.  Nothing
+counted explains a 3.3x.  So the cost is inside the generated code for
+the instructions themselves — a guest-code-mix or codegen-quality
+question, and the first one this project has faced without a profiler.
+
+Ideas, cheapest first: count guest memory ops (the softmmu fast path is
+entirely uncounted, and a load/store-heavy mix would explain it); compare
+the two boards' `W64_TBLOG` opcode histograms; sample-time the helper
+1-in-16 rather than every call.
+
+### An instrument was quietly reading the wrong counters
+
+`diagall.mjs`'s hand-written name list still carried `specRet` from a
+rejected experiment, so everything after it was off by one and
+`hflagsCalls`/`lookupConfl` were reported as their neighbours.  Both
+tools now import `tools/diagnames.mjs`, which parses the enum out of
+`wasm-diag.h`.  `counters.mjs` was correct, so round sixteen's
+conclusions stand.  **Never transcribe the enum.**
+
 ## Update (2026-09-15, round sixteen: 0080–0081 — the round the profile lost its credibility)
 
 No throughput patch landed.  What landed is **instrumentation and two
@@ -74,6 +168,17 @@ their names do not.
 
 Use `tools/counters.mjs` (new: every unconditional counter as a rate, per
 board) to find work, and a volatile-spin probe to price it.
+`tools/modcost.mjs` (round seventeen) prices the translate-and-compile
+pipeline directly off wall-clock timers rather than sampling — the
+browser's own `WebAssembly.Module`/`Instance` cost, and (in a
+`WASM_DIAG_TIME_PHASES` build) `tb_gen_code` beside it.
+
+Counter names now come from `tools/diagnames.mjs`, which parses
+`wasm-diag.h`: the transcribed list in `diagall.mjs` had kept a
+`specRet` entry from a rejected experiment and was reporting
+`hflagsCalls` and `lookupConfl` one index off.  Never transcribe the
+enum — a counter that is quietly reading its neighbour looks exactly
+like a result.
 
 ### The EL71 key lag has a floor, and speculation is below it
 
@@ -179,6 +284,14 @@ none in the one after.  That one *is* host variance; `boot-progress` and
 regression, and do not read a hard wasm trap as host pressure.
 
 ### Open at the end of round sixteen
+
+> **Round seventeen closed 1, 2, 3 and 4 of these.**  Tiering (1) is
+> capped at the ~10 % compile slice and is not being built.  The
+> trampoline heuristic (2) fires on one node in 35 k and is deleted.
+> The generic path (3) is now priced by phase timers, not a profile.
+> `do_ld4_mmu` (4) is answered by the hot-counter build: MMIO is 23 k/s
+> on EL71, and CX70 does 100x more per Mi while booting 3x faster.  See
+> the round-seventeen section at the top for what replaced them.
 
 1. **Tiering is the only way past the module floor.**  Module count is
    miss count; nothing that speculates harder can beat it.  Run a TB's
