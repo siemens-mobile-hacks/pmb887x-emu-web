@@ -171,6 +171,41 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    the hypothesis is wrong and the semihosting exit path is the next
    suspect.
 
+   **Update 2026-09-16, later that day: hypothesis confirmed, missing
+   names in hand — only the landing is left.** The cheapest-first test
+   ran: a no-onlylist build (45 MB, everything instrumented) runs the
+   suite **green, 1156/1156**. The switch stacks were then captured
+   with `QEMU_COSTACK=1` on the suite target via `tools/costack-suite.mjs`
+   (kept — the `tcgisa.mjs` page setup with a COSTACK console tap;
+   `conlog.mjs` cannot reach the `?suite=` page): 7 distinct stacks,
+   resolved and audited against the onlylist — **20 missing names, every
+   one on the versatilepb machine-init / legacy-SCSI / board-reset
+   path**: `versatile_init`, `vpb_init`,
+   `lsi53c8xx_handle_legacy_cmdline`, `scsi_bus_legacy_add_drive`,
+   `scsi_bus_legacy_handle_cmdline`, `scsi_cd_realize`,
+   `scsi_qdev_realize`, `scsi_realize`, `sd_realize`, `sd_get_inserted`,
+   `sdbus_get_inserted`, `blkconf_blocksizes`, `qemu_devices_reset`,
+   `do_legacy_reset`, `bus_reset_child_foreach`, `resettable_reset`,
+   `resettable_assert_reset`, `resettable_phase_hold`,
+   `resettable_container_child_foreach`, `pl181_reset`. Capture + audit
+   saved in `tests/results/asyncify-costack-20260916/` (local only —
+   gitignored; the names are all inline above). Resolving the
+   indices against either link gives the same 20 — the onlylist does
+   not renumber functions). The faulting `wasm-function[26650]` is
+   `dynCall_jj`, which *is* listed: the null callee is the rewind
+   target, a frame above it that was never instrumented — exactly the
+   predicted mechanism. To land: add the names to
+   `qemu/configs/meson/asyncify-only.txt` (wildcards `scsi_*`/
+   `resettable_*` would cover several, but prefer the minimal explicit
+   set — these run once per machine init/reset, cold on every board, so
+   the instrumentation cost on a phone boot should be nil; still A/B
+   `workbench --board el71` per the playbook), rebuild via
+   `scripts/build-qemu-wasm64.sh` (NOT `ninja-fast.sh` — only the former
+   re-applies the link args), confirm `WASM64_SUITE=1
+   scripts/run-tcg-isa.sh` green, delete the KNOWN-HOLE special case in
+   `scripts/run-tcg-isa.sh` so the leg gates again, `gate.sh keep`,
+   commit on the qemu branch, bump `QEMU_PMB887X_REV`.
+
 3. **A compile is 4–6× cheaper warm.** Nothing batches compile events
    except compaction, which is already nearly free. If a second pending
    compile ever exists, doing it adjacent to the first is worth ~68 µs.
