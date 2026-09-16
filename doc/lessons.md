@@ -29,14 +29,17 @@ file is the "why" behind them and behind the timing model.
   (~3.7×). The cap sleeps only on idle overrun, never on the
   compute-bound boot. Native has no cap by default, so native and web
   agree on the timing model and disagree on pacing.
-- **…and the cap needs two phases** (`banked:30`, the shipping default):
-  `banked` is right *during* the boot — a guest that fell behind must be
-  allowed to catch up — and wrong after it, because the same credit lets
-  a later stall be repaid by sprinting the phone's clock. So bank for the
-  guest's first 30 s of its own clock, then re-anchor on lag forever.
-  The window is measured in **guest** time on purpose: the boot costs the
-  same virtual time on every host while its wall time ranges from ~39 s
-  to minutes, so a wall window would expire mid-boot on exactly the slow
+- **…and the cap needs two phases** (`budget:30:500`, the shipping
+  default): `banked` is right *during* the boot — a guest that fell
+  behind must be allowed to catch up — and too generous after it,
+  because the same credit lets a later stall be repaid by sprinting the
+  phone's clock. So bank for the guest's first 30 s of its own clock,
+  then cap the repayable bank at 500 ms: a stall is still repaid, but
+  never by more than half a second of skipped clock, so the phone stays
+  close behind wall time instead of freezing its countdowns. The window
+  is measured in **guest** time on purpose: the boot costs the same
+  virtual time on every host while its wall time ranges from ~39 s to
+  minutes, so a wall window would expire mid-boot on exactly the slow
   machines `banked` exists to protect.
 - **LG firmware needs no icount at all** and boots on the realtime
   clock; the page and `run-native.sh` omit `-icount` for `lg-*`. Those

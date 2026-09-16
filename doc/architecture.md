@@ -143,11 +143,11 @@ TLB growth), `0043` (physical-address summary for the range flush),
 Timing/halt path: `0023` (idle warp on the vCPU thread), `0024`
 (pmb887x completion timers on the virtual clock), `0025`, `0027`,
 `0028`, `0032` (real-time cap on the sleep=off warp — wasm default
-`banked:30`, i.e. `banked` for the guest's first 30 s of its own clock
-and `strict` after, page `?rt=`), `0035`/`0037` (virtual timers serviced when
-icount is off — the LG boards). `0033` selects the RTC `CNT` layout
-from the board config (`[rtc] format`: Siemens linear Unix seconds, LG
-packed calendar).
+`budget:30:500`, i.e. `banked` for the guest's first 30 s of its own clock
+and a bank capped at 500 ms after, page `?rt=`), `0035`/`0037` (virtual
+timers serviced when icount is off — the LG boards). `0033` selects
+the RTC `CNT` layout from the board config (`[rtc] format`: Siemens
+linear Unix seconds, LG packed calendar).
 
 ### Page (site/)
 
@@ -266,7 +266,7 @@ packed calendar).
 - `boards.tar` unpacked into `/boards`; qemu args mirror the native
   launcher (`-display wasm -icount shift=3,sleep=off -machine pmb887x
   -drive if=pflash… -serial file:/serial.log`; no `-icount` for `lg-*`
-  devices; `QEMU_ICOUNT_RTCAP=banked:30` unless `?rt=` says otherwise).
+  devices; `QEMU_ICOUNT_RTCAP=budget:30:500` unless `?rt=` says otherwise).
 - LCD canvas repaints from the staging buffer on `requestAnimationFrame`;
   every phone key is a `<button>` mapped to linux keycodes, plus
   physical-key mapping.

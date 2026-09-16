@@ -79,13 +79,14 @@ parking in realtime) — with the default `sleep=on` the handshake still
 dies on any host slower than the phone. Deadlines then always arrive
 with the full native instruction budget, so the machine merely boots in
 slow motion. On top of that the wasm builds default to a **real-time
-cap** on the idle warp (`QEMU_ICOUNT_RTCAP=banked:30`, page `?rt=off|
-banked|banked:<n>|strict`): the compute-bound boot is never throttled, but
-a halted guest's clock and animations run at wall speed instead of racing
-ahead. The default switches from `banked` to `strict` once the guest has
-run 30 seconds of its own clock — roughly the boot — so the boot may still
-catch up as fast as it can, while a stall *after* it is forgiven rather
-than repaid by sprinting the phone's clock. Until it switches, the status
+cap** on the idle warp (`QEMU_ICOUNT_RTCAP=budget:30:500`, page `?rt=off|
+banked|banked:<n>|strict|budget[:<win>[:<ms>]]`): the compute-bound boot is
+never throttled, but a halted guest's clock and animations run at wall
+speed instead of racing ahead. Thirty seconds of the guest's own clock —
+roughly the boot — after start, the cap's budget settles at 500 ms: the
+boot itself may still catch up as fast as it can, while a stall *after* it
+is repaid by at most 500 ms of sprinted clock rather than freezing the
+phone's countdowns while it skips minutes. Until it switches, the status
 pill's `slow` warning stays off: below 1.00× is what a banked boot looks
 like by construction.
 **LG firmware needs no icount at all** — it boots fine on the plain

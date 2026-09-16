@@ -64,7 +64,7 @@
 //   - RT env: real-time cap mode (0032) the page boots with — default
 //     "off" so milestones measure engine speed; RT=banked pins the cap,
 //     RT=ship omits ?rt= so the page uses its own built-in default
-//     (banked:30) and the run measures what a user actually gets.  Like
+//     (budget:30:500) and the run measures what a user actually gets.  Like
 //     JS_FLAGS/EXTRA_Q, an RT!=off run never becomes the baseline.
 //   - JS_FLAGS env: extra V8 flags for the browser (e.g. "--no-wasm-lazy-compilation").
 //   - EXTRA_Q env: extra query string appended to the page URL.
@@ -198,7 +198,7 @@ const extraQ = process.env.EXTRA_Q || "";
 // touches icount/halt/timers.  RT=banked pins the cap and is the stable
 // A/B leg; RT=ship drops ?rt= entirely so the page picks its own default
 // and the tool cannot go stale when that default changes — but those
-// numbers straddle the banked→strict switch, so they are the "what a user
+// numbers straddle the banked→budget switch, so they are the "what a user
 // gets" leg, not the leg to A/B engine work against.
 const rtMode = process.env.RT || "off";
 const rtQuery = rtMode === "ship" ? "" : `&rt=${rtMode}`;

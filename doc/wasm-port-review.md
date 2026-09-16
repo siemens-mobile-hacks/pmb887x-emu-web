@@ -612,7 +612,7 @@ Grouped by what it costs. Line counts are approximate.
 | Knob | Where read (cached?) | Still used by | Verdict |
 |---|---|---|---|
 | `QEMU_IO_REWIND` | `accel/tcg/cputlb.c:1639` (static) | page `?iorewind=1` | A/B escape hatch for 0010 — keep or drop with it |
-| `QEMU_ICOUNT_RTCAP` | `accel/tcg/icount-common.c` (all builds; `off\|banked\|banked:<n>\|strict`, default `banked:30` on wasm, `off` native) | page `?rt=`; benchmarks pass `off`, `RT=ship` takes the default | shipping knob; native/web pacing disagree (handoff item 5) |
+| `QEMU_ICOUNT_RTCAP` | `accel/tcg/icount-common.c` (all builds; `off\|banked\|banked:<n>\|strict\|budget[:<win>[:<ms>]]`, default `budget:30:500` on wasm, `off` native) | page `?rt=`; benchmarks pass `off`, `RT=ship` takes the default | shipping knob; native/web pacing disagree (handoff item 5) |
 | `QEMU_COSTACK` | `util/coroutine-wasm.c:132` — **on every coroutine switch** | onlylist capture recipe only | cache the result (R-33) |
 | `QEMU_ICOUNT2_DEBUG` | pre-existing in master | page | unchanged |
 | `W64_DEBUG` | `tcg-target.c.inc:1088`, `wasm64.c:1303,1512,1841`, `cpu-exec.c:711` (static); `wasm64.c:1427` (**every 1024th re-ensure, uncached**) | page `?w64debug=1`, `tools/repro.mjs` | keep one cached flag for batch/compact stats; drop the `W64CALL` print (W-18) |
