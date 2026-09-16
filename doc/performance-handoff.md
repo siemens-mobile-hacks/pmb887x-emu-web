@@ -6,13 +6,78 @@ the per-patch numbers live in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
-**To start work, read as far as the end of § Non-goals and stop.** Those
-four sections are the live state. Everything after them is the round
-log, kept because the *reasoning* in a closed round is what stops an
-idea being retried for the fourth time — but every number in it is as of
-its own date. Where a later round contradicted an earlier one the later
-one is right, and the three corrections that matter most are listed at
-the very bottom, in the ledger.
+## Start here — new session, first five minutes
+
+**Read this far and stop:** § Where it stands, § Open items,
+§ Constraints, § Non-goals — the next four sections. They are the live
+state and they are enough to choose a target. Everything after them is
+the round log, kept because the *reasoning* in a closed round is what
+stops an idea being retried for the fourth time; but every number in it
+is as of its own date, a later round beats an earlier one, and the three
+corrections that matter most are tabled at the very bottom of the file.
+Once you have a candidate, [optimization-playbook.md](optimization-playbook.md)
+§ The iteration ladder is how to test it, and [lessons.md](lessons.md) is
+what has already been paid for.
+
+**The workspace is ready** (checked 2026-09-16): both native builds,
+`build/qemu-wasm64`, `site/dist-jit` + `site/dist`, `tools/node_modules`,
+and the `qemu/` submodule at `c07259db94`, which matches
+`QEMU_PMB887X_REV` in `versions.env`. Nothing needs bootstrapping — if
+something *does* look unbuilt, `scripts/build-qemu-wasm64.sh` is the safe
+mid-session rebuild; `scripts/build-qemu.sh` re-fetches and may check the
+submodule out to a stale pin.
+
+```bash
+PORT=8080 node serve.mjs &               # page server; leave it running
+bash scripts/ninja-fast.sh               # ~8 s. DO NOT SKIP: build/qemu-wasm64
+                                         # may have been left mid-state, and an
+                                         # incremental build over that once faked
+                                         # a 5 % win for four invocations
+cp -a site/dist-jit site/dist-jit-base   # the A leg of every A/B this session
+bash scripts/gate.sh quick               # 152 s, all jobs concurrent — start green
+```
+
+**Three rules decide whether a session produces anything.**
+
+1. **Measurements and gates are different activities.** A gate never
+   reads a wall clock as a result, so all of them run at once
+   (`scripts/gate.sh`: `keep` is 152 s against 846 s serial, `close`
+   719 s against 2274 s). A measurement does, so it runs alone on a
+   quiet host, with A and B interleaved inside one invocation. Never
+   measure while a tier is running.
+2. **A counter confirms a mechanism; a clock only prices it.** Counter
+   spread is 0.04 %, wall spread 3–8 %. `tools/diagall.mjs` /
+   `counters.mjs` first, `workbench.mjs` second.
+3. **Price the prize before building the machine.** Round 17 measured
+   the whole translate-and-compile pipeline at 19.5 % of a boot *before*
+   anyone built a tiering scheme for it; § Open items 1 carries the same
+   discipline forward with the probes to run first.
+
+**Traps that are specific to this tree**, each already paid for once:
+
+- **A name in a wprof2 profile is a neighbourhood, not a function** —
+  off by up to 100×. Confirm with a counter or a volatile-spin probe
+  before optimising anything it names.
+- **Module count is speculation-miss count.** Measure `specMiss`, never
+  `tbGen`, and read `mods` alongside wall on any codegen change: adding
+  instructions to a hot path buys modules at ~83 µs each.
+- **The wasm64 op-suite leg is broken** (§ Open items 2), so lockstep
+  and bootcheck are the *only* correctness coverage the shipping backend
+  has. Treat a lockstep failure as real on the first occurrence.
+- **A silent skip is worse than a red gate.** `run-tcg-isa.sh` skips a
+  leg whose dist is missing — read the leg list, not the PASS line.
+- **This is a container**: `/proc/loadavg` and `free` report the *host*,
+  co-tenants are invisible. Check the `load=` the tools print before
+  believing a ratio inside ±10 %.
+- **A hard wasm trap is never host pressure**, and a bisect that "fits"
+  can fit because the bug predates both revisions.
+
+**Landing a change:** one mechanism per commit on the `qemu/` submodule
+branch with the measured numbers in the message, bump
+`QEMU_PMB887X_REV` in `versions.env`, `scripts/gate.sh keep` before the
+commit and `close` before the session's last one. Whatever happened, it
+gets a row — the playbook's **What landed** if it shipped, **REJECTED**
+with its numbers if it did not, so nobody retries it blind.
 
 ## Where it stands
 
