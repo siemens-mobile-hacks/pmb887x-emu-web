@@ -107,13 +107,25 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 - The translate-and-compile pipeline is **19.5 %** of an EL71 boot, so
   the boot is **not** compile-bound; the other ~80 % is guest code plus
   the device and lookup paths.
-- **A module costs ~83 µs to create, and its size is invisible** — about
-  80 µs fixed plus ~1.4 ns/byte. Compile time is `83 µs × module count`.
+- **A module costs ~80 µs fixed + 3.2 µs/KB** in the app (round 21,
+  fitted with `W64_BYTEPAD`). At the shipping 5.1 KB/module that is 17 %
+  of the cost, so **emitted bytes are worth at most 2.2 % of wall even
+  driven to zero** — which is why three earlier rounds read a −3.7 %
+  byte cut as flat. Compile time is `~96 µs × module count`.
 - **Module count is speculation-miss count**: a batch opens on a lookup
   miss and closes when its first member runs, so `close` == `specMiss`.
-- **Four fifths of the 83 µs is not compiling** — the same bytes compile
-  in 12–31 µs back-to-back inside the vCPU worker's own isolate. The
-  rest is cold cache, evicted by ~700 µs of guest code between calls.
+  It never reaches `W64_BATCH_N`=128 — **modules average 4.9 TBs**.
+  Speculation is starved of *edges*, not budget (`W64_SPEC_N` 8 == 128).
+- **Four fifths of the 80 µs is not compiling** — the same bytes compile
+  in 12–31 µs back-to-back inside the vCPU worker's own isolate, and
+  ~8 µs + 7–12 µs/KB in a browser tight loop. The rest is cold cache,
+  evicted by ~700 µs of guest code between calls. It is **not** the
+  live-module count: 500 → 6000 live instances is flat (`modgrow.mjs`).
+- **~3.6 % of TB entries run V8's baseline tier, at 2× the optimizing
+  tier's cost** (round 21). `--liftoff-only` is +63 % and
+  `--wasm-tiering-budget=1000` is −3.1 %. Emitted code is mostly baseline;
+  a C helper in the main qemu module is optimized. Moving work *into* a
+  helper can win — the call boundary is only 2.1–2.4 ns.
 - The inline TLB probe's ~19 wasm instructions are **~5 % of EL71 wall**
   (`W64_LDSTPAD=4`, 2.51 ns per memop for 18 added instructions).
 
@@ -136,31 +148,70 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 
    | route | ceiling | what it needs |
    |---|---|---|
-   | **interpreter tier** (run cold code interpreted, compile only what repeats) | ~5.7 % — halving module count saves 17k × 83 µs = 1.43 s of 25 s | keep the TCG op stream alongside the wasm |
+   | **interpreter tier** (run cold code interpreted, compile only what repeats) | up to **12.5 %** — that is the whole pipeline; halving module count is ~6 % | keep the TCG op stream alongside the wasm |
 
-   **Probe before building**: is an interpreted first execution of a
+   Round 21 firmed the arithmetic and closed the alternatives. The cost
+   is `~80 µs fixed × miss count`; **bytes are capped at 2.2 % of wall**
+   (`W64_BYTEPAD` fit), the live-module count is not a factor
+   (`modgrow.mjs`), bigger modules are not the lever (`dispatch-probe`:
+   128-per-module vs one module is 8–13 % of the dispatch, and batches
+   average 4.9 members anyway), and misses are **edge-limited, not
+   budget-limited** (`W64_SPEC_N` 8 == 128; the walk makes 3.5 TBs per
+   miss against a budget of 32). Two edge classes were measured: the
+   call-return address is real but small (**0092, −2.6 % misses**), and
+   speculating from the link register when a TB has no static successor
+   is **−7.6 % of wall for nothing** (§ REJECTED).
+
+   **Probe before building**: (a) is an interpreted first execution of a
    ~3.9-instruction TB really ~100× cheaper than the module it avoids?
    The TCI dist already answers the cost side per-op; the open question
    is the dispatch overhead of entering a one-off interpreter run from
-   the wasm64 dispatcher without paying a module boundary.
+   the wasm64 dispatcher without paying a module boundary. (b) **How long
+   would a missed TB stay interpreted?** Decoupling the close from the
+   miss is the whole point, and the current close rate is one per 4.9
+   translations — a TB that waits for a 128-member batch waits ~22 ms,
+   which a hot TB spends thousands of entries in. The design almost
+   certainly needs a per-TB interpreted-execution count that promotes a
+   TB to its own module, so measure that distribution first.
 
-2. **CX70's device writes have no named device.** Post-0083 they are
+2. **The baseline tier: ~3.6 % of TB entries, at 2× the optimizing
+   tier's cost.** New in round 21 and barely exploited. Nothing page-side
+   can set a V8 flag (`--wasm-tiering-budget=1000` is −3.1 %, and that is
+   the size of the prize), so the ways at it are (a) emit less or cheaper
+   code for the baseline tier — the declared locals are priced at under
+   1 % and rejected on cost, but the same question has not been asked of
+   the inline TLB probe or the ld/st sequence — and (b) get functions to
+   tier up sooner. For (b): if V8's tiering budget drains by function
+   *size* per call, merging a batch's members into one `br_table`
+   function multiplies both size and call count and would tier up ~N²
+   sooner, against a br_table per TB entry and a coarser dispatch target.
+   **Measure the drain rule first** (calls to tier-up vs body size —
+   `tools/locals-probe.mjs` can be pointed at it); do not build on the
+   guess.
+
+   The generalizable half is already usable: **work moved out of emitted
+   code into a C helper lands in the main qemu module, which is hot
+   enough to be optimized; work moved the other way does not.** The call
+   boundary is not the obstacle it looks like — 2.1–2.4 ns
+   (`tools/import-probe.mjs`).
+
+3. **CX70's device writes have no named device.** Post-0083 they are
    ~103 ns each at 56k/s — about **0.6 % of wall**, so this is a
    name-the-register task, not a prize. (Round eighteen measured 645 ns
    before 0083 landed; that figure is stale.) `iotrace2.mjs --board cx70`
    is the tool.
 
-3. **ke800 saw −2.1 % from 0083** (2 pairs, inside noise): the LG board
+4. **ke800 saw −2.1 % from 0083** (2 pairs, inside noise): the LG board
    does not toggle EBU readonly, so it should be a wash. Wants one longer
    run to confirm.
 
-4. **Does Firefox still need the GC nudge?** 0087 keeps it for Firefox
+5. **Does Firefox still need the GC nudge?** 0087 keeps it for Firefox
    and takes it off Chromium, but the gate can no longer reproduce the
    OOM it exists for: 202 s with `W64_GCNUDGE=0` reached 2.73 G insns and
    40 152 modules, `errors=0`. The original report was *mobile* Firefox
    on a Pixel, so it stays until someone retests there.
 
-5. **Instrument hygiene, unfinished.** The phase timer over-attributes
+6. **Instrument hygiene, unfinished.** The phase timer over-attributes
    short functions — it put hflags at 3.8 % of wall and the patch
    delivered ~1 %. `CAL_NS` removes the interval floor but not whatever
    else inflates a sub-50 ns measurement, and it has not been used with
@@ -170,12 +221,12 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    the call-count reduction and the A/B, and read any sub-50 ns per-call
    figure as an upper bound.
 
-6. **J2ME throughput** (`tools/stopwatch.mjs`, vratio ~0.60 after 0052):
+7. **J2ME throughput** (`tools/stopwatch.mjs`, vratio ~0.60 after 0052):
    the remaining third is the DIF FIFO word loop, the DMAC per-word MMIO
    writes and the SRB events — a device-path target, not an engine one.
    This meter drifts with host load; take alternating samples.
 
-7. **Timer storms / main-loop wakeups — sized, audited and parked.** The
+8. **Timer storms / main-loop wakeups — sized, audited and parked.** The
    clock/timer path is ~2.5 % of the vCPU mid-boot at ~37k `timer_mod`/s.
    Halving it is below the noise floor of a single pair, so it only lands
    bundled with something measurable. The 0049-pattern audit is **done
@@ -188,14 +239,14 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    code. The "deadline = next hardware tick" shape exists nowhere else
    in the tree.
 
-8. **The idle-warp share of a boot is a fidelity question, not a
+9. **The idle-warp share of a boot is a fidelity question, not a
     performance one.** A boot consumes ~42 s of virtual time, ~31.5 s of
     it idle warp on millisecond device timers. Whether that is what a
     real S75 takes needs a measurement against hardware before any device
     timer period is touched. Engine work can only move the first ~0.75 G
     instructions — about 27 of the 39 s a user waits.
 
-9. **Native has no real-time cap** (0032 defaults it off outside
+10. **Native has no real-time cap** (0032 defaults it off outside
     emscripten), so native and web agree on the timing model and disagree
     on pacing. **Reviewed and deliberately not done**: it is a fidelity
     change that makes every native run 2.7× slower, costing the cheapest
@@ -234,6 +285,175 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 
 
 ## Round log (newest first)
+
+## Update (2026-09-16, round twenty-one: the dispatch, and then the tier — 0091–0094)
+
+Two landings and five closures.  0091 is the round's win; the rest of it
+went into finding out where the remaining time actually is, and most of
+that came back negative — which is the useful part, because four of the
+five closures were things the open list still wanted somebody to build.
+
+### 0091: dispatch on the table index, not the target's descriptor
+
+Every TB entry is a `return_call_indirect` through the shared chain table
+— ~11 M a second on an EL71 boot — and **both** exits reached it by
+following a pointer into the *target TB's* descriptor to read `fidx` and
+`tidx`.  That is one cache line per TB, in ~20 MB of module staging the
+execution path otherwise never reads, sitting on the dependency chain of
+an indirect branch.
+
+Nothing here had ever priced the dispatch, so it was priced first.
+`tools/dispatch-probe.mjs` builds F functions of the real TB signature,
+spread over a configurable number of module instances, each tail-calling
+the next index of a pseudo-random sequence: the mechanism is cheap (a
+predictable `return_call_indirect` is 2.4 ns, and 128-per-module vs one
+module costs 8–13 % of the dispatch, not a multiple), the cost is
+locality (5.5 ns at a 1-function working set, 46 ns at 4096), and the
+descriptor load specifically is **+2.1 ns over 256 TBs, +8.2 ns at 1024,
++9.1 ns at 4096**.
+
+So the helpers and `tb_set_jmp_target` now carry `W64_TIDX_TAG | tidx`
+directly.  A wasm64 heap pointer is below 2 GB, so the high half
+separates a table index from the two cases that must still reach the C
+dispatcher, with no test of its own.  **el71 −5.4 %, s75 −4.5 %,
+cx70 −7.0 %, ke800 −10.8 %, 3/3 pairwise each.**
+
+### 0092: the call-return edge nothing recorded
+
+A lookup miss costs a wasm module — `closeN` == `specMiss` exactly — and
+the module pipeline is **12.5 % of an EL71 boot** (`tools/modcost.mjs`).
+The batcher never gets near `W64_BATCH_N`=128: the open batch is
+force-closed the moment a staged TB has to run, so **modules average 4.9
+TBs**.  Speculation is starved of *edges*, not of budget — `W64_SPEC_N` 8
+and 128 give the same miss count, and the walk makes 3.5 TBs per miss
+against a budget of 32, because `w64_succ` holds goto_tb destinations and
+the walk dies at the first TB ending in an indirect branch.
+
+The one statically-known indirect edge is where a call returns to.
+`trans_BL`/`trans_BLX_i` already note it; three paths did not, and one of
+them matters: this is an ARM926EJ-S, so Thumb has no 32-bit BL and every
+Thumb call goes through the split `BL_BLX_prefix` + `BL_suffix` pair —
+and this firmware is mostly Thumb.  **Misses −2.6 %, 3/3 on fixed guest
+work**, ≈0.3 % of wall.  Counter-confirmed, free at run time, kept;
+nobody should expect to feel it.
+
+### The tier, which is the round's real finding
+
+`tools/locals-probe.mjs` was written to ask what the ~70 locals every TB
+function declares cost — wasm zeroes locals at entry and a baseline
+compiler has no liveness analysis to drop them.  The answer split by tier
+and the *split* turned out to matter more than the locals:
+
+| declared extra locals | baseline tier | optimizing tier |
+|---|---|---|
+| +0 | 49.93 ns/call | 25.08 |
+| +16 | 70.49 | 23.97 |
+| +69 | 88.87 | 25.02 |
+
+So the baseline tier is **2× the optimizing tier before any locals, and
+3.6× with ours**.  Which tier the boot is in, measured with `--js-flags`
+(`JS_FLAGS` is now a `workbench.mjs` knob):
+
+- `--liftoff-only` **+63 %** (30.3 → 49.4 s) — TB code really does tier up
+- `--no-liftoff` +119 % — forcing the optimizing tier from the start is far
+  worse, because compile swamps it
+- `--wasm-tiering-budget=1000` **−3.1 %, 3/3 interleaved** — that is what
+  is still running baseline in the shipping configuration, ≈3.6 % of TB
+  entries
+
+This is the same wall two earlier rounds hit without naming: 0046's first
+two designs were both "Liftoff code for a dozen loads and six branches
+costs more than the TurboFan-compiled helper's jump-cache hit".  It now
+has a number, and a direction: **work moved out of emitted code into a C
+helper lands in the main qemu module, which is hot enough to be
+optimized; work moved the other way does not.**  The call boundary is not
+what makes that trade — `tools/import-probe.mjs` prices a TB module's
+call into the main module at **2.1–2.4 ns** (3.6–4.4 ns baseline),
+whether imported as an export, taken from `wasmTable.get()` the way
+`wasm64.c` does it, or reached by `call_indirect`.
+
+### What a module costs, finally decomposed
+
+Two knobs landed for this (0093 `W64_LOCALPAD`, 0094 `W64_BYTEPAD`), and
+between them the module cost has a shape instead of a single number:
+
+- **`new WebAssembly.Module` on its own is ~8 µs** for a small module,
+  rising at ~7–12 µs/KB in a tight loop (`tools/locals-probe.mjs
+  --split`).  Large modules compile on background threads, which is why
+  the 404 KB compaction modules come in at 1.4 µs/KB and the 2.3 KB close
+  modules at 33 — do not fit a line through those two populations, they
+  are not the same experiment.
+- **In the app it is ~80 µs fixed + 3.2 µs/KB**, fitted properly by
+  inflating emitted bytes in place (`W64_BYTEPAD` 0/40/120 → 5.1/7.7/14.5
+  KB per module → 96/110/125 µs).
+- The live-module count is **not** a factor: `tools/modgrow.mjs` holds
+  500 → 6000 instances alive and the cost stays ~50 µs, and dropping them
+  all does not change it.
+
+That closes the emitted-byte question that three earlier rounds left
+ambiguous.  At the shipping 5.1 KB/module, bytes are 17 % of the module
+cost, so **emitted bytes are worth at most 2.2 % of wall even driven to
+zero** — the inline TLB probe at 37 % of bytes is worth ~0.8 %.  The
+earlier "flat" readings at −2.6 % and −3.7 % bytes were consistent with
+this all along; those experiments were looking for 0.4 % with meters that
+resolve 3 %.
+
+**So module count is the only lever on the 12.5 %, and module count is
+miss count.**  That is item 1, unchanged, and now with its arithmetic
+firm.
+
+### Rejected this round, with numbers
+
+1. **Dense goto_tb chain-slot arena** (16 B per TB keyed by tidx, four
+   translations per cache line, instead of `tb->jmp_target_addr[n]` inside
+   a TranslationBlock at ~1 KB stride).  Six interleaved pairs across two
+   sessions: −3.2, −1.1, +2.1, −7.2, +4.2, −0.0 % — mean −0.9 %, SE 1.6 %,
+   a wash.  The explanation is worth keeping: after 0091 the slot address
+   is a **compile-time constant**, so the load issues early and its
+   latency is hidden.  0091 won by removing a load whose address *depended
+   on another load*.  Locality only pays on the dependent one — which also
+   kills the matching idea for the `w64_lc` slots, whose address is
+   likewise constant.
+2. **Speculating from the link register** when the missed TB has no static
+   successor at all (17.5 % of misses).  **−7.6 % of wall, 3/3, with no
+   change in miss count.**  The walk it enables costs a
+   `probe_access_full_mmu` and a qht lookup on every one of those misses,
+   and the root can never be marked `w64_explored` because the hint is a
+   register, not a property of the TB.
+3. **Shrinking the declared locals.** Priced at under 1 % in-app
+   (superlinear, so the derivative at 70 is the small end), against
+   interleaving the i32/i64 register locals so trailing runs can be
+   patched to zero and renumbering `TCG_REG_TMP` off R28.  Not built.
+4. **Raising `W64_BATCH_N` / making modules bigger.**  Closed by
+   dispatch-probe: 128-per-module vs one module is 8–13 % of the dispatch.
+   Batches average 4.9 members anyway — the knob is not what binds.
+5. **The helper-call boundary as a cost.** 2.1–2.4 ns; it is not where
+   `helper_lookup_tb_ptr_lc`'s 102 ns goes.
+
+### Open at the end of round twenty-one
+
+The ranked list at the top of this file stands.  What this round changes
+about it:
+
+- **Item 1 is the only big one left, and its arithmetic is now firm**:
+  80 µs × miss count, misses are edge-limited and the edges are
+  indirect-branch targets that nothing static can name.  The interpreter
+  tier is the route; the probe it still needs is the one item 1 already
+  states, plus one this round adds — how long a missed TB would have to
+  run interpreted before its batch closes, since decoupling the close from
+  the miss is the whole point and the current close rate is one per 4.9
+  translations.
+- **A new lever exists and is barely exploited**: ~3.6 % of TB entries
+  execute baseline-tier code at 2× the optimizing tier's cost.  Nothing
+  page-side can set a V8 flag, so the ways at it are (a) emit less/cheaper
+  code for the baseline tier, and (b) get functions to tier up sooner.
+  For (b) there is an untested idea with a real mechanism behind it: if
+  V8's tiering budget drains by function *size* per call, then merging a
+  batch's members into one `br_table`-dispatched function multiplies both
+  size and call count and would tier up ~N² sooner — against a br_table
+  per TB entry and a much coarser dispatch target.  **Measure the drain
+  rule first** (call count to tier-up vs body size, which
+  `locals-probe.mjs` can be pointed at) before building any of it.
 
 ## Update (2026-09-16, round twenty: the op-suite hole is closed — 0090)
 

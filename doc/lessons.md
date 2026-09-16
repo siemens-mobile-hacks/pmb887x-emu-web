@@ -762,6 +762,70 @@ Related: watch for shares that *rise* across a round.  After round
 twelve `do_st_mmio_1p` reads 3.1 → 3.6 % and `cpu_exec_loop` 2.3 →
 2.6 %.  Nothing got slower; the denominator shrank.
 
+## Emitted code runs in the baseline tier; C helpers run optimized
+
+**The engine has two compilers and our code lands in the slow one**
+(2026-09-16, round twenty-one). A TB function is compiled when its
+module is created, by V8's single-pass baseline compiler, and tiers up
+only after thousands of calls. The main `qemu-system-arm.wasm` module is
+compiled once and everything hot in it is optimized long before the
+guest gets interesting. So the two halves of the system do not run at
+the same speed, and the usual JIT instinct — inline it into the
+generated code to avoid a call — is **inverted here**.
+
+The numbers, all from `tools/locals-probe.mjs` and `--js-flags`:
+
+- Baseline is **2×** the optimizing tier on the same TB-shaped function
+  (49.9 vs 25.1 ns), and **3.6×** once our ~70 declared locals are
+  there (88.9 ns) — wasm must zero locals at entry and a single-pass
+  compiler has no liveness analysis to drop the unused ones. The
+  optimizing tier drops them in SSA and is flat at 25 ns.
+- The boot runs `--liftoff-only` **+63 %** and `--no-liftoff` +119 %
+  (compile swamps it), so TB code does tier up and the baseline tier is
+  genuinely expensive.
+- `--wasm-tiering-budget=1000` is **−3.1 %, 3/3 interleaved** — that is
+  the share still executing baseline code in the shipping build,
+  ≈3.6 % of TB entries.
+- A function called ~1000 times does **not** tier up at the default
+  budget. Assume anything short-lived never leaves the baseline tier.
+
+And the call you were avoiding is nearly free: a TB module's call into
+the main module is **2.1–2.4 ns** optimized, 3.6–4.4 ns baseline, the
+same whether the helper is imported as an export, taken from
+`wasmTable.get()` the way `wasm64.c` resolves it, or reached by
+`call_indirect` (`tools/import-probe.mjs`). `wasmTable.get()` returns a
+real exported-function object, so V8 wires a direct cross-instance wasm
+call with no JS frame.
+
+Two rounds hit this wall before it had a name: 0046's first two inline
+lookup caches were both rejected with "Liftoff code for a dozen loads
+and six branches costs more than the TurboFan-compiled helper's
+jump-cache hit", and the `$tlb` hoist removed eight emitted bytes and a
+load per memory access and was **+3..+10 % slower**. Read those as the
+same fact. Before moving work into emitted code, ask what it costs at
+2× — and before rejecting a helper call, remember it is 2 ns.
+
+## Locality only pays on a dependent load
+
+**A load from a compile-time-constant address is not on the critical
+path** (2026-09-16). 0091 won 5–11 % by removing a load whose address
+came *out of another load* — the dispatch followed the chain slot into
+the target TB's descriptor, two hops feeding an indirect branch. The
+obvious follow-up, packing those chain slots into a dense arena so four
+TBs share a cache line, was **a wash over six interleaved pairs** (mean
+−0.9 %, SE 1.6 %).
+
+The difference is not size, it is dependence. After 0091 the remaining
+slot address is a constant the emitter wrote into the code, so the load
+issues as soon as the TB starts and its latency is hidden behind
+everything else in the block. Making it denser improves a number nobody
+was waiting on. The same argument retires the matching idea for the
+`w64_lc` inline-cache slots, whose address is likewise constant.
+
+When a locality change is proposed, first ask **where the address comes
+from**. If the emitter knows it, the prize is small however cold the
+line is.
+
 ## What a wasm hot path actually costs
 
 Round eleven (0058–0064) profiled the device access path and found that

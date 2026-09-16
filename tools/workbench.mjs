@@ -48,7 +48,14 @@ const extraQ = process.env.EXTRA_Q || "";
 const FLASH = here + "../fullflashes/" + board.flash;
 const SIDECARS = board.sidecars.map((f) => here + "../fullflashes/" + f);
 
-const b = await chromium.launch({ headless: true });
+// JS_FLAGS='--no-liftoff' forces every wasm function through TurboFan;
+// '--liftoff-only' pins them all to the baseline tier.  A/B'ing the two
+// sizes how much of the boot is running baseline-compiled TB code.
+const jsFlags = process.env.JS_FLAGS || "";
+const b = await chromium.launch({
+  headless: true,
+  args: jsFlags ? [`--js-flags=${jsFlags}`] : [],
+});
 const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
 let pageErr = null, serialExit = false;
 p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });
