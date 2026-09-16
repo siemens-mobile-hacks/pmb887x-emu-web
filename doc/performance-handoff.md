@@ -192,10 +192,6 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
   the backend holds a ~10× compute reserve the boot cannot spend on
   cold code.
 - Changing the timing model or any device's semantics for speed.
-- MTTCG, in-wasm JIT APIs, or a per-TB-instance dispatch design. Each
-  was measured to a ceiling during the backend's design work; the
-  write-up lived in `doc/wasm-tcg-backend-plan.md`, removed 2026-09-16
-  (recoverable: `git show cdd7a40^:doc/wasm-tcg-backend-plan.md`).
 
 
 ## Round log (newest first)
