@@ -677,6 +677,33 @@ fails silently and looks like good news.
 alternating them has no algebraic collapse; the chain ends in a store the
 engine cannot prove dead.
 
+## A shared sink serializes what it measures
+
+Any instrument that adds duplicate work has to consume the duplicate's
+result, or the compiler deletes it.  *How* it consumes it decides what
+is measured.
+
+Round twenty-three's `W64_TLBDUP` emits N extra inline TLB probes on
+every guest memop and folded their results into one global with
+`load; add; store`.  That is a read-modify-write of a single address
+executed by every memop in the program, so each memop's duplicate waits
+on the previous one's store-to-load forward.  The duplicates stop being
+independent work happening alongside the real code and become a
+**serialized dependency chain**, and the slope prices their *latency*
+instead of their cost.  Measured that way the probe came out ~2× too
+expensive, and a one-load variant read as costly as a three-load one —
+the three variants' ranking was wrong, not just their magnitudes.
+
+The fix is one line: store each duplicate's result to **its own**
+address with a plain store.  Nothing reads it, nothing forwards, and the
+work still cannot be eliminated.
+
+Generally: a sink must be un-eliminable *and* un-ordered.  A single
+accumulator is the natural thing to write and is exactly the wrong
+thing.  Related: "A calibration pad the compiler can fold measures the
+compiler, not the path" — same class of mistake at the other end, where
+the pad was too easy to remove instead of too hard to overlap.
+
 ## A ceiling probe measures the benefit and is silent on the cost
 
 The probe in "Some ceilings cannot be probed by deletion" works by
@@ -702,6 +729,34 @@ So before building from a simulated-mechanism probe, write down what the
 real version adds to the path that *still* takes the slow route, and
 whether it grows the generated code.  If neither can be estimated, the
 probe has given you a hit rate, not a prize.
+
+## A duplicate-probe prices deletion, never insertion
+
+The lesson above is about simulating a *new* mechanism.  This one is its
+mirror: measuring an *existing* one by duplicating it.
+
+`W64_TLBDUP` emits extra copies of the real inline TLB probe and reads
+the slope, which is as direct as a measurement gets — the probe is
+**5.07 % of EL71 wall**, and unlike the `W64_LDSTPAD` extrapolation it
+rested on, it measures the actual code.  A cheaper replacement was then
+priced the same way: a two-load per-site cache, 2.33 %.  With a measured
+94.7 % hit rate, putting the cheap check in front of the probe predicted
++2.4 %.  Built, it was **4.4–5.0 % slower**, and a pool-size sweep ruled
+out locality as the explanation.
+
+The duplicates are emitted **straight-line, outside any branch**.  The
+real cache is an `if/else` that every memop executes, and its hit arm
+has to duplicate the fast load/store it guards.  Meanwhile the probe it
+skips was already predicted-taken and sitting off the dependency chain,
+where a modern core runs it nearly for free.  So the instrument measured
+what that code costs *standing alone* — which is what you would recover
+by **deleting** it — and said nothing about what it costs to **insert** a
+branch in front of it.
+
+The rule: a duplicate-probe number is a ceiling on removing that code.
+It is not a budget to spend on a cheaper thing placed before it.  On
+this backend, only a scheme that *replaces* the probe outright can
+collect any of the 5 %.
 
 ## What a cross-thread wake really costs (round twelve)
 
@@ -989,6 +1044,15 @@ Round eleven (0058–0064) profiled the device access path and found that
   identical through t0.75G and then +33 % apart. If the page has a knob,
   the benchmark must be able to set it, and a knob A/B must be
   interleaved in one invocation (`<dir>@<query>`).
+- **A knob that changes emitted code size can trip a `tb_flush`, and it
+  looks exactly like a cache cliff.**  `W64_BYTEPAD` reads flat from 0
+  to 60 (+420 B/TB) and then +17.6 % at 120 — which is not the i-cache:
+  `tbFlush` goes 0 → 1, `tbGen` 159 k → 204 k and `mods` 33.6 k →
+  40.8 k, because the padded code overflows the code buffer and the
+  whole translation is redone.  The artifact is ~10× the effect being
+  looked for.  **Read `tbFlush`, `tbGen` and `mods` alongside every wall
+  number from a code-size knob**, and treat any leg whose `tbFlush`
+  differs from the baseline's as void.
 - **A/B in one invocation against a saved dist**, never against
   yesterday's absolute numbers on a shared host; ratios inside ±10 %
   need the pair repeated with the order swapped; below ~3 % go straight

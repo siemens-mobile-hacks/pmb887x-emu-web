@@ -19,10 +19,10 @@ Once you have a candidate, [optimization-playbook.md](optimization-playbook.md)
 § The iteration ladder is how to test it, and [lessons.md](lessons.md) is
 what has already been paid for.
 
-**The workspace is ready** (checked 2026-09-16, end of round twenty): both
-native builds, `build/qemu-wasm64`, `site/dist-jit`, `tools/node_modules`,
-and the `qemu/` submodule at `bad630a3e7` (0090), which matches
-`QEMU_PMB887X_REV` in `versions.env`. `site/dist` carries only the guest
+**The workspace is ready** (checked 2026-09-16, end of round
+twenty-three): both native builds, `build/qemu-wasm64`, `site/dist-jit`,
+`tools/node_modules`, and the `qemu/` submodule at `806bef81e3` (0098),
+which matches `QEMU_PMB887X_REV` in `versions.env`. `site/dist` carries only the guest
 images (boards.tar, tcgisa.bin) — **its TCI engine is not built**, so the
 wasm-TCI op-suite leg skips. Nothing needs bootstrapping — if
 something *does* look unbuilt, `scripts/build-qemu-wasm64.sh` is the safe
@@ -126,8 +126,27 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
   `--wasm-tiering-budget=1000` is −3.1 %. Emitted code is mostly baseline;
   a C helper in the main qemu module is optimized. Moving work *into* a
   helper can win — the call boundary is only 2.1–2.4 ns.
-- The inline TLB probe's ~19 wasm instructions are **~5 % of EL71 wall**
-  (`W64_LDSTPAD=4`, 2.51 ns per memop for 18 added instructions).
+- The inline TLB probe is **5.07 % of EL71 wall** — round 23 measured it
+  directly (`W64_TLBDUP`: N extra real probes per memop, each result
+  stored to its own slot; the N=1→N=2 slope is one probe), rather than
+  extrapolating `W64_LDSTPAD`'s ns-per-instruction over an instruction
+  count. The two agreeing at ~5 % is a coincidence: the pad calibration
+  measures a dependent ALU chain and a probe is two loads deep. **That
+  5.07 % is an upper bound on deleting the probe, not a budget** — a
+  cheaper check placed *in front* of it measured 4.4–5.0 % slower
+  (§ REJECTED, the per-site TLB entry cache).
+- **TB→TB transitions are 9.1 % of wall**: 240.6 k per Mi at ~7.7 ns
+  (`W64_XCOUNT`), 4.16 guest instructions per TB entry, the C dispatcher
+  re-entered once per 173 transitions, the inline cache serving 83.9 %
+  of `goto_ptr` exits. The exit mix and its three ceilings are in the
+  playbook § 0d. A cheaper indirect call is worth nothing — ~6 ns is
+  this engine's floor for `return_call_indirect` against the emulator's
+  7.7 ns.
+- **Emitted bytes do not cost execution time either** (round 23,
+  `W64_BYTEPAD` 0→60 flat at +420 B/TB). Caveat attached to the module
+  bullet above: `modMs` per module was also flat over that range, which
+  does *not* fit the 3.2 µs/KB compile term — treat that slope as
+  unresolved.
 
 ## Open items (ranked)
 
@@ -195,8 +214,14 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    can set a V8 flag (`--wasm-tiering-budget=1000` is −3.1 %, and that is
    the size of the prize), so the ways at it are (a) emit less or cheaper
    code for the baseline tier — the declared locals are priced at under
-   1 % and rejected on cost, but the same question has not been asked of
-   the inline TLB probe or the ld/st sequence — and (b) get functions to
+   1 % and rejected on cost, and round 23 asked the same question of the
+   inline TLB probe and got an answer that closes it: the probe is
+   5.07 % of wall, a two-load replacement is 2.33 %, a one-load `v128`
+   one is 4.09 % (lane extraction is not free), and fronting the probe
+   with a 94.7 %-accurate per-site page cache measured **4.4–5.0 %
+   slower**, because the hit arm has to duplicate the access. Nothing is
+   left on the ld/st sequence short of a scheme that *replaces* the
+   probe — and (b) get functions to
    tier up sooner. For (b): if V8's tiering budget drains by function
    *size* per call, merging a batch's members into one `br_table`
    function multiplies both size and call count and would tier up ~N²
@@ -310,6 +335,129 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 
 
 ## Round log (newest first)
+
+## Update (2026-09-16, round twenty-three: the probe, priced — and what pricing it cost — 0098)
+
+Round 22 left the execution side of the cost model as "the other 80 %".
+This round measured it. Nothing shipped except instruments; the one
+mechanism built on the numbers was rejected by its own A/B.
+
+### The exit mix, and what a TB transition costs
+
+`W64_XCOUNT=1` counts TB exits in the generated code; `dispCall` /
+`dispIter` count the C dispatcher. One 1360 Mi EL71 window:
+
+| exit | count | share |
+|---|---|---|
+| `goto_tb` which = 0 | 135 528 086 | 41.4 % |
+| `goto_tb` which = 1 (fall-through) | 97 455 274 | 29.8 % |
+| `goto_ptr` | 94 266 923 | 28.8 % |
+| — chaining back to the *same* TB | 15 638 733 | 4.8 % of all |
+
+240.6 k transitions per Mi, **4.16 guest instructions per TB entry**,
+`dispCall` 1 893 390 — the dispatcher is re-entered once per 173
+transitions, so after 0091 chains essentially never unwind — and
+`lcCall` 15 134 439, i.e. the inline cache serves **83.9 %** of
+`goto_ptr` exits. At ~7.7 ns a dispatch that is **9.1 % of wall**.
+
+Three ceilings fall straight out, all in the playbook § 0d:
+self-chaining loop-back ≤ 0.43 %, merging conditional fall-throughs
+≤ 2.7 %, and a *cheaper* indirect call ≈ 0 — `tools/dispsize-probe.mjs`
+puts this engine's `return_call_indirect` floor at ~6 ns (8 targets)
+against the emulator's 7.7 ns, on a clean cache-size curve that only
+reaches 22.7 ns at 131 072 targets.
+
+### The inline TLB probe is 5.07 %, and that is a ceiling not a budget
+
+`W64_TLBDUP=N` emits N extra *real* probes per memop against mmu index
+^ 1, so no load is CSE'd with the genuine one, each result stored to its
+own per-site slot. The N=1 → N=2 slope is exactly one probe: **+5.07 %
+of EL71 wall** (+4.8…+5.5 % across runs, with `mods`, `tbGen` and
+`modMs` identical between legs, so it is not the pipeline).
+
+The instrument had to be corrected once, and the correction is the
+transferable part. Folding every duplicate's result into one global with
+`load; add; store` makes each memop wait on the previous one's
+store-to-load forward: the duplicate's dependency chain lands on a
+serialized critical path, which prices its *latency* rather than its
+cost. Measured that way the probe inflated ~2× and a one-load check
+looked as expensive as a three-load one — the ordering of the three
+variants below was wrong until the sink became a plain store to a
+per-site address.
+
+Replacements, priced before building any of them:
+
+| check | loads to the addend | cost |
+|---|---|---|
+| current inline probe | 4 | +5.07 % |
+| generation-tagged per-site cache | 2 | +2.33 % |
+| the same as one `v128.load` | 1 | +4.09 % |
+
+**SIMD lane extraction is not cheap, and the probe's cost is not simply
+its load count** — one load costs nearly twice what two do here.
+
+And the hit rate the cheap check needs: `W64_TLBHIT=1` runs the per-site
+page cache for real and counts it — **1 656 776 205 hits / 91 863 184
+misses = 94.7 %**.
+
+### Then it was built, and it was 4.5 % slower
+
+Every input said +2.4 %: a 2.33 % check, 94.7 % of the time, replacing a
+5.07 % probe. Built end to end (`W64_SITECACHE`, knob flipped inside one
+binary): **26.62 s cache-off against 27.83 s cache-on, 4.4–5.0 % the
+wrong way**. `W64_SITEPOOL` 512 / 8192 / unlimited read +8.4 / +5.0 /
++5.0 %, which rules out slot locality — an unlimited pool loses exactly
+as much as an 8192-entry one. Reverted in full.
+
+**What the instrument could not see is the branch structure.** A
+duplicate probe is emitted straight-line, outside any `if`; the real
+cache is an `if/else` every memop executes, whose hit arm must
+*duplicate the fast load/store*. The probe it skips was already
+predicted-taken and off the dependency chain, so the trade is a test, a
+taken branch and a second copy of the access against work that was
+nearly free in the shadow. Generalizes to every "check before the check"
+on this backend: **a duplicate-probe number is an upper bound on
+deleting that code, never a budget to spend fronting it.** Retry only
+with a scheme that replaces the probe outright.
+
+### Also closed, each with a number
+
+- **Emitted bytes as an *execution* lever** — flat from `W64_BYTEPAD` 0
+  through 60 (+420 B/TB, ~2× module size): 27.22–28.03 s against a
+  27.2–27.6 s baseline. The +17.6 % cliff at 120 is a **`tb_flush`
+  artifact** — `tbFlush` 0 → 1, `tbGen` 159 k → 204 k, `mods`
+  33.6 k → 40.8 k — not the i-cache. Check those three counters before
+  reading any wall number off a knob that changes code size.
+  *Unresolved and worth someone's attention*: `modMs` per module was
+  flat (≈100–109 µs) across that same doubling of module size, which
+  contradicts round 21's ~80 µs + 3.2 µs/KB fit.
+- **memory64 bounds checks** — free. 0.241 / 0.253 / 0.258 ns per load
+  for m32 / m64 / m64-with-dynamic-index at a 2 GB memory
+  (`tools/mem64-probe.mjs`). The per-memop tax is the TLB probe, not the
+  wasm bounds check.
+- **`return_call_ref`** — 11.68 ns against 8.04 ns for the plain
+  indirect call, **45 % worse** (`tools/callref-probe.mjs`). A *typed*
+  non-nullable table is 7.52 ns, −6.5 %, which is ~0.6 % of wall: kept
+  as a micro-item, not pursued.
+- **Neighbour / jump-table speculation** — replayed offline against a
+  32 394-pc EL71 miss trace instead of building a predictor. 18.0 % of
+  misses are within ±4 words of an earlier miss and 36.4 % within ±12,
+  but unfiltered speculation converts at **10.0 %** against a 12.5 %
+  break-even. Filtering on the target being an ARM `B`/`BL` converts at
+  **23.6 %** — and only 10.1 % of missed pcs are at a branch at all,
+  2.9 % inside a run of ≥3, so it prevents **1.1 %** of misses.
+  Consistent with 0097: the miss stream is edge-limited.
+
+### Open at the end of round twenty-three
+
+Unchanged in rank. **The interpreter tier** (open item 1) is still the
+only item above 3 %, and this round removed its nearest competitors
+rather than adding any: the dispatch line is 9.1 % with a ~6 ns floor
+under it, the TLB probe is 5.07 % with no cheaper *front* and no
+replacement designed, and emitted bytes are closed on both the compile
+and the execution side. The two structural ideas left, both bounded and
+both real work, are **merging conditional fall-throughs** (≤ 2.7 %) and
+**typed funcref tables** (~0.6 %).
 
 ## Update (2026-09-16, round twenty-two: speculation has headroom, but not this edge — 0095)
 
