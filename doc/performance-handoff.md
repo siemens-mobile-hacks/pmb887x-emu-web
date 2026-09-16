@@ -6,6 +6,159 @@ the per-patch numbers are in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
+## Update (2026-09-16, round nineteen: a module costs 83 us, and almost none of it is compiling)
+
+Round eighteen left seven open items.  This round closed the cheap one by
+inspection, then spent itself on the module pipeline, where a decomposition
+that had never been taken turned an 11 %-of-wall line item into a number
+with a mechanism behind it.  One small win landed; two candidates were
+built, measured and rejected; and the thing the round actually produced is
+a price list.
+
+### `topoCommit` after 0083: there is nothing left there
+
+Item 2 asked what still forces ~665 topology commits a second on an EL71
+now that the EBU's readonly flips do not.  `WASM_DIAG_TOPO_COMMIT` counted
+both commit paths together, which stopped being useful the moment 0083 gave
+the cheap one all the traffic.  Split, over a 25 s EL71 boot:
+
+| | per 25 s |
+| --- | --- |
+| `topoFull` (re-render every flat view) | **170** |
+| `topoVar` (adopt a stashed variant, 0083) | 16 872 |
+
+and a per-setter attribution mask says 122 of those 170 are
+`memory_region_add_subregion` — device construction at startup.  Steady
+state is ~7 full commits a second on a board that used to do 1135.  **The
+item is closed with nothing to fix.**
+
+### The module pipeline, decomposed
+
+`MOD_NS` has been measured since 0082 and read ~14.6 % of EL71 boot wall,
+but nobody had split it.  The EM_JS body had timed four sub-phases into
+`__w64tR/M/I/A` all along — and those globals live in the vCPU worker,
+which runs the guest without yielding, so no `evaluate()` had ever read
+them.  Charged into `wasm_diag_stat` instead (the round-seventeen trick),
+over a 25 s EL71 boot:
+
+| phase | s | share of `modNs` |
+| --- | --- | --- |
+| `new WebAssembly.Module` | **2.82** | 77 % |
+| `new WebAssembly.Instance` | 0.31 | 8.5 % |
+| `addFunction` | 0.10 | 2.7 % |
+| building the import object | **0.026** | 0.7 % |
+
+The import loop — a `'f'+i` concatenation, a `BigInt`, a `wasmTable.get`
+and a property add per import — is 0.7 % of instantiation, because a close
+module has **2.1 imports**, not the twenty the code's shape suggests.  A
+cached import namespace was built anyway and is recorded under REJECTED.
+
+### 83 microseconds per module, and it does not depend on the module
+
+Split again by assemble source, the two sources differ by 178x in count and
+1.05x in bytes:
+
+| source | modules | bytes | compile |
+| --- | --- | --- | --- |
+| first close | 33 969 | 88.2 MB | 2.849 s |
+| compaction | 191 | 84.3 MB | 0.132 s |
+
+Solving the two points gives **~80 us fixed per `new WebAssembly.Module`
+call and ~1.4 ns/byte marginal** (722 MB/s).  An independent knob agrees:
+`W64_SPEC_N` 8 / 32 / 128 moves bytes per close module 1880 / 2625 / 2903
+and per-module compile time reads **83.6 / 82.7 / 83.3 us**.  Compile time
+is `83 us x module count` and the size term is invisible.
+
+That retro-explains three entries already in the REJECTED table.  Turning
+compaction off halves the bytes compiled and buys nothing because
+compaction is 0.13 s of 2.98 s.  `W64_SPEC_N` = 64 is a tie because at
+83 us per module and ~13 us per translated TB, the trade is at par —
+8 -> 32 saves 7414 modules (0.62 s) for 26 472 extra translations (0.34 s),
+and 32 -> 128 saves 1463 (0.12 s) for 11 477 (0.15 s), which is where it
+turns over.  **The knob is at its optimum and now it is known why.**
+
+### Most of the 83 us is not compiling
+
+The same shape compiled in the page costs ~21 us.  Everything about the
+module was eliminated as the difference — size, the 69 locals every TB
+function declares, control-flow density (160 `if/else` per module changed
+nothing), the GC nudge, machine load (the page reads 23.5 us *while the
+guest boots*), and the number of live modules (`W64_LIVE_MAX` 512 to
+200 000: 81.5 / 84.4 / 78.5 / 77.5 us).
+
+Then `W64_MODBENCH=<n>` compiled one real module's own bytes 200 times
+back to back **inside the vCPU worker's own isolate**:
+
+| | per compile |
+| --- | --- |
+| close #200 | 30.9 us |
+| close #8000 | **12.0 us** |
+| close #20000 | 16.9 us |
+| the same module, once, in the normal flow | **83 us** |
+
+The isolate is not slow.  A compile costs 12-31 us warm and 83 us when it
+happens once every ~700 us with the caches full of guest code.  **Roughly
+four fifths of the "compile" line is cold-cache cost**, paid per compile
+event, which is why it tracks the count and ignores the bytes.
+
+### What landed: the GC nudge is a Firefox workaround Chromium was paying for
+
+0019 allocates 32 MB of garbage every 256 instantiations so SpiderMonkey's
+GC sees pressure from dropped modules (module code is not GC pressure
+there, and the worker never yields — without it Firefox OOMs against its
+~16k executable-memory budget).  At the EL71 boot's ~1360 modules/s that is
+~170 MB/s manufactured on purpose, and V8 needs none of it.  The nudge now
+decides from the user agent.
+
+It does **not** inflate compile time — that was the first hypothesis for
+the 83 us and compile came back bit-identical with it off (2.8761 vs
+2.8754 s).  It is simply its own cost: `modNs` per module 119.3 -> 111.6 us,
+**0.27 s per 25 s of EL71 boot, ~1.1 % of wall**, and nothing else moves.
+
+### Open at the end of round nineteen
+
+1. **The remaining module prize is ~5.7 % of EL71 boot** — halving module
+   count would save 17k x 83 us = 1.43 s of 25 s — and it needs a design
+   that lets a cold TB run *without* a module.  Module count is miss count
+   (0080); speculation is at its budget optimum; observed edges do not
+   predict (below).  That leaves running cold code interpreted and
+   compiling only what repeats, which is a large change and needs the TCG
+   op stream kept alongside the wasm.  Nothing smaller is left here.
+2. **A compile is 4-6x cheaper warm.** Nothing today batches compile
+   events except compaction, which is already nearly free.  If a second
+   pending compile ever exists, doing it adjacent to the first is worth
+   ~68 us.
+3. Items 1, 3, 4 and 7 of round eighteen are untouched: the ke800 -2.1 %
+   from 0083 still wants a longer run; CX70's ~103 ns device writes at
+   56k/s still have no named device; `CAL_NS` should be used with the
+   measurement build's instruments.
+4. **Item 7 is answered, with a working range.** `W64_LDSTPAD=N` emits N
+   fold-proof ALU units on every memop, so wall against N gives ns per
+   wasm instruction on the hot path — a known cost rather than an empty
+   interval.  Two designs folded before one survived (see lessons), and
+   the instrument then turned out to have a limit of its own:
+
+   | N | wall (3 runs, el71 100M-1400M) | modules |
+   | --- | --- | --- |
+   | 0 | 28.70 s | 34 363 |
+   | 4 | 30.25 s (+1.55) | 34 178 |
+   | 12 | 38.25 s (+9.55) | 42 919, 3 `tb_flush` |
+
+   At N=4 it is clean: **18 added wasm instructions per memop cost
+   2.51 ns/memop**, 1.55 s of a 28.70 s window — so the inline TLB probe's
+   ~19 instructions are **roughly 5 % of EL71 wall**, and shaving three of
+   them is worth under 1 %.  At N=12 the pad has grown the emitted code
+   enough to add **8556 modules** (+0.71 s by itself) and the slope means
+   nothing.  **Adding code to a hot path costs module count**, which after
+   this round is the expensive axis — so measure `mods`, not just wall, on
+   any codegen change.
+5. **Does Firefox still need the GC nudge?**  0087 keeps it there and takes
+   it off Chromium, but the gate can no longer reproduce the OOM it exists
+   for: a 202 s Firefox run with `W64_GCNUDGE=0` reached 2.73 G insns and
+   40 152 modules created, `errors=0`.  Since 0053 `temp` is 0 and creation
+   plateaus at ~37k once the guest idles.  The original report was *mobile*
+   Firefox on a Pixel, so it stays until someone retests there.
+
 ## Update (2026-09-15, round eighteen: the 80 % had one name on it; 0083-0084)
 
 Round seventeen closed four candidates and left one question: the pipeline

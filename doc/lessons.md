@@ -610,6 +610,70 @@ and the vCPU run device code concurrently; the guest never reached idle,
 and there was no number.  When that happens, build the real thing and
 measure it — do not read the failure as "no win available".
 
+## A flat per-unit cost means the phase is misnamed
+
+`MOD_NS` — the wall time a vCPU thread waits for the browser to turn a
+batch of TBs into a callable module — had been read as "compile" since
+0019.  Round nineteen split it four ways and then split the compile term
+by assemble source, and the two sources differ by **178x in module count
+and 1.05x in bytes**:
+
+| source | modules | bytes | compile |
+| --- | --- | --- | --- |
+| first close | 33 969 | 88.2 MB | 2.849 s |
+| compaction | 191 | 84.3 MB | 0.132 s |
+
+That solves to ~80 us fixed per call and ~1.4 ns/byte marginal, and an
+independent knob confirms it: across `W64_SPEC_N` 8 / 32 / 128 the module
+grows 1880 -> 2903 bytes and the per-module cost reads **83.6 / 82.7 /
+83.3 us**.  A cost that is flat across a 1.5x size range is not paying for
+the work the phase is named after.
+
+It was not paying for compilation at all.  The same real module compiled
+**200 times back to back inside the vCPU worker's own isolate**
+(`W64_MODBENCH`) costs **12-31 us**; in the normal flow, once every
+~700 us between stretches of guest execution, the same bytes cost 83 us.
+Four fifths of "compile" is cold cache — the compiler's own code and data,
+evicted by the guest.
+
+Two things follow.  A phase whose per-unit cost ignores its input size is
+telling you the unit, not the work: find what *is* proportional and rename
+the line item.  And a cost paid per *event* rather than per byte inverts
+the usual advice — making each unit smaller buys nothing, and only fewer
+events, or events adjacent to each other, can pay.
+
+Note also what this exonerated.  Before the split, the obvious suspect for
+an inflated compile was the Firefox GC nudge next door in the same
+function, which manufactures ~170 MB/s of garbage at boot rates.  It costs
+exactly its own allocation (0.27 s per 25 s) and inflates compile by
+nothing: with it off, compile came back **2.8754 s against 2.8761 s**.
+A neighbour with a plausible mechanism is still only a hypothesis.
+
+## A calibration pad the compiler can fold measures the compiler, not the path
+
+Round eighteen's instruments priced a phase against an *empty* interval and
+inherited the clock's floor.  The fix is to price against a known cost
+instead: `W64_LDSTPAD=N` emits N filler ALU units on every guest memop, so
+wall time against N has a slope of ns per wasm instruction on that path.
+
+The filler has to survive the optimising tier, and two designs did not.  A
+dropped pure result folds to nothing.  An `i64.add` chain folds to
+`x + (sum of constants)`.  And xor-then-rotate, which *looks* like a mixing
+step and was chosen precisely because it seemed irreducible, folds just as
+completely — **xor distributes over rotate**, so `rotl(x^a, k)` is
+`rotl(x,k) ^ rotl(a,k)` and N units collapse to one rotate and one xor.
+
+That third one was measured before it was caught: 8 units, 32 ALU ops,
+read **1.64 ns per memop**.  It is worth noticing that this number is not
+absurd on its face — it is only absurd once you divide, which puts a wasm
+instruction at 0.05 ns, about 20 GHz.  **Sanity-check a calibration
+against a per-instruction bound before believing its slope**; a folded pad
+fails silently and looks like good news.
+
+`add` and `xor` do not distribute over each other in either direction, so
+alternating them has no algebraic collapse; the chain ends in a store the
+engine cannot prove dead.
+
 ## A ceiling probe measures the benefit and is silent on the cost
 
 The probe in "Some ceilings cannot be probed by deletion" works by
