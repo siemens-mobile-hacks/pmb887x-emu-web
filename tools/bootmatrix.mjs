@@ -78,7 +78,10 @@ const WATCH = `
 
 const pages = [];
 for (const r of runs) {
-  const page = await browser.newPage({ viewport: { width: 640, height: 900 } });
+  // wide enough for the three-column layout: below 900px the Firmware and
+  // Run panels are bottom sheets, and a driver would have to open one to
+  // reach the controls it sets here
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.on("pageerror", (e) => console.log(`[${r.label}] pageerror: ${String(e).slice(0, 200)}`));
   await page.goto(`http://127.0.0.1:${PORT}/${r.query ? "?" + r.query : ""}`, { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.addScriptTag({ content: WATCH });

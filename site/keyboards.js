@@ -335,11 +335,12 @@ export function applyKbdLayout(keyboardId, variantId, onRender) {
     keypad.appendChild(rowEl);
   }
   // side columns: auxLeft = left flank, auxRight = right flank (if the board
-  // has one); hidden entirely when a board defines no keys for a side
+  // has one). A side this board has no keys for is left empty; style.css
+  // takes it out of the layout (`.aux-keys-*:empty`) and sizes the screen box
+  // for the flanks that remain.
   for (const [elId, defs] of [["aux-keys-left", board.auxLeft], ["aux-keys-right", board.auxRight]]) {
-    const el = document.getElementById(elId);
-    el.replaceChildren(...(defs ?? []).map((def) => keyButton(def)));
-    el.style.display = defs?.length ? "" : "none";
+    document.getElementById(elId)
+      .replaceChildren(...(defs ?? []).map((def) => keyButton(def)));
   }
   onRender?.();
 }

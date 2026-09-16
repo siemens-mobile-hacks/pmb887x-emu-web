@@ -9,20 +9,22 @@ import { chromium } from "playwright-core";
 
 const [a = "8099", b = "8080", w = "1770", h = "1000"] = process.argv.slice(2);
 
-// --ui-scale is a fit-to-window factor, not a dimension: pin it to 1 so the
-// comparison is of the keypad itself, not of how much room the panels left
+// Everything is measured against the LCD's own corner and normalised by the
+// screen box, so the comparison is of the keypad's proportions rather than of
+// how much room the window happened to leave: the layout scales with the
+// column, and two builds at the same viewport need not draw it the same size
+// to be drawing the same keypad.
 const PROBE = `(() => {
-  document.querySelector(".phone-panel").style.setProperty("--ui-scale", "1");
   const lcd = document.getElementById("lcd").getBoundingClientRect();
   const out = {};
   const sel = "#keypad button[data-key], .aux-keys-left button[data-key], .aux-keys-right button[data-key]";
   for (const el of document.querySelectorAll(sel)) {
     const r = el.getBoundingClientRect();
     out[el.dataset.key] = [r.left - lcd.left, r.top - lcd.top, r.width, r.height]
-      .map((v) => Math.round(v * 100) / 100);
+      .map((v) => Math.round((v / lcd.width) * 1000) / 1000);
   }
   out.__lcd = [lcd.width, lcd.height].map((v) => Math.round(v * 100) / 100);
-  out.__scale = getComputedStyle(document.querySelector(".phone-panel")).zoom;
+  out.__ar = Math.round((lcd.width / lcd.height) * 1000) / 1000;
   return out;
 })()`;
 
@@ -53,7 +55,9 @@ await browser.close();
 
 let bad = 0;
 for (const k of new Set([...Object.keys(A), ...Object.keys(B)])) {
+  if (k === "__lcd") continue;   // the two builds may draw at different sizes
   const x = JSON.stringify(A[k]), y = JSON.stringify(B[k]);
   if (x !== y) { console.log(`DIFF ${k}: ${x} -> ${y}`); bad++; }
 }
-console.log(bad ? `${bad} difference(s)` : `identical (${Object.keys(A).length - 2} keys, lcd ${A.__lcd}, zoom ${A.__scale})`);
+console.log(bad ? `${bad} difference(s)`
+  : `identical (${Object.keys(A).length - 2} keys, lcd ${A.__lcd} -> ${B.__lcd})`);

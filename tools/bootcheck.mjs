@@ -85,7 +85,10 @@ for (const board of BOARDS) {
     if (!fs.existsSync(f)) throw new Error(`fullflash not found: ${f}`);
   }
 
-  const page = await browser.newPage({ viewport: { width: 640, height: 900 } });
+  // wide enough for the three-column layout: below 900px the Firmware and
+  // Run panels are bottom sheets, and a driver would have to open one to
+  // reach the controls it sets here
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
   page.on("crash", () => errors.push("page crashed"));

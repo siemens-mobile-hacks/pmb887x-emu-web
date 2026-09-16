@@ -179,7 +179,6 @@ const statusEl = $("status");
 const statusTextEl = $("status-text");
 const pillActionEl = $("pill-action");
 const captionEl = $("status-caption");
-const statusBlock = document.querySelector(".status-block");
 // declared here, with the rest of the pill, because render() reaches the
 // HUD and render() runs long before the HUD section further down
 const hudEl = $("hud");
@@ -490,7 +489,7 @@ P.sel.addEventListener("change", async () => {
     syncKeyboardToDevice(inferDevice(selectedPreset.files[0]));
   }
   await refreshPresetUi();
-  scheduleFit(); // a different phone, a different screen ratio
+  setAspect(); // a different phone, a different screen ratio
 });
 
 P.clear.addEventListener("click", async () => {
@@ -632,7 +631,7 @@ O.device.addEventListener("change", () => {
   syncKeyboardToDevice(O.device.value);
   renderOwn();
   render();
-  scheduleFit(); // a different phone, a different screen ratio
+  setAspect(); // a different phone, a different screen ratio
 });
 
 /* ------------------------------------------------------------------ */
@@ -919,7 +918,13 @@ $("btn-settings").addEventListener("click", (e) => openSheet($("sheet-settings")
 /* layout: the two panels flank the phone, or live in the sheets        */
 /* ------------------------------------------------------------------ */
 
-const phoneLayout = matchMedia("(max-width: 599px)");
+// The phone column is the same view at every size (style.css); what changes
+// is only where the two control panels live. Below the three-column
+// breakpoint — and on any window too short to put them beside the phone —
+// they are bottom sheets, which is a different place in the DOM and so the
+// one layout decision that cannot be a stylesheet rule. It must agree with
+// the `min-width: 900px` block in style.css.
+const phoneLayout = matchMedia("(max-width: 899px), (max-height: 620px)");
 const mainEl = document.querySelector("main");
 const phonePanel = document.querySelector(".phone-panel");
 
@@ -927,17 +932,12 @@ function applyLayout() {
   if (phoneLayout.matches) {
     $("sheet-firmware-body").appendChild($("pre-panel"));
     $("sheet-settings-body").appendChild($("post-panel"));
-    // §4 — an overlay on the top edge of the screen box, so the strip costs
-    // the column no height and the keypad keeps every pixel it had
-    document.querySelector(".lcd-wrap").appendChild(hudEl);
   } else {
     closeSheet(true);
     mainEl.insertBefore($("pre-panel"), phonePanel);
     mainEl.appendChild($("post-panel"));
-    statusBlock.appendChild(hudEl);   // §5 — two lines under the pill
   }
   render(); // the pill says different things in the two layouts
-  scheduleFit();
 }
 phoneLayout.addEventListener("change", applyLayout);
 
@@ -1028,7 +1028,7 @@ async function loadBoards() {
     renderOwn();
   }
   render();
-  scheduleFit(); // the panel size (and so the screen box) is known now
+  setAspect(); // the panel size (and so the screen box) is known now
 }
 
 // Fullflash sidecars (SIDE_CAR_RE) are documented in fullflashes.js:
@@ -1278,7 +1278,6 @@ async function boot() {
     : selectedPreset?.files[0] ?? null;
   setEmuState("booting");
   showOverlay("Loading…");
-  scrollToPhone();
 
   // [[".cfi-efa", bytes], ...] — filled below, checked again after the boot
   let sidecarBytes = [];
@@ -1885,7 +1884,7 @@ function startPainting() {
     if (w <= 0 || h <= 0) return;
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w; canvas.height = h;
-      scheduleFit(); // the guest's panel ratio is the real one
+      setAspect(); // the guest's panel ratio is the real one
     }
     const addr = m._wasm_fb_ptr();
     const tPaint = performance.now();
@@ -2136,99 +2135,18 @@ function beep() {
 }
 
 /* ------------------------------------------------------------------ */
-/* fit the phone to the window height                                   */
+/* the one thing the layout needs from here: the screen's aspect ratio   */
 /* ------------------------------------------------------------------ */
 
-// At the browser's own zoom level the phone column is scaled (CSS `zoom`,
-// so it takes real layout space and the grid keeps centring it) to exactly
-// fill the window height: no scrollbar, no wasted height. It only ever
-// takes the room the side panels leave — width is as much a cap as height,
-// or a window barely past the three-column breakpoint would scale the phone
-// to the height it has and slide it over the panels beside it.
+// The phone column sizes itself — control row, screen box, edge tabs and
+// keypad all come out of `.phone-panel`'s own box in style.css, with no
+// measure-and-apply pass here and nothing scaled after layout. A window
+// resize is therefore one reflow, and browser zoom is just a bigger page.
 //
-// Browser zoom is left alone. The devicePixelRatio this page loaded at is
-// the baseline; while it differs the user is zoomed, so we stop refitting
-// and Ctrl+ simply makes everything bigger and the page scroll, as it
-// should. Ctrl+0 comes back to the baseline and the fit resumes.
-const SCALE_MIN = 0.55, SCALE_MAX = 2.5;
-const baseDpr = window.devicePixelRatio;
-// Two layouts are fitted: the three-column one, where the phone must share
-// the window with the panels beside it, and the compact landscape one (LCD
-// left, keypad right), where height is the scarce dimension. The stacked
-// and phone layouts are left alone (the phone layout sizes the screen with
-// flexbox instead).
-const sideBySide = matchMedia("(min-width: 900px)");
-const landscapeFit =
-  matchMedia("(min-width: 600px) and (max-width: 899px) and (orientation: landscape)");
-
-function fitPhone() {
-  // the user is zoomed: keep the scale they were fitted at, so their zoom
-  // multiplies on top of it instead of being cancelled out by a refit
-  if (Math.abs(window.devicePixelRatio - baseDpr) > 0.01) return;
-  if (!(sideBySide.matches || landscapeFit.matches)) {
-    phonePanel.style.removeProperty("--ui-scale");
-    return;
-  }
-  phonePanel.style.setProperty("--ui-scale", "1"); // measure it unscaled
-  const nat = phonePanel.getBoundingClientRect();
-  if (!nat.height) return;
-
-  const cs = getComputedStyle(mainEl);
-  const px = (v) => parseFloat(v) || 0;
-  const padY = px(cs.paddingTop) + px(cs.paddingBottom);
-  const inner = mainEl.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight);
-  let availH, availW;
-  if (sideBySide.matches) {
-    availH = window.innerHeight - mainEl.getBoundingClientRect().top - padY;
-    // whatever the side panels do not use is the phone's to grow into
-    const sides = [...mainEl.children]
-      .filter((el) => el !== phonePanel)
-      .reduce((w, el) => w + el.getBoundingClientRect().width + px(cs.columnGap), 0);
-    availW = inner - sides;
-  } else {
-    // stacked: the phone gets a whole screenful once it is scrolled to
-    availH = window.innerHeight - padY;
-    availW = inner;
-  }
-
-  const scale = Math.min((availH - 2) / nat.height, availW / nat.width);
-  // floored, never rounded up: rounding up is what puts a scrollbar back
-  const set = (s) => {
-    const v = Math.floor(Math.max(SCALE_MIN, Math.min(SCALE_MAX, s)) * 1000) / 1000;
-    phonePanel.style.setProperty("--ui-scale", String(v));
-    return v;
-  };
-  const applied = set(scale);
-  // `zoom` rounds each box it scales, and over a keypad's worth of nested
-  // boxes that rounding adds up to a few pixels — correct against the real
-  // height rather than trusting the multiplication
-  const got = phonePanel.getBoundingClientRect().height;
-  if (got > availH - 2) set(applied * (availH - 2) / got);
-}
-
-// On the stacked layout the Firmware panel sits above the phone, so pressing
-// Start would leave the screen — and the download progress drawn on it —
-// below the fold. Three columns need no scrolling at all, and the phone
-// layout has none to do.
-function scrollToPhone() {
-  if (sideBySide.matches || phoneLayout.matches) return;
-  phonePanel.scrollIntoView({
-    block: "start",
-    behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-  });
-}
-
-/* ---- the phone layout's screen box ---- */
-// The box is the device's own panel ratio, as large as fits in what the row
-// leaves once the control row and the keypad have taken their height — so
-// the canvas fills it exactly, with no letterbox inside and no bars around.
+// The single thing CSS cannot know is how tall and wide the guest's panel
+// is, because that is board data: publish it as `--ar` and the stylesheet
+// does the rest.
 const lcdWrap = document.querySelector(".lcd-wrap");
-const screenCell = document.querySelector(".screen-cell");
-const screenRow = document.querySelector(".screen-row");
-const auxCols = [...document.querySelectorAll(".aux-keys-left, .aux-keys-right")];
-// the edge tabs when the screen box is width-limited and there is nothing
-// spare, and the widest they are worth growing to (a full touch target)
-const TAB_MIN = 14, TAB_MAX = 44;
 
 function screenAspect() {
   // a live guest's framebuffer beats the board config
@@ -2237,76 +2155,18 @@ function screenAspect() {
   return p ? p.w / p.h : 132 / 176;
 }
 
-function fitScreen() {
-  if (!phoneLayout.matches) {
-    lcdWrap.style.removeProperty("width");
-    lcdWrap.style.removeProperty("height");
-    screenRow.style.removeProperty("--tab-w");
-    return;
-  }
-  // The row is `flex: 1; min-height: 0`, so its height is exactly what the
-  // column has left once the status row and the keypad have taken their
-  // natural heights — the browser has already done the constraint solving.
-  // Fitting the box inside it is the whole job; there is no budget to compute
-  // and nothing here can make the column taller than the viewport.
-  const row = screenRow.getBoundingClientRect();
-  const cellH = screenCell.getBoundingClientRect().height;
-  if (!row.width || !cellH) return;
-  // Width is measured from the row, not the cell, and against the tabs at
-  // their *minimum*: the tabs are widened below out of whatever the box then
-  // leaves, and deriving the box from a width the tabs have already taken
-  // would feed that back in on the next fit.
-  const gaps = (parseFloat(getComputedStyle(screenRow).columnGap) || 0) * 2;
-  const cols = auxCols.filter((c) => c.children.length).length;
-  const ar = screenAspect();
-  let w = row.width - gaps - cols * TAB_MIN, h = w / ar;
-  if (h > cellH) { h = cellH; w = h * ar; }   // height is tighter
-  const wPx = Math.floor(w) + "px", hPx = Math.floor(h) + "px";
-  if (lcdWrap.style.width !== wPx) lcdWrap.style.width = wPx;
-  if (lcdWrap.style.height !== hPx) lcdWrap.style.height = hPx;
-  // A ratio-locked box usually cannot use the full width; rather than leave
-  // that blank either side of it, the edge tabs take it.
-  const tabW = cols
-    ? Math.max(TAB_MIN, Math.min(TAB_MAX, Math.floor((row.width - gaps - w) / cols)))
-    : TAB_MIN;
-  const tabPx = tabW + "px";
-  if (screenRow.style.getPropertyValue("--tab-w") !== tabPx) {
-    screenRow.style.setProperty("--tab-w", tabPx);
-  }
+function setAspect() {
+  phonePanel.style.setProperty("--ar", String(+screenAspect().toFixed(6)));
 }
 
-// 100dvh is not the visible area on Chrome for Android while the URL bar is
-// showing — the bottom of the column ends up under the browser chrome.
-function syncAppHeight() {
-  const vv = window.visualViewport;
-  if (!vv?.height) return;
-  // a pinch-zoom shrinks the visual viewport too, and rebuilding the layout
-  // around it would fight the user's zoom — keep the last unzoomed height
-  if (vv.scale > 1.01) return;
-  document.documentElement.style.setProperty("--app-h", Math.round(vv.height) + "px");
-}
-
-let fitPending = 0;
-function scheduleFit() {
-  cancelAnimationFrame(fitPending);
-  fitPending = requestAnimationFrame(() => {
-    syncAppHeight(); fitPhone(); fitScreen(); refitHud(); drawVpProbe();
-  });
-}
-window.addEventListener("resize", scheduleFit);
-// the URL bar sliding in and out changes dvh without a window resize event
-window.visualViewport?.addEventListener("resize", scheduleFit);
-// ...and on Android it retracts on scroll, which fires neither resize event
-window.visualViewport?.addEventListener("scroll", scheduleFit);
-for (const mq of [sideBySide, landscapeFit, phoneLayout]) mq.addEventListener("change", scheduleFit);
-// Whatever moves the row's height — a keypad with more rows, a sheet, the
-// control row rewrapping — reaches the box through the cell, because flex has
-// already resized the cell by the time this fires. Watching the cell alone is
-// therefore enough. The HUD is as wide as the box it sits on, so it follows.
-new ResizeObserver(() => { fitScreen(); refitHud(); }).observe(screenCell);
-// the token budget follows the container width, wherever that came from
+// The strip drops whole tokens to fit the box it sits on, which is the one
+// piece of text fitting CSS cannot do; everything else about it is style.
+// The box resizes for every reason the layout can change — window, rotation,
+// URL bar, fullscreen, a board with a different panel — so this is also
+// where the height probe below gets its cue.
+new ResizeObserver(() => { refitHud(); drawVpProbe(); }).observe(lcdWrap);
 function refitHud() { if (!hudEl.hidden) drawHud(); }
-document.fonts?.ready.then(scheduleFit);
+document.fonts?.ready.then(refitHud);
 
 /* ------------------------------------------------------------------ */
 /* Performance HUD: two lines, and never a third                        */
@@ -2578,30 +2438,27 @@ function hudReset() {
 const hudLive = () => !exitReport
   && (emuState === "booting" || emuState === "running" || emuState === "paused");
 
-// Both layouts follow the toggle; at phone widths the strip is an overlay on
-// the screen box, so it waits for a guest rather than sitting on the idle
-// "Ready to boot" panel (§4). The sampler follows the guest,
-// not the strip: it runs for any live guest either way — the pill's slow
-// warning does not wait for the strip — and stops the moment the guest goes,
-// since there is nothing left to sample and calling the exports past the
-// runtime's exit aborts it. A strip left on keeps the last window's numbers.
+// The strip is an overlay on the screen box, so it waits for a guest rather
+// than sitting on the idle "Ready to boot" panel (§4). The sampler follows
+// the guest, not the strip: it runs for any live guest either way — the
+// pill's slow warning does not wait for the strip — and stops the moment the
+// guest goes, since there is nothing left to sample and calling the exports
+// past the runtime's exit aborts it. A strip left on keeps the last
+// window's numbers.
 function syncHud() {
   if (!hudReady) return;
-  const show = hudChk.checked && (!phoneLayout.matches || hudLive());
-  const changed = hudEl.hidden === show;   // it was the other way a moment ago
+  const show = hudChk.checked && hudLive();
   hudEl.hidden = !show;
   if (hudLive()) { if (!hudTimer) hudTimer = setInterval(hudTick, HUD_MS); }
   else stopHudTimer();
   if (show) drawHud();
-  // off the phone layout the two lines are real height in the phone column
-  if (changed && !phoneLayout.matches) scheduleFit();
 }
 
 function stopHudTimer() { clearInterval(hudTimer); hudTimer = 0; }
 
 // the toggle takes effect immediately, mid-run or before one; it starts off
-// on every layout — the strip is an instrument, and on a phone it covers the
-// top of the screen box, which is the one thing the page is there to show
+// — the strip is an instrument, and it covers the top of the screen box,
+// which is the one thing the page is there to show
 hudChk.checked = localStorage.getItem("opt-hud") === "1";
 hudChk.addEventListener("change", () => {
   localStorage.setItem("opt-hud", hudChk.checked ? "1" : "0");
@@ -2631,10 +2488,7 @@ function syncFsBtn() {
 }
 
 // leaving fullscreen by swipe, Back or Esc never goes through the button
-document.addEventListener("fullscreenchange", () => {
-  syncFsBtn();
-  scheduleFit();   // the visible viewport just changed by the height of two bars
-});
+document.addEventListener("fullscreenchange", syncFsBtn);
 
 /* ?vp=1 — the height budget drawn on the page, because "the keypad does not
  * fit" is reported with a screenshot and the numbers have to be in it. It is
@@ -2656,7 +2510,6 @@ function vpProbeEl() {
 }
 
 function drawVpProbe() {
-  if (!phoneLayout.matches) { if (vpEl) vpEl.hidden = true; return; }
   const v = viewportReport();
   // self-shows on a real overflow, so a regression is visible without knowing
   // to ask for it; ?vp=1 pins it on when nothing is wrong yet
@@ -2665,26 +2518,34 @@ function drawVpProbe() {
   vpEl.hidden = false;
   vpEl.textContent =
     `inner ${v.inner}  visual ${v.visual}  client ${v.client}  dpr ${v.dpr}\n`
-    + `appH ${v.appH}  bodyMin ${v.bodyMin}  safeBottom ${v.safeAreaBottom}`
+    + `bodyH ${v.bodyH}  bodyMin ${v.bodyMin}  safeBottom ${v.safeAreaBottom}`
     + `  fs ${v.fullscreen ? 1 : 0}\n`
     + `status ${v.status}  screen ${v.screen}  keypad ${v.keypad}\n`
     + `used ${v.used}  budget ${v.budget}  fits ${v.fits ? "YES" : "NO"}`;
 }
 
 // What the column had to divide up, so a "the keypad does not fit" report
-// carries the numbers instead of a description.
+// carries the numbers instead of a description. The stylesheet derives the
+// screen box from exactly these constants, so a mismatch here is the bug.
 function viewportReport() {
   const px = (v) => Math.round(parseFloat(v) || 0);
   const cs = getComputedStyle(document.querySelector("main"));
-  const R = (s) => Math.round(document.querySelector(s)?.getBoundingClientRect().height ?? 0);
-  const gap = px(getComputedStyle(phonePanel).rowGap);
-  const used = R(".status-block") + R(".screen-row") + R("#keypad") + gap * 2;
-  const budget = window.innerHeight - px(cs.paddingTop) - px(cs.paddingBottom);
+  const rect = (s) => document.querySelector(s)?.getBoundingClientRect();
+  const R = (s) => Math.round(rect(s)?.height ?? 0);
+  // measured, not added up, so it holds for the landscape arrangement too:
+  // how far past the top of the column the lowest piece of the phone reaches,
+  // against the height the column was given
+  const panel = rect(".phone-panel");
+  const used = Math.round(
+    Math.max(rect("#keypad")?.bottom ?? 0, rect(".screen-row")?.bottom ?? 0) - panel.top);
+  const budget = Math.round(panel.height);
   return {
     inner: window.innerHeight,
     visual: Math.round(window.visualViewport?.height ?? 0),
     client: document.documentElement.clientHeight,
-    appH: px(getComputedStyle(document.documentElement).getPropertyValue("--app-h")),
+    // 100dvh as the browser resolved it, which is what the column is sized
+    // from; if it exceeds `inner` the column cannot fit the viewport
+    bodyH: Math.round(document.body.getBoundingClientRect().height),
     // min-height outranks the height we set: if this exceeds `inner`, the
     // column is floored taller than the viewport and nothing below fits
     bodyMin: px(getComputedStyle(document.body).minHeight),
@@ -2713,10 +2574,10 @@ function diagnostics() {
     // rtcap makes vratio readable: 0.6x is a slow host under strict or
     // budget, but a guest still catching up under banked
     device: currentDevice(), state: emuState, slow, exitCode,
-    // the phone layout's height budget, for "the keypad does not fit" reports:
-    // the viewport runs behind the system bars, so `inner` can exceed what is
-    // actually on screen by `safeArea` (Android's gesture bar)
-    viewport: phoneLayout.matches ? viewportReport() : null,
+    // the phone column's height budget, for "the keypad does not fit"
+    // reports: the viewport runs behind the system bars, so `inner` can
+    // exceed what is actually on screen by `safeArea` (Android's gesture bar)
+    viewport: viewportReport(),
     // what Advanced ▸ Siemens keys was set to, and what it did to this image
     siemensMode: currentDevice()?.startsWith("siemens-") ? siemensMode() : null,
     siemensKeys: keyReport,
@@ -2747,7 +2608,10 @@ $("btn-diag").addEventListener("click", async () => {
   diagFlash = setTimeout(() => { label.textContent = "Copy diagnostics"; }, 1600);
 });
 
-window.__hud = { shortUserAgent, diagnostics };
+// drawHud so a driver can render the strip without a guest to sample: it is
+// an overlay on the screen box now, so it never shows on its own until one
+// is running
+window.__hud = { shortUserAgent, diagnostics, drawHud };
 
 hudReady = true;
 syncHud();   // applies the remembered toggle, and nothing above could
@@ -2850,7 +2714,6 @@ function selectKeyboard(wanted = varSel.value) {
   const variant = pickVariant(kbdSel.value, wanted);
   fillSelect(varSel, Object.entries(kbd.variants), variant);
   applyKbdLayout(kbdSel.value, variant, renderKeypad);
-  scheduleFit(); // boards differ in keypad height
   localStorage.setItem("kbd-keyboard", kbdSel.value);
   localStorage.setItem("kbd-variant", variant);
 }
@@ -2938,7 +2801,7 @@ async function diagnoseIsolation() {
 setMode("preset");   // §1.2 — Preset, with the last-used entry selected
 applyLayout();
 if (selectedPreset) syncKeyboardToDevice(inferDevice(selectedPreset.files[0]));
-scheduleFit();
+setAspect();
 
 if (!crossOriginIsolated) diagnoseIsolation();
 boardsReady = loadBoards().catch((e) => {

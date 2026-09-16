@@ -268,12 +268,12 @@ ok("v4.1 nothing above the panels carries performance text", await page.evaluate
   }
   return !document.querySelector("body > pre");
 }));
-ok("v4.5 the strip sits under the pill, above the screen", await page.evaluate(() => {
+// one place at every width: an overlay on the screen box, so turning it on
+// costs the column no height and cannot move the keypad (v4 §4)
+ok("v4.5 the strip is an overlay on the screen box", await page.evaluate(() => {
   const h = document.getElementById("hud");
-  return h.parentElement === document.querySelector(".status-block")
-    && h.previousElementSibling.id === "status-caption"
-    && (h.compareDocumentPosition(document.querySelector(".screen-row"))
-        & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  return h.parentElement === document.querySelector(".lcd-wrap")
+    && getComputedStyle(h).position === "absolute";
 }));
 ok("v4.5 hidden until the toggle is on", await page.$eval("#hud", (e) => e.hidden));
 ok("v4.G the strip is aria-hidden", await page.$eval("#hud", (e) => e.getAttribute("aria-hidden") === "true"));
@@ -297,10 +297,17 @@ const panelTops = () => page.evaluate(() => [
 const tops0 = await panelTops();
 await page.check("#opt-hud");
 await page.waitForTimeout(250);
+// the strip waits for a guest to sample — it sits on the screen, and there is
+// nothing to put on an idle one — so render it by hand for the shape checks
+// that need no guest
+await page.evaluate(() => {
+  document.getElementById("hud").hidden = false;
+  window.__hud.drawHud();
+});
 ok("v4.3 exactly two lines, and they are the whole strip", await page.evaluate(() => {
   const h = document.getElementById("hud");
   const lines = [...h.children].filter((e) => e.classList.contains("hud-line"));
-  return lines.length === 2 && !h.hidden
+  return lines.length === 2
     && h.getBoundingClientRect().height <= 3 * lines[0].getBoundingClientRect().height;
 }));
 ok("v4.3 monospace, tabular figures, never wrapped", await page.evaluate(() =>
@@ -312,11 +319,11 @@ ok("v4.3 monospace, tabular figures, never wrapped", await page.evaluate(() =>
 ok("v4.3 line 2 is the environment: " + await text("#hud-env"),
   /^Linux x86_64 · Chrome \d+ · \d+c( · \d+ GB)?( · isolated)?$/.test(await text("#hud-env")));
 ok("v4.3 no 10 s averages in the strip", !/10s|avg/i.test(await text("#hud")));
-ok("v4.5 no background, muted line 2", await page.evaluate(() => {
+ok("v4.5 legible over the screen, muted line 2", await page.evaluate(() => {
   const bg = getComputedStyle(document.getElementById("hud")).backgroundColor;
   const l1 = getComputedStyle(document.getElementById("hud-metrics")).color;
   const l2 = getComputedStyle(document.getElementById("hud-env")).color;
-  return /rgba\(0, 0, 0, 0\)|transparent/.test(bg) && l1 !== l2;
+  return bg === "rgba(0, 0, 0, 0.6)" && l1 !== l2;
 }));
 ok("v4.5 turning it on does not move the side panels",
   JSON.stringify(await panelTops()) === JSON.stringify(tops0), JSON.stringify([tops0, await panelTops()]));
@@ -325,16 +332,38 @@ await page.waitForTimeout(200);
 ok("v4.5 turning it off hides it again", await page.$eval("#hud", (e) => e.hidden));
 
 /* ---------------- §4 desktop layout ---------------- */
+// the tracks stretch: the phone column is the height of the window, and a
+// panel taller than that scrolls inside itself rather than growing the row
 ok("4 three columns", await page.evaluate(() => {
   const cs = getComputedStyle(document.querySelector("main"));
   const cols = cs.gridTemplateColumns.split(" ").map(parseFloat);
   return cols.length === 3 && Math.round(cols[0]) === 420 && Math.round(cols[2]) === 420
-    && cs.alignItems === "start";
+    && cs.alignItems === "stretch";
 }), await page.evaluate(() => getComputedStyle(document.querySelector("main")).gridTemplateColumns));
 ok("4 panels top-align with the pill", await page.evaluate(() => {
   const t = (s) => Math.round(document.querySelector(s).getBoundingClientRect().top);
   return t("#pre-panel") === t(".status-row") && t("#post-panel") === t(".status-row");
 }));
+ok("4 the phone column fills the window height", await page.evaluate(() => {
+  const main = document.querySelector("main");
+  const cs = getComputedStyle(main);
+  const inner = main.getBoundingClientRect().height
+    - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const p = document.querySelector(".phone-panel").getBoundingClientRect();
+  const kp = document.getElementById("keypad").getBoundingClientRect();
+  return Math.abs(p.height - inner) < 1 && Math.abs(kp.bottom - p.bottom) < 1
+    && p.bottom <= window.innerHeight + 1;
+}), await page.evaluate(() =>
+  `panel ${Math.round(document.querySelector(".phone-panel").getBoundingClientRect().height)}`));
+// no zoom, no transform: what is on screen is what was laid out, so a resize
+// is a reflow and the browser's own zoom is left to the user
+ok("4 nothing in the phone column is scaled after layout", await page.evaluate(() =>
+  [document.querySelector(".phone-panel"), document.getElementById("keypad"),
+    document.querySelector(".lcd-wrap")].every((e) => {
+    const s = getComputedStyle(e);
+    return (s.zoom === "1" || s.zoom === "" || s.zoom === "normal")
+      && (s.transform === "none" || s.transform === "");
+  })));
 ok("4 phone column centred", await page.evaluate(() => {
   const main = document.querySelector("main").getBoundingClientRect();
   const lcd = document.getElementById("lcd").getBoundingClientRect();
@@ -486,6 +515,8 @@ ok("v2.2 no shortcut labels on the edge keys", await page.evaluate(() =>
 /* ---------------- v2 §3: screen box at the device ratio ---------------- */
 ok("v2.3 no object-fit letterboxing", await page.$eval("#lcd", (e) =>
   getComputedStyle(e).objectFit !== "contain"));
+// 844 − 12 page padding − 32 control row − 2×6 gaps − the keypad's
+// 7×--key-h + 6×6 leaves the row 456 tall, and 3:4 of that is the box
 ok("v2.3 box is 342x456 at 390x844", await page.evaluate(() => {
   const r = document.querySelector(".lcd-wrap").getBoundingClientRect();
   return Math.round(r.width) === 342 && Math.round(r.height) === 456;

@@ -14,10 +14,11 @@
 <header>
   <h1>Siemens / LG PMB887X <span>emulator</span></h1>
 </header>
-<!-- Three columns: what you set before Start on the left, the phone in the
-     middle (dead centre of the page), what only matters once it runs on the
-     right. Phone-width screens keep only the phone here and move the two
-     panels into the sheets below. -->
+<!-- The phone is the page: one column that fills the viewport, with the two
+     panels in the sheets below. From 900px they come back as the two columns
+     flanking it — what you set before Start on the left, what only matters
+     once it runs on the right — and nothing about the phone column itself
+     changes between the two. -->
 <main>
   <!-- ============ left: pre-start ============ -->
   <section class="ctrl-panel pre-panel" id="pre-panel">
@@ -177,21 +178,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.49.49 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.25.41.48.41h3.84c.23 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"/></svg>
         </button>
       </div>
-      <!-- the one-line reason whenever the pill's action is disabled -->
+      <!-- the one-line reason whenever the pill's action is disabled. The
+           line under the row is reserved whether or not there is anything to
+           put on it, so the screen never moves when there is. -->
       <p id="status-caption" class="status-caption" hidden></p>
-
-      <!-- Two fixed lines of run metrics, never more: under the pill on
-           desktop (with "Performance HUD" on), and moved onto the top edge
-           of the screen box at phone widths, where it is always on while the
-           guest runs. aria-hidden because it is a 2 Hz ticker no screen
-           reader should read out — "Copy diagnostics" is the accessible
-           route to the same numbers. -->
-      <div id="hud" class="hud" aria-hidden="true" hidden>
-        <div id="hud-metrics" class="hud-line"></div>
-        <div id="hud-env" class="hud-line hud-env"></div>
-        <!-- the fitting rule's ruler: one glyph of the line's own font -->
-        <span id="hud-ruler" class="hud-ruler" aria-hidden="true">0</span>
-      </div>
     </div>
 
     <!-- side-key column | screen | side-key column -->
@@ -207,9 +197,9 @@
         <button data-key="vol_down" title="Volume down">Vol−</button>
       </div>
 
-      <!-- display:contents off the phone layout, so the screen sits in the
-           row exactly as it always did; a centring cell at phone widths,
-           where app.js sizes the box to the device's own aspect ratio -->
+      <!-- the cell is exactly the screen box: style.css sizes it to the
+           board's own aspect ratio out of what the row has left, and the
+           edge tabs take the width a ratio-locked box cannot use -->
       <div class="screen-cell">
         <div class="lcd-wrap">
           <canvas id="lcd" width="132" height="176"></canvas>
@@ -221,6 +211,18 @@
               <div id="ov-bar" class="ov-bar" hidden><i></i></div>
               <div id="ov-sub" class="ov-sub"></div>
             </div>
+          </div>
+          <!-- Two fixed lines of run metrics, never more, on the top edge of
+               the screen box: the strip costs the layout no height, so
+               turning it on cannot move the keypad or resize the screen.
+               aria-hidden because it is a 2 Hz ticker no screen reader
+               should read out — "Copy diagnostics" is the accessible route
+               to the same numbers. -->
+          <div id="hud" class="hud" aria-hidden="true" hidden>
+            <div id="hud-metrics" class="hud-line"></div>
+            <div id="hud-env" class="hud-line hud-env"></div>
+            <!-- the fitting rule's ruler: one glyph of the line's own font -->
+            <span id="hud-ruler" class="hud-ruler" aria-hidden="true">0</span>
           </div>
           <!-- a Siemens firmware that panics prints its crash dump on the
                serial port; app.js parses it, ends the run and leaves it

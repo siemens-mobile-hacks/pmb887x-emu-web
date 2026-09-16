@@ -210,44 +210,53 @@ linear Unix seconds, LG packed calendar).
   Start/Stop/Cancel there is (`window.__ui` mirrors that state for the
   drivers in `tools/`). A capture in progress is a second pill beside it,
   ended with **Finish** — "Stop" only ever means the emulator.
-- At phone widths (< 600px) the page is one column with no scroll: a single
-  32px row (state/firmware pill, screenshot, record, settings), the screen at
-  the board's own `[peripheral.LCD0]` aspect ratio flanked by edge tabs for the
-  side keys (`--tab-w`, set by `fitScreen()`: a ratio-locked box usually cannot
-  use the full width, so the tabs take what is left, 14px to 44px, and a board
-  with keys on one side only collapses the empty column), and the keypad, which
-  keeps its natural height
-  (`--key-h`) while `fitScreen()` gives the screen box whatever is left. The
-  Firmware and Run panels move into two bottom sheets.
-  `tools/ui-acceptance.mjs` checks all of this, `tools/uidiff.mjs` that the
-  keypad itself did not move. What is not obvious is the height, and headless
-  Chromium hides most of it — only a real phone shows these:
-  - `100dvh` is not what is on screen on Chrome for Android while the URL bar
-    is showing, so the column's height is `--app-h`, published from
-    `visualViewport.height` by `syncAppHeight()` (ignored while pinch-zoomed;
-    `100dvh` is the pre-JS fallback).
-  - **`min-height: 0` on `html, body` is load-bearing.** The base rule floors
-    body at `min-height: 100vh`, min-height beats height, and Chrome for
-    Android resolves `100vh` to the URL-bar-*retracted* height — so without the
-    reset the column is floored ~80px taller than the viewport it must fit in,
-    and the keypad's last row goes under the bottom edge. This was the actual
-    cause of "the keypad does not fit", and headless cannot see it: there
-    `100vh == innerHeight` and the floor is a no-op. `?vp=1` named it — the
-    phone reported `screen 559` where flex should have given 479, and a row
-    that overshoots its flex share means an ancestor is taller than the
-    viewport, not that the viewport was mis-measured. Reproduce it in a
-    headless phone context with `:where(body){min-height:947px}`.
-  - **The column is correct by construction, and `fitScreen()` must never
-    compute a height budget of its own.** `.screen-row` is `flex: 1;
-    min-height: 0`: the status row and the keypad keep their natural heights,
-    the browser hands the row exactly what is left, and `fitScreen()` only
-    fits the box *inside* the flex-resolved `.screen-cell` rect. Deriving a
-    budget in JS instead (from `.phone-panel`'s rect, or `innerHeight` minus
-    padding) is self-concealing: a box that is too tall grows the very
-    measurement the next fit reads, so it never converges. Three viewport
-    theories — `dvh`, `visualViewport`, safe-area insets — and a `--sysbar`
-    fudge constant were spent on the `min-height` bug above before this was
-    restored. If the keypad is ever clipped again, check the body floor first.
+- **The phone column is the same view at every size, and it is laid out in
+  CSS alone.** One `100dvh` page that never scrolls: a single 32px control
+  row (state/firmware pill, screenshot, record, fullscreen, settings), the
+  screen at the board's own `[peripheral.LCD0]` aspect ratio flanked by edge
+  tabs for the side keys, and the keypad under it. From 900px wide (and
+  621px tall) the Firmware and Run panels come back as the two columns
+  flanking it and the title bar returns; below that they are bottom sheets.
+  Nothing else differs between the two, and nothing is scaled after layout —
+  there is no `zoom`, no `transform` and no measure-and-apply pass, so a
+  window resize is one reflow. `tools/ui-acceptance.mjs` checks all of this;
+  `tools/uidiff.mjs` compares two builds' keypad geometry normalised by the
+  screen box.
+  - Everything is derived from `.phone-panel`'s own box, published to its
+    descendants by `container-type: size` as `cqw`/`cqh`. The custom
+    properties are inherited as *unresolved tokens*, so those units resolve
+    where they are used — on a descendant — and each therefore means "of the
+    phone column". `--key-h` is one keypad row (5.08% of the column, or the
+    widest keypad that still fits, whichever is smaller, between 30px and
+    72px); `--pad-h` is `7 × --key-h + 6 × --kgap`, because the keypad is
+    always exactly seven key rows whatever board is in it — the rows divide
+    that height rather than setting it, which is what used to make the screen
+    box depend on which phone was selected. `--box-h` is then what the column
+    has left, `--box-w` that at the board's ratio, `--tab-w` what a
+    ratio-locked box could not use (14px to 44px, and no more than 13% of the
+    box), and `--asm-w` the whole assembly, which the control row matches.
+  - The one thing CSS cannot know is the panel's aspect ratio, because that is
+    board data: `setAspect()` publishes it as `--ar` on `.phone-panel` — from
+    the board config, or from the guest's own framebuffer once it is running.
+    That is the entire layout contribution of `app.js`.
+  - A board with keys on one side only collapses the empty column
+    (`.aux-keys-*:empty`), and `.phone-panel:has(.aux-keys-* button)` is what
+    tells the arithmetic above how many tabs to leave room for. The screen is
+    then balanced back to centre with a margin on the empty side, but only
+    out of width nothing else wants — where the box is width-limited it keeps
+    every pixel and hangs half a tab off centre instead.
+  - Short and wide (`max-height: 620px`, from 560px) puts the keypad *beside*
+    the screen instead of under it — a phone on its side, or a shallow
+    window. Same pieces and the same arithmetic; only the axis the two share
+    changes.
+  - **`min-height` on `html, body` must stay 0.** A `min-height: 100vh` here
+    beats the `height` we set, and Chrome for Android resolves `100vh` to the
+    URL-bar-*retracted* height — so the column gets floored ~80px taller than
+    the viewport it must fit in and the keypad's last row goes under the
+    bottom edge. This was the actual cause of "the keypad does not fit", and
+    headless cannot see it: there `100vh == innerHeight` and the floor is a
+    no-op. Reproduce it in a headless phone context with
+    `:where(body){min-height:947px}`.
   - `viewport-fit=cover` is deliberately not set, so the viewport stops above
     the system bars and the `env(safe-area-inset-*)` on `main` read 0; they
     are kept only in case that meta returns.
@@ -257,12 +266,15 @@ linear Unix seconds, LG packed calendar).
     and Esc never go through the button), stands down while a capture runs
     (the recording pill needs that width at 320px), and is hidden where the
     Fullscreen API is not available (iOS Safari).
-  - `?vp=1` draws that budget on the page, since this class of bug is reported
-    with a screenshot and the numbers have to be inside it.
-  `diagnostics()` reports the resulting budget under `viewport` (`inner`,
-  `visual`, `appH`, `safeAreaBottom`, the three column heights and `fits`), so
-  a "the keypad does not fit" report carries numbers rather than a
-  description.
+  - `?vp=1` draws the height budget on the page, and it self-shows on a real
+    overflow, since this class of bug is reported with a screenshot and the
+    numbers have to be inside it. `used` is measured (the lowest edge of the
+    phone against the height the column was given), not added up, so it holds
+    for the landscape arrangement too. `diagnostics()` reports the same under
+    `viewport` (`inner`, `visual`, `bodyH`, `bodyMin`, `safeAreaBottom`, the
+    three heights and `fits`).
+  - Drivers in `tools/` that set controls in the two panels need a viewport
+    at least 900x621, or the panel they are reaching into is a closed sheet.
 - `boards.tar` unpacked into `/boards`; qemu args mirror the native
   launcher (`-display wasm -icount shift=3,sleep=off -machine pmb887x
   -drive if=pflash… -serial file:/serial.log`; no `-icount` for `lg-*`

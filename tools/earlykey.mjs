@@ -37,7 +37,10 @@ const dist = opt("dist", "dist-jit");
 const port = process.env.PORT || "8080";
 
 const b = await chromium.launch({ headless: true });
-const p = await b.newPage({ viewport: { width: 640, height: 900 } });
+// wide enough for the three-column layout: below 900px the Firmware and
+// Run panels are bottom sheets, and a driver would have to open one to
+// reach the controls it sets here
+const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
 const errs = [];
 p.on("pageerror", (e) => errs.push(String(e).slice(0, 200)));
 p.on("console", (m) => { const t = m.text(); if (/RuntimeError|Aborted\(/.test(t)) errs.push(t.slice(0, 200)); });

@@ -10,15 +10,46 @@
   --warn: #e8b339;
   --bad: #ff5d5d;
   font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+
+  /* ---- the phone column's layout constants ----
+     Every size below is derived from these and the container's own size, in
+     CSS alone: there is no measure/apply pass in JS and nothing is scaled
+     after layout, so a resize is one reflow and lands where it belongs. */
+  --status-h: 32px;   /* the one control row above the screen */
+  /* the control block: the row, plus the line under it for the reason an
+     action is disabled wherever there is height to spare for one */
+  --head-h: var(--status-h);
+  --col-gap: 6px;     /* status | screen | keypad */
+  --row-gap: 2px;     /* edge tabs | screen box */
+  --kgap: 6px;        /* between keypad rows and columns */
+  --tab-min: 14px;    /* edge tab: the floor, and what the box is sized from */
+  --tab-max: 44px;    /* ...and the widest one worth growing to */
+  /* the guest panel's aspect ratio as a bare number (132/176 = 0.75 for the
+     S75). app.js republishes it on .phone-panel whenever the board or the
+     guest's own framebuffer says otherwise — the one thing here that cannot
+     come from CSS, because it is board data. */
+  --ar: 0.75;
 }
 * { box-sizing: border-box; }
 /* several components below set their own `display`, which would otherwise
    beat the UA stylesheet's [hidden] rule */
 [hidden] { display: none !important; }
-body { margin: 0; background: var(--bg); color: var(--text); min-height: 100vh; }
 
+/* The page is the viewport and never scrolls: one flex column, the phone
+   column inside it takes what the header leaves, and the two control panels
+   scroll inside themselves. `dvh` is the visible area with the browser's own
+   bars accounted for; nothing may floor the body above it (a `min-height:
+   100vh` here is what once pushed the keypad's last row off a phone). */
+html, body { height: 100dvh; min-height: 0; overflow: hidden; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  display: flex; flex-direction: column;
+}
+
+/* the title bar is desktop-only chrome: at every width where the phone is the
+   whole page, that height belongs to the screen */
 header {
-  display: flex; align-items: baseline; gap: 1rem;
+  display: none; flex: none; align-items: baseline; gap: 1rem;
   padding: 0.8rem 1.2rem; border-bottom: 1px solid var(--border);
 }
 header h1 { font-size: 1.15rem; margin: 0; }
@@ -33,53 +64,47 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .ico-fill { width: 1rem; height: 1rem; flex: none; fill: currentColor; }
 
 /* ---------------- status pill: state + the only Start/Stop ------------- */
-/* run state and its action, pinned above the LCD (see .phone-panel), with
-   the two capture actions on the same row and the disabled-reason caption
-   right under it */
+/* One 32px row above the screen at every width: the state/firmware pill,
+   then screenshot, record, fullscreen and (where the panels live in sheets)
+   settings. The block's height is `--head-h`, a constant the screen box is
+   derived from — so whether the disabled-reason caption under the row has
+   anything to say never moves the screen. Where there is no height to spare
+   for that line it is dropped, and the pill's own text is the reason. */
 .status-block {
+  flex: none; width: 100%; height: var(--head-h);
   display: flex; flex-direction: column; align-items: center;
-  gap: 0.35rem; width: 100%;
 }
 .status-row {
-  display: flex; align-items: center; gap: 0.4rem;
-  width: max-content; max-width: 100%;
+  flex: none; width: min(100cqw, max(var(--asm-w), 320px));
+  height: var(--status-h);
+  display: flex; align-items: center; gap: 6px;
 }
 .status {
-  display: flex; align-items: center; gap: 0.45rem; min-width: 0;
-  padding: 0.25rem 0.3rem 0.25rem 0.8rem;
+  flex: 1; min-width: 0; height: var(--status-h);
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 4px 0 8px;
   border: 1px solid var(--border); border-radius: 1em;
-  background: #333a47; font-size: 0.85rem;
+  background: #333a47; font-size: 0.75rem;
 }
 /* a long status ("Downloading · 23 / 64 MiB") must not widen the row */
 #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* off the phone layout this is inert text, not a control */
+/* while idle where the Firmware panel is a sheet, the text is the way in */
 .status-open {
-  display: flex; align-items: center; gap: 0.3rem; min-width: 0;
+  flex: 1; display: flex; align-items: center; gap: 0.3rem; min-width: 0;
   font: inherit; color: inherit; background: none; border: 0; padding: 0;
   text-align: left;
 }
 .status-open:disabled { color: inherit; opacity: 1; cursor: default; }
 .status-chev { display: none; width: 0.8rem; height: 0.8rem; opacity: .7; }
-.status-caption { margin: 0; font-size: 0.72rem; color: var(--muted); text-align: center; }
-
-/* Off the phone layout the pill row sits dead centre of the phone column and
-   stays there: the disabled-reason caption gets a track of its own beside
-   it, so switching Preset <-> Own file (which is what makes the reason come
-   and go) moves nothing above the screen. */
-@media (min-width: 600px) {
-  .status-block {
-    display: grid; align-items: center; gap: 0.35rem 0.5rem;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  }
-  .status-row { grid-column: 2; }
-  .status-caption {
-    grid-column: 3; justify-self: start; text-align: left; white-space: nowrap;
-  }
-  .hud { grid-column: 1 / -1; }
+.status-open:not(:disabled) .status-chev { display: block; }
+.status-caption {
+  display: none; width: 100%; margin: 0;
+  font-size: 0.72rem; color: var(--muted);
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 .status-dot {
-  flex: none; width: 0.55rem; height: 0.55rem; border-radius: 50%;
+  flex: none; width: 6px; height: 6px; border-radius: 50%;
   background: var(--muted);
 }
 .status[data-state="booting"], .status[data-state="running"] {
@@ -100,7 +125,7 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 /* the two waiting states spin instead of sitting still */
 .status[data-state="downloading"] .status-dot,
 .status[data-state="booting"] .status-dot {
-  width: 0.7rem; height: 0.7rem; background: none;
+  width: 8px; height: 8px; background: none;
   border: 2px solid currentColor; border-top-color: transparent;
   animation: spin 0.8s linear infinite;
 }
@@ -109,8 +134,8 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .pill-action { display: flex; }
 .pill-btn {
   display: inline-flex; align-items: center; gap: 0.3rem;
-  font: inherit; font-size: 0.8rem; font-weight: 600;
-  padding: 0.25rem 0.75rem; border-radius: 1em; cursor: pointer;
+  font: inherit; font-size: 0.72rem; font-weight: 600;
+  height: 24px; padding: 0 0.7rem; border-radius: 1em; cursor: pointer;
   border: 1px solid transparent;
 }
 .pill-btn .ico { width: 0.8rem; height: 0.8rem; }
@@ -127,13 +152,14 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
 }
 
-/* a capture in progress, in the record button's place (phone widths) */
+/* a capture in progress, in the record button's place */
 .rec-pill {
-  flex: none; display: flex; align-items: center; gap: 0.4rem;
-  height: 32px; padding: 0 4px 0 8px; border-radius: 1em;
+  flex: none; display: flex; align-items: center; gap: 0.35rem;
+  height: 28px; padding: 0 2px 0 7px; border-radius: 1em;
   background: #4a1414; border: 1px solid #8a2b2b; color: #ffc4c4;
-  font-size: 0.75rem; white-space: nowrap;
+  font-size: 0.72rem; white-space: nowrap;
 }
+.rec-pill .pill-btn { height: 24px; padding: 0 0.5rem; font-size: 0.7rem; }
 .rec-pill-dot {
   flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--bad);
   animation: pulse 1.6s ease-in-out infinite;
@@ -141,17 +167,22 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .rec-pill-time { font-variant-numeric: tabular-nums; }
 
 .icon-btn {
-  flex: none; display: grid; place-items: center; width: 1.9rem; height: 1.9rem;
+  flex: none; display: grid; place-items: center; width: 28px; height: 28px;
   padding: 0; cursor: pointer; color: var(--muted); background: var(--panel2);
   border: 1px solid var(--border); border-radius: 50%;
 }
-.icon-btn svg { width: 1.05rem; height: 1.05rem; fill: currentColor; }
+.icon-btn svg { width: 0.95rem; height: 0.95rem; fill: currentColor; }
 .icon-btn:not(:disabled):hover { color: var(--accent); border-color: var(--accent); }
-/* the Run panel is a column of its own off the phone layout */
-#btn-settings { display: none; }
-#btn-record:not(:disabled) { color: var(--bad); }
-.rec-stop, .rec-time, .rec-cam { display: none; }
+/* the gear is only a way into the Run panel where that panel is a sheet */
+#btn-settings { display: grid; }
+/* nothing in the row is red until something is actually recording */
+#btn-record:not(:disabled) { color: var(--muted); }
+#btn-record:not(:disabled):hover { color: var(--accent); }
+.rec-stop, .rec-time, .rec-dot { display: none; }
+/* a neutral camcorder, so nothing but the emulator's own Stop reads as
+   "stop" while a capture is running (see .rec-pill) */
 .rec-cam {
+  display: block;
   fill: none; stroke: currentColor; stroke-width: 1.8;
   stroke-linejoin: round; stroke-linecap: round;
 }
@@ -163,7 +194,7 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   grid-auto-flow: column; gap: 0.35rem;
   background: #5c1a1a; border-color: var(--bad);
 }
-#btn-record.recording .rec-dot { display: none; }
+#btn-record.recording .rec-cam { display: none; }
 #btn-record.recording .rec-stop { display: block; }
 #btn-record.recording .rec-time {
   display: block; font-size: 0.72rem; color: #ffc4c4;
@@ -171,58 +202,148 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 }
 
 /* ---------------- page layout ---------------- */
-/* Stacked by default (narrow windows); the three-column desktop grid below
-   takes over at 900px. */
+/* The phone is the page: one column that fills whatever the header leaves,
+   with the two control panels in bottom sheets. The three-column desktop
+   grid below puts them back beside it, and nothing else about the phone
+   column changes between the two — it is the same view either way. */
 main {
-  display: grid; gap: 1.2rem; padding: 1.2rem; align-items: start;
-  grid-template-columns: minmax(0, 1fr);
+  flex: 1; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+  padding:
+    calc(6px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right))
+    calc(6px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
 }
-.pre-panel, .phone-panel, .post-panel { grid-column: 1; justify-self: center; }
 
-/* Firmware panel | phone | Run panel. The side tracks are the fixed 420px
-   the panels were always drawn at; between 900px and ~1400px there is not
-   enough width for both plus the phone, so they give way (the phone column
-   keeps its min-content) instead of pushing the page into a sideways
-   scroll. */
-@media (min-width: 900px) {
-  main { grid-template-columns: minmax(0, 420px) 1fr minmax(0, 420px); }
-  .pre-panel { grid-column: 1; justify-self: stretch; }
-  .phone-panel { grid-column: 2; justify-self: center; }
-  .post-panel { grid-column: 3; justify-self: stretch; }
+/* Firmware panel | phone | Run panel. The side tracks are the 420px the
+   panels were always drawn at; between 900px and ~1400px there is not enough
+   width for both plus the phone, so they give way — the middle track's 340px
+   floor is what makes them, rather than the phone, do the giving. The one row
+   is `minmax(0, 1fr)` and not `auto` so it is definite: a panel taller than
+   the window then scrolls inside itself instead of growing the row and
+   pushing the phone column past the bottom.
+   The height bound matches the `max-height` query further down, where the
+   keypad moves beside the screen and the phone wants the whole window; it
+   must also match `phoneLayout` in app.js, which is what moves the two
+   panels into the sheets. */
+@media (min-width: 900px) and (min-height: 621px) {
+  header { display: flex; }
+  main {
+    display: grid; gap: 1rem; padding: 1rem; align-items: stretch;
+    grid-template-columns: minmax(0, 420px) minmax(340px, 1fr) minmax(0, 420px);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .pre-panel { grid-column: 1; }
+  .post-panel { grid-column: 3; }
+  .ctrl-panel { min-height: 0; max-height: 100%; overflow-y: auto; }
+  /* the panels are right there; the gear would open what is already open */
+  #btn-settings { display: none; }
+  /* ...and there is height to spare for the reason an action is disabled:
+     give it a line of its own, charged to the control block whether or not
+     there is anything on it, so the screen never moves when there is */
+  .phone-panel { grid-column: 2; --head-h: calc(var(--status-h) + 1.15rem); }
+  .status-caption { display: block; }
 }
 
 /* ---------------- phone panel ---------------- */
-/* the inline padding reserves room for the absolutely-positioned
-   .aux-keys-* columns (64px keys + 10px gap) so they participate in layout
-   and can never be clipped by the viewport when the window gets narrow. It
-   stays symmetric even for boards with no right-hand column, so the LCD sits
-   in the middle of the panel — and thus of the page. */
-/* --ui-scale is set by fitPhone() in app.js. `zoom` (not `transform`) so the
-   scaled column still occupies its real size in the grid and stays centred */
+/* The whole phone — control row, screen and keypad — is sized from this
+   element's own box and nothing else, which is what makes a resize a plain
+   reflow. `container-type: size` publishes that box to the rules below as
+   `cqw`/`cqh`; the custom properties are inherited as unresolved tokens, so
+   the units resolve where they are *used*, on a descendant, and every one of
+   them therefore means "of the phone column".
+     --key-h  one keypad row. 5.08cqh hands the keypad ~40% of the column,
+              the proportion the phone layout was drawn at — it puts a
+              390x844 phone back on exactly the 342x456 screen box it had.
+              13.1cqw is the same height expressed as the widest keypad that
+              still fits, so a narrow column shrinks the keys rather than
+              overflowing; 30px and 72px bound the two.
+     --pad-h  the keypad is *always* seven rows plus six gaps, whatever board
+              is loaded (the rows below divide it), so the height above it is
+              a constant the screen box can be derived from.
+     --pad-w  and its width follows the key height, so the keys keep their
+              shape instead of stretching to whatever is going spare.
+     --box-w  the screen at the board's own ratio, capped by what the row has
+              left once the edge tabs have taken their floor.
+     --asm-w  the whole assembly: box + the tabs at the width they grew to.
+              The control row above matches it. */
 .phone-panel {
-  --flank: 74px;
-  display: flex; flex-direction: column; align-items: center; gap: 1rem;
-  padding-inline: var(--flank);
-  zoom: var(--ui-scale, 1);
+  container-type: size;
+  flex: 1; min-height: 0; min-width: 0; width: 100%;
+  display: flex; flex-direction: column; align-items: center;
+  gap: var(--col-gap);
+
+  --cols: 0;
+  --key-h: clamp(30px, min(5.08cqh, 13.1cqw), 72px);
+  --pad-h: calc(7 * var(--key-h) + 6 * var(--kgap));
+  --pad-w: min(100cqw, calc(var(--key-h) * 7.6));
+  --box-h: calc(100cqh - var(--head-h) - 2 * var(--col-gap) - var(--pad-h));
+  --box-w: min(
+    calc(100cqw - var(--cols) * (var(--tab-min) + var(--row-gap))),
+    calc(var(--box-h) * var(--ar)));
+  --tab-w: var(--tab-min);
+  /* a tab is an edge of the phone, not a column of buttons: on a window with
+     width to spare it stops at a full touch target, and beside a small
+     screen it stops at a fraction of it */
+  --tab-cap: clamp(var(--tab-min), calc(var(--box-w) * 0.13), var(--tab-max));
+  --asm-w: min(100cqw,
+    calc(var(--box-w) + var(--cols) * (var(--tab-w) + var(--row-gap))));
+}
+/* How many edge-key columns this board actually has — an empty flank is not
+   laid out at all, so it costs the screen box no width — and, from that, how
+   much of the row the box leaves the tabs. The box was sized against the
+   14px floor, so whatever a ratio-locked box could not use is theirs, up to
+   a full 44px touch target. */
+.phone-panel:has(.aux-keys-left button),
+.phone-panel:has(.aux-keys-right button) {
+  --cols: 1;
+  --tab-w: clamp(var(--tab-min),
+    calc(100cqw - var(--box-w) - var(--row-gap)), var(--tab-cap));
+}
+.phone-panel:has(.aux-keys-left button):has(.aux-keys-right button) {
+  --cols: 2;
+  --tab-w: clamp(var(--tab-min),
+    calc((100cqw - var(--box-w) - 2 * var(--row-gap)) / 2), var(--tab-cap));
 }
 
-/* side-key column | screen | side-key column. Off the phone layout the two
-   columns are absolute and the row is exactly the screen, so the side keys
-   keep flanking the LCD at the same offsets they always had. */
-.screen-row { position: relative; }
-.screen-cell { display: contents; }
-.lcd-wrap { position: relative; }
+/* edge keys | screen | edge keys. The cell is exactly the box and the tabs
+   are exactly `--tab-w`, so the row is the assembly and nothing but it: the
+   whole thing sits centred under the control row. */
+.screen-row {
+  flex: 1; min-height: 0; width: 100%;
+  display: flex; justify-content: center; align-items: flex-start;
+  gap: var(--row-gap);
+}
+.screen-cell {
+  flex: 0 0 auto; width: var(--box-w); height: 100%;
+  display: flex; justify-content: center; align-items: flex-start;
+}
+/* A board with keys on one flank only — the generic Siemens has no
+   right-hand column — would hang half a tab off centre and stop lining up
+   with the keypad under it. Balance the row with the same width on the empty
+   side, but only out of width nothing else wants: where the box is
+   width-limited there is none, and it keeps every pixel it had. */
+.phone-panel:has(.aux-keys-left button):not(:has(.aux-keys-right button)) .screen-cell {
+  margin-right: min(calc(var(--tab-w) + var(--row-gap)),
+    max(0px, calc(100cqw - var(--box-w) - var(--tab-w) - var(--row-gap))));
+}
+.phone-panel:has(.aux-keys-right button):not(:has(.aux-keys-left button)) .screen-cell {
+  margin-left: min(calc(var(--tab-w) + var(--row-gap)),
+    max(0px, calc(100cqw - var(--box-w) - var(--tab-w) - var(--row-gap))));
+}
+.lcd-wrap {
+  position: relative; width: 100%;
+  aspect-ratio: var(--ar); max-height: 100%;
+}
 #lcd {
-  width: 264px; height: 352px;          /* 2x the 132x176 LCD */
-  background: #000; border: 6px solid #0a0b0e;
-  border-radius: 8px; box-shadow: 0 0 0 1px var(--border), 0 8px 30px rgba(0,0,0,.5);
+  width: 100%; height: 100%; display: block;
+  background: #000; border: 0; border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--border), 0 8px 30px rgba(0,0,0,.45);
   image-rendering: pixelated;
-  display: block;
 }
 .lcd-overlay {
-  position: absolute; inset: 6px; display: flex; align-items: center; justify-content: center;
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--muted); font-size: 0.9rem; text-align: center;
-  background: rgba(0,0,0,.55); border-radius: 4px; pointer-events: none;
+  background: rgba(0,0,0,.55); border-radius: 6px; pointer-events: none;
 }
 .lcd-overlay.hidden { display: none; }
 .ov-body { width: 100%; padding: 0 0.9rem; }
@@ -240,8 +361,8 @@ main {
    only as tall as the dump, and it is the only thing that stays lit: the
    screen behind and around it is fading to black under it. */
 .exit-overlay {
-  position: absolute; inset: 6px; z-index: 3;
-  display: flex; align-items: flex-start; padding: 5px;
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; align-items: flex-start; padding: 6px;
   pointer-events: none;                /* the fading screen, not a surface */
 }
 .exit-card {
@@ -249,7 +370,7 @@ main {
   width: 100%; max-height: 100%; overflow: auto;
   padding: 5px 6px; border-radius: 5px;
   border: 1px solid #8a2b2b; background: rgba(10, 11, 14, 0.88);
-  font: 10px/1.4 ui-monospace, "Cascadia Mono", monospace;
+  font: 11px/1.4 ui-monospace, "Cascadia Mono", monospace;
   font-variant-numeric: tabular-nums;
 }
 .exit-head { display: flex; align-items: baseline; gap: 5px; margin-bottom: 3px; }
@@ -265,23 +386,31 @@ main {
 .exit-fields dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
 
 /* ---------------- keypad ---------------- */
-.keypad { display: flex; flex-direction: column; gap: 6px; width: 320px; }
-.krow { display: grid; gap: 6px; }
+/* The block is exactly --pad-h tall whatever board is in it, and the rows
+   divide that height by how many key rows each one is worth: three for the
+   S75's joystick pad, four for the digits, one for everything else. Sizing
+   the rows instead of the block is what used to make the keypad's height
+   depend on the board — and with it the screen box above it. */
+.keypad {
+  flex: none; display: flex; flex-direction: column; gap: var(--kgap);
+  width: var(--pad-w); height: var(--pad-h);
+}
+.krow { flex: 1 1 0; min-height: 0; display: grid; gap: var(--kgap); }
 .krow-soft    { grid-template-columns: 1fr 1.2fr 1fr; }
 .krow-joy     { grid-template-columns: 1fr 1.2fr 1fr; }
 .krow-call    { grid-template-columns: 1fr 1.2fr 1fr; }
 /* the * / 0 / # keys carry their legend beside the digit instead of under it
    (.key-inline), so their row is a line of text shorter than the three above
    it — 1fr rows hand every row of the block the tallest row's height */
-.krow-digits  { grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; }
+.krow-digits  { flex: 4 1 0; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; }
 
 /* S75 middle block (keyboards/S75-ru.webp): the joystick is one square pad —
    four arrow marks around the OK button, inside its own frame — and the keys
    beside it sit in two-column flanks, soft key across the top, call/media
    (left) and browser/hang-up (right) level with the middle of the pad */
-.krow-s75-mid { grid-template-columns: 1.68fr 1.6fr 1.68fr; }
+.krow-s75-mid { flex: 3 1 0; grid-template-columns: 1.68fr 1.6fr 1.68fr; }
 .kflank {
-  display: grid; gap: 6px;
+  display: grid; gap: var(--kgap);
   grid-template-columns: 1fr 1fr; grid-template-rows: 0.8fr 2.2fr;
 }
 /* legends sit in the middle of these keys, not at the top */
@@ -289,7 +418,7 @@ main {
 /* the soft keys are thin bars on the real phone, and since they set the
    floor for the whole block (0.8fr of it), trimming them shortens the
    call/media row too */
-.keypad .kflank .kspan2 { grid-column: 1 / -1; padding-block: 0.3rem; }
+.keypad .kflank .kspan2 { grid-column: 1 / -1; }
 /* the arrows are marks on the pad's frame, so they get thin edge strips and
    the OK button the whole middle — as the engraving has it */
 .kpad {
@@ -300,11 +429,12 @@ main {
 }
 .keypad .kpad button {
   background: none; border: none; border-radius: 8px;
-  padding: 0.1rem; justify-content: center; font-size: 0.6rem;
+  padding: 0.1rem; justify-content: center;
+  font-size: clamp(0.55rem, calc(var(--key-h) * 0.24), 0.95rem);
 }
 .keypad .kpad .key-center {
   background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
-  font-size: 1rem;
+  font-size: clamp(0.9rem, calc(var(--key-h) * 0.38), 1.6rem);
 }
 /* the pad's arrow marks are too small to carry a hint under them, and the
    binding is the matching arrow key anyway — only the OK button keeps one */
@@ -315,13 +445,17 @@ body.show-key-hints .kpad .key-nav .key-hint { display: none; }
 .kpad-right { grid-area: 2 / 3; }
 .kpad-down  { grid-area: 3 / 2; }
 
+/* the keys divide the block's height, so they set none of their own: a legend
+   that needs more room shrinks its type rather than growing the keypad */
 .keypad button, .aux-keys-left button, .aux-keys-right button {
   font: inherit; color: var(--text); background: var(--panel2);
   border: 1px solid var(--border); border-radius: 8px;
-  padding: 0.55rem 0.2rem; cursor: pointer; user-select: none;
-  display: flex; flex-direction: column; align-items: center; line-height: 1.15;
-  touch-action: none; position: relative;
+  padding: 0 0.2rem; cursor: pointer; user-select: none;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; line-height: 1.15;
+  touch-action: none; position: relative; min-width: 0;
 }
+.keypad button { font-size: clamp(0.8rem, calc(var(--key-h) * 0.36), 1.7rem); }
 /* Holding a phone key is a key press, not a gesture on a document: no iOS
    callout sheet, no selection, no tap flash. (-webkit-touch-callout is the
    only way to suppress the iOS long-press sheet; preventing `contextmenu`
@@ -332,11 +466,12 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 .key-sub {
-  font-size: 0.6rem; color: var(--muted); letter-spacing: .08em; text-transform: lowercase;
+  font-size: clamp(0.55rem, calc(var(--key-h) * 0.22), 1rem);
+  color: var(--muted); letter-spacing: .08em; text-transform: lowercase;
   white-space: nowrap;
 }
 .key-sub svg {
-  height: 0.55rem; width: auto;
+  height: clamp(0.5rem, calc(var(--key-h) * 0.2), 0.9rem); width: auto;
   stroke: currentColor; fill: none; stroke-width: 1.7;
   stroke-linecap: round; stroke-linejoin: round;
 }
@@ -357,7 +492,8 @@ button {
 .key-hint {
   display: none;
   position: absolute; left: 0; right: 0; bottom: 2px;
-  font-size: 0.5rem; line-height: 1; color: var(--accent); opacity: .85;
+  font-size: clamp(0.45rem, calc(var(--key-h) * 0.18), 0.8rem);
+  line-height: 1; color: var(--accent); opacity: .85;
   white-space: nowrap; text-align: center; pointer-events: none;
 }
 body.show-key-hints .key-hint { display: block; }
@@ -371,23 +507,26 @@ body.show-key-hints .key-hint { display: block; }
 .keypad button:active .key-hint, .keypad button.pressed .key-hint,
 .aux-keys-left button:active .key-hint, .aux-keys-left button.pressed .key-hint,
 .aux-keys-right button:active .key-hint, .aux-keys-right button.pressed .key-hint { color: #08131f; }
-.key-nav { font-size: 0.8rem; }
-.key-center { font-size: 1.05rem; }
-.key-icon { width: 1.1rem; height: 1.1rem; display: block; fill: currentColor; }
+/* everything engraved on a key is sized off the key, so the whole keypad
+   scales with the column instead of turning into large keys with small type */
+.keypad .key-nav { font-size: clamp(0.7rem, calc(var(--key-h) * 0.3), 1.4rem); }
+.keypad .key-center { font-size: clamp(0.85rem, calc(var(--key-h) * 0.38), 1.7rem); }
+.key-icon { width: var(--icon); height: var(--icon); display: block; fill: currentColor; }
 /* stroke-drawn main-label icon (KE800 side power button) */
 .key-icon-line {
-  width: 1.1rem; height: 1.1rem; display: block;
+  width: var(--icon); height: var(--icon); display: block;
   stroke: currentColor; fill: none; stroke-width: 1.8;
   stroke-linecap: round; stroke-linejoin: round;
 }
-.key-icon-stack { width: 1.05rem; height: auto; }
-/* a wide legend (the S75 ringed planet) reads too small in the 1.1rem box */
-.key-icon-line.icon-wide { width: 1.45rem; height: auto; }
+.keypad button { --icon: clamp(0.9rem, calc(var(--key-h) * 0.4), 2rem); }
+.key-icon-stack { width: var(--icon); height: auto; }
+/* a wide legend (the S75 ringed planet) reads too small in the square box */
+.key-icon-line.icon-wide { width: calc(var(--icon) * 1.32); height: auto; }
 .key-end .icon-hangup { fill: #9b2d2e; }
 .key-end .icon-power { fill: #d7dce4; }
 /* keys whose legend is glyph + icon side by side (*, 0, #) */
 .keypad .key-inline { flex-direction: row; justify-content: center; gap: 0.45rem; }
-.key-inline .key-sub svg { height: 0.8rem; }
+.key-inline .key-sub svg { height: clamp(0.7rem, calc(var(--key-h) * 0.29), 1.3rem); }
 /* call/end icon colors sampled from keyboards/S75-ru.webp
    (.keypad prefix needed to beat the .keypad button color rule) */
 .keypad .key-send { color: #68ba9c; }
@@ -397,58 +536,105 @@ body.show-key-hints .key-hint { display: block; }
    .key-send so the red wins on the call key */
 .keypad .key-red { color: #ef1d24; }
 
-/* side columns: auxiliary keys flanking the LCD, vertically centered on it */
+/* Side columns: thin edge tabs hugging the screen, top-aligned 34px below
+   its top edge. `--tab-w` is the width a ratio-locked box could not use, so
+   nothing is left blank beside the screen until they have reached a full
+   touch target. A column with no keys for this board is not laid out at all
+   (no width, and no gap either). */
 .aux-keys-left, .aux-keys-right {
-  position: absolute; top: 50%; transform: translateY(-50%);
-  display: flex; flex-direction: column; gap: 6px; width: 64px;
+  flex: none; width: var(--tab-w); height: 100%; padding-top: 34px;
+  display: flex; flex-direction: column; gap: 8px;
 }
-/* left flank hangs off the LCD's left edge (KE800: volume rocker) */
-.aux-keys-left { right: calc(100% + 10px); }
-/* right-hand twin (KE800: power/camera/MP3 opposite the volume rocker) */
-.aux-keys-right { left: calc(100% + 10px); }
-.aux-keys-left button, .aux-keys-right button { font-size: 0.78rem; }
-/* one-glyph alternates for the aux keys — only shown by the narrow-screen
-   media query at the bottom, so the side columns can shrink to one
-   character wide and still flank the LCD when space runs out */
-.aux-keys-left .key-short, .aux-keys-right .key-short { display: none; }
+.aux-keys-left:empty, .aux-keys-right:empty { display: none; }
+.aux-keys-left button, .aux-keys-right button {
+  flex: 0 1 40px; min-height: 22px; width: 100%; padding: 0;
+  line-height: 1; font-size: clamp(0.7rem, calc(var(--tab-w) * 0.32), 1rem);
+  --icon: clamp(11px, calc(var(--tab-w) * 0.4), 20px);
+}
+.aux-keys-left button { border-radius: 4px 0 0 4px; }
+.aux-keys-right button { border-radius: 0 4px 4px 0; }
+/* 14px of tab is nothing to hit: each key claims a 32x44 target reaching out
+   into the page padding, without growing the tab itself */
+.aux-keys-left button::before, .aux-keys-right button::before {
+  content: ""; position: absolute; top: 50%; transform: translateY(-50%);
+  width: 32px; height: 44px;
+}
+.aux-keys-left button::before { left: -8px; }
+.aux-keys-right button::before { right: -8px; }
+/* a tab is one glyph wide — the full legend never fits, and the binding is
+   on the key's own title */
+.aux-keys-left .key-main, .aux-keys-right .key-main { display: none; }
+.aux-keys-left .key-short, .aux-keys-right .key-short { display: block; }
+body.show-key-hints .aux-keys-left .key-hint,
+body.show-key-hints .aux-keys-right .key-hint { display: none; }
 
-/* Landscape on a stacked (small-tablet) layout: height is the scarce
-   dimension, so put the keypad beside the LCD instead of under it. app.js
-   scales the whole block to the window height on top of this. Stops at the
-   three-column breakpoint: there the phone shares the width with the two
-   panels and has none to spare for a keypad beside the screen. */
-@media (min-width: 600px) and (max-width: 899px) and (orientation: landscape) {
+/* Short and wide — a phone on its side, or a shallow window: height is the
+   scarce dimension, so the keypad goes beside the screen instead of under
+   it. Same pieces, same arithmetic; only the axis the two of them share
+   changes, and the keypad now takes its height from the row rather than a
+   share of the column. */
+@media (max-height: 620px) and (min-width: 560px) {
   .phone-panel {
-    display: grid; align-items: center; justify-items: center;
-    grid-template-columns: auto auto; column-gap: 1.4rem; row-gap: 0.6rem;
+    display: grid; align-content: center; justify-content: center;
+    grid-template-columns: auto auto; grid-template-rows: auto minmax(0, 1fr);
+    column-gap: 1rem; row-gap: var(--col-gap);
+
+    --key-h: clamp(26px, min(
+      calc((100cqh - var(--head-h) - var(--col-gap) - 6 * var(--kgap)) / 7),
+      calc(100cqw / 16)), 72px);
+    --pad-w: calc(var(--key-h) * 7.2);
+    --box-h: calc(100cqh - var(--head-h) - var(--col-gap));
+    --box-w: min(
+      calc(100cqw - var(--pad-w) - 1rem
+           - var(--cols) * (var(--tab-min) + var(--row-gap))),
+      calc(var(--box-h) * var(--ar)));
+    --asm-w: min(100cqw, calc(var(--box-w) + var(--pad-w) + 1rem
+      + var(--cols) * (var(--tab-max) + var(--row-gap))));
   }
-  .phone-panel > .status-block { grid-column: 1 / -1; }
+  .phone-panel > .status-block { grid-column: 1 / -1; grid-row: 1; }
   .phone-panel > .screen-row { grid-column: 1; grid-row: 2; }
-  .phone-panel > .keypad { grid-column: 2; grid-row: 2; }
+  .phone-panel > .keypad { grid-column: 2; grid-row: 2; align-self: center; }
+  /* the screen shares the width with the keypad here, so there is no spare to
+     balance an empty flank out of — and nothing under the screen to line up
+     with either */
+  .phone-panel .screen-cell { margin: 0; }
 }
 
-/* touch screens: no pointer precision and no key travel, so every key gets
-   at least the 44px the platform guidelines ask for */
+/* touch screens: a fingertip cannot land on the 17px edge strips the
+   engraving gives the S75 pad's arrows, so the arms are about twice as thick
+   in both directions. The pad keeps the height of the three key rows beside
+   it — growing it would take the height off the screen box — so the
+   thickness comes from the row's middle column (widened at the flanks'
+   expense), from the pad's own inner padding, and from the three rows
+   sharing the height evenly instead of the arrows getting a ninth each. */
 @media (pointer: coarse) {
-  .keypad .krow > button, .keypad .kflank > button,
-  .aux-keys-left button, .aux-keys-right button { min-height: 44px; }
-  .keypad .kpad button { min-height: 0; }
-  /* A fingertip cannot land on the 17px edge strips the engraving gives the
-     S75 pad's arrows, so on a touch screen the arms are about twice as thick
-     in both directions. The pad keeps the height of the three key rows
-     beside it — growing it would take the height off the screen box, which
-     §3 of the acceptance criteria pins — so the thickness comes from the
-     row's middle column (widened at the flanks' expense), from the pad's own
-     inner padding, and from the three rows sharing the height evenly instead
-     of the arrows getting a ninth of it each. */
   .keypad .krow-s75-mid { grid-template-columns: 1.45fr 2.1fr 1.45fr; }
   .keypad .kpad {
-    min-height: 132px; padding: 0;
+    padding: 0;
     grid-template-columns: 1fr 1.4fr 1fr;
     grid-template-rows: 1fr 1fr 1fr;
   }
-  /* the arrow marks are drawn to the strip they sit on */
-  .keypad .kpad .key-nav { font-size: 0.85rem; }
+}
+
+/* Size container queries are how every measurement above is taken (Chrome
+   105, Safari 16, Firefox 110). On an engine without them every `var()`
+   derived from one is invalid at computed-value time, which would collapse
+   the column to nothing — so hand those a plain fixed phone instead. It does
+   not fill the window, but it is a working emulator. It has to come after
+   the landscape block above, which redefines the same properties and, being
+   a media query, carries no extra specificity of its own. */
+@supports not (container-type: size) {
+  .phone-panel {
+    --key-h: 40px; --pad-w: 304px; --box-w: 300px; --tab-w: var(--tab-min);
+  }
+  .keypad { height: auto; }
+  .krow { min-height: var(--key-h); }
+  .krow-digits { min-height: calc(4 * var(--key-h) + 3 * var(--kgap)); }
+  .krow-s75-mid { min-height: calc(3 * var(--key-h)); }
+  .screen-cell { flex: 1 1 auto; width: auto; min-width: 0; margin: 0; }
+  .lcd-wrap { width: auto; height: 100%; max-width: 100%; }
+  .status-row { width: 100%; }
+  .aux-keys-left, .aux-keys-right { width: var(--tab-min); }
 }
 
 /* ---------------- control panels ---------------- */
@@ -653,19 +839,19 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 #serial.nowrap { white-space: pre; word-break: normal; overflow-x: auto; }
 
 /* ---------------- performance HUD ---------------- */
-/* Two lines and never a third: under the status pill on desktop, and an
-   overlay strip on the top edge of the screen box at phone widths. Both
-   drop whole tokens off the end rather than wrap or shrink (app.js), so the
-   height here is fixed whatever the width is. */
+/* Two lines and never a third, as an overlay on the top edge of the screen
+   box: it costs the column no height, so turning it on cannot move the
+   keypad or resize the screen. The lines drop whole tokens off the end
+   rather than wrap or shrink (app.js), so the height is fixed whatever the
+   width is. Type is sized off the box it sits on. */
 .hud {
-  position: relative;
-  /* the phone column is only as wide as the keypad; the strip spills into
-     the empty flanks the side keys are reserved in, which is 148px more of
-     line and still dead centre under the pill */
-  width: calc(100% + 2 * var(--flank, 0px)); margin-inline: calc(-1 * var(--flank, 0px));
-  font: 11px/1.4 ui-monospace, "Cascadia Mono", monospace;
+  position: absolute; top: 0; left: 0; right: 0; z-index: 2;
+  padding: 3px 6px; text-align: left; pointer-events: none;
+  background: rgba(0, 0, 0, 0.6); border-radius: 6px 6px 0 0;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: clamp(9px, calc(var(--box-w) * 0.026), 12px); line-height: 1.4;
   font-variant-numeric: tabular-nums;
-  text-align: center; color: var(--text);
+  color: #d7f0dd;
 }
 /* `pre`, not `nowrap`: the tokens are padded to a fixed width so the line
    does not jitter, and `nowrap` would collapse that padding away.
@@ -721,161 +907,4 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 .sheet legend { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .sheet, .sheet-scrim { transition: none; }
-}
-
-/* ---------------- phone layout ---------------- */
-/* One column the height of the visible viewport and no page scroll: a single
-   32px control row, the screen with the two edge-key columns taking every
-   pixel that is left, and the keypad pinned to the bottom. The status row and
-   the keypad keep their natural heights and the screen row is handed the
-   remainder, so the keypad is never clipped or scrolled — see the
-   `min-height` note below for the one rule that quietly breaks that. */
-@media (max-width: 599px) {
-  /* --app-h is visualViewport.height, published by syncAppHeight() in app.js:
-     100dvh is not the area on screen on Chrome for Android while the URL bar
-     is showing (100dvh is the pre-JS fallback). `min-height: 0` is not
-     redundant either — the base rule floors body at `min-height: 100vh`,
-     min-height beats height, and that 100vh stays at the URL-bar-*retracted*
-     height, flooring the column ~80px taller than the viewport it has to fit
-     in. Both are invisible headless, where 100vh == innerHeight. */
-  html, body { height: var(--app-h, 100dvh); min-height: 0; overflow: hidden; }
-  body { display: flex; flex-direction: column; }
-  header { display: none; }
-  /* 8px each side is what §2's 48px of non-screen width is measured from;
-     the block padding and the gaps are trimmed to 6px so the screen box
-     gets every pixel the control row and the keypad do not need.
-     The insets are belt-and-braces: the page is deliberately not
-     `viewport-fit=cover` (see index.html), so the viewport already stops
-     above the system bars and every inset reads 0 — but if that meta ever
-     comes back, these keep the keypad's last row off Android's gesture
-     bar instead of under it. */
-  main {
-    flex: 1; min-height: 0; display: flex; flex-direction: column;
-    gap: 0;
-    padding:
-      calc(6px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right))
-      calc(6px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
-  }
-  .phone-panel {
-    --flank: 0px;                /* no side-key gutters to spill into */
-    flex: 1; min-height: 0; width: 100%; gap: 6px;
-    padding-inline: 0; zoom: 1;
-  }
-
-  /* one row: state/firmware pill | screenshot | record | settings */
-  .status-block { gap: 0; width: 100%; }
-  .status-row { width: 100%; height: 32px; gap: 6px; }
-  .status {
-    flex: 1; min-width: 0; height: 32px; gap: 6px;
-    padding: 0 4px 0 8px; font-size: 0.75rem;
-  }
-  .status-dot { width: 6px; height: 6px; }
-  .status[data-state="downloading"] .status-dot,
-  .status[data-state="booting"] .status-dot { width: 8px; height: 8px; }
-  .status-open { flex: 1; min-width: 0; }
-  .status-open:not(:disabled) .status-chev { display: block; }
-  .pill-btn { height: 24px; padding: 0 0.7rem; font-size: 0.72rem; }
-  .icon-btn { width: 28px; height: 28px; }
-  .icon-btn svg { width: 0.95rem; height: 0.95rem; }
-  #btn-settings { display: grid; }
-  /* nothing in the row is red until something is actually recording */
-  #btn-record:not(:disabled) { color: var(--muted); }
-  #btn-record:not(:disabled):hover { color: var(--accent); }
-  #btn-record .rec-dot { display: none; }
-  #btn-record .rec-cam { display: block; }
-  .rec-pill { height: 28px; padding: 0 2px 0 7px; gap: 0.35rem; font-size: 0.72rem; }
-  .rec-pill .pill-btn { height: 24px; padding: 0 0.5rem; font-size: 0.7rem; }
-  /* the pill's own text is the reason; a caption would be a second row */
-  .status-caption { display: none; }
-
-  /* screen row: edge keys | screen box | edge keys, 2px gaps (§2).
-     `flex: 1; min-height: 0` is what makes the column correct by
-     construction: the status row and the keypad keep their natural heights,
-     the row is handed exactly what is left, and the three can never add up to
-     more than the column. The screen box is then fitted *inside* the row, so
-     no arithmetic of ours can push the keypad off the bottom. */
-  .screen-row {
-    position: static; flex: 1; min-height: 0; width: 100%;
-    display: flex; align-items: flex-start; gap: 2px;
-  }
-  .screen-cell {
-    display: flex; flex: 1; min-width: 0; height: 100%;
-    align-items: flex-start; justify-content: center;
-  }
-  /* Edge tabs, top-aligned 34px below the top of the screen box. `--tab-w` is
-     set by fitScreen(): the screen box keeps its ratio, so on most phones it
-     cannot use the full width, and the tabs take what is left over instead of
-     leaving it blank either side. 14px is the floor (what is left when the box
-     *is* width-limited), 44px the ceiling. The columns are sized by their
-     buttons so a board with keys on one side only — `generic` has no
-     auxRight — collapses the empty column instead of reserving width for it. */
-  .aux-keys-left, .aux-keys-right {
-    position: static; transform: none; flex: none;
-    width: auto; gap: 8px; padding-top: 34px;
-  }
-  .aux-keys-left button, .aux-keys-right button {
-    width: var(--tab-w, 14px); height: 40px; min-height: 0; padding: 0;
-    justify-content: center; line-height: 1;
-    font-size: clamp(0.7rem, calc(var(--tab-w, 14px) * 0.32), 1rem);
-  }
-  .aux-keys-left button { border-radius: 4px 0 0 4px; }
-  .aux-keys-right button { border-radius: 0 4px 4px 0; }
-  .aux-keys-left .key-icon, .aux-keys-right .key-icon,
-  .aux-keys-left .key-icon-line, .aux-keys-right .key-icon-line {
-    width: clamp(11px, calc(var(--tab-w, 14px) * 0.4), 18px);
-    height: clamp(11px, calc(var(--tab-w, 14px) * 0.4), 18px);
-  }
-  /* 14px of tab is nothing to hit: each key claims a 32x44 target reaching
-     out into the page padding, without growing the tab itself */
-  .aux-keys-left button::before, .aux-keys-right button::before {
-    content: ""; position: absolute; top: 50%; transform: translateY(-50%);
-    width: 32px; height: 44px;
-  }
-  .aux-keys-left button::before { left: -8px; }
-  .aux-keys-right button::before { right: -8px; }
-  .aux-keys-left .key-main, .aux-keys-right .key-main { display: none; }
-  .aux-keys-left .key-short, .aux-keys-right .key-short { display: block; }
-  /* no room for a shortcut label on a 14px tab */
-  body.show-key-hints .aux-keys-left .key-hint,
-  body.show-key-hints .aux-keys-right .key-hint { display: none; }
-
-  /* the box is sized by fitScreen() in app.js to the device's own ratio, so
-     the canvas fills it exactly — no letterbox inside it and no bezel bars
-     around it */
-  .lcd-wrap { flex: none; }
-  #lcd {
-    width: 100%; height: 100%; border-width: 0; border-radius: 6px;
-    box-shadow: 0 0 0 1px var(--border);
-  }
-  .lcd-overlay { inset: 0; border-radius: 6px; }
-  /* the box is bigger here than the 264px desktop one, so the dump gets the
-     point of type it was one short of */
-  .exit-overlay { inset: 0; padding: 6px; }
-  .exit-card { font-size: 11px; }
-
-  /* app.js moves the HUD in here: an overlay on the top edge of the screen
-     box, so it costs the layout column no height at all and the keypad-fit
-     rule above is untouched. 9px is what makes the full six-token line fit
-     a 342px box — the fitting rule drops tokens, it never shrinks type. */
-  .hud {
-    position: absolute; top: 0; left: 0; right: 0; width: auto; z-index: 2;
-    padding: 3px 6px; text-align: left; pointer-events: none;
-    background: rgba(0, 0, 0, 0.6); border-radius: 6px 6px 0 0;
-    font-size: 9px; color: #d7f0dd;
-  }
-
-  /* the keypad is the floor of the layout: it scales with the viewport and
-     is never the thing that gets clipped */
-  .keypad {
-    --key-h: clamp(30px, calc(var(--app-h, 100dvh) * 0.065), 44px);
-    flex: none; margin-top: auto; width: 320px; max-width: 100%;
-  }
-  .keypad .krow > button { min-height: var(--key-h); }
-  .keypad button { padding-block: 0; justify-content: center; }
-  /* the nav cluster is exactly three rows tall, and the S75 key columns
-     beside it divide the same height — so the whole keypad scales with
-     --key-h instead of one block setting its own floor */
-  .keypad .kpad { height: calc(var(--key-h) * 3); min-height: 0; }
-  .keypad .kflank > button { min-height: 0; }
-  .keypad .kflank .kspan2 { padding-block: 0; }
 }
