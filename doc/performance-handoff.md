@@ -150,8 +150,15 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    |---|---|---|
    | **interpreter tier** (run cold code interpreted, compile only what repeats) | up to **12.5 %** — that is the whole pipeline; halving module count is ~6 % | keep the TCG op stream alongside the wasm |
 
-   Round 21 firmed the arithmetic and closed the alternatives. The cost
-   is `~80 µs fixed × miss count`; **bytes are capped at 2.2 % of wall**
+   Rounds 21–22 firmed the arithmetic and closed the alternatives. A
+   translation costs **~12 µs** against ~96 µs for the module a miss
+   forces, so speculation pays at a **12.5 % hit rate** and already
+   converts at **66 %** — there is headroom to guess far more wildly,
+   but the one extra edge tried (the address after an unconditional
+   transfer) removed no misses and, after an indirect exit, panicked the
+   EL71 firmware (§ REJECTED; **read that before extending speculation**
+   — it means a speculation "hint" can change guest behaviour, and the
+   cause is still unknown). The cost is `~80 µs fixed × miss count`; **bytes are capped at 2.2 % of wall**
    (`W64_BYTEPAD` fit), the live-module count is not a factor
    (`modgrow.mjs`), bigger modules are not the lever (`dispatch-probe`:
    128-per-module vs one module is 8–13 % of the dispatch, and batches
@@ -294,6 +301,52 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 
 
 ## Round log (newest first)
+
+## Update (2026-09-16, round twenty-two: speculation has headroom, but not this edge — 0095)
+
+Round twenty-one left item 1 with one number missing: what a translation
+costs, against the ~96 µs a miss costs in module time.  It is **~12 µs**,
+and it was got by solving a two-point system on the fixed-work meter
+rather than by a phase timer — a `WASM_DIAG_TIME_PHASES` build is 2.2×
+slower overall (its `tlb_fill_align` timer runs at 54k/s) and its shares
+are unusable, which is worth knowing before anyone reaches for it again.
+
+`W64_SPEC_N` 0 vs 32, el71, 100–1400 Mi:
+
+| | tbGen | misses | modules |
+|---|---|---|---|
+| 32 (default) | 160 655 | 33 621 | 33 817 |
+| 0 (off) | 117 881 | 117 881 | 118 342 |
+
+So speculation spends **127k extra translations to remove 84k misses** —
+a **66 % conversion against a 12.5 % break-even**.  It is already a 16:1
+win, and there is room to guess much more wildly than it does.
+
+The edge tried was the address after an unconditional transfer: goto_tb
+records only the branch target, an indirect exit records nothing, so the
+next basic block is never pre-translated.  **It makes 89 % more
+speculative translations and removes no misses** — rejected on its own
+merits — and then, guessed after an *indirect* exit, it panics the EL71
+firmware in 4.5 s at a fixed guest pc.  s75 and cx70 survive it; EL71 is
+the board that programs its flash file system while booting.
+
+That second half outlives the experiment.  `w64_speculate` is documented
+as a hint that cannot change guest behaviour, and it can.  Three causes
+were ruled out by experiment (tb_flush — the shipping build survives 11
+and 38 forced flushes, which also exercises 0091's tidx recycling for the
+first time and finds it sound; ISA alignment; and a stale TB over
+reprogrammed flash).  A real gap was found on the way and recorded rather
+than fixed: **the pmb887x flash model and `pflash_cfi01` both write their
+rom device's backing RAM directly and neither invalidates TBs for the
+range**, which `nrf51_nvm.c` shows is required.  It is latent — something
+has to translate the range before it is written — but a speculative
+translator makes that ordinary, so it is a prerequisite for item 1 rather
+than a curiosity.
+
+`W64_LINSPEC` ships off, as the reproducer.  New tool:
+`tools/abortlog.mjs` — the failure was a firmware panic on the serial
+console, which `workbench.mjs` reports only as a Node crash three layers
+up.
 
 ## Update (2026-09-16, round twenty-one: the dispatch, and then the tier — 0091–0094)
 

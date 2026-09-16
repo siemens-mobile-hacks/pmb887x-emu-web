@@ -87,6 +87,11 @@ const snap = () => p.evaluate(() => {
     // the thing batching exists to avoid -- if it dominates, batching is not
     // reaching the TBs the guest actually runs.
     closeN: g(48), compactN: g(49), ensureN: g(50), specMiss: g(80),
+    // 87 = wall ns the vCPU spent inside WebAssembly.Module+Instance.
+    // Always on, so on a fixed-guest-work run `wall - modNs` is
+    // everything-but-compile and two runs can be differenced to price
+    // a phase whose rate changed (see --dist A/B with W64_SPEC_N).
+    modNs: g(87), tbIcount: g(89),
   };
 });
 
@@ -146,7 +151,8 @@ console.log(`WORKBENCH ${boardId} ${dist} MIPS=${(mi / wall).toFixed(1)} wall=${
   `jcFlush=${d("jcFlush")} tlbFlush=${d("tlbFlush")} tlbFlushRange=${d("tlbFlushRange")} ` +
   `fill=${d("fill")} tbGen=${d("tbGen")} ` +
   `confl=${d("conflict")} lcCall=${d("lcCall")} lcFill=${d("lcFill")} keyGen=${d("keyGen")} ` +
-  `halt=${d("halt")} mods=${d("mods")} close=${d("closeN")} compact=${d("compactN")} ` +
+  `halt=${d("halt")} mods=${d("mods")} modMs=${(d("modNs") / 1e6).toFixed(0)} ` +
+  `icount=${d("tbIcount")} close=${d("closeN")} compact=${d("compactN")} ` +
   `ensure=${d("ensureN")} temp=${d("mods") - d("closeN") - d("compactN") - d("ensureN")} ` +
   `miss=${d("specMiss")} tbFlush=${d("tbFlush")} load=${load}`);
 await b.close();
