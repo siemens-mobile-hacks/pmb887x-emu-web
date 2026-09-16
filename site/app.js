@@ -2599,11 +2599,10 @@ function syncHud() {
 
 function stopHudTimer() { clearInterval(hudTimer); hudTimer = 0; }
 
-// the toggle takes effect immediately, mid-run or before one; with no choice
-// stored it starts on at phone widths, which is where the strip is the only
-// way to read the numbers without a debugger
-const storedHud = localStorage.getItem("opt-hud");
-hudChk.checked = storedHud == null ? phoneLayout.matches : storedHud === "1";
+// the toggle takes effect immediately, mid-run or before one; it starts off
+// on every layout — the strip is an instrument, and on a phone it covers the
+// top of the screen box, which is the one thing the page is there to show
+hudChk.checked = localStorage.getItem("opt-hud") === "1";
 hudChk.addEventListener("change", () => {
   localStorage.setItem("opt-hud", hudChk.checked ? "1" : "0");
   syncHud();
