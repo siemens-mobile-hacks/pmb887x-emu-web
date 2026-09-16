@@ -308,27 +308,40 @@ main {
 /* edge keys | screen | edge keys. The cell is exactly the box and the tabs
    are exactly `--tab-w`, so the row is the assembly and nothing but it: the
    whole thing sits centred under the control row. */
+/* `align-items: stretch`, not `flex-start`: the cell tops its own box out
+   instead. A flank told to be `height: 100%` cannot resolve that percentage
+   where the row's height comes from a grid track rather than from flex, so
+   it would size itself to its keys — a seven-key board then grows the row
+   past the column and takes the keypad off the bottom with it. Stretched, it
+   is handed the row's height and its keys shrink into it. */
 .screen-row {
   flex: 1; min-height: 0; width: 100%;
-  display: flex; justify-content: center; align-items: flex-start;
+  display: flex; justify-content: center; align-items: stretch;
   gap: var(--row-gap);
 }
 .screen-cell {
-  flex: 0 0 auto; width: var(--box-w); height: 100%;
+  flex: 0 0 auto; width: var(--box-w); min-height: 0;
   display: flex; justify-content: center; align-items: flex-start;
 }
 /* A board with keys on one flank only — the generic Siemens has no
    right-hand column — would hang half a tab off centre and stop lining up
    with the keypad under it. Balance the row with the same width on the empty
    side, but only out of width nothing else wants: where the box is
-   width-limited there is none, and it keeps every pixel it had. */
-.phone-panel:has(.aux-keys-left button):not(:has(.aux-keys-right button)) .screen-cell {
-  margin-right: min(calc(var(--tab-w) + var(--row-gap)),
-    max(0px, calc(100cqw - var(--box-w) - var(--tab-w) - var(--row-gap))));
-}
-.phone-panel:has(.aux-keys-right button):not(:has(.aux-keys-left button)) .screen-cell {
-  margin-left: min(calc(var(--tab-w) + var(--row-gap)),
-    max(0px, calc(100cqw - var(--box-w) - var(--tab-w) - var(--row-gap))));
+   width-limited there is none, and it keeps every pixel it had.
+   The media condition is the exact complement of the landscape block's,
+   because there the keypad is standing in that width and there is nothing
+   under the screen to line up with anyway. It is a media query and not a
+   reset further down for a reason: `:has()` lends these selectors more
+   specificity than a plain `.phone-panel .screen-cell` could beat. */
+@media (min-height: 621px), (max-width: 559px) {
+  .phone-panel:has(.aux-keys-left button):not(:has(.aux-keys-right button)) .screen-cell {
+    margin-right: min(calc(var(--tab-w) + var(--row-gap)),
+      max(0px, calc(100cqw - var(--box-w) - var(--tab-w) - var(--row-gap))));
+  }
+  .phone-panel:has(.aux-keys-right button):not(:has(.aux-keys-left button)) .screen-cell {
+    margin-left: min(calc(var(--tab-w) + var(--row-gap)),
+      max(0px, calc(100cqw - var(--box-w) - var(--tab-w) - var(--row-gap))));
+  }
 }
 .lcd-wrap {
   position: relative; width: 100%;
@@ -542,12 +555,23 @@ body.show-key-hints .key-hint { display: block; }
    touch target. A column with no keys for this board is not laid out at all
    (no width, and no gap either). */
 .aux-keys-left, .aux-keys-right {
-  flex: none; width: var(--tab-w); height: 100%; padding-top: 34px;
-  display: flex; flex-direction: column; gap: 8px;
+  flex: none; width: var(--tab-w); min-height: 0;
+  /* 34px below the top of the screen, and 8px apart — until the row is short
+     enough that the offset and the gaps are what the keys needed. The
+     `generic` board puts seven of these down one flank, which is what sets
+     the floor: with these they fit any row over ~138px, well under the
+     shortest window the keypad itself supports. */
+  padding-top: min(34px, calc(var(--box-h) * 0.12));
+  display: flex; flex-direction: column;
+  gap: min(8px, calc(var(--box-h) * 0.028));
+  /* no `overflow: hidden` here, however tempting: it would clip the keys'
+     own touch targets, which deliberately reach 8px out past the tab. The
+     column is stretched to the row and its keys shrink into it, so there is
+     nothing to clip until well below the shortest supported window. */
 }
 .aux-keys-left:empty, .aux-keys-right:empty { display: none; }
 .aux-keys-left button, .aux-keys-right button {
-  flex: 0 1 40px; min-height: 22px; width: 100%; padding: 0;
+  flex: 0 1 40px; min-height: 14px; width: 100%; padding: 0;
   line-height: 1; font-size: clamp(0.7rem, calc(var(--tab-w) * 0.32), 1rem);
   --icon: clamp(11px, calc(var(--tab-w) * 0.4), 20px);
 }
@@ -578,6 +602,11 @@ body.show-key-hints .aux-keys-right .key-hint { display: none; }
     display: grid; align-content: center; justify-content: center;
     grid-template-columns: auto auto; grid-template-rows: auto minmax(0, 1fr);
     column-gap: 1rem; row-gap: var(--col-gap);
+    /* the column layout's `align-items: center` is a *horizontal* centring;
+       in the grid the same property is the block axis, and leaving it would
+       content-size the screen row instead of handing it its track — which is
+       how a seven-key flank grew the row past the bottom of the window */
+    align-items: stretch; justify-items: center;
 
     --key-h: clamp(26px, min(
       calc((100cqh - var(--head-h) - var(--col-gap) - 6 * var(--kgap)) / 7),
@@ -589,15 +618,24 @@ body.show-key-hints .aux-keys-right .key-hint { display: none; }
            - var(--cols) * (var(--tab-min) + var(--row-gap))),
       calc(var(--box-h) * var(--ar)));
     --asm-w: min(100cqw, calc(var(--box-w) + var(--pad-w) + 1rem
-      + var(--cols) * (var(--tab-max) + var(--row-gap))));
+      + var(--cols) * (var(--tab-w) + var(--row-gap))));
+  }
+  /* The spare the tabs may take is what is left once the *keypad* has had
+     its share — beside the screen, not under it. Taking the column-layout
+     figure here would hand them width the keypad is standing in and push it
+     off the side of the window. */
+  .phone-panel:has(.aux-keys-left button),
+  .phone-panel:has(.aux-keys-right button) {
+    --tab-w: clamp(var(--tab-min), calc(100cqw - var(--pad-w) - 1rem
+      - var(--box-w) - var(--row-gap)), var(--tab-cap));
+  }
+  .phone-panel:has(.aux-keys-left button):has(.aux-keys-right button) {
+    --tab-w: clamp(var(--tab-min), calc((100cqw - var(--pad-w) - 1rem
+      - var(--box-w) - 2 * var(--row-gap)) / 2), var(--tab-cap));
   }
   .phone-panel > .status-block { grid-column: 1 / -1; grid-row: 1; }
   .phone-panel > .screen-row { grid-column: 1; grid-row: 2; }
   .phone-panel > .keypad { grid-column: 2; grid-row: 2; align-self: center; }
-  /* the screen shares the width with the keypad here, so there is no spare to
-     balance an empty flank out of — and nothing under the screen to line up
-     with either */
-  .phone-panel .screen-cell { margin: 0; }
 }
 
 /* touch screens: a fingertip cannot land on the 17px edge strips the

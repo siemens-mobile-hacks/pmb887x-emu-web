@@ -248,7 +248,23 @@ linear Unix seconds, LG packed calendar).
   - Short and wide (`max-height: 620px`, from 560px) puts the keypad *beside*
     the screen instead of under it — a phone on its side, or a shallow
     window. Same pieces and the same arithmetic; only the axis the two share
-    changes.
+    changes. Three things about that block have already gone wrong once, and
+    a phone in landscape with the seven-key `generic` flank is what shows all
+    three:
+    - **`align-items` means a different axis in the grid.** The column
+      layout's `align-items: center` centres the pieces *horizontally*; left
+      alone in the grid it stops stretching the screen row to its track, so
+      the row content-sizes to the flank and grows past the bottom of the
+      window. The block sets `align-items: stretch` for that reason.
+    - **A flank must be stretched, never `height: 100%`.** That percentage
+      cannot resolve against a grid track, so the column sizes itself to its
+      keys instead of shrinking them into the row.
+    - **The tabs' spare width is what the keypad has not taken.** Reusing the
+      column layout's figure hands them width the keypad is standing in and
+      pushes it off the side. The one-flank centring margin is scoped by the
+      exact complement media query rather than reset inside the block,
+      because `:has()` gives those selectors more specificity than a plain
+      descendant reset can beat.
   - **`min-height` on `html, body` must stay 0.** A `min-height: 100vh` here
     beats the `height` we set, and Chrome for Android resolves `100vh` to the
     URL-bar-*retracted* height — so the column gets floored ~80px taller than
