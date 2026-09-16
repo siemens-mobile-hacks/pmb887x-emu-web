@@ -185,9 +185,18 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    *size* per call, merging a batch's members into one `br_table`
    function multiplies both size and call count and would tier up ~N²
    sooner, against a br_table per TB entry and a coarser dispatch target.
-   **Measure the drain rule first** (calls to tier-up vs body size —
-   `tools/locals-probe.mjs` can be pointed at it); do not build on the
-   guess.
+   **That was measured and the premise is false**: `tools/tierup-probe.mjs`
+   puts tier-up at **~1–2.4 × 10⁴ calls across an 85× range of body sizes**
+   (329 B, 2849 B, 28051 B all land in the same decade; the calls × size
+   product spans 47×, so it is per-call, not size-weighted). Merging N
+   members therefore buys N, not N² — 5× at the 4.9 members a batch
+   actually holds — against a `br_table` on every one of ~12.8 M TB
+   entries a second. Not worth building. What the number *does* explain:
+   a TB needs ~15k entries to leave the baseline tier, and the average
+   live TB sees ~250 entries a second, so only the genuinely hot ones ever
+   get there. Compaction re-instantiates a member into a new module and
+   resets its budget, but it does so roughly once per TB and within ~1024
+   translations of its creation, so it costs almost nothing.
 
    The generalizable half is already usable: **work moved out of emitted
    code into a C helper lands in the main qemu module, which is hot

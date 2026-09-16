@@ -786,8 +786,17 @@ The numbers, all from `tools/locals-probe.mjs` and `--js-flags`:
 - `--wasm-tiering-budget=1000` is **−3.1 %, 3/3 interleaved** — that is
   the share still executing baseline code in the shipping build,
   ≈3.6 % of TB entries.
-- A function called ~1000 times does **not** tier up at the default
-  budget. Assume anything short-lived never leaves the baseline tier.
+- **Tier-up takes ~1–2.4 × 10⁴ calls, and does not depend on function
+  size** (`tools/tierup-probe.mjs`, across an 85× size range). So a
+  function called ~1000 times does not tier up, and anything short-lived
+  never leaves the baseline tier. It also means merging functions to make
+  them tier up sooner buys N, not N² — the budget drains per call.
+- Two ways to mis-measure this, both paid for once: a warm-then-measure
+  ladder cannot work (the measuring calls drain the budget too, so
+  measuring is what causes the transition), and the body must be *live* —
+  a dead one is removed by the optimizing tier's DCE so every trial reads
+  as already-tiered, while a straight dependent add/xor chain compiles
+  identically in both tiers and reads as never-tiered.
 
 And the call you were avoiding is nearly free: a TB module's call into
 the main module is **2.1–2.4 ns** optimized, 3.6–4.4 ns baseline, the
