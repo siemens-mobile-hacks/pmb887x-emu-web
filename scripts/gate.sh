@@ -15,7 +15,10 @@
 #   --dist D     dist under site/ to gate (default dist-jit)
 #   --port P     server port for the browser gates (default 8080)
 #   --jobs N     max concurrent jobs (default 6; each browser gate peaks
-#                around 2 GB RSS, so this is a memory bound, not a CPU one)
+#                around 2 GB RSS, so this is a memory bound, not a CPU
+#                one).  Note lockstep-full runs its three comparisons
+#                with --par 3 internally, so it is worth ~3 slots and
+#                ~6 GB on its own -- it is not counted as such here.
 #   --only a,b   run just these jobs;  --skip a,b  drops them
 #   --list       print the jobs of each tier and exit
 #
