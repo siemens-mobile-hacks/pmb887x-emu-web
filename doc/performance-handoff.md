@@ -102,25 +102,52 @@ metric. The icount boards settle within ~1 % run to run; ke800 and cx70
 swing several percent. Use `workbench.mjs` for anything that has to
 resolve a patch.
 
-Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
+**Round 25 landed the interpreter tier and the cost model below it
+changed shape.** EL71, 12 s windows: **347 → 576.7 Mi, +66.2 %**.
+Modules 18 650 → 698, module time 2.02 s → 0.34 s, members per module
+5.4 → 152. Three things did it, in order of size: the tier itself
+(+29.7 %), defaulting speculation off because the tier removes the thing
+it was buying (+23 %), and raising the batch cap to 256 (+3.5 %).
 
-- The translate-and-compile pipeline is **19.5 %** of an EL71 boot, so
-  the boot is **not** compile-bound; the other ~80 % is guest code plus
-  the device and lookup paths.
-- **A module costs ~86 µs per close + ~2.8 µs per member** (round 24,
-  fitted over a **48× range of members** by moving the close policy —
-  `W64_SPEC_N` 4/32/64, `W64_BATCH_N` 16/32/128 and `W64_NOCLOSEEXEC`,
-  six real points on one line; playbook § 0f). At the shipping 4.85
-  members the per-member term is 13.6 µs against 86, so **96 % of the
-  boot's 3.5 s of module time is the fixed cost of closing too often**.
-  Bytes, members, batch size and live-module count are all closed as
-  levers; **the close count is the only one left**.
-- **Module count is speculation-miss count**: a batch opens on a lookup
-  miss and closes when its first member runs, so `close` == `specMiss`.
-  It never reaches `W64_BATCH_N`=128 — **modules average 4.85 TBs**.
-  Speculation is starved of *edges*, not budget: `W64_SPEC_N` 4/32/64
-  gives 2.64/4.85/5.39 members per close, so doubling the shipping
-  budget buys 0.5 members and 24 ms for 7 % more translations.
+Cost model of a boot, from counters (rounds 17–19, spread 0.04 %;
+**the module and pipeline lines below were re-measured in round 25 and
+are marked where they changed**):
+
+- **The pipeline is ~21 % of an EL71 boot and is now mostly
+  translation, not compilation** (round 25, `WASM_DIAG_TIME_PHASES`
+  plus temporary timers around `translate_code`, `tcg_optimize +
+  liveness` and `tcg_gen_code`). Per translated TB, 25.5 µs total:
+  frontend (guest decode → TCG IR) **4.5**, optimize + liveness **5.3**,
+  register allocation + wasm emission **8.0**, the batch close now
+  charged here **3.7**, `tb_gen_code`'s own bookkeeping **4.1**. At
+  ~105 k translations per 12 s window that is 2.1 s of translation
+  against 0.34 s of module time.
+- **A batch close is charged to `tb_gen_code` now, not to execution.**
+  With the tier a batch fills before any member has to run, so the close
+  fires inside `tcg_out_tb_finalize`. Anything comparing `tbGenNs`
+  across a tier-on/tier-off pair is comparing translation *plus module
+  time* against translation alone — that cost a round-25 measurement
+  4.57 µs/TB of phantom "recorder overhead" before it was caught.
+- **The recorder costs under 1 µs per TB** — under 5 % of a translation
+  and under 1 % of wall. It cannot be priced by turning it off against a
+  normal run, because a build with no records has no tier: module time
+  goes from 0.34 s to 4.2 s and the guest gets half as far, so the two
+  legs are different regimes, not an A/B (32.9 µs/TB against 25.0, with
+  the *slower* leg being the one without the recorder). The legs that do
+  share behaviour are record-but-discard against record-not-at-all:
+  **32.9 vs 32.4 µs**. Live records are **48 KB**, because a record is
+  dropped when its TB lands in a module.
+- **Round 24's module law holds only at the close rate that produced
+  it.** ~86 µs per close + ~2.8 µs per member was fitted at 4.85 members
+  per module, where the fixed term is 96 % of the cost. At 152 members
+  the per-member term dominates and **the close count is no longer the
+  lever** — module time is now proportional to emitted bytes.
+- **"Module count == speculation-miss count" is retired.** Speculation
+  is off by default with the tier, and a batch closes on fill. Module
+  count is now translations ÷ members-per-module, and members-per-module
+  is capped by the union import/type tables (`W64_UMAX_IMPORTS` 192,
+  `W64_UMAX_TYPES` 64) well before `W64_BATCH_N`: at a cap of 512 the
+  batches still average ~200, at 1024 ~236.
 - **`new WebAssembly.Module` is 79 % of a module** (83.8 µs of 106.4;
   Instance 9.0, pre 5.2, addFunction 2.8, imports 1.2, GC nudge 0.45),
   and it has **no cheap corner**: linear in function count with a
@@ -163,112 +190,55 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 
 ## Open items (ranked)
 
-1. **The module pipeline is the last big target, and after the round-20
-   probe there is exactly one way at it: the interpreter tier.**
-   Compile time is `83 µs × module count`, module count is miss count
-   (0080), speculation is already at its budget optimum (`W64_SPEC_N`=64
-   is a measured tie), and observed edges cannot predict because an edge
-   is recorded only after the guest took it. The **AOT cache route is
-   closed** (2026-09-16, probed in both engines before building — see
-   the playbook's REJECTED table): neither V8 nor SpiderMonkey stores a
-   compiled `WebAssembly.Module` in IndexedDB, byte-persistence costs
-   more than the recompile it avoids (0.56–0.60× in V8, 0.90–0.91× in
-   Firefox at
-   real module size), a put per batch close alone would cost 4.4–13.3 s
-   per boot, and Cache-API `compileStreaming` gives synthetic responses
-   no code-cache hit. What remains:
+**Item 1 of every hand-off since round nineteen — the interpreter tier —
+landed in round 25 (0101–0103), and with it the module pipeline stops
+being the target.** Modules are 0.34 s of a 12 s window (2.8 %), down
+from 2.02 s. What the tier did *not* do is reduce translation, and
+translation is now the biggest single item at ~2.1 s (17 %).
 
-   | route | prize | what it needs |
-   |---|---|---|
-   | **interpreter tier** (run cold code interpreted, compile only what repeats) | **+2.2 s of a ~27 s EL71 boot, ~8 %** — both sides now measured, not assumed (playbook § 0g) | keep the TCG op stream alongside the wasm, a promotion counter per TB, and an interpreter entry from the wasm64 dispatcher |
+1. **Cold TBs are still fully compiled, and the tier is what makes that
+   avoidable — but only from the TCG IR.** Every translated TB runs the
+   whole of `tcg_gen_code` (optimize + liveness 5.3 µs, regalloc +
+   emission 8.0 µs) and joins a batch, even though the threshold means
+   most of them are interpreted for their first 64 entries and round
+   23's distribution says 74 % of entered TBs never run more than 31
+   times. The threshold delays *use* of a module; it does not prevent
+   its creation.
 
-   **Round 24 measured the cost side, which was the last assumption.**
-   The saving was always easy: defer the close and batches fill to
-   `W64_BATCH_N`, so closes drop **35 873 → 1 353** and module time
-   **3.54 s → 0.548 s**. The cost is how much runs interpreted while a
-   batch fills, and that depends on an interleaving of translation and
-   execution order only the real thing produces — so it was measured on
-   the real thing: `W64_NOCLOSEEXEC=1` is exactly that deferral, and
-   `closePreEnt` sums each member's exact `W64_TBHIST` count at close.
-   **7 001 592 entries — 1.45 % of all entries — run before their batch
-   closes**, and 55.2 % of members had run at all (the other 44.8 % are
-   compiled before first use and never need interpreting). At 109 ns per
-   interpreted entry that is 0.76 s to save 2.99 s. Both ends of the
-   trade curve are now measured — the shipping build is the other end,
-   35 873 closes and nothing interpreted — so a deadline policy moves
-   along a line between two known points rather than into the unknown.
+   **Deferring only the wasm emission does not pay, and this is
+   measured, not argued.** The record is produced *by* the emitters,
+   from post-register-allocation operands, so a record-only translation
+   still costs the frontend, optimize, liveness and regalloc — it skips
+   the byte writing alone, at most ~4 µs of 25.5. Re-translating the
+   ~25 % that promote costs 25.5 µs each, i.e. 4.9 µs spread over every
+   TB. **Break-even needs emission to exceed 4.9 µs and it does not.**
 
-   **Feasibility, checked this round.** `qemu/tcg/tci.c` is in the tree
-   *and has already been tuned for wasm*: `tci_call_tag` gives helper
-   calls with ≤5 integer words a direct `call_indirect` instead of
-   libffi's `ffi_call_js` (~1.7 µs through JS). The hard part is not the
-   interpreter, it is having two backends in one build — this QEMU uses
-   the `TCGOutOp` struct dispatch (46 `outop_*` in `tcg/wasm64/`), so
-   capture has to hook the ~15 `container_of(all_outop[...])` sites in
-   `tcg_reg_alloc_op` after register allocation, where args are already
-   target registers and constants.
+   The version that *does* pay records at **IR level**, before
+   `tcg_gen_code`, with an interpreter over TCG temps rather than target
+   registers. A cold TB then costs the frontend plus the record (~9.6 µs
+   against 25.5) and a promoted one pays a full re-translation:
+   0.75 × 9.6 + 0.25 × 35.1 = **16.0 µs against 25.5, ~8 % of wall**.
+   The cost is a second interpreter — TCI's shape without TCI's bytecode
+   step — and it would replace the one round 25 just built. Price the
+   promotion share on the real thing first: the 25 % is round 23's
+   pre-tier distribution, not a measurement of this build.
 
-   Rounds 21–22 firmed the arithmetic and closed the alternatives. A
-   translation costs **~12 µs** against ~96 µs for the module a miss
-   forces, so speculation pays at a **12.5 % hit rate** and already
-   converts at **66 %**. That looked like headroom, and it is not:
-   **speculating harder is closed by measurement** (0097). The miss
-   stream is 31 397 events at 31 397 *distinct* pcs — zero repeats — and
-   only **10.2 % of them appear anywhere in the 64 MB flash image as a
-   pointer**. The other 89.8 % are reached by computed addresses (jump
-   tables whose entries are branch *instructions*, index-scaled
-   dispatch), which no literal, pointer or relocation scan can see. That
-   caps **every** static-edge idea at ~1.2 % of wall. Misses also
-   cluster only weakly — 10.2 per touched page against ~529 basic blocks
-   in a page, so eager page translation is 7× negative. Two edges were
-   tried before this was known: call returns bought 2.6 % of misses
-   (0092), and the address after an unconditional transfer bought nothing
-   and **panicked the guest** (§ REJECTED; **read that before touching
-   speculation** — a speculation "hint" can change guest behaviour and
-   the cause is still unknown). The cost is `~80 µs fixed × miss count`; **bytes are capped at 2.2 % of wall**
-   (`W64_BYTEPAD` fit), the live-module count is not a factor
-   (`modgrow.mjs`), bigger modules are not the lever (`dispatch-probe`:
-   128-per-module vs one module is 8–13 % of the dispatch, and batches
-   average 4.9 members anyway), and misses are **edge-limited, not
-   budget-limited** (`W64_SPEC_N` 8 == 128; the walk makes 3.5 TBs per
-   miss against a budget of 32). Two edge classes were measured: the
-   call-return address is real but small (**0092, −2.6 % misses**), and
-   speculating from the link register when a TB has no static successor
-   is **−7.6 % of wall for nothing** (§ REJECTED).
+   A cheaper slice of the same idea, if the big one is not wanted:
+   **defer only batch membership** until a TB is hot. Emission stays as
+   it is, so nothing needs re-translating; module *bytes* drop by the
+   cold share and module time is now proportional to bytes. Worth
+   ~1.5–2 % for the cost of keeping a TB's call fixups until promotion.
 
-   **Both probes are done (round 23) and both came back green.** The
-   round log has the numbers; the operative summary:
-
-   (a) **An interpreter transfers to wasm at 1.0×.** `tools/interp-probe.c`
-   compiles one TCI-shaped dispatch loop with `gcc -O2` and with
-   `emcc -O3` and they run at the same speed (7.30/7.42/7.43 ns per op
-   native against 7.26/7.42/7.22 in wasm). The emitted TB code it would
-   replace runs in V8's *baseline* tier at 2.7× native, so the browser is
-   the **favourable** environment for this design. Natively the same EL71
-   window is 131.1 MIPS on the JIT against 21.4 on TCI; decomposed
-   against wasm64's 20.4 ns/insn that is **~118 ns extra per interpreted
-   TB entry**, against ~83 µs for the module a first execution forces.
-
-   (b) **The entry-count distribution is bimodal, with an enormous gap.**
-   `W64_TBHIST=1` (per-TB entry counter in the prologue, exact). EL71:
-   27.2 % of translated TBs are **never entered at all**; of those that
-   are, **35.9 % run exactly once** and **74.0 % run ≤ 31 times**, while
-   0.08 % of TBs take **half of all entries**. Promoting at 32 entries
-   therefore leaves 74 % of entered TBs interpreted forever for **0.25 %
-   of all TB entries** ever interpreted. S75 agrees (36.5 % / 72.7 % /
-   0.27 %). The prize nets **+1.8 s of a ~27 s boot (~6 %)** on today's
-   3.55-members-per-close, +0.25 s if a promotion always forces its own
-   close and +2.35 s if batches fill to 128 — flat from T = 16 to
-   T = 256, so the threshold is not delicate.
-
-   **What is left to settle can only be settled by building it**: which
-   batch closes actually survive, because that depends on the
-   interleaving of translation and execution order. Instrument it first
-   in any prototype. Second risk: Asyncify. The interpreter sits under
-   `tcg_qemu_tb_exec` and calls helpers that can longjmp, so it is an
-   onlylist candidate, and round fourteen priced that instrumentation as
-   expensive — `interp-probe.c` is uninstrumented, so its 1.0× is an
-   upper bound.
+1a. **Closed in round 25, with numbers — do not retry these.**
+   `W64_NOCLOSEEXEC` (round 24's deferral knob) now *raises* module
+   count, 1091 → 2277, because the tier already removed the early closes
+   it was built to defer. The promotion threshold is flat from 16 to 256
+   (557/570/574 Mi) — it is not a lever, which is what round 23
+   predicted. The batch cap pays once, 128 → 256 (+3.5 %, modules
+   1092 → 700), and then stops: 256 → 512 is a tie on throughput
+   (608 vs 600 Mi) because the union import and type tables bind at
+   ~200 members before `W64_BATCH_N` does. Raising *those* is the only
+   way further, and the remaining prize behind them is under 2 %.
 
 1b. **Merging a conditional branch's fall-through into its own TB —
    ≤ 2.7 % of wall, and it needs an icount correction.** Sized in round
@@ -446,6 +416,92 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 
 
 ## Round log (newest first)
+
+## Update (2026-09-16, round twenty-five: the interpreter tier, and what it retired — 0101–0103)
+
+**EL71, 12 s windows: 347 → 576.7 Mi, +66.2 %.** Modules 18 650 → 698,
+module time 2.02 s → 0.34 s, members per module 5.4 → 152. Three
+landings, in order of size: the tier (+29.7 %), speculation defaulted
+off because the tier removes what it was buying (+23 %), and the batch
+cap raised to 256 (+3.5 %).
+
+### The tier
+
+The backend records every emitter's already-register-allocated operands
+into a flat `uint32_t` stream (`tcg/wasm64/w64-interp.h`) and a C
+interpreter in the main module runs a TB before its module exists, so a
+batch is no longer closed early by the first member that has to run.
+Coverage is total: `irecN == tbGen` exactly, so no TB is
+un-interpretable, and `itryNorec` is 0 — a record is never missing when
+it is wanted.
+
+**Two invariants broke outside the backend, both silently.**
+
+*32-bit signed compares.* Operands are held zero-extended, so comparing
+them at 64 bits makes `(int64_t)(uint32_t)-1` positive. `gen_tb_start`'s
+icount test is `count - n < 0`, which therefore never fired, and the
+guest wedged with its instruction budget uncharged. This is the bug
+class to expect first in any future work on the interpreter.
+
+*`tb_add_jump` linking into a target with no module.* A compiled
+`goto_tb` tail-calls the target's shared-table entry, and
+`tb_set_jmp_target`'s own comment says why that used to be safe:
+"tb_add_jump is immediately followed by executing the target, so its
+table entry is live by then". The tier is precisely the thing that makes
+a target run for a long time without one. The guard must go **before**
+the `cmpxchg` that claims `jmp_dest[n]`, or the pair is marked linked
+and can never link later.
+
+### What the tier retired
+
+- **Speculation.** Round 22 priced it soundly: a translation costs
+  ~12 µs against ~96 µs for the module a miss forces, break-even 12.5 %,
+  actual conversion 66 %. The tier invalidates the numerator — a miss no
+  longer forces a module — and break-even moves to ~100 %. The sweep is
+  monotone with no interior optimum: **593/571/540/514 Mi at a budget of
+  0/2/8/32**. Round 23's separate "27.2 % of translated TBs are never
+  entered" was measuring the same waste.
+- **Round 24's module law.** ~86 µs per close + ~2.8 µs per member was
+  fitted at 4.85 members, where the fixed term is 96 % of the cost. At
+  152 members the per-member term dominates, module time is proportional
+  to emitted bytes, and **the close count is no longer the lever**.
+- **`W64_NOCLOSEEXEC`.** Round 24's deferral knob now *raises* module
+  count, 1091 → 2277: the tier already removed the early closes it was
+  built to defer.
+- **The promotion threshold.** Flat from 16 to 256 (557/570/574 Mi).
+  Raising it does cut modules hard — at a 512 cap, T = 64/1024/8192
+  gives 527/348/319 modules — but interpreted entries rise in step
+  (353 k/944 k/1.96 M) and throughput does not move. Both ends of the
+  trade are visible and they cancel.
+- **Deferring wasm emission for cold TBs.** Priced and rejected without
+  building it. The record is produced *by* the emitters, so a
+  record-only translation still pays the frontend, optimize, liveness
+  and regalloc — it skips byte-writing alone, at most ~4 µs of 25.5 —
+  while re-translating the ~25 % that promote costs 4.9 µs spread over
+  every TB. Break-even needs emission above 4.9 µs and it is not.
+
+### Method notes from this round
+
+- **`?env=` takes ONE assignment per parameter.** `site/app.js` does
+  `getAll("env")` and splits at the first `=`, so
+  `&env=A%3D1%26B%3D2` sets `A` to the literal `1&B=2` and never sets
+  `B` at all — silently, with no error and a plausible-looking result.
+  Three measurements in this round were invalidated by it, including a
+  "the recorder costs 4.57 µs" figure that was really speculation being
+  on in one leg. **Pass each variable as its own `&env=`.**
+- **`tbGenNs` changed meaning when the tier landed.** A batch now fills
+  before any member runs, so its close fires inside
+  `tcg_out_tb_finalize` — i.e. inside `tb_gen_code`. Any tier-on/off
+  comparison of `tbGenNs` compares translation *plus module time*
+  against translation alone.
+- **You cannot A/B the recorder by disabling it**, because a build with
+  no records has no tier: the two legs differ in module time by 12×
+  and in guest progress by 2×. Compare record-but-discard against
+  record-not-at-all instead, which share behaviour exactly.
+- The per-TB translation decomposition (temporary timers around
+  `translate_code`, `tcg_optimize + liveness`, `tcg_gen_code`): frontend
+  **4.5 µs**, optimize + liveness **5.3**, regalloc + emission **8.0**,
+  batch close **3.7**, `tb_gen_code` bookkeeping **4.1**.
 
 ## Update (2026-09-16, round twenty-three: the probe, priced — and what pricing it cost — 0098)
 
