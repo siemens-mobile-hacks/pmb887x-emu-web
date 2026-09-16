@@ -46,7 +46,8 @@ is now rung 7) → 0054 the per-word MMIO dispatch decision (~2 points of
 non-guest work; both wall-clock meters flat) → 0055 the emitter
 peephole (−3.7 % emitted bytes/TB, flat on all three speed meters) →
 **open now**: the J2ME throughput target (§ Remaining 0, now ~0.58×),
-the AOT cache now that it is costed (§ Remaining 5), and — the honest
+the interpreter tier now that the AOT cache is probed out (§ Remaining
+5), and — the honest
 read after 0054/0055 — **both cheap directions are now exhausted**.
 The device chain is a long tail of ~1–3 % items with no single
 removable piece (re-checked against a fresh profile in § Remaining 7,
@@ -54,9 +55,9 @@ three candidates sized and rejected without building), and the guest's
 49 % is not reachable by codegen volume: it is smeared over thousands
 of TBs (§ Remaining 0b) and four independent measurements now say
 emitted bytes and op count are not what it is bound by.  So the next
-*structural* win has to be a **design** change — § Remaining 5 (AOT
-cache, ~21 % of the early vCPU, large and with a correctness surface
-the gates do not cover today) or collapsing the per-word DMA
+*structural* win has to be a **design** change — § Remaining 5 (the
+interpreter tier, ~5.7 %: halving module count, needs the TCG op
+stream kept alongside the wasm) or collapsing the per-word DMA
 request/acknowledge dance (§ Remaining 7, changes what the guest could
 observe between words) — not another peephole.  Round nine's real
 product is arguably the negative results and the two new meters in
@@ -461,6 +462,7 @@ commit, then `ninja-fast.sh` and the ladder.
 
 | Experiment | Result | Why |
 |---|---|---|
+| **The AOT module cache** (persist translated-and-compile output — `WebAssembly.Module` or its bytes — keyed by flash hash, so second boots skip the pipeline; ceiling priced at ~19.5 % of boot) (2026-09-16, probed before building) | **Dead on the platform side, both engines.** (1) Neither V8 nor SpiderMonkey will store a `WebAssembly.Module` in IndexedDB at all — `DataCloneError` on `put` in both (in-memory `structuredClone` works, 1.5/0.9 µs, but that is not persistence). (2) The bytes fallback was measured at real module size (2.47 KB × 2000, `tools/wasmclone-probe.mjs`): restore = getAll + `new Module(bytes)` + instantiate costs **56 µs/mod against 30–34 µs/mod to just compile fresh in the same isolate — 0.56–0.60× in V8 across two runs**, and **0.90–0.91× in SpiderMonkey** (179–183 vs 164 µs). (3) Writing at every batch close (one IndexedDB transaction per module) costs **0.13 ms/put (V8), 0.39 ms (FF) — ×34k modules = 4.4–13.3 s per boot, more than the whole 2.82 s compile prize**; even one bulk transaction is ~0.5–0.9 s of first-boot write. (4) The escape route — Chromium's HTTP wasm code cache via `compileStreaming` from the Cache API — gives **no code-cache hit for synthetic responses** and the streaming path itself is 12× slower than plain compile in V8 (418 vs 34 µs; `tools/wasmcache-probe.mjs`) | The browsers refuse to persist compiled modules, and byte-persistence costs more than the recompile it avoids: the read alone (~18 µs/mod at ~150 MB/s) is half a cold compile. Even the most AOT-favourable framing (83 µs cold saved vs ~30 µs restored) buys under ~1.5 s of a 25 s boot, minus the first-boot write, for a correctness surface the gates do not cover (qht/chain restore, flash-change invalidation). **The interpreter tier is the only remaining route into the module pipeline.** Side finding worth keeping: SpiderMonkey compiles the same 2.5 KB module ~7× slower than V8 (150 vs 20 µs) — the 83 µs/module economy is V8's; on Firefox the pipeline share of boot has never been measured |
 | **A cached import namespace for generated modules** (one persistent `imports.e` object plus a `Map` memoising `wasmTable.get(BigInt(fptr))`, replacing a fresh object, a `'f'+i` concatenation, a BigInt and a table lookup per import per module) (2026-09-16) | **0.7 % of the thing it optimises.** The four-way split of `MOD_NS` puts building the import object at **0.026 s of 3.66 s** over a 25 s EL71 boot, against 2.82 s in `new WebAssembly.Module`. Reverted unbuilt-upon | The reasoning was sound and the premise was wrong: a close module has **2.1 imports** (`modUimp` 74 461 / 34 722 modules), not the twenty the `W64_UMAX_IMPORTS`-sized machinery suggests. **Measure the phase before optimising the loop inside it** — the split cost twenty lines and settled it, and the same split is what found the 83 us. Nothing here is worth retrying unless imports per module rise by an order of magnitude |
 | **Observed goto_ptr edges as speculation successors** (`helper_lookup_tb_ptr_lc` knows the calling TB — its `slot` is `&tb->w64_lc` — so record the target it actually resolved into a `w64_isucc[2]` on that TB and let `w64_speculate` walk it; aimed at the 18.8 % of misses whose TB has no static successor at all) (2026-09-16) | **2 225 628 edges recorded, 474 TBs translated by following one.** `specMiss` went the wrong way, 34 547 -> 35 032 (+1.4 %), and `tbGen` +1.5 % for it | **An observed edge is evidence about the past.** It is recorded only after the guest took it, by which point the target is translated — so it can only ever predict a TB that already exists, and is useful solely after a `tb_flush` (which a boot does not do: `tbFlush` = 0). This is the third attempt to lower `specMiss` by giving the walk more edges, after call-return points and the `ldr pc` trampoline. **Stop adding edges.** Module count is miss count, and a miss is the guest reaching code no predecessor has ever named; only a scheme that runs cold code *without* a module can move it |
 | **`arm_rebuild_hflags` as an 11 % target** (the profile's single largest vCPU entry on an idle CX70, apparently contradicting round fifteen's rejection of the `cpsr_write` hflags skip) (2026-09-15) | Not a target and never was: an unconditional entry counter (`hflagsCalls`, index 85) puts the call rate at **11,606/s**, so 11.0 % of a 30 s profile would be **9.5 us per call** for a function priced at ~76 ns.  A 10,000-iteration volatile spin placed in it took the board 113 MIPS -> **0.7 MIPS**, confirming both the rate and that the knob reaches the code | **The profiler names the wrong function.**  Profiling the spin build -- where all the work provably sits in `arm_rebuild_hflags` and calls nothing -- reported `rebuild_hflags_a32` **67.3 %**, `arm_rebuild_hflags` 20.3 %, `arm_security_space` 9.5 %, `cpsr_write` 1.0 %.  A name in a wprof2 profile identifies a neighbourhood, not a function.  Round fifteen's A/B was right and its profile was not.  Price a function from a counter times a per-call cost, or by a volatile-spin probe -- never from self-time; and see doc/lessons.md for the two ways a cost probe silently measures nothing |
@@ -578,27 +580,18 @@ commit, then `ninja-fast.sh` and the ladder.
    remaining dispatcher exits are `TB_EXIT_REQUESTED` (~25k/s early —
    icount budget ends at every virtual deadline) and goto_tb first
    links (~3k/s).
-5. **AOT cache — OPEN, and the one idea round nineteen made *bigger*.**
-   Persist translated batches (Cache API/IndexedDB, keyed by flash hash)
-   for zero-translation second boots. Re-costed against § 0c's counter
-   numbers rather than the old profile: the whole translate-and-compile
-   pipeline is **19.5 % of an EL71 boot**, and an AOT cache is the only
-   scheme that can take *all* of it — it does not make a module cheaper,
-   it removes the `new WebAssembly.Module` call entirely, which is where
-   the 83 µs lives. That is a ceiling of ~19 % against the interpreter
-   tier's ~5.7 % (hand-off item 1), for a different kind of work:
-   serialise the TB set + code buffer, restore the qht/chain table,
-   invalidate on flash change, and a correctness surface the gates do
-   not cover today.
-
-   Two things to settle before building it: whether a cached
-   `WebAssembly.Module` restored from IndexedDB actually skips
-   compilation in V8 and SpiderMonkey (structured-clone of a Module is
-   specified to, but round nineteen's finding that four fifths of the
-   cost is *cold cache* rather than compilation means the saving could
-   be much smaller than the 83 µs suggests), and what it costs on the
-   first boot to write ~90 MB out. **Measure a restored module's cost
-   with `W64_MODBENCH`'s method before committing to the design.**
+5. **AOT cache — CLOSED (2026-09-16, probed and rejected; see the
+   REJECTED row).**  Neither engine persists a compiled
+   `WebAssembly.Module` (IndexedDB refuses the put in V8 *and*
+   SpiderMonkey), byte-persistence measured 0.56× in V8 and 0.91× in
+   Firefox at real module size, a put-per-batch-close costs more than
+   the entire compile prize, and the Cache API + `compileStreaming`
+   code-cache route gives synthetic responses no benefit.  The ~19 %
+   ceiling was real but unreachable from the browser; the interpreter
+   tier's ~5.7 % (halving module count) is what remains of the module
+   pipeline, and its own probe — is an interpreted first execution of
+   a ~3.9-insn TB ~100× cheaper than the module it avoids? — is the
+   gate before any of it is built.
 6. **Backend tail — the TB lookup path: 0046 landed the inline cache
    (2026-09-13).**  It was ~12.6 % of the vCPU mid-boot by profile:
    `helper_lookup_tb_ptr` 7.4 %, `qht_lookup_custom` 3.0 %,

@@ -119,29 +119,30 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 
 ## Open items (ranked)
 
-1. **The module pipeline is the last big target, and there are exactly
-   two ways at it.** Compile time is `83 µs × module count`, module count
-   is miss count (0080), speculation is already at its budget optimum
-   (`W64_SPEC_N`=64 is a measured tie), and observed edges cannot predict
-   because an edge is recorded only after the guest took it. So no knob
-   or heuristic is left — only a design change, and the two candidates
-   have very different ceilings:
+1. **The module pipeline is the last big target, and after the round-20
+   probe there is exactly one way at it: the interpreter tier.**
+   Compile time is `83 µs × module count`, module count is miss count
+   (0080), speculation is already at its budget optimum (`W64_SPEC_N`=64
+   is a measured tie), and observed edges cannot predict because an edge
+   is recorded only after the guest took it. The **AOT cache route is
+   closed** (2026-09-16, probed in both engines before building — see
+   the playbook's REJECTED table): neither V8 nor SpiderMonkey stores a
+   compiled `WebAssembly.Module` in IndexedDB, byte-persistence costs
+   more than the recompile it avoids (0.56–0.60× in V8, 0.90–0.91× in
+   Firefox at
+   real module size), a put per batch close alone would cost 4.4–13.3 s
+   per boot, and Cache-API `compileStreaming` gives synthetic responses
+   no code-cache hit. What remains:
 
    | route | ceiling | what it needs |
    |---|---|---|
-   | **AOT cache** (persist translated batches, keyed by flash hash) | **~19.5 %** of boot — the whole pipeline, because it removes the `new WebAssembly.Module` call rather than making it cheaper | serialise the TB set + code buffer, restore the qht/chain table, invalidate on flash change; a correctness surface the gates do not cover |
    | **interpreter tier** (run cold code interpreted, compile only what repeats) | ~5.7 % — halving module count saves 17k × 83 µs = 1.43 s of 25 s | keep the TCG op stream alongside the wasm |
 
-   **Probe before building either**, and the probes are small. For the
-   AOT cache: does a `WebAssembly.Module` restored from IndexedDB
-   actually skip compilation in V8 and SpiderMonkey? Structured clone is
-   specified to preserve compiled code, but four fifths of the 83 µs is
-   *cold cache* rather than compilation, so the saving may be far less
-   than the headline — measure a restored module with `W64_MODBENCH`'s
-   method, and measure what writing ~90 MB costs the first boot. For the
-   interpreter tier: is an interpreted first execution of a
+   **Probe before building**: is an interpreted first execution of a
    ~3.9-instruction TB really ~100× cheaper than the module it avoids?
-   Playbook § Remaining 5 carries the AOT detail.
+   The TCI dist already answers the cost side per-op; the open question
+   is the dispatch overhead of entering a one-off interpreter run from
+   the wasm64 dispatcher without paying a module boundary.
 
 2. **A compile is 4–6× cheaper warm.** Nothing batches compile events
    except compaction, which is already nearly free. If a second pending
@@ -282,6 +283,53 @@ Also corrected this round: the workspace-ready claim that `site/dist` is
 built — it holds only guest images; its TCI engine is absent, so the
 wasm-TCI op-suite leg skips (that is the documented normal state, but
 the claim was wrong).
+
+### The AOT-cache probe: the ~19.5 % ceiling is unreachable, item 1
+halved
+
+The hand-off's discipline is *probe before building*, and item 1's two
+probes were both page-side, so this round ran the AOT one to ground
+(`tools/wasmclone-probe.mjs`, `tools/wasmcache-probe.mjs`, both kept;
+synthetic modules shaped like a real batch — 2 imports, 69 declared
+locals, ~2.5 KB — measured in Chromium and Firefox, fresh DB per run):
+
+- **Neither engine persists a compiled module.** `put` of a
+  `WebAssembly.Module` into IndexedDB throws `DataCloneError` in V8
+  ("can not be serialized for storage") *and* SpiderMonkey. The
+  spec's "structured clone preserves compiled code" holds only for
+  the in-memory clone (1.5/0.9 µs — cheap, and useless: that is just
+  not dropping the module).
+- **Persisting bytes loses to recompiling.** At real module size,
+  restore = getAll + `new Module(bytes)` + instantiate measured
+  **56 µs/mod against 30–34 µs/mod for compiling fresh in the same
+  isolate — 0.56–0.60× in V8 across two runs**; **0.90–0.91× in
+  Firefox**. The getAll read
+  (~18 µs/mod at ~150 MB/s) is half a cold compile by itself.
+- **Writing costs more than the prize.** One transaction per put —
+  what writing at every batch close means — is **0.13 ms (V8) / 0.39 ms
+  (FF)**; ×34k modules = **4.4–13.3 s per boot**, against the whole
+  2.82 s compile prize. A single bulk transaction is ~0.5–0.9 s of
+  first-boot write.
+- **The code-cache escape route is closed too.** V8's HTTP wasm code
+  cache does not apply to Cache API responses:
+  `compileStreaming(cache.match(...))` showed **no gen1→gen2 improvement
+  in either engine**, and the streaming path itself is 12× slower than
+  plain `new Module` in V8 (promise/Response machinery: 418 vs 34 µs).
+
+Conclusion, recorded in the playbook's REJECTED table: **the AOT cache
+is dead on the web platform** — not on its qemu-side merits. The
+interpreter tier (~5.7 %) is the module pipeline's only remaining
+route, and its probe question is now item 1's only open probe.
+
+Two side findings: **SpiderMonkey compiles the same 2.5 KB module ~7×
+slower than V8** (150 vs 20 µs) — the 83 µs/module economy is V8's and
+the Firefox boot's pipeline share has never been measured; and a
+hard-killed browser can leave an IndexedDB database **wedged** so every
+new transaction on it hangs forever — the probes now use a fresh DB
+name per run and attach transaction handlers before issuing the put
+(the chained `txDone(db.transaction(...).put(...))` form crashed the
+renderer on its first transaction after a wasm-heavy preamble;
+handlers-first ran 500× clean).
 
 ### Open at the end of round twenty
 
