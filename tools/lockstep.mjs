@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Lockstep driver (phase 0b, doc/wasm-tcg-backend-plan.md §5): run the
+// Lockstep driver (phase 0b): run the
 // same deterministic boot on two TCG backends with the tests/lockstep.so
 // plugin and value-diff the guest-state digests.
 //

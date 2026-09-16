@@ -1,5 +1,5 @@
 #!/bin/bash
-# Phase-0b gate runner (doc/wasm-tcg-backend-plan.md §5): build the
+# Phase-0b gate runner: build the
 # lockstep plugin, then N value-level lockstep comparisons of full S75
 # boots between the two native TCG backends (JIT = reference vs TCI).
 #

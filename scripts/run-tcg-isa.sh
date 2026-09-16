@@ -1,5 +1,5 @@
 #!/bin/bash
-# Phase-0a gate runner (doc/wasm-tcg-backend-plan.md §5): build the guest
+# Phase-0a gate runner: build the guest
 # op-suite image, run it on every backend that is built — native TCG JIT,
 # native TCI, the wasm64 page (site/dist-jit) and the wasm TCI page
 # (site/dist) — and byte-compare all serial logs against the native JIT.

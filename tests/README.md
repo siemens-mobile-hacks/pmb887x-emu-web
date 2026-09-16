@@ -78,8 +78,7 @@ verdicts are in (fast path); the `--timeout` deadline is the worst case.
 ## Lockstep (phase 0b — cross-backend value equality)
 
 Whole-boot, value-level comparison of guest state between two TCG
-backends — the containment net the wasm64 backend was built under
-([doc/wasm-tcg-backend-plan.md](../doc/wasm-tcg-backend-plan.md) §5);
+backends — the containment net the wasm64 backend was built under;
 `tools/lockstep-wasm.mjs` runs the same comparison against the wasm page.
 Caveat learned on 2026-09-12: the gate forces `one-insn-per-tb`, so it
 cannot see multi-insn-TB bugs (0034 slipped through it) —

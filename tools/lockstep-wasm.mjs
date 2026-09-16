@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Lockstep driver, wasm leg (phase-1 gate, doc/wasm-tcg-backend-plan.md §5):
+// Lockstep driver, wasm leg (phase-1 gate):
 // value-level diff of guest-state digests per executed-insn epoch between
 // the native reference JIT (tests/lockstep.so plugin) and the wasm64
 // backend running in a headless browser (built-in fold, env-driven).

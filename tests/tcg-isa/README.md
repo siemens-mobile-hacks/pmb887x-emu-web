@@ -1,8 +1,7 @@
 # tcg-isa — guest op-suite (phase 0a)
 
-The bare-metal ARM926EJ-S test image from
-[doc/wasm-tcg-backend-plan.md](../../doc/wasm-tcg-backend-plan.md) §5
-phase 0a: it exercises the guest instruction classes that map onto the
+The bare-metal ARM926EJ-S test image of phase 0a: it exercises the
+guest instruction classes that map onto the
 TCG ops the wasm64 backend implements, asserts
 oracle-computed `(value, NZCV)` pairs and *dumps* every computed value —
 one stream, three uses:
@@ -80,7 +79,7 @@ softfloat runs as helpers).
 
 ## Emulator-pinned expectations
 
-Authored against the native JIT (the plan's §5 reference) where the
+Authored against the native JIT (the reference backend) where the
 architecture is unpredictable or differs from silicon:
 
 - unaligned `ldr`/`str` (pre-v6): natural little-endian access, no

@@ -1,5 +1,4 @@
-// Run the phase-0a guest op-suite on a wasm page and print the serial log
-// (doc/wasm-tcg-backend-plan.md).
+// Run the phase-0a guest op-suite on a wasm page and print the serial log.
 //
 //   node tcgisa.mjs [port] [dist] [outfile] [ENV=VAL ...]
 //

@@ -859,9 +859,7 @@ Round eleven (0058–0064) profiled the device access path and found that
   per TB, a C dispatch loop between instances) measured a ~1.3–2.3×
   ceiling over TCI on this 3–4 insn/TB busy-polling firmware and was
   discarded. The redesign that shipped (tail-call chaining through a
-  funcref table, regs as locals, batched modules) is
-  [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md); its §1 records
-  what the failed attempt proved.
+  funcref table, regs as locals, batched modules) shipped as 0017.
 - **Value-level correctness needs its own harness.** The wasm32
   attempt's killer bug was a data divergence with an identical PC
   stream for 470k+ TBs; PC tracing cannot see that class. Hence the

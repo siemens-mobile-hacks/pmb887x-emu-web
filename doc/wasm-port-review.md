@@ -303,7 +303,7 @@ reachable in principle on the pmb887x firmware.
 - **Fix:** delete; keep `W64_DEBUG`'s one useful output (`W64BATCH close#`/`W64COMPACT #`) behind a single cached flag (`tools/repro.mjs` and the `?w64debug=1` page switch read it).
 
 ### W-19 — `W64_NOACCTINLINE` and `W64_NOTLB` A/B paths
-- **Severity:** REMOVE (~60 lines; perf: none — both measured and decided: `W64_NOACCTINLINE=1` 3.05× slower, `W64_NOTLB=1` 13–17× slower on ld/st per [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md)).
+- **Severity:** REMOVE (~60 lines; perf: none — both measured and decided: `W64_NOACCTINLINE=1` 3.05× slower, `W64_NOTLB=1` 13–17× slower on ld/st per the backend design record (removed 2026-09-16)).
 - **Location:** `tcg-target.c.inc:1152-1160, 2262-2269, 2312-2336, 2423-2427`; `wasm64.c:1876-1884` (`w64_tb_account`), `wasm64.c:501-507` (`if (!LS.inited) w64_ls_init()` — dead since `w64_init` arms it eagerly). 0017.
 - **Notes:** dropping `W64_NOACCTINLINE` also removes the `acc_*` import registration and the second import-table variant; dropping `W64_NOTLB` removes the `fast=false` arms of `tgen_qemu_ld/st`. Update [diagnostics.md](diagnostics.md) and `tools/tcgbench.mjs`.
 

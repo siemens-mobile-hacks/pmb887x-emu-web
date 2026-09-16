@@ -13,7 +13,6 @@
 | [diagnostics.md](diagnostics.md) | **The tooling**: page URL params, the full `?env=` knob inventory (A/B knobs vs measurement knobs vs verification knobs), wasm exports and the `wasm_memstat` counter ABI, which script does what, native trace runs |
 | [architecture.md](architecture.md) | How the browser emulator works: the two wasm engines (wasm64-backend dist-jit = default, TCI dist), the build pipeline from the `qemu/` submodule, the series' structural commits, the page, native reference builds, the testing ladder |
 | [upstream-branch.md](upstream-branch.md) | The qemu series branch (`wasm-browser-port` / `origin/wasm-patches`, = the `qemu/` submodule): how to work on it and bump the pin, the commit list with scope, safety properties for a native merge, the standalone RTC fix branch |
-| [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) | The wasm64 TCG backend's design record: what the first attempt proved, platform readiness, the tail-call/locals/batched-modules architecture, phases and gates |
 | [wasm-threads-audit.md](wasm-threads-audit.md) | Evidence that the browser build really runs multi-threaded (5 pthread workers), the thread census (1 vCPU + futex-parked waiters), the two profiling traps that faked a "syscall spin", and the no-symbols hand-symbolization recipe |
 | [serial-cross-tab.md](serial-cross-tab.md) | Exposing the emulator's serial port to another tab: what the browser allows (Web Serial can't be published; socat ptys invisible to Chrome), the tab-link design and the wasm chardev prerequisite |
 
@@ -32,7 +31,7 @@ carries a status banner, and a finding in them means "was true then":
 | Command | What it does |
 |---|---|
 | `scripts/ninja-fast.sh` | incremental rebuild + deploy to `site/dist-jit` (~8 s); `TCI=1` for `site/dist` |
-| `scripts/gate.sh quick\|keep\|close` | every correctness gate, run concurrently, one verdict table (measured 152 s / 152 s / 1175 s; 846 s and 2874 s if run serially) |
+| `scripts/gate.sh quick\|keep\|close` | every correctness gate, run concurrently, one verdict table (measured 152 s / 152 s / 719 s; 846 s and 2274 s if run serially) |
 | `scripts/run-tcg-isa.sh` | the guest op-suite on every built backend, serial logs byte-compared |
 | `scripts/run-lockstep.sh` | native JIT-vs-TCI value lockstep over full boots |
 | `scripts/build-qemu-wasm64.sh` | the safe mid-session full rebuild (`build-qemu.sh` resets the submodule to the pin first) |

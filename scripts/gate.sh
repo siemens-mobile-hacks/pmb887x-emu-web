@@ -6,11 +6,11 @@
 #   scripts/gate.sh close     # before the session's last commit
 #
 # Measured on this host (32 cores, 2026-09-16): quick 5 jobs / 152 s,
-# keep 11 jobs / 152 s -- both bounded by the single 150 s board boot
-# they all overlap with -- and close 15 jobs / 1175 s.  Summed serially
-# those are 846 s and 2874 s, which is the whole point.  `close` is
-# bounded by boot-ordered (602 s: four boards in one browser, in order,
-# and that sequence is the test) and by the 2.5e9 lockstep.
+# keep 11 jobs / 152 s, close 15 jobs / 719 s.  Summed serially those
+# are 846 s and 2274 s, which is the whole point.  quick and keep are
+# bounded by the single 150 s board boot they all overlap with; close
+# by boot-ordered (602 s -- four boards in one browser, in order, and
+# that sequence is the test condition, so it cannot be split).
 #
 #   --dist D     dist under site/ to gate (default dist-jit)
 #   --port P     server port for the browser gates (default 8080)

@@ -293,8 +293,7 @@ s75/el71/c81/ke800 natively and benchmarks before/after, and
 ## Performance work (see doc/performance-handoff.md + doc/optimization-playbook.md)
 
 The wasm64 TCG backend landed as 0017 (tail-call chaining,
-regs-as-locals, batched modules; design and gates in
-doc/wasm-tcg-backend-plan.md), then the
+regs-as-locals, batched modules), then the
 qemu-core device path (0018), the module economy (0019–0022), the halt
 path (0023–0030), the Asyncify onlylist + real-time cap (0031/0032),
 the RTC seed layout (0033), the EL71/KE800 fixes that made every board
@@ -320,7 +319,7 @@ SGOLD boards, the flat-view variant cache and the module pipeline, to
   a 32-core host, against 846 s serially) — a gate never reads a wall
   clock as a result, so unlike the benchmarks it is safe to parallelise.
   `gate.sh close` adds the ordered four-board boot, the native lockstep,
-  the 2.5e9 lockstep and Firefox (1175 s, against 2874 s serially);
+  the 2.5e9 lockstep and Firefox (719 s, against 2274 s serially);
   `node tools/stopwatch.mjs` is the in-guest pacing gate — it boots
   S75v40lg1, walks the keypad to Extras → Stopwatch and prints `vratio`,
   virtual seconds per wall second while a J2ME app redraws (1.0 = real

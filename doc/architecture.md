@@ -36,8 +36,7 @@ engines are served side by side, built from the same tree:
   table, with an inline TLB probe and inline TB accounting. The page
   default for every board (LG included since 0034–0038). ~7.4× TCI on
   compute (tcgbench), ~1.6× faster to the idle screen, ~28 MB wasm
-  (Asyncify onlylist, 0031). Design + history:
-  [wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md).
+  (Asyncify onlylist, 0031).
 - `site/dist/` — the **TCI interpreter** build (`TCI=1` at build time,
   `?dist=dist` on the page). The reference/fallback tier and the oracle
   for bisecting JIT-only failures (diff the same device trace between
@@ -134,8 +133,6 @@ exit, io barriers, romd FlatView variants). Numbers:
 0020, 0022, 0026, 0029, 0030, 0034, 0038 are its follow-ups
 (speculative batching, successor hints, goto_ptr handoff/tail call, no
 icount2 prologue, explored flag, retaddr fix, narrowed speculation).
-Its design doc is authoritative:
-[wasm-tcg-backend-plan.md](wasm-tcg-backend-plan.md) (design + gates).
 
 Generic qemu-core commits (help every backend including native): `0016`
 (romd FlatView variants + range-scoped flush), `0018` (fill-time MMIO
