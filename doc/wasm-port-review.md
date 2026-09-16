@@ -1,5 +1,18 @@
 # Review of the qemu `wasm-browser-port` series against master (2026-09-12)
 
+> **Status, as of 2026-09-16 — read this before treating any finding as
+> open.** This review was taken against a **43-commit** series; the branch
+> is now past patch 0088. Roughly thirty findings (the R-01…R-17 and
+> W-01…W-23 sets) were fixed and committed on 2026-09-13 — including
+> W-12, the EL71 second-page `Prefetch_Abort`, which was a real
+> firmware-visible bug. **The per-finding severity table below was not
+> re-marked one by one**, so a finding here is "was true on 2026-09-12",
+> not "is true now": check the code and `git -C qemu log` before acting
+> on one. The two companion documents
+> ([part 1](wasm-port-glm-review-part1.md),
+> [part 2](wasm-port-glm-review-part2.md)) are a second reviewer's pass
+> over the same 43-commit tree and carry the same caveat.
+
 Critical review of the `qemu/` submodule branch against qemu-pmb887x
 master, measured against the branch's acceptance criteria: **the best
 wasm performance possible, correctness maintained, and as little
@@ -607,7 +620,7 @@ Grouped by what it costs. Line counts are approximate.
 | `W64_SPEC_N` | `cpu-exec.c:706` (static) | docs | keep (default 32) |
 | `W64_NOTLB` | `tcg-target.c.inc:1157` (static, per ld/st translation) | docs only | REMOVE (W-19) |
 | `W64_NOACCTINLINE` | `tcg-target.c.inc:2266` (static) | `tools/tcgbench.mjs` example, docs | REMOVE (W-19) |
-| `W64_NOBATCH`, `W64_BATCH_N` | `wasm64.c:656-663` (static) | `tools/bootbench.mjs` comment, `site/app.js` comment, plan gates (`W64_BATCH_N=4`) | `W64_NOBATCH` dies with W-20; `W64_BATCH_N` keep (cheap, exercises union-table pressure) |
+| `W64_NOBATCH`, `W64_BATCH_N` | `wasm64.c:656-663` (static) | `site/app.js` comment, plan gates (`W64_BATCH_N=4`) | `W64_NOBATCH` dies with W-20; `W64_BATCH_N` keep (cheap, exercises union-table pressure) |
 | `W64_NOCLOSEEXEC` | `wasm64.c:1817` (static) | nobody (undocumented) | REMOVE (W-20) |
 | `W64_COMPACT_BATCHES`, `W64_COMPACT_MEMBERS`, `W64_LIVE_MAX` | `wasm64.c:615-646` (static) | `tools/idlebench.mjs`, [diagnostics.md](diagnostics.md); both sweeps rejected | keep as documented A/B knobs (W-14 bounds the count LEB) |
 | `W64_LOCKSTEP`, `_PERIOD`, `_EPOCH`, `_MEMINSNS`, `_INSNS`, `_FROM`, `_TO`, `_MEM` | `wasm64.c:440-470` (once, `w64_ls_init`) | page `?lockstep=1&ls-*`, `tools/lockstep-wasm.mjs` | keep (correctness gate); gate the emitted probes on it (W-21) |

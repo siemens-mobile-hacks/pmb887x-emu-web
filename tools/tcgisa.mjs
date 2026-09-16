@@ -1,25 +1,41 @@
-// Run the phase-0a guest op-suite on the wasm TCI page and print the
-// serial log (doc/wasm-tcg-backend-plan.md). The page is loaded with
-// ?suite=dist/tcgisa.bin&dist=dist (the TCI dist, explicitly — the page
-// default is dist-jit; the wasm64-backend leg is tools/tcgisa64.mjs); the suite boots -M versatilepb, prints TAP +
-// value dumps into /serial.log and then parks (the wasm pthread runtime
-// cannot take the semihosting exit path — the page would die before the
-// log could be collected), so this polls window.__qemu.FS until the
-// trailing "# result:" verdict appears. window.__suiteReport (installed
-// via exposeFunction) is kept as the exit-path bridge should that ever be
+// Run the phase-0a guest op-suite on a wasm page and print the serial log
+// (doc/wasm-tcg-backend-plan.md).
+//
+//   node tcgisa.mjs [port] [dist] [outfile] [ENV=VAL ...]
+//
+// The suite *image* always comes from site/dist/tcgisa.bin; the *engine*
+// is whichever dist the page is pointed at, so `dist-jit` runs it on the
+// wasm64 backend and `dist` on the TCI interpreter.  Both legs of
+// scripts/run-tcg-isa.sh use this one driver.
+//
+// The suite boots -M versatilepb, prints TAP + value dumps into
+// /serial.log and then parks: the wasm pthread runtime cannot take the
+// semihosting exit path (the page would die before the log could be
+// collected), so this polls window.__qemu.FS until the trailing
+// "# result:" verdict appears.  window.__suiteReport (installed via
+// exposeFunction) is kept as the exit-path bridge should that ever be
 // fixed.
 //
-//   node tcgisa.mjs [port] [outfile]
+// Trailing ENV=VAL arguments become ?env= page knobs, and EXTRA_Q appends
+// raw page query (e.g. EXTRA_Q=icount=1 — the suite boots without icount
+// by default, which is a different wasm64 prologue path).
 //
 // Exit code: 0 = suite green, 1 = failure/timeout (the log is still
 // printed + written to outfile if given).
 import { chromium } from "playwright-core";
 
 const port = process.argv[2] || "8080";
-const outFile = process.argv[3] || null;
-const timeoutMs = 10 * 60 * 1000;
+const dist = process.argv[3] || "dist-jit";
+const outFile = process.argv[4] || null;
+const envs = process.argv.slice(5);
+// The suite runs in well under a minute per backend; a longer wait only
+// means a hang, and a gate that waits ten minutes for one gets skipped.
+const timeoutMs = Number(process.env.TCGISA_TIMEOUT || 180) * 1000;
 
 let bridge = null; // { text, code } from the onExit bridge, if it fires
+
+const envQ = envs.map((e) => `&env=${encodeURIComponent(e)}`).join("");
+const extraQ = process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : "";
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
@@ -31,9 +47,17 @@ page.on("console", (m) => {
   const t = m.text();
   if (t.startsWith("[qemu]")) qemuLog.push(t);
 });
-page.on("pageerror", (e) => console.error("[pageerror]", String(e).slice(0, 500)));
+// A RuntimeError or an emscripten abort means no result line is ever
+// coming; waiting out the timeout for one only makes a gate slow enough
+// to get skipped.
+let fatal = null;
+page.on("pageerror", (e) => {
+  const s = String(e);
+  console.error("[pageerror]", s.slice(0, 800));
+  if (/RuntimeError|Aborted\(|out of memory/i.test(s)) fatal ??= s.slice(0, 200);
+});
 
-await page.goto(`http://127.0.0.1:${port}/?suite=dist/tcgisa.bin&dist=dist`,
+await page.goto(`http://127.0.0.1:${port}/?suite=dist/tcgisa.bin&dist=${dist}${envQ}${extraQ}`,
                 { waitUntil: "networkidle", timeout: 120000 });
 
 let serial = "";
@@ -41,6 +65,7 @@ const t0 = Date.now();
 for (;;) {
   await new Promise((r) => setTimeout(r, 1000));
   if (bridge) { serial = bridge.text; break; }
+  if (fatal) { console.error(`[tcgisa] ${dist}: page died: ${fatal}`); break; }
   try {
     const s = await page.evaluate(() => {
       const m = window.__qemu;
@@ -76,11 +101,11 @@ if (qemuLog.length) {
 await browser.close();
 
 if (!result) {
-  console.error("[tcgisa] no suite result line — boot/exit failure?");
+  console.error(`[tcgisa] ${dist}: no suite result line — boot/exit failure?`);
   process.exit(1);
 }
 if (notOk > 0 || !/fail=0$/.test(result)) {
-  console.error(`[tcgisa] SUITE FAILURES: ${result}, ${notOk} 'not ok' lines`);
+  console.error(`[tcgisa] ${dist}: SUITE FAILURES: ${result}, ${notOk} 'not ok' lines`);
   process.exit(1);
 }
-console.error(`[tcgisa] ${result} — wasm TCI leg green`);
+console.error(`[tcgisa] ${dist}: ${result} — green`);

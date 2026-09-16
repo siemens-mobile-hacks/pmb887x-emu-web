@@ -1181,12 +1181,26 @@ Round eleven (0058–0064) profiled the device access path and found that
 
 ## Gates
 
+- **A gate is not a measurement, so gates can run concurrently.**
+  Nothing in a gate reads a wall clock as a result, which means host
+  load cannot change a verdict — so there is no reason to run them one
+  after another, and every reason not to: the four-board browser gate
+  alone was ten minutes serial and is 2.5 minutes in parallel
+  (`scripts/gate.sh`). The same property is exactly what benchmarks
+  lack, so keep the two sets apart and never measure while a tier runs.
+- **A gate that is slow gets skipped, and a gate that skips silently is
+  worse than none.** Both failure modes were live here at once: the
+  op-suite waited out a 10-minute timeout on a leg that had been dead
+  since 2026-09-13, and announced `PASS` while printing "wasm leg
+  skipped" for the backend under test. Bail the moment a page throws —
+  no result line is coming — and make a skipped leg say so in the
+  verdict, not only in the log.
 - **Boot one fullflash per class, not one fullflash.** S75 was the only
   browser boot anyone watched for the whole 0019–0032 run; EL71 (the
   only one that programs flash during boot) and KE800 (the only one
   without icount) each hid a distinct bug the whole time while the
-  native suite stayed 4/4. The three-fullflash browser gate
-  (`tools/bootcheck.mjs`) is part of every final gate.
+  native suite stayed 4/4. CX70 joined for SGOLD. The four-board browser
+  gate (`tools/bootcheck.mjs`) is in every tier of `scripts/gate.sh`.
 - **The native suite is blind to every emscripten-gated change**, and a
   lockstep gate that forces `one-insn-per-tb` cannot see multi-insn-TB
   bugs. The TCI dist is the oracle for JIT-only failures: diff the same

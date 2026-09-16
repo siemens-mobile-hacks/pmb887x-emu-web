@@ -209,7 +209,10 @@ and the lockstep gate cover.
                         site/dist-jit; TCI=1: dist) — the iteration loop
     ninja-wasm64.sh     bare incremental ninja in the wasm64 build dir
     iterate.sh          one-command edit→rebuild→browser-verdict loop
-    run-tcg-isa.sh      guest op-suite gate (3 backends, byte-compared)
+    gate.sh             every correctness gate, run concurrently, one
+                        verdict table: quick | keep | close
+    run-tcg-isa.sh      guest op-suite gate (every built backend,
+                        byte-compared against the native JIT)
     run-lockstep.sh     native cross-backend lockstep gate
   site-src/recalc/      emcc glue around pmb887x-emu's siemens_recalc.cpp
                         (the only C++ here outside the submodules)
@@ -296,9 +299,11 @@ qemu-core device path (0018), the module economy (0019–0022), the halt
 path (0023–0030), the Asyncify onlylist + real-time cap (0031/0032),
 the RTC seed layout (0033), the EL71/KE800 fixes that made every board
 boot on the JIT (0034–0038), the display path + TLB growth (0039–0041)
-and the TB-lookup / hflags / range-flush work (0042–0045). The
-per-patch table with numbers is the playbook's "What landed"; open items
-are its "Remaining opportunities".
+and the TB-lookup / hflags / range-flush work (0042–0045); since then
+the device access path, the wake cost, wasm atomics and the BQL, the
+SGOLD boards, the flat-view variant cache and the module pipeline, to
+0088. The per-patch table with numbers is the playbook's "What landed";
+**the ranked open items are `doc/performance-handoff.md` § Open items**.
 
 - `site/dist-jit/` — the wasm64 TCG backend build, what the page runs
   by default for every board (`scripts/build-qemu-wasm64.sh`). Boots
@@ -306,12 +311,16 @@ are its "Remaining opportunities".
 - `site/dist/` — the TCI build (`TCI=1`), the reference/fallback tier
   and the oracle for bisecting JIT-only failures; `?dist=dist`.
 - Fast iteration: `scripts/ninja-fast.sh` (incremental, correct env,
-  atomic deploy) + `node tools/tcgbench.mjs` (seconds-per-leg A/B) +
-  `node tools/idlebench.mjs --quick` (~1 min per dist: boot window +
-  guest-work milestones, A/B ratios, regression verdict); full
-  `tools/idlebench.mjs` runs are the end-to-end gate;
-  `node tools/bootcheck.mjs --dist dist-jit` boots s75/el71/ke800 in
-  the browser (the three-fullflash final gate);
+  atomic deploy, ~8 s) + `node tools/workbench.mjs --board <b>` (wall
+  time over a fixed stretch of guest work — the keep/revert meter) +
+  `node tools/diagall.mjs` (every counter by name, 0.04 % spread, to
+  confirm the mechanism); `node tools/idlebench.mjs` is the end-to-end
+  boot number and `node tools/tcgbench.mjs` the device-path mirror.
+- Gates: **`bash scripts/gate.sh keep`** runs them all at once (152 s on
+  a 32-core host, against 846 s serially) — a gate never reads a wall
+  clock as a result, so unlike the benchmarks it is safe to parallelise.
+  `gate.sh close` adds the ordered four-board boot, the native lockstep,
+  the 2.5e9 lockstep and Firefox (1175 s, against 2874 s serially);
   `node tools/stopwatch.mjs` is the in-guest pacing gate — it boots
   S75v40lg1, walks the keypad to Extras → Stopwatch and prints `vratio`,
   virtual seconds per wall second while a J2ME app redraws (1.0 = real

@@ -88,109 +88,127 @@ Since 2026-09-12 the qemu tree is the `qemu/` submodule: a "patch" is
 a commit on its branch (numbering continues as before), and
 `versions.env` pins the tip — see [upstream-branch.md](upstream-branch.md).
 
+## Measure, then gate — they are different activities
+
+Two kinds of run, and confusing them is what makes a session both slow
+and wrong:
+
+- **A measurement** answers "how fast". It reads a wall clock, so host
+  load changes the answer. Run one at a time, on a quiet host, A and B
+  interleaved inside a single invocation.
+- **A gate** answers "is it still correct". Nothing in it reads a wall
+  clock as a result, so host load cannot change the verdict. Gates can
+  therefore all run **at once** — which is what `scripts/gate.sh` does,
+  and it is the difference between a 20-minute step and a 3-minute one.
+
+Never take a measurement while a gate tier is running.
+
 ## The iteration ladder (cheapest reject first)
 
 Every candidate climbs this ladder and stops at the first rung that
-rejects it.  Costs are wall-clock on this host (32 cores, quiet).
+rejects it. Costs are wall-clock on this host (32 cores, quiet).
 
 | rung | command | cost | detects | cannot see |
 |---|---|---|---|---|
-| 0 build | `scripts/ninja-fast.sh` (**wasm64 → site/dist-jit by default**; `TCI=1 scripts/ninja-fast.sh` for the interpreter → site/dist) | ~8 s wasm64, ~70 s TCI | compile errors | — |
-| 1 tcgbench | `node tools/tcgbench.mjs` (native-jit + dist-jit); `LEGS=dist,dist-jit` for qemu-core; `ICOUNTS=0,1` for icount; `SUITE=quick` = ÷4 iterations smoke image | ~15 s per wasm64 leg, TCI leg 100 s (`SUITE=quick`: ~3 s / ~25 s) | per-op-class compute + MMIO/RAM dispatch tax (ns/access), value bugs (checksum) | **boot regressions** — hot loops amortize translation |
-| 2 quick boot | `node tools/idlebench.mjs <base>,<cand> --quick` | ~1 min per dist | window v=2..7, t0.1G/t0.25G/t0.5G, A/B ratios, REGRESSION verdict vs previous run | late-phase and idle (cap 60 s) |
-| 3 op-suite | `scripts/run-tcg-isa.sh` | ~30 s | any TCG/memory/exec value divergence, 3 backends byte-identical | perf |
-| 4 full boot | `node tools/idlebench.mjs --runs 2` | ~2.5 min per dist | tIdle, t1.3G, LCD idle screen, crash/stall classes | — |
-| — counters | `node tools/diagall.mjs [secs] [interval]` | ~1 min | every `wasm_memstat` index by name + a per-second DELTA block (tbGen/tbFlush, module bytes by assemble source, lookups and jump-cache hits, MMIO, fills, warp buckets) | attribution to a function |
-| 5 native suite | `node tests/run.mjs --label <patch> --timeout 240` | ~65 s | native boots of 4 phones | wasm-only paths |
-| 6 lockstep | `tools/lockstep-wasm.mjs --insns 20e6\|250e6\|700e6`; full `2.5e9` at slice close | 1–15 min | cross-backend state equality over a boot | — |
-| — uibench | `node tools/uibench.mjs --board s75\|el71\|ke800 --state both --settle <s>` | ~3 min per board | per-board steady-state: MIPS, v/wall, fps, halts/s and the display/dispatch counters, at the idle screen and while the menu is driven.  The only meter that sees a board-specific mechanism (rounds 4–9 measured the S75 only, and both round-ten findings were invisible there) | boot phases; and on `icount=none` boards v/wall is 1.0 by construction, so read MIPS/fps |
-| 7 Firefox boot | `BROWSER=firefox node tools/ffboot.mjs dist-jit` (Playwright Firefox; `MAX=60` is enough) | ~1–3 min | the Firefox module budget: `temp=` (modules created − batch closes − compactions) must stay ~0 and `errors=0`; a "failed to allocate executable memory" at ~450 M insns is the budget (2026-09-13: nine commits shipped with ~20 % of TBs in throwaway modules because nobody ran this) | perf |
+| 0 build | `scripts/ninja-fast.sh` (**wasm64 → site/dist-jit by default**; `TCI=1` for the interpreter → site/dist) | ~8 s wasm64, ~70 s TCI | compile errors | — |
+| 1 knob A/B | `idlebench "dist-jit@env=K=V,dist-jit"` — same wasm both legs | ~2 min | whether the mechanism is worth building at all | anything without a knob |
+| 2 fixed work | `node tools/workbench.mjs --board <b> --to <Mi>` | ~30 s/leg | **the default keep/revert meter**: wall time over identical guest work | steady state, boot phases |
+| 3 op-suite | `scripts/run-tcg-isa.sh` | ~3 s | any TCG/memory/exec value divergence; every built backend byte-identical against the native JIT | perf; **and the wasm64 leg, which is a known hole** |
+| 4 counters | `node tools/diagall.mjs [secs]` / `counters.mjs --board` | ~1 min | every `wasm_memstat` index by name + per-second deltas — mechanism confirmation at 0.04 % spread | attribution to a function |
+| 5 board meter | `node tools/uibench.mjs --board <b> --state both` | ~3 min/board | per-board steady state; the only meter that sees a board-specific mechanism | boot phases |
+| 6 full boot | `node tools/idlebench.mjs --runs 2` | ~2.5 min/dist | tIdle, t1.3G, LCD idle screen, crash/stall classes | — |
+| 7 gates | `scripts/gate.sh quick\|keep\|close` | **152 s / 152 s / 1175 s** | correctness, everything at once | perf |
+
+`quick` and `keep` cost the same wall time — both are bounded by the one
+150 s board boot that every other job overlaps with, which is what
+running gates concurrently buys: the eleven jobs of `keep` sum to 846 s
+one after another, and `close`'s fifteen sum to 2874 s. `close` is
+bounded instead by its two longest jobs — `boot-ordered` (602 s: four
+boards as consecutive pages of one browser, where the *sequence* is the
+test condition, so it cannot be split) and the 2.5e9 lockstep. That
+1175 s was measured with the lockstep's three runs serial; it now runs
+them `--par 3`, which trades per-run speed for overlap.
 
 Rules that keep the ladder honest:
 
-1. **No change lands without a measurement**; a rejected change gets
-   a row in § REJECTED with its numbers so it is not retried blind.
+1. **No change lands without a measurement**; a rejected change gets a
+   row in § REJECTED with its numbers so it is not retried blind.
 2. **One mechanism per commit** on the `qemu/` submodule branch, the
-   commit message WITH the measured numbers; bump `QEMU_PMB887X_REV`
-   in `versions.env` when it lands.
-3. **A/B against a saved dist in one invocation.**  Before the first
-   candidate deploy: `cp -a site/dist-jit site/dist-jit-base` (and
-   `dist`→`dist-base` for qemu-core work).  Then
-   `idlebench dist-jit-base,dist-jit --quick` — same invocation, same
-   host state, ratios printed.  Never compare against yesterday's
-   absolute numbers on this shared host.
-4. **Read the milestones, not tIdle.**  tIdle sums phases with
-   opposite signs (the JIT loses ~9 s early, wins ~11 s late — equal
-   tIdle, 27 % early-phase regression).  Keep/revert is decided on
-   t0.5G + window (rung 2) for boot work, on the ns/access mirrors
-   (rung 1) for device-path work, on t1.3G/tIdle (rung 4) as the
-   human cross-check.  Both dists for qemu-core changes.
-5. **Repeat only what is close.**  Ratios beyond ±10 % on a quiet host
+   message carrying the measured numbers; bump `QEMU_PMB887X_REV` in
+   `versions.env` when it lands.
+3. **Prefer a knob A/B to a build A/B.** One binary, two query strings,
+   one invocation: no rebuild, no build-directory skew, no chance of
+   comparing against a mid-state tree. Build the knob first when the
+   mechanism allows one.
+4. **A/B inside one invocation, never against yesterday's number.**
+   Before the first candidate deploy: `cp -a site/dist-jit
+   site/dist-jit-base`. Then `idlebench dist-jit-base,dist-jit` or
+   `workbench` alternating legs — same host state, ratios printed.
+5. **Use the meter that matches the board.** The SGOLD boards (EL71,
+   CX70) have no steady state — idle animates and the GSM stack cycles,
+   so idle MIPS swings ~15 % between runs of the same build and cannot
+   resolve a patch. Fixed guest work (rung 2) is the meter there.
+   S75/KE800 idle is stable enough for uibench.
+6. **Repeat only what is close.** Ratios beyond ±10 % on a quiet host
    (loadavg < 4) are decided by one pair; inside ±10 % run the pair
-   again with the order swapped and require both pairs to agree.
-   Run-to-run spread is ±3–5 % on t0.5G, ±5–8 % on the window.
-6. **Gate by change class** — rung 3 for anything touching
-   TCG/memory/exec; rungs 4–6 at slice close only; rung 5 always
-   before capture.  Backend-only (`/dist-jit`) changes skip the `dist`
-   legs.
+   again with the order swapped and require both to agree. Run-to-run
+   spread is ±3–5 % on t0.5G, ±5–8 % on the window, ~2–3 % on uibench,
+   and **0.04 %** on a counter — which is why a mechanism is confirmed
+   with counters and only its *value* with a clock.
+7. **Gate by change class**: rung 3 for anything touching TCG/memory/
+   exec; `gate.sh keep` before a commit; `gate.sh close` at session
+   close. Backend-only (`dist-jit`) changes skip the `dist` legs.
 
 ## The loop, as commands
 
 ```bash
-# 0. serve the dists (keep running)
-PORT=8080 HTTPS_PORT=6808 node serve.mjs &
+# 0. serve the dists (keep running; gate.sh starts one if none answers)
+PORT=8080 node serve.mjs &
 
 # baseline once per session.  REBUILD IT FIRST — build/qemu-wasm64 may
 # have been left mid-state by the previous session, and an incremental
 # build over that produced a 5 %-slow "baseline" on 2026-09-13 that
 # faked a win for four invocations (§ Measuring, "phantom win").
 bash scripts/ninja-fast.sh
-cp -a site/dist-jit site/dist-jit-base            # + dist -> dist-base for qemu-core
-node tools/tcgbench.mjs
-PORT=8080 node tools/idlebench.mjs dist,dist-jit --quick
-PORT=8080 node tools/idlebench.mjs dist-jit-base,dist-jit --quick   # null A/B:
-                                                  # today's noise floor + position bias
+cp -a site/dist-jit site/dist-jit-base
 
-# 1. edit qemu/ (the submodule, all patches committed) → 2. rebuild + deploy (~8 s)
-bash scripts/ninja-fast.sh                        # wasm64 -> site/dist-jit
-TCI=1 bash scripts/ninja-fast.sh                  # interpreter -> site/dist (qemu-core changes)
+# 1. edit qemu/ (the submodule)  ->  2. rebuild + deploy (~8 s)
+bash scripts/ninja-fast.sh
 
-# 3. rung 1–2: ~1.5 min total
-node tools/tcgbench.mjs
-PORT=8080 node tools/idlebench.mjs dist-jit-base,dist-jit --quick
+# 3. decide: fixed guest work, the board the change is aimed at
+PORT=8080 node tools/workbench.mjs --board el71 --to 1300
+#    ...or, when the mechanism has a knob, one binary and no rebuild:
+PORT=8080 node tools/idlebench.mjs "dist-jit@env=W64_SPEC_N=64,dist-jit" --quick
 
-# 4. profile only when choosing the next target (~40 s)
-PORT=8080 node tools/wprof2.mjs 40 "" 100                 # PROF_DELAY=<s> picks the phase
-PROF_FN=<symbol> PORT=8080 node tools/wprof2.mjs 30 "" 100  # caller stacks
+# 4. confirm the MECHANISM with counters before believing the clock
+PORT=8080 node tools/diagall.mjs 45
 
-# 5. gates for a keeper, then commit
-scripts/run-tcg-isa.sh
-PORT=8080 node tools/idlebench.mjs dist-jit-base,dist-jit --runs 2
-node tests/run.mjs --label <name> --timeout 240
-git -C qemu commit -a                             # measured numbers in the message
+# 5. profile only when choosing the next target (~40 s)
+PORT=8080 node tools/wprof2.mjs 40 "" 100          # PROF_DELAY=<s> picks the phase
+#    a name here is a NEIGHBOURHOOD, not a function — confirm with a
+#    counter or a volatile-spin probe before you optimise it
+
+# 6. gates for a keeper, then commit
+bash scripts/gate.sh keep
+git -C qemu commit -a                              # measured numbers in the message
 git -C qemu push origin wasm-browser-port:wasm-patches
-# then set QEMU_PMB887X_REV in versions.env to the new tip (fetch-qemu.sh
-# resets the checkout to the pin on the next full build)
+# then set QEMU_PMB887X_REV in versions.env to the new tip
 
-# 5b. BEFORE believing a keep verdict: build both revisions pristinely
-#     (own worktree, own build dir — no inherited objects) and re-A/B.
-#     Hashes differ between build dirs for identical source (absolute
-#     paths are embedded), so identify a dist by behaviour, not hash.
+# 7. before the session's last commit
+bash scripts/gate.sh close
+```
+
+**Before believing a keep verdict on a close call**, build both revisions
+pristinely (own worktree, own build dir — no inherited objects) and
+re-A/B. Hashes differ between build dirs for identical source (absolute
+paths are embedded), so identify a dist by behaviour, not hash:
+
+```bash
 git -C qemu worktree add --detach build/wt-<rev> <rev>
 #   configure that worktree into build/qemu-wasm64-<rev> exactly as
 #   scripts/build-qemu-wasm64.sh does (it needs EM_PKG_CONFIG_PATH set
-#   as well as PKG_CONFIG_PATH — the script only sets the latter and its
-#   configure branch is untested), deploy to site/dist-pristine-<rev>
+#   as well as PKG_CONFIG_PATH), deploy to site/dist-pristine-<rev>
 PORT=8080 node tools/idlebench.mjs dist-pristine-old,dist-pristine-new --quick --runs 4
-
-# 6. FINAL GATE before the session's last commit (~6 min): all three
-#    fullflashes must boot, native AND in the browser.
-node tests/run.mjs --label <name>-final --timeout 240   # s75 el71 c81 ke800
-node tools/bootcheck.mjs --dist dist-jit --secs 150     # s75 el71 ke800
-
-# 7. the LG boot benchmark (no icount: tIdle is the number, ~2.5 min/run;
-#    a change to timers, the main loop or the halt path needs it)
-PORT=8080 node tools/idlebench.mjs dist-jit-base,dist-jit --board ke800 --runs 2 --max 240
 ```
 
 Deploy hygiene: never plain-`cp` over a live-served wasm (a torn file
@@ -200,8 +218,20 @@ garbage.
 
 ## Measurement methodology (and its traps)
 
-- **Metric by question.**  Device-path work → tcgbench mirrors
-  (`mmiopoll`/`rampoll`/`mmiow` ns/access; checksum cross-checked).
+- **Measure the phase before optimising the loop inside it.** The
+  single cheapest habit here, and the one most often skipped. Round
+  nineteen's import-object cache was sound reasoning on an unmeasured
+  premise: the loop it optimised turned out to be **0.7 %** of the phase
+  it sat in, because a module has 2.1 imports and not the twenty the
+  code's shape implied. A twenty-line split settled it — and the same
+  split then found the 83 µs. Cost a phase first; optimise second.
+- **Metric by question.**  A keep/revert verdict → `workbench.mjs`,
+  wall time over a fixed stretch of guest work on the board the change
+  targets (icount makes that stretch identical across builds, so the
+  meter has no guest-side variance at all). Mechanism confirmation →
+  counters (`diagall`, 0.04 % spread). Device-path work → tcgbench
+  mirrors (`mmiopoll`/`rampoll`/`mmiow` ns/access; checksum
+  cross-checked). Attribution → wprof2, then verify the name.
   Boot speed → idlebench guest-work milestones: the S75v40lg1 boot
   executes a fixed ~1.345e9 guest insns to the idle screen (±0.3 %
   across builds/hosts/load), so `tNG` = wall s until N insns is a
@@ -211,8 +241,10 @@ garbage.
 - **The boot has three phases** (per-second MIPS in the idlebench
   JSON `samples`): new-code heavy to ~0.5 G insns (JIT 7–20 MIPS in
   2 s intervals with 5–10k new TBs/s, 30–45 MIPS when translation
-  drops below 2k/s — the early phase is bound by translation + module
-  compile, ~11 s of a 41 s boot after 0030), the display-DMA stretch
+  drops below 2k/s — translation-heavy, though **not "compile-bound"**:
+  round seventeen priced the whole translate-and-compile pipeline at
+  19.5 % of boot wall with a C-side timer, against the ~50 % the early
+  phase's profile had implied), the display-DMA stretch
   (v 4.7→23.5, ~7 s at 10–20 MIPS: one IRQ + WFI per word, no
   main-loop handoffs since 0023/0024), then compute (TCI 45 MIPS, JIT
   190).  A change can move one phase and leave tIdle flat.
@@ -464,44 +496,6 @@ commit, then `ninja-fast.sh` and the ladder.
 
 ## Remaining opportunities (ranked; the plan lives in performance-handoff.md)
 
-0. **The displayed digital clock — CLOSED by 0033** (RTC `CNT` seed
-   layout; native seconds clock and idle clock verified 1.0×).
-   **The J2ME stopwatch pacing — OPEN, a throughput target with a
-   meter.**  `node tools/stopwatch.mjs` boots, walks the keypad to
-   Секундомер, starts it and prints `vratio` (virtual s per wall s;
-   1.0 = real time).  While it runs the guest never halts (halts/s = 0,
-   warp share 0 — 2026-09-12 counters), so the shown rate is exactly
-   guest MIPS / 125 (icount shift=3).  Native: 150+ MIPS, paced by the
-   RT cap.  wasm: 0.19× at session start → **0.33×** after the display
-   path fixes (VIC bitmap, DIF pin/request caches, mux tables, DMAC
-   burst reads, QOM casts off) and fill-time TLB growth.  What is left
-   in that state (profile, `PROF_ATTACH`): devices 33 % (DIF FIFO
-   word loop, DMAC per-word MMIO writes, SRB events), guest code 33 %,
-   `helper_lookup_tb_ptr` 12 % (2.9 M lookups/s — the JVM's indirect
-   dispatch), MMIO 6 %.  Reaching 1.0× needs ~3× on this workload.
-   **Not a regression**: the same meter on the saved `dist-jit-0022`
-   build reads **0.12× (15.1 MIPS)** vs 0.29–0.33× now — the earlier
-   build was 2.4× *slower* at this, so whatever ran correctly before was
-   not that build (native, paced by the RT cap, is the other candidate).
-   **2026-09-13**: still ~0.30 (37–39 MIPS, 2.5 M lookups/s).  The wide
-   jump-cache entry measured **exactly flat here** — 8 samples
-   alternating the builds in both orders, means 0.3005 vs 0.3005 — at a
-   time when the boot ladder was (wrongly) showing it at −4..−6 %.  This
-   meter was right and the boot ladder's baseline was bad; when two
-   meters disagree, suspect the baseline before believing the flattering
-   one.  **This meter drifts** — the
-   first four samples fell monotonically 0.313 → 0.281 as host loadavg
-   went 1.97 → 2.77, which on its own read as a 4 % regression.
-   Alternate the builds and require both orders, exactly as for
-   idlebench.
-   **2026-09-13 (later)**: 0046 → 0.35, then **0047 → 0.48–0.53** (60–67
-   MIPS) from the device side — the profile of the running app (attach
-   `wprof2.mjs` to `stopwatch.mjs --devtools <port> --hold <s>`) is the
-   map here, not the boot profile: devices were 46 % of the vCPU, and
-   the top symbol was a table rebuild on a register write, not a
-   per-word cost.  What is left is the per-word chain itself
-   (§ Remaining 7).
-
 0b. **Emitted code volume — CLOSED as a lever (2026-09-13, reconfirmed
    2026-09-14).**  Four independent measurements now say the
    emitted-byte count is not what the early phase is bound by: the
@@ -522,39 +516,45 @@ commit, then `ninja-fast.sh` and the ladder.
    emitted bytes (the inline TLB probe), `add` 12.0 B × 4.2/TB,
    `goto_tb` 57 B, `goto_ptr` 65 B, `mov` 5.0 B × 6.3/TB, `brcond` 18.9 B.
 
-0c. **Where the vCPU actually goes (2026-09-13 wprof2, the measurement
-   that replaced the estimate above).**  The hand-off's cost model —
-   "~176k TBs × 38 µs translation ≈ 6.7 s of a boot" — is wrong by a
-   large factor.  Self-time of the vCPU worker, `rt=off` (the profiled
-   build carried the jump-cache patch that was later measured flat and
-   dropped, which does not move these shares):
+0c. **Where the boot's time actually goes (counters, rounds 17–19).**
+   This replaces a 2026-09-13 wprof2 self-time table that stood here for
+   five rounds and was wrong in both directions — round sixteen showed a
+   profiler name identifies a neighbourhood rather than a function, and
+   rounds 17–19 re-derived the same quantities from counters, where the
+   run-to-run spread is 0.04 % instead of tens of percent.
 
-   | | early (insns 0.24 G →, 8 s) | mid (0.28 G → 1.6 G, 16 s) |
+   The translate-and-compile pipeline is **19.5 %** of an EL71 boot, so
+   the boot is *not* compile-bound and the other ~80 % is guest code plus
+   the device/lookup paths. Inside the pipeline, per 25 s EL71 boot:
+
+   | phase | s | note |
    |---|---|---|
-   | guest code (`tcg_qemu_tb_exec` + JIT-module frames) | 23.4 % | ~17.5 % |
-   | `Module` (browser wasm compile) | **14.1 %** | 7.7 % |
-   | TB lookup (`helper_lookup_tb_ptr` + qht + `arm_get_tb_cpu_state`) | 8.4 % | **12.6 %** |
-   | instantiate (`w64_batch_instantiate` + `Instance`) | 2.8 % | 1.5 % |
-   | translate (`tcg_gen_code` + liveness + optimize) | **3.9 %** | 2.9 % |
-   | clock/timers (`icount_get`, `tpu_update_timer`, `timer_mod_ns`) | ~1 % | ~2.5 % |
+   | `new WebAssembly.Module` | 2.82 | 77 % of `modNs` |
+   | `new WebAssembly.Instance` | 0.31 | |
+   | `addFunction` | 0.10 | |
+   | building the import object | 0.026 | 2.1 imports per module, not 20 |
+   | `tcg_gen_code` (translate) | ~2.2 | ~13 µs × ~170k TBs, ~8.5 % of wall |
 
-   So translation is ~3–4 %, not ~20 %, and the two real cost centres
-   are the **TB lookup path** and **`Module`**.  `tcg_qemu_tb_exec`'s
-   self time is guest code: 0026's `return_call_indirect` reuses the
-   caller's frame, so V8 attributes every chained TB to the dispatcher
-   frame that started the chain (and JIT-module frames resolve to
-   nonsense names — `input_barrier_get_name`, `hmp_object_del` — because
-   the `.symbols` sidecar maps the *main* module's indices).
+   **A module costs ~83 µs to create and the size term is invisible**
+   (~80 µs fixed + ~1.4 ns/byte; `W64_SPEC_N` 8/32/128 reads 83.6/82.7/
+   83.3 µs across a 1.5× byte range). Compile time is therefore
+   `83 µs × module count`, and **module count is speculation-miss count**
+   (0080): a batch opens on a lookup miss and closes when its first
+   member runs, so `close` == `specMiss` exactly.
 
-   Counters for the same boot (`tools/diagall.mjs`, new this session —
-   prints every `wasm_memstat` index by name): tbGen 175,158 with
-   **tbFlush 0** (every translation is unique; no flush cycles to
-   remove), tbBytes 86.1 MB, modCount 41,437 / modBytes 180.2 MB
-   (closeN 32,085 / 89.4 MB, compactN 191 / 85.7 MB, ensureN 0),
-   lookup 153.4 M at 92.8 % jump-cache hits, ioLd+ioSt 12.7 M,
-   tlbFill 128,812, halt 73,045.  **Batches average 5.5 members, not
-   the 128 of `W64_BATCH_N`** — `w64_batch_close_pending()` closes on
-   first execution, and that is right (§ REJECTED `W64_NOCLOSEEXEC`).
+   **Four fifths of that 83 µs is not compiling.** `W64_MODBENCH=1`
+   compiles one real module's own bytes 200× back-to-back inside the
+   vCPU worker's own isolate: 12–31 µs. Size, the 69 locals per TB
+   function, control-flow density, the GC nudge, machine load and live-
+   module count were each eliminated separately. The remainder is cold
+   cache — the compiler's working set evicted by ~700 µs of guest code
+   between calls.
+
+   Consequences, all of which are now REJECTED rows: halving compiled
+   bytes buys nothing (compaction is 0.13 s of 2.98 s); `W64_SPEC_N`=64
+   is a tie because 83 µs/module against ~13 µs/TB is par; and adding
+   instructions to a hot path costs *module count*, which is why the
+   `W64_LDSTPAD` calibration confounds itself at n=12 (+8 556 modules).
 
 1. **wasm64 early-boot deficit — REDUCED by 0019, still open.**  Was
    ~27 % behind TCI on the first 0.75 G insns (per-TB module compile =
@@ -568,15 +568,6 @@ commit, then `ninja-fast.sh` and the ladder.
    65 % of them single-member (indirect `bx lr`/`ldr pc,[rN]` targets,
    mode switches).  Candidates: cheaper first execution, AOT cache (#4).  Meter: `idlebench --quick` t0.25G/t0.5G + `W64_DEBUG=1` batch
    histogram (`tools/iotrace.mjs`).
-2. **The display-DMA stretch (v 4.7→23.5) — MOSTLY CLOSED by
-   0021/0023/0024/0025, ~7 s left (was ~12 s, then ~9 s).**  ~12k
-   single-word DMA transfers, one IRQ + WFI per word; the halt/wake
-   handoffs are gone (vCPU futex wait 31 % → 4 % of the stretch), the
-   remaining time is guest work at 10–20 MIPS: ~100 M insns of IRQ
-   entry/exit + DMA setup, TPU/VIC device work (`tpu_update_timer`,
-   `qemu_set_irq`), `cpu_exec` re-entry per halt (~4k/s).  Meter: the
-   per-second MIPS/v curve (`samples`) between v 4.6 and 23.5, then
-   tIdle.
 3. **Timer storms / main-loop wakeups — OPEN, smaller.**  The vCPU now
    runs virtual timers itself; what is left is the main loop's own
    realtime timers (gui refresh, DSP AFE 1 ms tick, PCM refill) and
@@ -585,24 +576,27 @@ commit, then `ninja-fast.sh` and the ladder.
    remaining dispatcher exits are `TB_EXIT_REQUESTED` (~25k/s early —
    icount budget ends at every virtual deadline) and goto_tb first
    links (~3k/s).
-4. **wasm64 batcher `SOURCE-CORRUPT` — CLOSED 2026-09-13** (`bf0b67d4`,
-   see the landed table): `encode_search()`'s overflow path abandoned a
-   TB without advancing `code_gen_ptr`, so `tcg_tb_alloc()` carved
-   `TranslationBlock`s out of the staged member's bytes.  Not
-   `w64_speculate()`, which was the standing hypothesis.  It was also
-   far more frequent than recorded — 1–2 per 60 s S75 boot.
-5. **AOT cache — OPEN, and now costed.**  Persist translated batches
-   (Cache API/IndexedDB, keyed by flash hash) for zero-translation
-   second boots.  What it can actually buy, from § Remaining 0c:
-   `Module` 14.1 % + instantiate 2.8 % + translate 3.9 % ≈ **21 % of the
-   vCPU in the early phase**, ~12 % mid — call it 3–5 s of a 30 s
-   `rt=off` boot, and since only the first ~0.75 G instructions move
-   under the shipping cap, ~3–4 s of a 39 s `rt=banked` boot.  Real, but
-   an order of magnitude smaller than "removes the whole 197 MB"
-   suggests, against a large implementation (serialise the TB set + code
-   buffer, restore the qht/chain table, invalidate on flash change) and
-   a correctness surface the gates do not cover today.  Decide on those
-   numbers, not on the byte count.
+5. **AOT cache — OPEN, and the one idea round nineteen made *bigger*.**
+   Persist translated batches (Cache API/IndexedDB, keyed by flash hash)
+   for zero-translation second boots. Re-costed against § 0c's counter
+   numbers rather than the old profile: the whole translate-and-compile
+   pipeline is **19.5 % of an EL71 boot**, and an AOT cache is the only
+   scheme that can take *all* of it — it does not make a module cheaper,
+   it removes the `new WebAssembly.Module` call entirely, which is where
+   the 83 µs lives. That is a ceiling of ~19 % against the interpreter
+   tier's ~5.7 % (hand-off item 1), for a different kind of work:
+   serialise the TB set + code buffer, restore the qht/chain table,
+   invalidate on flash change, and a correctness surface the gates do
+   not cover today.
+
+   Two things to settle before building it: whether a cached
+   `WebAssembly.Module` restored from IndexedDB actually skips
+   compilation in V8 and SpiderMonkey (structured-clone of a Module is
+   specified to, but round nineteen's finding that four fifths of the
+   cost is *cold cache* rather than compilation means the saving could
+   be much smaller than the 83 µs suggests), and what it costs on the
+   first boot to write ~90 MB out. **Measure a restored module's cost
+   with `W64_MODBENCH`'s method before committing to the design.**
 6. **Backend tail — the TB lookup path: 0046 landed the inline cache
    (2026-09-13).**  It was ~12.6 % of the vCPU mid-boot by profile:
    `helper_lookup_tb_ptr` 7.4 %, `qht_lookup_custom` 3.0 %,
@@ -719,25 +713,15 @@ commit, then `ninja-fast.sh` and the ladder.
    one pass per burst without changing what the guest can observe
    between words (the request bits in `RIS`, the VIC line, the FIFO
    level) — not attempted.
-8. **ke800 stalls at the LG logo when booted as the first page of a
-   browser — CLOSED by 0049 (2026-09-13).**  It was not a guest wait:
-   the profile of the stalled page (`ke800probe` + `wprof2.mjs
-   PROF_ATTACH`) showed the vCPU thread 94 % in `futex_wait` and the
-   main-loop thread 100 % busy in `gptu_t2_sync_timer` /
-   `gptu_t01_add_ticks` / `timer_mod` / `emscripten_get_now`.  The LG
-   firmware chains GPTU T1A..T1D into one 32-bit timer clocked at 26 MHz
-   and the GPTU model armed its QEMU timer at every 8-bit overflow of the
-   free-running byte — ~100 k main-loop callbacks per second, each ~10 µs
-   of JS clock imports, each holding the BQL.  Natively that is a few
-   percent of one core; in wasm it saturates the main-loop worker and the
-   vCPU starves (~40 k guest insns/s).  Why a warm third page usually
-   survived the same storm is not established (a warm JIT needs fewer
-   vCPU cycles per phase, and host load moved between runs); what is
-   measured is the storm itself and that 0049 removes it (`gptuTimer`
-   counter).  0049 steps the chain lazily and arms the
-   timer for the next *observable* overflow only (§ What landed).
-   `bootcheck` now requires ke800 to reach 1.5 G, and `idlebench --board
-   ke800` measures its boot to the idle screen.
+8. **ke800's LG-logo stall — CLOSED by 0049**, and the precedent for
+   the open timer-model question: the GPTU model armed a QEMU timer at
+   every 8-bit overflow of a free-running byte — ~100k main-loop
+   callbacks/s, each ~10 µs of JS clock imports, each holding the BQL.
+   Natively a few percent of one core; in wasm it saturated the
+   main-loop worker and the vCPU starved at ~40k insns/s.  0049 steps
+   the chain lazily and arms only for the next *observable* overflow
+   (`gptuTimer` counter).  **The TPU/CAPCOM/STM models have never been
+   audited for the same "deadline = next hardware tick" pattern.**
 
 Landed/closed since the last ranking: MMIO dispatch path (0018 —
 mmiopoll 534→202 ns, native parity; re-measure before reopening).
@@ -782,16 +766,13 @@ inline on wasm64 anyway).
   `lookup_tb_ptr` targets all pass through it.  Anything that jumps
   into a TB must land on the header.
 
-## The three-fullflash final gate (added 2026-09-12)
+## The browser boot gate: why four boards, and why not just the native suite
 
-Run this before the session's last commit, not just `tests/run.mjs`:
+`scripts/gate.sh` runs this; the reasoning is why it is in every tier.
 
-```
-node tests/run.mjs --label <name>-final --timeout 240
-node tools/bootcheck.mjs --dist dist-jit --secs 150
-```
-
-Why both, and why three devices:
+Why the native suite is not enough, and why each board earns its place
+(it was three boards when this was written in 2026-09-12; CX70 joined
+with the SGOLD work in round fifteen):
 
 - **The native suite is blind to every wasm patch.**  S75 on the wasm
   builds was the only browser boot anyone watched for the whole 0019-0032
@@ -971,30 +952,36 @@ boot and meant nothing.  The HUD strip keeps its real colours.  The HUD's
 of paying it back, so carrying the boot's 16 s of lag past the switch
 would show an amber token for a debt that no longer exists.
 
-## Gates added 2026-09-11
+## Two gates that are not in gate.sh
 
 - **precise-clocks smoke** (any change near timers/halt/rr):
   `cd tools && PORT=8080 DIST=dist-jit MATCH=WATCH EXTRA_Q=icount=precise-clocks=on node conlog.mjs 40`
   must show v advancing to ≈45 by 40 s (a stall reads as a frozen
-  `v=`/`insns=` — 0024's first build froze at v=7.2).
-- **gzip sidecar warm-up** before any idlebench:
+  `v=`/`insns=` — 0024's first build froze at v=7.2). Not in a tier
+  because it only means anything for a change in that area.
+- **gzip sidecar warm-up** before any *benchmark*:
   `curl -s -o /dev/null -H 'Accept-Encoding: gzip' http://localhost:8080/<dist>/qemu-system-arm.wasm`
   for every dist in the run (serve.mjs regenerates the sidecar on the
   first request after a deploy — ~1.3 s inside `tModule`, i.e. on every
-  milestone of the fresh candidate).
+  milestone of the fresh candidate). `gate.sh` does this for its own
+  dist; a benchmark invocation must do it for each leg.
 
 ## Session checklist
 
 1. `git log` here and `git -C qemu log origin/master..` (the series);
-   read performance-handoff.md for where the workstream stands.
-2. Save baseline dists aside; `tcgbench` + `idlebench --quick` for
-   today's numbers (≈3 min).
-3. Profile (step 4 of the command list), pick ONE target from § Remaining, check
-   § REJECTED first.
-4. Patch → rungs 0–2 → keep/revert → gates (**every rung 3–7 for a
-   backend change — Firefox included; Chrome hides module-budget bugs**)
-   → commit on the qemu branch with the measured numbers, push, bump the
-   pin.
-5. Update the tables here (landed/rejected/remaining), the commit
-   list in upstream-branch.md, and lessons.md when something was
-   learned the hard way.
+   read **performance-handoff.md down to the end of § Open items** — that
+   is the live state, and the round log below it is history.
+2. `bash scripts/ninja-fast.sh` **first** (an inherited mid-state build
+   dir has faked a baseline before), then `cp -a site/dist-jit
+   site/dist-jit-base`.
+3. Pick ONE target from § Open items. **Check § REJECTED here first** —
+   it is 34 experiments deep and several ideas have been retried twice.
+4. Patch → rung 2 (fixed guest work) → confirm the mechanism with
+   counters → keep/revert → `bash scripts/gate.sh keep` → commit on the
+   qemu branch with the measured numbers, push, bump the pin in
+   `versions.env`.
+5. `bash scripts/gate.sh close` before the session's last commit —
+   Firefox included, because Chrome hides module-budget bugs.
+6. Update the tables here (landed/rejected/remaining), § Open items in
+   the hand-off, the commit list in upstream-branch.md, and lessons.md
+   when something was learned the hard way.

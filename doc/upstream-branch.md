@@ -11,7 +11,8 @@ any more.
 ```
 submodule:  qemu/                 (Azq2/qemu-pmb887x)
 branch:     wasm-browser-port     local name; tracks origin/wasm-patches
-pin:        debfa3d6f5            QEMU_PMB887X_REV in versions.env
+pin:        c07259db94            QEMU_PMB887X_REV in versions.env (0088,
+                                  2026-09-16; 101 commits ahead of master)
 base:       8b9d485bc2            qemu-pmb887x master at the time of the switch
 companion:  pmb887x-emu/          the meta-repo, branch wasm-patches, whose
                                   qemu submodule pin is the same revision
@@ -40,7 +41,7 @@ Once that lands upstream, rebase onto master; expect only trivial
 conflicts (the series touches tcg/tci, tcg/wasm64, accel/tcg, util/,
 target/arm/tcg, hw/arm/pmb887x, ui/, configs/meson/).
 
-## Series contents (53 commits on master, in order)
+## Series contents (101 commits on master, in order)
 
 Patch numbers are the ones the docs use (the numbering has gaps where
 patches were dropped; 0033 sits at the top of the series).
@@ -98,6 +99,41 @@ patches were dropped; 0033 sits at the top of the series).
 | 0053 | tcg/wasm64: open the batch at TB start (Firefox module budget; regression since the prologue cleanup) | `tcg/wasm64/`, wasm64 backend only |
 | 0054 | memory/pmb887x: MMIO write dispatch decision cached per DMAC window | `system/memory.c` + `include/system/memory.h` (two new entry points), `hw/arm/pmb887x/dmac.c` |
 | 0055 | tcg/wasm64: `local.tee` for set+get pairs, no scratch local in the TLB probe | `tcg/wasm64/`, wasm64 backend only |
+| 0056 | accel/tcg: stop the wasm io-barrier set from thrashing | `accel/tcg`, `include/qemu`; wasm-gated |
+| 0057 | accel/tcg, memory: resolve subpage MMIO dispatch at TLB fill time | `accel/tcg`, `include/hw`, `include/system`, `system/physmem.c` |
+| — | pmb887x: fix dsp crash on Siemens SGOLD phones | merge from qemu-pmb887x master |
+| 0058 | accel/tcg, system: stop paying the icount seqlock twice per MMIO access | `accel/tcg`, `system/cpus.c` |
+| 0059 | accel/tcg: fuse the single-piece MMIO load path | `accel/tcg`, `include/qemu` |
+| 0060 | cpu-timers: give `timers_state.qemu_icount` its own cache line | `include/system` |
+| 0061 | accel/tcg: fuse the single-piece MMIO store path too | `accel/tcg`, `include/qemu` |
+| 0062 | hw/pmb887x: stop the TPU re-arming its QEMU timer on every register write | pmb887x TPU model |
+| 0063 | system/cpus, accel/tcg: a lean BQL pair for the MMIO dispatch path | `accel/tcg`, `system/cpus.c` |
+| 0064 | util/qemu-timer: read the icount clock without the `cpus_accel` frame | `util/qemu-timer.c`, `stubs/icount.c` |
+| 0065 | accel/tcg: one clock notify per idle round, not two | `accel/tcg`, `include/exec`, `stubs/icount.c` |
+| 0066 | hw/pmb887x: do not advance the TPU twice per register write | pmb887x TPU model |
+| 0067 | util/qemu-timer: no virtual-clock notify for an empty timerlist | `util/qemu-timer.c`, `util/main-loop.c` |
+| 0068 | hw/pmb887x: no TPU advance for an event-RAM write that cannot move the deadline | pmb887x TPU model |
+| 0069 | target/arm: do not rebuild hflags twice per CPSR write | `target/arm`, all backends |
+| 0070 | accel/tcg/icount: read the virtual clock without the wasm fence pair | `accel/tcg`, wasm-gated |
+| 0071 | target/arm: a short hflags rebuild for a pre-v6 A-profile CPU | `target/arm`, `include/qemu` |
+| 0072 | wasm: four fixed costs the profile named, on the per-access and per-TB paths | `accel/tcg`, pmb887x, `include/hw` |
+| 0073 | system/cpus: do not give the BQL back after every device access | `accel/tcg`, `system/cpus.c` |
+| 0074 | wasm: trim the Asyncify onlylist to the frames a switch can reach | `configs/meson/asyncify-only.txt`, wasm64 build only |
+| 0075 | accel/tcg: fold the MMIO fast path into its callers, one bswap | `accel/tcg` |
+| 0076 | wasm-diag: gate the counters that ended up on hot paths | `accel/tcg`, `include/qemu`, `target/arm` |
+| — | switch to `rt=off` mode 30 s after boot | real-time cap default |
+| — | SGOLD dsp mask-ROM version fix; alula/dsp-stuff resolved to ours | merges from upstream |
+| 0078 | pmb887x: give DIF v1 the two things v2 already does | pmb887x DIF v1 model |
+| 0079 | pmb887x: run DIF v1 transfers where they are asked for, not from a timer | pmb887x DIF v1 model |
+| 0080 | wasm-diag: counters that price speculation, the jump cache and hflags | `accel/tcg`, `include/qemu`, `target/arm` |
+| 0081 | ui/wasm: a key event before the display exists must not trap the module | `ui/wasm.c` |
+| 0082 | wasm-diag: phase timers, and delete a heuristic that never ran | `accel/tcg`, `include/qemu`, `tcg/wasm64` |
+| 0083 | memory: a readonly flip is a view variant, not a topology change | `system/memory.c`, `accel/tcg`, pmb887x |
+| 0084 | accel/tcg: size the jump cache for the wasm64 lookup path | `accel/tcg`, `include/qemu`, `target/arm` |
+| 0085 | target/arm: rebuild hflags only when a CPSR write moves an hflags input | `target/arm`, all backends |
+| 0086 | wasm-diag: split the topology commit, and decompose a module compile | `system/memory.c`, `tcg/wasm64`, `include/qemu` |
+| 0087 | tcg/wasm64: the module-GC nudge is a Firefox workaround, so only do it there | `tcg/wasm64/`, wasm64 backend only |
+| 0088 | tcg/wasm64: stop rebuilding heap views and copying the module twice | `tcg/wasm64/`, `include/qemu` |
 | — | pmb887x: hacky AFE (LLE+HLE) implementation | cherry-pick from alula/dsp-stuff |
 | 0033 | pmb887x: seed the RTC counter in the layout the firmware expects | pmb887x RTC, per-board `[rtc] format` |
 

@@ -318,12 +318,25 @@ packed calendar).
 
 ## Correctness / testing ladder
 
+**`scripts/gate.sh quick|keep|close` runs all of the gates below
+concurrently** and prints one verdict table — a gate never reads a wall
+clock as a result, so host load cannot change a verdict. The benchmarks
+at the bottom are *not* in it and must be run one at a time on a quiet
+host.
+
 | gate | what it proves | driver |
 |---|---|---|
 | native boot suite | s75/el71/c81/ke800 boot-init/progress/no-exit | `node tests/run.mjs` |
-| browser boot gate | s75/el71/ke800 boot on a wasm dist (progress in executed insns) | `node tools/bootcheck.mjs --dist dist-jit` |
-| guest op-suite | 1156 (value, NZCV) cases byte-identical across native JIT / native TCI / wasm page | `scripts/run-tcg-isa.sh` |
+| browser boot gate | s75/el71/ke800/cx70 boot on a wasm dist (progress in executed insns) | `node tools/bootcheck.mjs --dist dist-jit` |
+| early key | a key delivered before the machine exists does not kill the module | `node tools/earlykey.mjs --board <b>` |
+| guest op-suite | 1156 (value, NZCV) cases byte-identical across every backend built. **The wasm64 page leg is a known hole** — see performance-handoff.md § Open items 2 | `scripts/run-tcg-isa.sh` |
 | lockstep | whole-boot cross-backend value equality (regs + SRAM/SDRAM digests); full 2.5e9-insn gate | `scripts/run-lockstep.sh`, `tools/lockstep-wasm.mjs` |
+| Firefox smoke | the module budget: throwaway modules (`temp=`) stay at 0 | `BROWSER=firefox node tools/ffboot.mjs` |
+
+| benchmark | what it measures | driver |
+|---|---|---|
+| workbench | wall time over a fixed stretch of guest work — the keep/revert meter | `tools/workbench.mjs` |
+| uibench | per-board steady state (MIPS, v/wall, fps, halts/s) | `tools/uibench.mjs` |
 | tcgbench | fast-iteration per-phase A/B + the device/icount-tax mirrors | `tools/tcgbench.mjs` |
 | idlebench | deterministic boot-to-idle wall time + guest-work milestones (the human metric) | `tools/idlebench.mjs` |
 | stopwatch | in-guest pacing while a J2ME app redraws (`vratio`) | `tools/stopwatch.mjs` |

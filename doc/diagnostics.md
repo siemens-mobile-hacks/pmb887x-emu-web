@@ -17,7 +17,7 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
 | `?debug=1` | print every stderr line to console (no dedup) |
 | `?qargs=<args>` | append raw qemu arguments (e.g. `qargs=-d exec -D /exec.log`) |
-| `?env=NAME=VAL` | extra environment for the build (repeatable) — wasm64 knobs such as `W64_SPEC_N`, `W64_LIVE_MAX`, `W64_COMPACT_BATCHES`/`W64_COMPACT_MEMBERS`, `W64_NOTLB=1`, `W64_TBSTATS=1` (per-TB-entry counters under icount, so `wasm_tbs` reads non-zero), `W64_DEBUG=1`, `W64_NOLC=1` (0046 inline next-TB lookup cache off: same-wasm knob A/B), `W64_LC_VERIFY=1` (every goto_ptr goes through the helper, which cross-checks each would-be inline hit — `lcVhit`/`lcVbad` in `tools/diagall.mjs`) |
+| `?env=NAME=VAL` | extra environment for the build (repeatable) — the full knob inventory is its own section below |
 | `?w64debug=1` | wasm64 backend console diagnostics (batch histogram, module events) |
 | `?env=QEMU_LOG_PABT=1` | one stderr line per guest prefetch abort / BKPT (IFSR, IFAR, pc, lr, sp, cpsr) — the tool that pinned the W-12 panic; combine with `tracebuf=1`, never with `-d int` (its per-IRQ volume shifts timing enough to hide a race) |
 | `?suite=<url>` | boot a bare-metal versatilepb image instead of a phone (`dist/tcgisa.bin`, `dist/tcgbench.bin`); with `?icount=1` the suite runs under the phones' stock timing model (the tcgbench icount-tax leg) |
@@ -66,41 +66,134 @@ the 10 s averages, the environment and the full unmodified user agent on the
 clipboard as JSON — which is how a phone without a debugger reports its own
 number. `window.__hud.diagnostics()` returns the same object.
 
+## Runtime knobs (`?env=NAME=VAL`, repeatable)
+
+Derived from `git grep getenv` in the submodule — if a knob is not here,
+check there rather than assuming it is gone. Three classes, and the class
+is what decides whether a number taken under one means anything:
+
+**A/B knobs** — the same wasm both legs, so a pair taken in one browser
+with one leg per query is a true interleaved A/B (`idlebench
+"dist-jit@env=W64_SPEC_N=64,dist-jit"`). This is the cheapest honest
+measurement in the ladder: no rebuild, no build-dir skew.
+
+| Knob | Default | Effect |
+|---|---|---|
+| `W64_SPEC_N=<n>` | 32 (max 64) | speculative-successor budget per batch. Measured flat at 64 — see the playbook's REJECTED row before sweeping it again |
+| `W64_BATCH_N=<n>` | 128 | staged members a batch may hold before it is forced closed. Rarely binding: batches average ~5 members because a close fires on first execution |
+| `W64_NOBATCH=1` | off | batching off entirely (one module per TB). Firefox-fatal; a bisection aid only |
+| `W64_LIVE_MAX=<n>` | 6144 | live-module FIFO cap; eviction forces a re-ensure (recompile) |
+| `W64_COMPACT_BATCHES=<n>` | 256 | small batches merged per compaction |
+| `W64_COMPACT_MEMBERS=<n>` | 1024 | member cap on a compacted module. Two sweeps found nothing — stop sweeping |
+| `W64_NOCLOSEEXEC=1` | off | don't close a batch when its first member runs. Measured 12–17 % slower; kept as the proof that the close is what makes speculation pay |
+| `W64_NOTLB=1` | off | drop the inline TLB probe, every memop to the helper |
+| `W64_NOLC=1` | off | 0046 inline next-TB lookup cache off |
+| `W64_IO_BARRIERS=<n>` | 4096 | usable io-barrier slots (power of two, 1..4096) |
+| `W64_GCNUDGE=0\|1` | Firefox only | force the 32 MB-per-256-instantiations GC nudge off/on. Default decides from the user agent (0087) |
+
+**Measurement knobs — these change the generated code**, so per-Mi rates
+stay exact (icount determinism) but wall-clock numbers under them are not
+comparable to anything. Never use one as an A/B leg.
+
+| Knob | Effect |
+|---|---|
+| `W64_LDSTCOUNT=1\|2` | emit counter bumps into generated memops. `1` = miss arms only (nearly free, sits beside a helper call); `2` = every execution too (`ldstExec`), the memops-per-guest-instruction denominator, hot by construction |
+| `W64_LDSTPAD=<n>` | emit `n` fold-resistant ALU units per memop — the ns-per-instruction calibration pad. Clean at n=4; at n=12 it grows emitted code enough to add thousands of modules and confound itself |
+| `W64_MODBENCH=1` | compile one real module's own bytes 200× back-to-back inside the vCPU worker (`modbenchNs`/`modbenchN`) — the warm-compile floor against the 83 µs a module really costs |
+| `W64_TBSTATS=1` | per-TB-entry counters under icount, so `wasm_tbs` reads non-zero |
+
+**Verification and debug** — correctness cross-checks and console noise.
+
+| Knob | Effect |
+|---|---|
+| `W64_LC_VERIFY=1` | every `goto_ptr` goes through the helper, which cross-checks each would-be inline hit (`lcVhit`/`lcVbad`) |
+| `W64_LC2=1` | software ceiling probe: simulates a second inline-cache way and reports the hit rate it *would* have had. Built for real afterwards and rejected — a hit-rate probe is silent on the cost added to the path that still misses |
+| `W64_NOGENBUMP=1` | **unsound** (stale targets survive): skip the global key-generation bump, which prices a perfect inline cache in one run |
+| `W64_DEBUG=1`, `W64_TBLOG=1`, `?w64debug=1` | speculation stats / per-TB translation log / batch histogram + module events |
+| `QEMU_LOG_PABT=1` | one stderr line per guest prefetch abort or BKPT (IFSR, IFAR, pc, lr, sp, cpsr) — combine with `tracebuf=1`, never with `-d int` |
+| `QEMU_COSTACK=1` | coroutine-stack audit (see the Asyncify work in lessons.md) |
+| `W64_LOCKSTEP*` | the page's built-in guest-state fold; driven by `tools/lockstep-wasm.mjs`, not set by hand |
+
 ## Exports on `window.__qemu` (the emscripten module)
 
 `_wasm_fb_ptr/_width/_height/_stride/_take_dirty/_updates`,
 `_wasm_vclock` (guest ns), `_wasm_tbs/_wasm_insns` (per-TB stats),
 `_wasm_reg(n)/_wasm_pc()/_wasm_peek(addr)` (guest state probes),
-`_wasm_irq_pending()`, `_wasm_memstat(idx)` (the cold-path diagnostic
-counters of `include/qemu/wasm-diag.h` — indices are positional, re-derive
-them from the header after every edit: `grep WASM_DIAG_ | nl`),
-`_wasm_send_key(lnx, down)`, `_wasm_quit()`, `FS`, `ENV`.
+`_wasm_irq_pending()`, `_wasm_memstat(idx)` (the diagnostic counters of
+`include/qemu/wasm-diag.h`), `_wasm_send_key(lnx, down)`, `_wasm_quit()`,
+`FS`, `ENV`.
+
+**The `wasm_memstat` index is the ABI, and a hand-written index list in a
+tool goes stale silently.** A wrong counter returns a plausible number,
+not an error: a `specRet` left over from a rejected experiment once
+shifted `hflagsCalls` and `lookupConfl` by one and two tools misreported
+both for a whole round. So never transcribe an index — import
+`tools/diagnames.mjs`, which parses the enum out of the header at run
+time and throws if it finds implausibly few:
+
+```js
+import { NAMES } from "./diagnames.mjs";   // NAMES[i] is the camelCase name
+```
+
+Some counters sit on the hottest paths there are — every MMIO dispatch,
+every virtual-clock read, every hflags rebuild, ~14 M read-modify-writes
+a second on an idle S75. Those are marked `WASM_DIAG_HOT()` at their
+increment sites and **compiled out of the shipping build**, so `ioLd`,
+`ioSt`, `vclock`, `hflags` and `tpuRamW` read zero there — "not compiled
+in", not "did not happen". To get real rates, add `#define
+WASM_DIAG_HOT_COUNTERS 1` above that block in `wasm-diag.h` and rebuild;
+never take a wall-clock A/B against such a build. The cold counters are
+unconditional, so tb/flush/fill/warp diagnostics work everywhere.
 
 ## Scripts that matter
 
-Benchmarks and gates:
+**Gates** (correctness — parallel-safe, run them through
+`scripts/gate.sh`) and **benchmarks** (measurement — one at a time on a
+quiet host) are different things, and mixing them is how a session gets
+both a slow loop and a wrong number. `scripts/gate.sh quick|keep|close`
+runs the whole gate set concurrently and prints one verdict table; the
+benchmarks below are never in it.
+
+Benchmarks — the meters:
 
 | Script | Purpose |
 |---|---|
+| `workbench.mjs` | **the default A/B meter.** Wall time to execute a fixed stretch of guest work (`--board`, `--to <Mi>`). Under icount the guest between two instruction milestones is identical in every run of every build that does not change guest-visible behaviour, so this resolves a patch where a steady-state meter cannot — the SGOLD boards have no steady state (idle animates, the GSM stack cycles) and swing ~15 % run to run |
+| `uibench.mjs` | per-board steady-state: MIPS, v/wall, fps, halts/s and the display/dispatch counters, at the idle screen and while the menu is driven. The only meter that sees a board-specific mechanism — rounds 4–9 measured the S75 only and both round-ten findings were invisible there. On `icount=none` boards v/wall is 1.0 by construction, so read MIPS/fps |
 | `idlebench.mjs` | the end-to-end boot benchmark: fresh headless browser per run, S75v40lg1 to the idle screen (LCD bottom-139-rows vs a committed reference), guest-work milestones `t0.1G…t1.3G`, the v=2..7 window, A/B ratios between dists in one invocation, regression verdict vs `tests/results/idlebench-latest.json`; `--quick` (~1 min/dist), `--runs N`, `RT=banked`, a dist may be `<dir>@<query>` for knob A/Bs; `--board ke800` boots the LG fullflash (+ EFA sidecar, no icount) to its idle screen (`tools/test_targets/KE800-v11b_idle.png`, bottom 150 rows) — tIdle is its number, its own `idlebench-ke800-latest.json` baseline; the `-lcd.png` of any run is the canvas at its own resolution, i.e. a reference candidate |
 | `tcgbench.mjs` | fast-iteration perf bench on versatilepb (`tests/tcgbench`): per-phase backend A/B + the device/icount-tax mirrors (`mmiopoll`/`rampoll`/`mmiow` ns/access, `ICOUNTS=0,1`, `SUITE=quick`) |
-| `bootcheck.mjs` | the three-fullflash browser gate: boots s75/el71/ke800 on one dist and judges progress in executed instructions; on a firmware `>>EXIT<<` it waits for the panic text and saves the serial tail (`tests/results/bootcheck-<dist>-<board>-serial.txt`); `--query "trace=dsp,scu&tracebuf=1"` adds page parameters to every board and saves the buffered stderr/device trace per board (`…-trace.txt`); `--flash s75,el71` boots the boards in that order as consecutive pages of one browser |
-| `stopwatch.mjs` | J2ME pacing meter: boots S75v40lg1, walks the keypad to Extras → Stopwatch and prints `vratio` (virtual s per wall s), plus a `per-s` line with the display-path counters (`difTxWord`, `dmacBurst`, `dmacSchedTimer`, `dmacXlatFill`, `difMuxRebuild`, `lcCall`); `--devtools <port> --hold <s>` keeps the running app open for `wprof2.mjs PROF_ATTACH=<port>` — the profile that ranks this workload; `CHROME_ARGS="--js-flags=--liftoff-only"` passes browser switches (a phone-tier A/B: `--liftoff-only` pins V8's baseline tier, `--no-liftoff` pins TurboFan; `--no-wasm-tier-up` is a no-op in Chrome 153) |
-| `lockstep.mjs`, `lockstep-wasm.mjs` | cross-backend value-equality drivers — native JIT vs native TCI (plugin) / native JIT vs the wasm page (built-in fold); `scripts/run-lockstep.sh` is the native gate |
-| `tcgisa.mjs`, `tcgisa64.mjs` | drive the guest op-suite page leg (`scripts/run-tcg-isa.sh` is the gate; `tcgisa64.mjs` takes a dist + `--env` knobs) |
-| `ffboot.mjs` | boot a dist in Playwright's Firefox (cross-browser smoke; `BROWSER=chromium` too); gate rung 7 — `temp=` (per-TB throwaway modules) must stay ~0 |
-| `ab.mjs` | parallel boot-survival A/B of query variants against the deployed dist (`scripts/iterate.sh` uses it) |
+| `keylag.mjs` | key-press response latency per board — the meter for the EL71 key-lag complaint |
+| `stopwatch.mjs` | J2ME pacing meter: boots S75v40lg1, walks the keypad to Extras → Stopwatch and prints `vratio` (virtual s per wall s), plus a `per-s` line with the display-path counters (`difTxWord`, `dmacBurst`, `dmacSchedTimer`, `dmacXlatFill`, `difMuxRebuild`, `lcCall`); `--devtools <port> --hold <s>` keeps the running app open for `wprof2.mjs PROF_ATTACH=<port>`; `CHROME_ARGS="--js-flags=--liftoff-only"` passes browser switches (a phone-tier A/B: `--liftoff-only` pins V8's baseline tier, `--no-liftoff` pins TurboFan; `--no-wasm-tier-up` is a no-op in Chrome 153) |
 | `loadbench.mjs` | startup-path benchmark (download, compile, instantiate) |
+| `ab.mjs` | parallel boot-survival A/B of query variants against the deployed dist (`scripts/iterate.sh` uses it) |
+| `slowhost.sh` | run a command on a "phone-sized" slice of this host (pinned cores + same-priority spinners) |
+
+Gates — `scripts/gate.sh quick|keep|close` runs these; the individual
+commands are worth knowing only for reproducing one failure:
+
+| Script | Purpose |
+|---|---|
+| `bootcheck.mjs` | the four-fullflash browser gate: boots s75/el71/ke800/cx70 on one dist and judges progress in executed instructions; on a firmware `>>EXIT<<` it waits for the panic text and saves the serial tail (`tests/results/bootcheck-<dist>-<board>-serial.txt`); `--query "trace=dsp,scu&tracebuf=1"` adds page parameters to every board and saves the buffered stderr/device trace per board (`…-trace.txt`); `--flash s75,el71` boots the boards in that order as consecutive pages of one browser, which is its own test condition (the second page starts from cache at full speed) |
+| `earlykey.mjs` | a key event delivered at the earliest instant the export exists must not take the module down (0081). One board per invocation |
+| `tcgisa.mjs` | drives the guest op-suite on one page leg: `node tcgisa.mjs <port> <dist> [out] [ENV=VAL…]`. `scripts/run-tcg-isa.sh` is the gate and runs it once per built dist, comparing each against the native JIT serial log |
+| `lockstep.mjs`, `lockstep-wasm.mjs` | cross-backend value-equality drivers — native JIT vs native TCI (plugin) / native JIT vs the wasm page (built-in fold); `scripts/run-lockstep.sh` is the native gate |
+| `ffboot.mjs` | boot a dist in Playwright's Firefox (cross-browser smoke; `BROWSER=chromium` too) — `temp=` (per-TB throwaway modules) must stay ~0 and `errors=0` |
+| `tests/run.mjs` | the native suite: four fullflashes booted with `run-native.sh`'s recipe, plus an insncount MIPS benchmark. Blind to every wasm-only path, which is why the browser gates exist |
 
 Profiling and counters:
 
 | Script | Purpose |
 |---|---|
-| `wprof2.mjs` | per-worker CDP profiler with `wasm-function[N]` → symbol resolution via the `.symbols` sidecar; `PROF_DELAY=<s>` picks the boot phase, `PROF_FN=<substr>` prints caller stacks, `PROF_ATTACH=` profiles a page another tool drove, `PROF_SAVE=<json>` keeps the raw profile |
+| `diagall.mjs` | **every** `wasm_memstat` counter by name plus a per-second DELTA block — the tool for deciding *where* time goes. Names come from `diagnames.mjs`, so it never goes stale |
+| `counters.mjs` | every unconditional counter for one board as a rate (`--board`, `--from`, `--window`) |
+| `memstat.mjs`, `diagprobe.mjs` | the memory-path subset over a boot / any counter by index (`name=idx`) |
+| `modcost.mjs` | what fraction of wall time goes into translation + module construction — the ceiling probe for any tiering scheme. Reads the C-side phase timers through `_wasm_memstat`, *not* from the worker: the vCPU worker runs the guest without yielding, so a worker-side `evaluate()` never gets scheduled and hangs the tool |
+| `modfloor.mjs` | synthesizes wasm modules of chosen shapes and times `new WebAssembly.Module` — the page-side floor to compare the emulator's own 83 µs against |
+| `haltprobe.mjs` | why is this board awake? — halt/wake attribution |
+| `wprof2.mjs` | per-worker CDP profiler with `wasm-function[N]` → symbol resolution via the `.symbols` sidecar; `PROF_DELAY=<s>` picks the boot phase, `PROF_FN=<substr>` prints caller stacks, `PROF_ATTACH=` profiles a page another tool drove, `PROF_SAVE=<json>` keeps the raw profile. **Self-time names a neighbourhood, not a function** — confirm with a counter or a volatile-spin probe before believing a rank |
 | `profcat.mjs`, `profjit.mjs` | categorize a saved profile by cost class; distribution of JIT-guest self time over TB functions |
-| `memstat.mjs`, `diagprobe.mjs` | sample the cold-path `wasm_memstat` counters over a boot (memstat: the memory-path set; diagprobe: any counter by index, `name=idx`) |
 | `threadmap.mjs`, `syscallprobe.mjs` | thread census / syscall CPU attribution (see wasm-threads-audit.md) |
-| `modbench.mjs`, `ffmodtest*.mjs` | WebAssembly.Module compile-cost and Firefox executable-memory probes |
+| `asyncify-audit.mjs` | which frames the Asyncify onlylist still needs (`QEMU_COSTACK=1` is the evidence half) |
 
 Probes and traces:
 
