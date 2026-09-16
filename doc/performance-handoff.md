@@ -21,7 +21,7 @@ what has already been paid for.
 
 **The workspace is ready** (checked 2026-09-16, end of round
 twenty-three): both native builds, `build/qemu-wasm64`, `site/dist-jit`,
-`tools/node_modules`, and the `qemu/` submodule at `806bef81e3` (0098),
+`tools/node_modules`, and the `qemu/` submodule at `6a11e50a23` (0099),
 which matches `QEMU_PMB887X_REV` in `versions.env`. `site/dist` carries only the guest
 images (boards.tar, tcgisa.bin) — **its TCI engine is not built**, so the
 wasm-TCI op-suite leg skips. Nothing needs bootstrapping — if
@@ -165,9 +165,9 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    per boot, and Cache-API `compileStreaming` gives synthetic responses
    no code-cache hit. What remains:
 
-   | route | ceiling | what it needs |
+   | route | prize | what it needs |
    |---|---|---|
-   | **interpreter tier** (run cold code interpreted, compile only what repeats) | up to **12.5 %** — that is the whole pipeline; halving module count is ~6 % | keep the TCG op stream alongside the wasm |
+   | **interpreter tier** (run cold code interpreted, compile only what repeats) | **~6 % of an EL71 boot** measured (1–9 % across the close-behaviour range); ceiling is the whole ~10–12.5 % pipeline | keep the TCG op stream alongside the wasm, a promotion counter per TB, and an interpreter entry from the wasm64 dispatcher |
 
    Rounds 21–22 firmed the arithmetic and closed the alternatives. A
    translation costs **~12 µs** against ~96 µs for the module a miss
@@ -197,17 +197,89 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    speculating from the link register when a TB has no static successor
    is **−7.6 % of wall for nothing** (§ REJECTED).
 
-   **Probe before building**: (a) is an interpreted first execution of a
-   ~3.9-instruction TB really ~100× cheaper than the module it avoids?
-   The TCI dist already answers the cost side per-op; the open question
-   is the dispatch overhead of entering a one-off interpreter run from
-   the wasm64 dispatcher without paying a module boundary. (b) **How long
-   would a missed TB stay interpreted?** Decoupling the close from the
-   miss is the whole point, and the current close rate is one per 4.9
-   translations — a TB that waits for a 128-member batch waits ~22 ms,
-   which a hot TB spends thousands of entries in. The design almost
-   certainly needs a per-TB interpreted-execution count that promotes a
-   TB to its own module, so measure that distribution first.
+   **Both probes are done (round 23) and both came back green.** The
+   round log has the numbers; the operative summary:
+
+   (a) **An interpreter transfers to wasm at 1.0×.** `tools/interp-probe.c`
+   compiles one TCI-shaped dispatch loop with `gcc -O2` and with
+   `emcc -O3` and they run at the same speed (7.30/7.42/7.43 ns per op
+   native against 7.26/7.42/7.22 in wasm). The emitted TB code it would
+   replace runs in V8's *baseline* tier at 2.7× native, so the browser is
+   the **favourable** environment for this design. Natively the same EL71
+   window is 131.1 MIPS on the JIT against 21.4 on TCI; decomposed
+   against wasm64's 20.4 ns/insn that is **~118 ns extra per interpreted
+   TB entry**, against ~83 µs for the module a first execution forces.
+
+   (b) **The entry-count distribution is bimodal, with an enormous gap.**
+   `W64_TBHIST=1` (per-TB entry counter in the prologue, exact). EL71:
+   27.2 % of translated TBs are **never entered at all**; of those that
+   are, **35.9 % run exactly once** and **74.0 % run ≤ 31 times**, while
+   0.08 % of TBs take **half of all entries**. Promoting at 32 entries
+   therefore leaves 74 % of entered TBs interpreted forever for **0.25 %
+   of all TB entries** ever interpreted. S75 agrees (36.5 % / 72.7 % /
+   0.27 %). The prize nets **+1.8 s of a ~27 s boot (~6 %)** on today's
+   3.55-members-per-close, +0.25 s if a promotion always forces its own
+   close and +2.35 s if batches fill to 128 — flat from T = 16 to
+   T = 256, so the threshold is not delicate.
+
+   **What is left to settle can only be settled by building it**: which
+   batch closes actually survive, because that depends on the
+   interleaving of translation and execution order. Instrument it first
+   in any prototype. Second risk: Asyncify. The interpreter sits under
+   `tcg_qemu_tb_exec` and calls helpers that can longjmp, so it is an
+   onlylist candidate, and round fourteen priced that instrumentation as
+   expensive — `interp-probe.c` is uninstrumented, so its 1.0× is an
+   upper bound.
+
+1b. **Merging a conditional branch's fall-through into its own TB —
+   ≤ 2.7 % of wall, and it needs an icount correction.** Sized in round
+   23: `goto_tb` which = 1 exits are **29.8 %** of all TB transitions
+   (97 455 274 of 327 250 283 on a 1360 Mi EL71 window), and transitions
+   are 9.1 % of wall. Second-order and possibly larger: a merged TB
+   covers two basic blocks, so TB count — and therefore miss count and
+   module count — would fall too.
+
+   **The frontend side is small.** ARM already has the machinery: a
+   conditional branch emits `arm_skip_unless` (a `brcond` to
+   `dc->condlabel`) and then `gen_jmp` → `gen_goto_tb(dc, 0, diff)`,
+   which sets `DISAS_NORETURN`, and `arm_tr_tb_stop`'s
+   `if (dc->condjmp)` tail emits the fall-through as
+   `gen_goto_tb(dc, 1, curr_insn_len(dc))`. The same `condjmp` mechanism
+   *already* lets a TB continue past a conditionally-skipped
+   instruction (`arm_post_translate_insn`); a branch is the one case
+   where it stops instead.
+
+   **The blocker is icount, and it is structural.** `gen_tb_end()`
+   patches the TB-start subtraction to `db->num_insns` and sets
+   `tb->icount = db->num_insns`, so QEMU charges the guest for **every**
+   instruction in the TB the moment it is entered. A TB that can leave
+   early through `goto_tb 0` would over-charge by the length of the
+   fall-through it skipped — which this tree cannot absorb: three of
+   four boards run stock `-icount shift=3` and the lockstep gate is
+   instruction-exact.
+
+   The way round it is to **emit the taken path last**, so the skipped
+   count is known when it is emitted:
+
+       brcond  cond -> Ltaken
+       <fall-through instructions, inline>
+       goto_tb 1   (after the last one)
+     Ltaken:
+       icount_decr += n_fallthrough_insns    <- the correction
+       goto_tb 0   (branch target)
+
+   which fits `arm_tr_tb_stop`'s existing `if (dc->condjmp)` tail, with
+   the roles inverted. **Do not start without a plan for the second
+   problem**: the fall-through block is usually reachable from elsewhere
+   too, so it will *also* exist as a TB of its own — duplicate
+   translation, more TBs, more modules, the classic trace-JIT blow-up.
+   Measure how much of the which = 1 traffic goes to a block with only
+   that one predecessor before building anything.
+
+   This is a qemu-core + frontend change, so it shifts both backends and
+   needs the full matrix plus `close`'s 2.5 G lockstep. Ranked below the
+   interpreter tier on prize (2.7 % against ~6 %) and well below it on
+   risk.
 
 2. **The baseline tier: ~3.6 % of TB entries, at 2× the optimizing
    tier's cost.** New in round 21 and barely exploited. Nothing page-side
@@ -448,16 +520,106 @@ with a scheme that replaces the probe outright.
   2.9 % inside a run of ≥3, so it prevents **1.1 %** of misses.
   Consistent with 0097: the miss stream is edge-limited.
 
+### The interpreter tier: both its gates measured, and both open green
+
+Open item 1 has carried two "probe before building" questions since round
+twenty.  Both are now answered, and the item changes from *plausible* to
+*priced*.
+
+**(b) How long would a missed TB stay interpreted?**  `W64_TBHIST=1`
+bumps a per-TB entry counter at a translation-time-constant address in
+the prologue, so every TB's lifetime entry count is exact.  EL71, 2528 Mi,
+`tbFlush` 0 (tidx is recycled at flush, which would merge counts):
+
+| entries in this TB's life | TBs | % | of all entries |
+|---|---|---|---|
+| never entered at all | 47 251 | 27.2 % of translated | — |
+| exactly 1 | 45 406 | 35.9 % of entered | 0.01 % |
+| ≤ 3 | 63 689 | 50.4 % | 0.01 % |
+| ≤ 15 | 86 123 | 68.2 % | 0.04 % |
+| ≤ 31 | 93 568 | 74.0 % | 0.07 % |
+| ≥ 1 048 576 | 107 | 0.08 % | 50.5 % |
+
+**The distribution is bimodal and the gap is enormous.**  A TB that will
+be hot is hot immediately — 0.08 % of TBs take half of all entries — and
+a threshold anywhere between 2 and 128 separates the two populations at
+negligible cost: promoting at 32 entries leaves 74 % of entered TBs
+interpreted forever and only **0.25 % of all TB entries** ever
+interpreted.  S75 is the same distribution (36.5 % / 72.7 % / 0.27 %), so
+this is a property of guest code, not of one board.
+
+**(a) Is an interpreted first execution cheap enough?**  Measured in two
+steps rather than guessed.  Natively, the same EL71 window runs **131.1
+MIPS on the JIT and 21.4 MIPS on TCI** (`tests/run.mjs --flash el71`,
+`QEMU_BIN=build/qemu-native-tci-build/...`) — interpretation is 6.1× at
+that end.  That ratio does not transfer, because the two sides land in
+different tiers in the browser, so `tools/interp-probe.c` measures the
+transfer factor directly: the same TCI-shaped dispatch loop (byte
+opcode, jump-table switch, decoded operands, a register file, TCG's own
+op mix) compiled with `gcc -O2` and with `emcc -O3`.
+
+**They are the same speed.** 7.30 / 7.42 / 7.43 ns per op native against
+7.26 / 7.42 / 7.22 in wasm, three pairs — V8's optimizing tier compiles a
+branchy interpreter loop as well as gcc does.  So the interpreter
+transfers at **1.0×** while the thing it replaces — emitted TB code in
+V8's *baseline* tier — is 2.7× slower in wasm than native.  **The
+browser is the favourable place for this design, not the unfavourable
+one**, which is the opposite of the assumption the item was written
+under.
+
+Decomposing the four measured throughputs (native JIT 7.63 ns/insn,
+native TCI 46.7, wasm64 20.4, devices/other common to all) puts the
+wasm penalty for interpreting rather than executing compiled code at
+**~28 ns per guest instruction, ~118 ns per 4.16-insn TB entry** —
+against ~83 µs for the module a first execution currently forces.
+
+### What it is worth
+
+Module count is what changes: a batch closes today because its first
+member has to *run*, and an interpreted first run removes that reason.
+The saving is `(modules no longer forced) × 83 µs`, the cost is
+`(interpreted entries) × 118 ns` plus a second translation for each TB
+that does get promoted.  At the measured distribution, promoting at
+T = 64:
+
+| assumption about how batches close | net |
+|---|---|
+| every promotion forces its own close (no batching at all) | **+0.25 s** |
+| closes keep today's 3.55 members each | **+1.8 s** |
+| batches fill to `W64_BATCH_N` = 128 | **+2.35 s** |
+
+On a ~27 s EL71 boot that is **1 % to 9 %, most likely ~6 %** — and the
+curve is flat from T = 16 to T = 256, so the threshold is not delicate.
+**The middle column is the one assumption no probe can settle**, because
+it depends on the interleaving of translation and execution order that
+only the real thing produces; it is the first thing to measure once a
+prototype runs.
+
+Two risks worth writing down before anyone starts. **Asyncify**: the
+interpreter would sit under `tcg_qemu_tb_exec` and call helpers that can
+longjmp, so it is a candidate for the onlylist — and round fourteen
+measured Asyncify instrumentation as expensive.  `interp-probe.c` is
+*not* instrumented, so its 1.0× is an upper bound on how well the real
+loop transfers.  **Memory**: every live TB would carry a TCG/TCI op
+stream alongside (or instead of) its wasm bytes.
+
 ### Open at the end of round twenty-three
 
-Unchanged in rank. **The interpreter tier** (open item 1) is still the
-only item above 3 %, and this round removed its nearest competitors
-rather than adding any: the dispatch line is 9.1 % with a ~6 ns floor
-under it, the TLB probe is 5.07 % with no cheaper *front* and no
-replacement designed, and emitted bytes are closed on both the compile
-and the execution side. The two structural ideas left, both bounded and
-both real work, are **merging conditional fall-throughs** (≤ 2.7 %) and
-**typed funcref tables** (~0.6 %).
+**The interpreter tier is the target, and it is now the only one with a
+measured prize.** Both of its gates opened green (above): the per-TB
+entry distribution is bimodal, with a 0.25 %-of-entries interpretation
+cost at a promotion threshold of 32, and an interpreter loop compiles to
+wasm at *native* speed while the emitted code it replaces runs 2.7×
+slower than native. Worth ~6 % of an EL71 boot on the central
+assumption, 1–9 % across the range. It is a multi-session build; the
+plan is in open item 1.
+
+Everything else shrank this round rather than grew: the dispatch line is
+9.1 % with a ~6 ns floor under it, the TLB probe is 5.07 % with no
+cheaper *front* and no replacement designed, and emitted bytes are
+closed on both the compile and the execution side. The two structural
+ideas left, both bounded and both real work, are **merging conditional
+fall-throughs** (≤ 2.7 %) and **typed funcref tables** (~0.6 %).
 
 ## Update (2026-09-16, round twenty-two: speculation has headroom, but not this edge — 0095)
 

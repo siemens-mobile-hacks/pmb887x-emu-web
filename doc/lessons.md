@@ -869,6 +869,35 @@ load per memory access and was **+3..+10 % slower**. Read those as the
 same fact. Before moving work into emitted code, ask what it costs at
 2× — and before rejecting a helper call, remember it is 2 ns.
 
+## An interpreter compiles to wasm at native speed; emitted code does not
+
+Two numbers that look like they belong to the same scale and do not.
+
+`tools/interp-probe.c` is a TCI-shaped dispatch loop — byte opcode,
+jump-table switch over ~15 cases, operands decoded out of the stream, a
+register file, TCG's own op mix.  Compiled with `gcc -O2` and with
+`emcc -O3` it runs at **the same speed**: 7.30 / 7.42 / 7.43 ns per op
+native against 7.26 / 7.42 / 7.22 in wasm, three pairs.  V8's optimizing
+tier has nothing to apologise for on branchy interpreter code.
+
+Emitted TB code does not get that.  It lands in the **baseline** tier
+(see "Emitted code runs in the baseline tier; C helpers run optimized"),
+and the whole wasm64 emulator runs 2.7× slower than the native JIT on the
+same guest window — 49 MIPS against 131.1.
+
+So the *ratio* between interpreting and compiling is much kinder in the
+browser than on the host.  Natively, TCI is 6.1× the JIT (21.4 against
+131.1 MIPS on EL71).  In wasm the interpreter keeps its native speed
+while the compiled side gives up 2.7×, so the same interpreter costs
+about 3× — and against a translate-and-compile pipeline that costs
+~83 µs per module, that changes a verdict rather than a decimal.
+
+The general form: **before assuming a native cost ratio carries to the
+browser, ask which tier each side lands in.**  C in the main module is
+optimized; emitted wasm is mostly not.  Anything that moves work from the
+second to the first gets a 2–3× discount that has nothing to do with the
+work itself.
+
 ## Locality only pays on a dependent load
 
 **A load from a compile-time-constant address is not on the critical
