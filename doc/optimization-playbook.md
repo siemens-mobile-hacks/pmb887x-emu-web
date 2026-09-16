@@ -370,6 +370,7 @@ mmiopoll only) makes a whole-run profile pure.
 | 0094 tcg/wasm64: `W64_BYTEPAD`, the knob that prices emitted bytes against compile | instrumentation.  N never-executed i64 add/store pairs per TB body behind a test of `$scr32` (still 0 there), so emitted bytes move and execution cost does not.  Three earlier rounds called emitted-byte count "not the lever" on −2.6 % and −3.7 % byte cuts read as flat — but at a 10 % compile share those predict 0.4 %, under every meter used | 0/40/120 → 5.1/7.7/14.5 KB per module → 96/110/125 µs: **~80 µs fixed + 3.2 µs/KB in the app**.  At the shipping size bytes are 17 % of module cost, so **emitted bytes are worth at most 2.2 % of wall driven to zero** (the inline TLB probe, 37 % of bytes, ~0.8 %).  Companion floors: `new WebAssembly.Module` alone is ~8 µs + 7–12 µs/KB (`locals-probe --split`), large modules compile on background threads (do not fit a line through the 2.3 KB close and 404 KB compaction populations — different experiments), and the live-module count is **flat** from 500 to 6000 instances (`tools/modgrow.mjs`).  **Module count is the only lever on the 12.5 %, and module count is miss count** |
 | 0098 tcg/wasm64: `W64_XCOUNT`, `W64_TLBDUP`/`TLBCHEAP`/`TLBSIMD`/`TLBHIT`, `dispCall`/`dispIter` | instrumentation, all off by default (+4 618 bytes in the shipping wasm, nothing on a hot path).  `W64_XCOUNT` counts TB exits in the generated code by kind, including the self-chaining subset; `dispCall`/`dispIter` count the C dispatcher's entries and loop iterations.  `W64_TLBDUP=N` emits N extra *real* inline probes per memop against mmu index ^ 1 — no load CSE'd with the genuine one — each result stored to **its own** per-site slot, so the N=1→N=2 slope is one whole probe.  `TLBCHEAP`/`TLBSIMD` are the same instrument over a two-load generation-tagged site cache and a one-load `v128` form of it; `TLBHIT` runs the site cache for real and counts hits | **The inline TLB probe is 5.07 % of EL71 wall** (+4.8…+5.5 % across runs, `mods`/`tbGen`/`modMs` identical between legs), against 2.33 % for the two-load check and 4.09 % for the one-load `v128` one — **its cost is not its load count**, and SIMD lane extraction is expensive.  Site page-stability is **94.7 %** (1 656 776 205 / 91 863 184).  Dispatch: 240.6 k transitions per Mi at ~7.7 ns = **9.1 % of wall**, 4.16 guest insns per TB entry, dispatcher re-entered once per 173 transitions, inline cache serving 83.9 % of `goto_ptr` exits (§ 0d).  **The sink must be a plain per-site store**: folding duplicates into one global serializes every memop through store-to-load forwarding and prices latency, which inflated the probe ~2× and reordered all three variants.  Everything built on these numbers was then rejected by its own A/B — see § REJECTED, the per-site TLB entry cache |
 | 0099 tcg/wasm64: `W64_TBHIST`, the per-TB entry counter | instrumentation, off by default.  The TB prologue bumps `w64_tbhist[tidx]` — one i32 load/add/store at a **translation-time-constant** address, the cheapest per-TB-entry counter the backend can emit — and `wasm_tbhist()` buckets the result by log2.  This is the measurement the interpreter tier is gated on: what fraction of translated TBs never run often enough to be worth a wasm module.  `tools/tbhist.mjs` prints the distribution and the promotion-threshold decision curve | **The distribution is bimodal and the gap is enormous.**  EL71, 2528 Mi, tbFlush 0: 173 583 TBs translated, of which **47 251 (27.2 %) are never entered at all**; of the 126 358 that are, **35.9 % run exactly once**, 50.4 % run ≤ 3 times, **74.0 % run ≤ 31 times** — and **0.08 % of TBs take half of all 586 M entries**.  Promoting at 32 entries leaves 74 % of entered TBs interpreted forever for **0.25 % of all TB entries** ever interpreted.  S75 is the same shape (36.5 % / 72.7 % / 0.27 %), so this is guest code, not one board.  Combined with `tools/interp-probe.c` (an interpreter loop compiles to wasm at **native speed**, 7.26–7.42 ns/op against 7.30–7.43, while emitted TB code runs 2.7× slower than native) the interpreter tier prices at **+1.8 s of a ~27 s EL71 boot, ~6 %** — see the hand-off's open item 1 for the range and the one assumption no probe can settle |
+| 0100 tcg/wasm64: `closePreEnt`/`closePreTb`, and `tools/modshape-probe.mjs` | instrumentation, off by default (the accounting is inside `if (w64_tbhist)`, and `w64_tbhist` is NULL unless `W64_TBHIST=1`).  At each batch close, sum what the members have already executed.  Combined with `W64_NOCLOSEEXEC=1` — which defers the close so batches fill to `W64_BATCH_N` — that is the interpreter tier's cost term measured rather than assumed.  `modshape-probe.mjs` maps `new WebAssembly.Module` over synthetic modules: function count, size, imports, exports, identical-vs-distinct wire bytes | **The module cost law, fitted over a 48× range of members** (§ 0f): ~86 µs per close + ~2.8 µs per member, so **96 % of the boot's 3.5 s of module time is the fixed cost of closing too often** and only the close count is a lever.  `new WebAssembly.Module` is 79 % of a module and has **no cheap corner** — linear in function count from 1 to 256, no threshold, imports 0.09 µs each.  **Round 19's "four fifths is not compiling" is withdrawn**: it recompiled *identical* bytes, which V8 serves from a wire-byte-keyed module cache; distinct bytes cost 2.0–3.8× more.  Interpreter tier re-priced with its cost measured (§ 0g): 1 353 closes, 0.548 s of module time, **7.00 M entries (1.45 %) run before their batch closes** — **net +2.2 s of a ~27 s EL71 boot**.  gate keep 11/11 |
 | 0007 TCI TB chaining | restore `goto_tb` chaining; per-TB icount2 accounting moved into the interpreter via a `tci_tbhdr` header op executed at every TB entry; the old 0004-era session io accounting collapses to a deadline-sync | +84–113 % insns at fixed wall time; `cpu_exec_loop` 9.3 %→0.8 % of vCPU; boot to idle ~260 s |
 | 0008 TCI immediate forms | `tci_add/and/or/xor/andc_ri`, `tci_setcond32_ri` + constraint letters + `tcg_target_const_match` + outop `out_rri`/`out_ri` wiring — constants stop materializing through `tci_movi` (18.9 %→12.8 % of ops; `add` 7.4 %→1.0 %) | window 46.7→42.9–43.7 s (+8 %); idle screen ~235 s |
 | 0009 futex main-loop wait | emscripten `poll()` cannot sleep (it ignores the timeout — the browser main thread must not block), so the main loop busy-spun ~23k iterations/s through a proxied syscall, 2 BQL handoffs each, and the aio eventfd wake never worked at all.  Replaced with a worker-local ns-precision futex wait woken by `qemu_notify_event`/`aio_notify`; main-loop wait no longer times out on virtual deadlines (the vCPU runs those) | window 43.7→40.1–40.4 s (+8 %); +22 % boot progress @110 s; idle screen ~195 s |
@@ -468,6 +469,8 @@ commit, then `ninja-fast.sh` and the ladder.
 
 | Experiment | Result | Why |
 |---|---|---|
+| **Filling batches by speculating harder** (a close costs ~86 µs fixed and carries only 4.85 members, so more members per close is the whole prize) (2026-09-16, round 24) | **The budget is not what binds.**  `W64_SPEC_N` 4 / 32 / 64 gives 2.64 / 4.85 / 5.39 members per close and 5.514 / 3.543 / 3.519 s of module time: doubling the budget from the shipping 32 buys **0.5 members and 24 ms**, for 7 % more translations.  `W64_BATCH_N` 16 / 32 / 128 is likewise 4.41 / 4.81 / 4.85 — the cap is reached by ~10 % of closes at 16 and never at 128 | The successor walk exhausts: `w64_explored` prunes a node whose successors all exist, and after a few hops everything does.  The batch closes on the **first execution of a member**, not on fullness, so the close count is pinned to the miss count no matter how the walk is tuned.  **The only way to unpin it is another way to run a TB before its module exists** — which is the interpreter tier, and is now the sole remaining route into the pipeline.  (Also settles the handoff's older "`W64_SPEC_N` 8 == 128" as too strong: 4 is clearly worse, 64 is a tie.) |
+| **A cheap corner in `new WebAssembly.Module`** — a function-count or size threshold, or a cost hiding in imports/exports rather than compilation (2026-09-16, round 24, probed before building) | **There is none.**  `tools/modshape-probe.mjs`: cost is linear in function count with a per-call intercept over **1 → 256 functions and 23 B → 236 KB**, no knee anywhere; 64 imports add 0.09 µs each, exports are free; an empty module still costs the intercept.  Sub-timers in the app agree — `Module` is 83.8 µs of a 106.4 µs module, Instance 9.0, addFunction 2.8, the GC nudge 0.45 | The API offers exactly one lever, the number of calls.  **Found on the way and worth more than the negative result**: both this probe's and round 19's "warm" numbers were compiling *identical* wire bytes, which V8 serves from its compiled-module cache — distinct bytes cost 2.0–3.8× more (§ 0f).  Round 19's "four fifths of the 80 µs is cold cache" is withdrawn |
 | **Turning off `CF_PCREL`** (set unconditionally on every ARM system-mode TB; it makes every PC materialisation a read of `cpu_R[15]` plus an add instead of a constant, and on ARMv5 every 32-bit literal is an `ldr rX, [pc, #imm]`) (2026-09-16, 0096, `W64_NOPCREL`) | **-0.7 %, 2/3 pairwise — inside noise — and +2 % lookup misses**, which at ~96 µs a module cancels most of it.  `tbGen` does not move (158–160k either way) | The saving is not there because **`cpu_R[15]` is a TCG global, and the wasm64 backend keeps globals in wasm locals for the life of the TB** — the "read" is a `local.get`, not a memory load, so `addi` costs about what the constant would.  Generalises: do not price a TCG global access as a load on this backend.  Same shape as round 21's "a load from a compile-time-constant address is not on the critical path".  The misses rise because TBs key on the virtual pc once PCREL is off and stop being shared between aliases; that `tbGen` is flat says this firmware maps its code once, so CF_PCREL's generality is unused here and still not worth removing |
 | **Compaction granularity as a dispatch-locality lever** (`W64_COMPACT_MEMBERS` 256 / 1024 / 4096 — fewer live wasm instances should make a `return_call_indirect` cheaper) (2026-09-16) | **Flat.** Five interleaved pairs over a **4.6× range in compaction events** (compact 602 / 194 / 130): 20.63 / 20.87 / 20.37 ms per Mi, and a follow-up 3 pairs of 1024 vs 4096 read +1.0 % the other way.  A wash | `tools/dispatch-probe.mjs` really does show 1024 functions per module dispatching **38 % cheaper** than 128 over a 32768-function working set (60.3 vs 96.5 ns) — but that is a **uniformly random draw**, which is the worst case and not where the emulator lives.  Real guest execution has a hot set of a few hundred TBs that were translated together and therefore share a module.  **Calibration worth keeping: the probe's `live` knob is a worst case; do not read its absolute ns as the emulator's dispatch cost.**  Also measured there and not pursued: a *direct* `return_call` instead of an indirect one, at identical access patterns, saves only 1.1 ns at 128 functions per module (7.5 ns at 1024) |
 | **Speculating the address after an unconditional transfer** (`b`, `bx lr`, `pop {pc}` -- the next basic block, which goto_tb never records because it notes only the branch target and an indirect exit notes nothing) (2026-09-16, 0095, `W64_LINSPEC`) | **Rejected twice over.** Performance: **+89 % speculative translations** (specMade 143k -> 271k) and **no change in the miss count**. Soundness: guessing after an *indirect* exit panics the EL71 firmware in ~4.5 s, deterministically, at a fixed guest pc ("sorry died at A04D103C"); after an unconditional branch it does not, and s75/cx70 survive it -- EL71 is the one board that programs its flash file system while booting | The economics looked inviting and are worth recording: a speculative translation is ~12 us against ~96 us for a module, so an extra edge pays at a **12.5 % hit rate**, and the edges the walk already has convert at **66 %** (`W64_SPEC_N` 0 vs 32 on a fixed-work el71 window: 127k extra translations remove 84k misses, 117881 -> 33621 — solve the two-point system, do not guess). There is headroom; this is not the edge that fills it. **The panic is unexplained and matters more than the experiment**: w64_speculate is documented as a hint that cannot change guest behaviour, and it can. Ruled out, each by experiment: tb_flush (the shipping build survives 11 and 38 flushes forced with `?qargs=-accel tcg,tb-size=24`/`=8` — which also exercises 0091's tidx recycling across a flush for the first time and finds it sound); ISA alignment (filtering the guess on `s->thumb` alignment changes nothing); and a stale TB over reprogrammed flash (adding the missing `tb_invalidate_phys_range` to the pmb887x program/erase paths does not stop it). **Recorded separately**: `hw/arm/pmb887x/flash.c` and `hw/block/pflash_cfi01.c` both write their rom device's backing RAM directly and neither invalidates TBs for the range, which `hw/nvram/nrf51_nvm.c` shows is required. Latent, not currently reachable, and `memory_region_flush_rom_device` cannot be used as-is — it asserts the region is in romd mode, which a CFI part never is while being programmed |
@@ -656,6 +659,88 @@ commit, then `ninja-fast.sh` and the ladder.
    run at all**, which is speculation's over-reach priced from the other
    side: 47 251 TBs × ~12 µs = ~0.57 s of an EL71 boot, unavoidable
    without a predictor the miss-stream work has already closed.
+
+0f. **What a wasm module costs, as a law (counters, round 24).**  The
+   figure quoted since round 19 — "~80 µs fixed + 3.2 µs/KB" — was
+   fitted by *inflating* one population with `W64_BYTEPAD`, over a 2.8×
+   range of bytes at a fixed 4.9 members.  Round 24 fits it over a
+   **48× range of members** instead, by moving the close policy, and
+   every point is a real batch of real emitted code:
+
+   | knob | members/close | closes | modNs | µs/close |
+   |---|---|---|---|---|
+   | `W64_SPEC_N=4` | 2.64 | 54 784 | 5.514 s | 100.6 |
+   | `W64_BATCH_N=16` | 4.41 | 39 345 | 4.025 s | 102.3 |
+   | `W64_BATCH_N=32` | 4.81 | 35 996 | 3.720 s | 103.3 |
+   | shipping | 4.85 | 35 708 | 3.543 s | 99.2 |
+   | `W64_SPEC_N=64` | 5.39 | 34 393 | 3.519 s | 102.3 |
+   | `W64_NOCLOSEEXEC=1` | **128.1** | **1 352** | **0.600 s** | 443.8 |
+
+   Two points 26× apart give **~86 µs per close + ~2.8 µs per member**,
+   and the four in between sit on that line.  At the shipping 4.85
+   members the per-member term is 13.6 µs against 86 — so **96 % of the
+   boot's 3.5 s of module time is the fixed cost of closing too often**,
+   and neither bytes nor members nor batch size is the lever.  Only the
+   close count is.
+
+   Decomposed by sub-timer (shipping, 36 083 modules, 106.4 µs each):
+   `new WebAssembly.Module` **83.8 µs (79 %)**, Instance 9.0, pre 5.2,
+   addFunction 2.8, import object 1.2, GC nudge 0.45.  There is no
+   second thing to attack.
+
+   And `new WebAssembly.Module` has **no cheap corner**
+   (`tools/modshape-probe.mjs`, synthetic modules in Chromium): cost is
+   linear in function count with a per-call intercept, across 1 to 256
+   functions and 23 B to 236 KB, with no threshold anywhere; 64 imports
+   cost 0.09 µs each and exports are free.  The only lever the API
+   offers is fewer calls.
+
+   **Correction to round 19.**  That round concluded "four fifths of the
+   80 µs is not compiling — the same bytes compile in 12–31 µs
+   back-to-back".  *The same bytes* is the flaw: V8 keeps a
+   compiled-module cache keyed on wire bytes, so a repeat compile is a
+   cache hit.  Measured with one immediate byte perturbed per call
+   (`modshape-probe` case G, 1 KB/function):
+
+   | functions | identical bytes | distinct bytes | ratio |
+   |---|---|---|---|
+   | 1 | 7.3 µs | 27.9 µs | 3.8× |
+   | 5 | 14.6 | 40.5 | 2.8× |
+   | 32 | 46.8 | 125.7 | 2.7× |
+   | 128 | 149.4 | 305.8 | 2.0× |
+
+   So most of that "cold cache" gap was a cache *hit*, not cache
+   coldness, and `W64_MODBENCH`'s number is not a floor the emulator
+   could approach by being warmer.  The emulator never compiles the same
+   bytes twice.  **Generalises: a repeat-the-same-input microbenchmark
+   of a compiler measures its cache.**
+
+0g. **What the interpreter tier would have to interpret (counters,
+   round 24).**  The saving was always easy to price and the cost never
+   was: a TB stays interpreted from its translation until its batch
+   closes, and how often it runs in that window depends on an
+   interleaving only the real thing produces.  `W64_NOCLOSEEXEC=1` *is*
+   that real thing with the close deferred — batches then fill to
+   `W64_BATCH_N` — so summing each member's exact `W64_TBHIST` count at
+   close time (`closePreEnt`) measures it instead of assuming it.
+
+   EL71, 2113 Mi, batches filling to 128:
+
+   | | |
+   |---|---|
+   | batch closes | 1 353 (from 35 873) |
+   | module time | **0.548 s** (from 3.54 s) |
+   | members that had run before their batch closed | 95 702 of 173 297 — **55.2 %** |
+   | entries run before their batch closed | **7 001 592** — 1.45 % of all entries |
+
+   At the measured 109 ns penalty per interpreted entry (4.16 guest
+   insns; 49 MIPS compiled in-browser against 21.4 MIPS for native TCI,
+   which `tools/interp-probe.c` shows transfers to wasm at 1.0×) that
+   costs **0.76 s** to save **2.99 s**: **net +2.2 s of a ~27 s boot,
+   ~8 %**, and +1.7 s if the interpreter lands 1.5× short of TCI.  The
+   other end of the trade curve is the shipping build itself (35 873
+   closes, nothing interpreted), so **both ends are now measured** and a
+   deadline policy moves along a line between them.
 
 1. **wasm64 early-boot deficit — REDUCED by 0019, still open.**  Was
    ~27 % behind TCI on the first 0.75 G insns (per-TB module compile =

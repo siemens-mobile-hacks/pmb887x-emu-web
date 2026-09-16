@@ -1302,6 +1302,40 @@ Round eleven (0058–0064) profiled the device access path and found that
   honest shape of the result and it is worth landing on, but only if
   you write both halves down.  A mechanism meter answers "did my change
   happen"; it never answers "did it help".
+- **A repeat-the-same-input microbenchmark of a compiler measures its
+  cache** (2026-09-16, round 24).  Round 19 timed `new
+  WebAssembly.Module` back-to-back on one real module, got 12–31 µs
+  against ~84 µs in the app, and concluded that four fifths of the
+  module cost was cold cache — a conclusion that shaped two rounds of
+  planning.  It was compiling the *same wire bytes* every time, and V8
+  keeps a compiled-module cache keyed on exactly those bytes.  Perturb
+  one immediate per call and the cost rises 2.0–3.8×.  The check costs
+  one line and the false floor it removes was worth two rounds: **if
+  you are benchmarking something that is allowed to memoise, vary the
+  input.**  The same trap is waiting in any probe of a translator, a
+  parser, a regex engine or a shader compiler.
+- **Fit a cost model by moving the variable you care about, not a
+  proxy for it** (2026-09-16, round 24).  "A module costs ~80 µs fixed
+  + 3.2 µs/KB" was fitted with `W64_BYTEPAD`, which inflates *bytes* at
+  a fixed member count, over a 2.8× range — and the per-byte term it
+  produced did not survive.  Moving the close policy instead
+  (`W64_SPEC_N`, `W64_BATCH_N`, `W64_NOCLOSEEXEC`) sweeps **members**
+  over 48×, which is the term that actually varies in the emulator, and
+  six points land on one line: ~86 µs per close + ~2.8 µs per member.
+  A padding knob is easy to build and sweeps the wrong axis; a policy
+  knob is the real experiment.
+- **The assumption a probe "cannot settle" is usually settled by a knob
+  that already exists** (2026-09-16, round 24).  The interpreter tier's
+  cost — how much runs interpreted while a batch fills — was written
+  down twice as depending on an interleaving only the real thing
+  produces, and therefore as the thing to measure *after* building a
+  prototype.  But `W64_NOCLOSEEXEC=1`, added rounds earlier as an A/B
+  for a different question, **is** that deferral: batches fill to 128
+  under it.  Summing each member's existing per-TB entry counter at
+  close time turned the last assumption into 7 001 592, measured, for
+  about twenty lines.  Before accepting "only a prototype can tell us",
+  re-read the knob list for a mechanism that already produces the state
+  you need.
 - **A negative result that closes a direction is worth a round.**  0055
   removed bytes *and* executed ops and bought nothing.  That matters
   more than the commit: the 2026-09-13 hoist had removed bytes and cost

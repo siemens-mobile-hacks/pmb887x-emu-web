@@ -107,20 +107,33 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 - The translate-and-compile pipeline is **19.5 %** of an EL71 boot, so
   the boot is **not** compile-bound; the other ~80 % is guest code plus
   the device and lookup paths.
-- **A module costs ~80 µs fixed + 3.2 µs/KB** in the app (round 21,
-  fitted with `W64_BYTEPAD`). At the shipping 5.1 KB/module that is 17 %
-  of the cost, so **emitted bytes are worth at most 2.2 % of wall even
-  driven to zero** — which is why three earlier rounds read a −3.7 %
-  byte cut as flat. Compile time is `~96 µs × module count`.
+- **A module costs ~86 µs per close + ~2.8 µs per member** (round 24,
+  fitted over a **48× range of members** by moving the close policy —
+  `W64_SPEC_N` 4/32/64, `W64_BATCH_N` 16/32/128 and `W64_NOCLOSEEXEC`,
+  six real points on one line; playbook § 0f). At the shipping 4.85
+  members the per-member term is 13.6 µs against 86, so **96 % of the
+  boot's 3.5 s of module time is the fixed cost of closing too often**.
+  Bytes, members, batch size and live-module count are all closed as
+  levers; **the close count is the only one left**.
 - **Module count is speculation-miss count**: a batch opens on a lookup
   miss and closes when its first member runs, so `close` == `specMiss`.
-  It never reaches `W64_BATCH_N`=128 — **modules average 4.9 TBs**.
-  Speculation is starved of *edges*, not budget (`W64_SPEC_N` 8 == 128).
-- **Four fifths of the 80 µs is not compiling** — the same bytes compile
-  in 12–31 µs back-to-back inside the vCPU worker's own isolate, and
-  ~8 µs + 7–12 µs/KB in a browser tight loop. The rest is cold cache,
-  evicted by ~700 µs of guest code between calls. It is **not** the
-  live-module count: 500 → 6000 live instances is flat (`modgrow.mjs`).
+  It never reaches `W64_BATCH_N`=128 — **modules average 4.85 TBs**.
+  Speculation is starved of *edges*, not budget: `W64_SPEC_N` 4/32/64
+  gives 2.64/4.85/5.39 members per close, so doubling the shipping
+  budget buys 0.5 members and 24 ms for 7 % more translations.
+- **`new WebAssembly.Module` is 79 % of a module** (83.8 µs of 106.4;
+  Instance 9.0, pre 5.2, addFunction 2.8, imports 1.2, GC nudge 0.45),
+  and it has **no cheap corner**: linear in function count with a
+  per-call intercept over 1 → 256 functions and 23 B → 236 KB, no
+  threshold, imports 0.09 µs each (`tools/modshape-probe.mjs`).
+- **Round 19's "four fifths of the 80 µs is cold cache" is withdrawn.**
+  It recompiled *identical* wire bytes, which V8 serves from a
+  compiled-module cache keyed on exactly those bytes. Perturb one
+  immediate per call and cost rises **2.0–3.8×** (7.3→27.9 µs at one
+  function, 149→306 at 128). The emulator never compiles the same bytes
+  twice, so that 12–31 µs was never a floor it could approach. Still
+  true and independently measured: it is **not** the live-module count,
+  500 → 6000 live instances flat (`modgrow.mjs`).
 - **~3.6 % of TB entries run V8's baseline tier, at 2× the optimizing
   tier's cost** (round 21). `--liftoff-only` is +63 % and
   `--wasm-tiering-budget=1000` is −3.1 %. Emitted code is mostly baseline;
@@ -167,7 +180,33 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 
    | route | prize | what it needs |
    |---|---|---|
-   | **interpreter tier** (run cold code interpreted, compile only what repeats) | **~6 % of an EL71 boot** measured (1–9 % across the close-behaviour range); ceiling is the whole ~10–12.5 % pipeline | keep the TCG op stream alongside the wasm, a promotion counter per TB, and an interpreter entry from the wasm64 dispatcher |
+   | **interpreter tier** (run cold code interpreted, compile only what repeats) | **+2.2 s of a ~27 s EL71 boot, ~8 %** — both sides now measured, not assumed (playbook § 0g) | keep the TCG op stream alongside the wasm, a promotion counter per TB, and an interpreter entry from the wasm64 dispatcher |
+
+   **Round 24 measured the cost side, which was the last assumption.**
+   The saving was always easy: defer the close and batches fill to
+   `W64_BATCH_N`, so closes drop **35 873 → 1 353** and module time
+   **3.54 s → 0.548 s**. The cost is how much runs interpreted while a
+   batch fills, and that depends on an interleaving of translation and
+   execution order only the real thing produces — so it was measured on
+   the real thing: `W64_NOCLOSEEXEC=1` is exactly that deferral, and
+   `closePreEnt` sums each member's exact `W64_TBHIST` count at close.
+   **7 001 592 entries — 1.45 % of all entries — run before their batch
+   closes**, and 55.2 % of members had run at all (the other 44.8 % are
+   compiled before first use and never need interpreting). At 109 ns per
+   interpreted entry that is 0.76 s to save 2.99 s. Both ends of the
+   trade curve are now measured — the shipping build is the other end,
+   35 873 closes and nothing interpreted — so a deadline policy moves
+   along a line between two known points rather than into the unknown.
+
+   **Feasibility, checked this round.** `qemu/tcg/tci.c` is in the tree
+   *and has already been tuned for wasm*: `tci_call_tag` gives helper
+   calls with ≤5 integer words a direct `call_indirect` instead of
+   libffi's `ffi_call_js` (~1.7 µs through JS). The hard part is not the
+   interpreter, it is having two backends in one build — this QEMU uses
+   the `TCGOutOp` struct dispatch (46 `outop_*` in `tcg/wasm64/`), so
+   capture has to hook the ~15 `container_of(all_outop[...])` sites in
+   `tcg_reg_alloc_op` after register allocation, where args are already
+   target registers and constants.
 
    Rounds 21–22 firmed the arithmetic and closed the alternatives. A
    translation costs **~12 µs** against ~96 µs for the module a miss
