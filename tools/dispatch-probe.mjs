@@ -83,6 +83,13 @@ function moduleBytes(base, n, kind, stride) {
       b.push(0x12, ...u((i + 1) % n));      // return_call, fixed neighbour
     } else if (kind === "ind-same") {
       b.push(0x41, ...sl(base), 0x13, 0, 0);
+    } else if (kind === "ind-cycle") {
+      // the SAME walk as "direct" -- the next function of this module --
+      // but reached through the table.  Paired with "direct" this isolates
+      // the call kind from the access pattern, which is the comparison
+      // that decides whether a goto_tb chain whose target sits in the same
+      // batch module is worth emitting as a static return_call.
+      b.push(0x41, ...sl(base + ((i + 1) % n)), 0x13, 0, 0);
     } else {
       b.push(0x20, 4, 0x13, 0, 0);          // return_call_indirect seq[..]
     }
@@ -142,6 +149,8 @@ async function measure(kind, split, stride) {
 const out = [];
 out.push(await measure("loop", FUNCS, 0));
 out.push(await measure("ind-same", FUNCS, 0));
+for (const sp of SPLITS) out.push(await measure("direct", sp, 0));
+for (const sp of SPLITS) out.push(await measure("ind-cycle", sp, 0));
 for (const sp of SPLITS) out.push(await measure("ind", sp, 0));
 for (const sp of SPLITS) out.push(await measure("ind", sp, STRIDE));
 return out;
@@ -170,7 +179,8 @@ for (const name of browsers) {
   const loop = rows.find((r) => r.kind === "loop").ns;
   console.log(`DISPATCH ${name}  funcs=${FUNCS} live=${LIVE} stride=${STRIDE} iters=${ITERS}`);
   for (const r of rows) {
-    const tag = r.kind === "ind" ? `ind/${r.split} ${r.stride ? "+desc@" + r.stride : "dense    "} (${r.mods} mods)` : r.kind;
+    const tag = (r.kind === "ind" || r.kind === "direct" || r.kind === "ind-cycle")
+      ? `${r.kind}/${r.split} ${r.stride ? "+desc@" + r.stride : "dense    "} (${r.mods} mods)` : r.kind;
     console.log(`  ${tag.padEnd(30)} ${r.ns.toFixed(2)} ns/iter` +
       (r.kind === "loop" ? "   (work floor)"
         : `   dispatch = ${(r.ns - loop).toFixed(2)} ns`));

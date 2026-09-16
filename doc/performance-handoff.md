@@ -348,6 +348,45 @@ than a curiosity.
 console, which `workbench.mjs` reports only as a Node crash three layers
 up.
 
+### Three more closed the same round
+
+- **Compaction granularity is not a dispatch lever.** `W64_COMPACT_MEMBERS`
+  256 / 1024 / 4096 is **flat over a 4.6× range in compaction events**
+  (five pairs, then three more of 1024 vs 4096 reading +1.0 % the other
+  way). The synthetic probe genuinely shows 1024 functions per module
+  dispatching **38 % cheaper** than 128 across a 32768-function set
+  (60.3 vs 96.5 ns) — but that is a **uniformly random draw**, the worst
+  case, and the emulator does not live there: its hot set is a few
+  hundred TBs that were translated together and share a module. **Do not
+  read `dispatch-probe`'s absolute ns as the emulator's dispatch cost**;
+  the `live` knob is a ceiling, not a measurement. A *direct*
+  `return_call` instead of an indirect one, at identical access
+  patterns, is worth only 1.1 ns at 128 functions per module.
+- **`CF_PCREL` off is a wash** (0096): −0.7 %, 2/3 pairwise, and +2 %
+  misses. No saving because `cpu_R[15]` is a TCG global, which this
+  backend keeps in a wasm local — the "read" is a `local.get`, not a
+  load. *Do not price a TCG global access as a load on this backend.*
+- **`tb_flush` is sound**, exercised for the first time: 11 and 38
+  flushes forced with `?qargs=-accel tcg,tb-size=24` / `=8`, no panic.
+  That also covers 0091's `tidx` recycling across a flush, which its own
+  commit noted had never been observed to run.
+
+### Method notes from this round
+
+- **A `WASM_DIAG_TIME_PHASES` build is not usable for shares.** It is
+  2.2× slower overall (677 M insns in 30 s against 1500 M) because its
+  `tlb_fill_align` timer runs at 54k/s, and it inflates even the
+  always-on `modNs` (96 → 226 µs/module). Get a phase cost by solving a
+  two-point system on the fixed-work meter instead — that is where the
+  ~12 µs translation figure comes from.
+- **`modcost.mjs` is fixed-*wall*, not fixed-work.** Counts from it must
+  be normalised per Mi, and its insn totals swing 15 % run to run with
+  how much idle the window caught. An earlier A/B in this round read as
+  "no effect" purely because of that; `workbench.mjs` (fixed guest work,
+  and now printing `modMs`) is the right meter for anything counted.
+- **`modcost.mjs` takes `WENV=`, not `EXTRA_Q=`.** Four runs were
+  compared before anyone noticed the knob had never reached qemu.
+
 ## Update (2026-09-16, round twenty-one: the dispatch, and then the tier — 0091–0094)
 
 Two landings and five closures.  0091 is the round's win; the rest of it
