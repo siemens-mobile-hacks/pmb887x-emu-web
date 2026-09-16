@@ -153,12 +153,21 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    Rounds 21–22 firmed the arithmetic and closed the alternatives. A
    translation costs **~12 µs** against ~96 µs for the module a miss
    forces, so speculation pays at a **12.5 % hit rate** and already
-   converts at **66 %** — there is headroom to guess far more wildly,
-   but the one extra edge tried (the address after an unconditional
-   transfer) removed no misses and, after an indirect exit, panicked the
-   EL71 firmware (§ REJECTED; **read that before extending speculation**
-   — it means a speculation "hint" can change guest behaviour, and the
-   cause is still unknown). The cost is `~80 µs fixed × miss count`; **bytes are capped at 2.2 % of wall**
+   converts at **66 %**. That looked like headroom, and it is not:
+   **speculating harder is closed by measurement** (0097). The miss
+   stream is 31 397 events at 31 397 *distinct* pcs — zero repeats — and
+   only **10.2 % of them appear anywhere in the 64 MB flash image as a
+   pointer**. The other 89.8 % are reached by computed addresses (jump
+   tables whose entries are branch *instructions*, index-scaled
+   dispatch), which no literal, pointer or relocation scan can see. That
+   caps **every** static-edge idea at ~1.2 % of wall. Misses also
+   cluster only weakly — 10.2 per touched page against ~529 basic blocks
+   in a page, so eager page translation is 7× negative. Two edges were
+   tried before this was known: call returns bought 2.6 % of misses
+   (0092), and the address after an unconditional transfer bought nothing
+   and **panicked the guest** (§ REJECTED; **read that before touching
+   speculation** — a speculation "hint" can change guest behaviour and
+   the cause is still unknown). The cost is `~80 µs fixed × miss count`; **bytes are capped at 2.2 % of wall**
    (`W64_BYTEPAD` fit), the live-module count is not a factor
    (`modgrow.mjs`), bigger modules are not the lever (`dispatch-probe`:
    128-per-module vs one module is 8–13 % of the dispatch, and batches
@@ -347,6 +356,32 @@ than a curiosity.
 `tools/abortlog.mjs` — the failure was a firmware panic on the serial
 console, which `workbench.mjs` reports only as a Node crash three layers
 up.
+
+### The miss stream, priced — and "speculate harder" closed
+
+The open list kept coming back to "can another edge be guessed?", and the
+economics invited it. 0097 answers it by measuring the stream instead of
+guessing a third time:
+
+- 39 562 misses land in 3 878 distinct guest pages — **10.2 misses per
+  touched page** — against ~529 basic blocks in a 4 KB page at this
+  firmware's 3.87 insns/TB. Translating a page on first entry costs
+  ~6.3 ms to save ~0.88 ms: **7× negative**.
+- `W64_MISSDUMP` over a 60 s boot: 31 397 miss events at **31 397
+  distinct pcs — zero repeats**, exactly as the model says (a miss is a
+  TB being discovered, once).
+- Intersected with every pointer-shaped word in the 64 MB image:
+  91.5 % of missed pcs are inside flash, and only **10.2 % appear
+  anywhere in the image as a pointer**.
+
+So **89.8 % of misses are at addresses the firmware never stores as a
+pointer at all**. They are computed — base+offset, `add pc, pc, rN lsl
+#2` tables whose entries are branch instructions, index-scaled dispatch.
+Nothing a translator can scan will find them. That is a ceiling of
+**~1.2 % of wall** on every static-edge idea, and it assumes a heuristic
+that can read the whole image, which a real one cannot.
+
+**The 12.5 % is the interpreter tier or nothing.**
 
 ### Three more closed the same round
 
