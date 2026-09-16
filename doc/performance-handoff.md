@@ -115,6 +115,22 @@ the 83 us and compile came back bit-identical with it off (2.8761 vs
 2.8754 s).  It is simply its own cost: `modNs` per module 119.3 -> 111.6 us,
 **0.27 s per 25 s of EL71 boot, ~1.1 % of wall**, and nothing else moves.
 
+### And 0.6 % was sitting outside every timer
+
+The four-way split did not sum to `MOD_NS`: ~14.5 us a module was
+unaccounted for.  Timing the prologue found it — `w64_batch_instantiate`
+was rebuilding a `DataView` and a `Float64Array` over the 2 GB shared
+buffer on every call and copying the module bytes twice, because
+`HEAPU8.slice()` already returns a `Uint8Array` and the `new Uint8Array()`
+around it copied again.  **9.8 -> 5.3 us a module, 0.156 s per 25 s boot,
+~0.62 % of wall** (0088), and `modPreNs` is stable to +-0.5 ms across runs
+where `modCompileNs` swings 2.62-2.94 s.
+
+The general point is the one worth keeping: **a decomposition that does
+not add up is itself a finding.**  Four phases summing to 3.35 s inside a
+3.71 s whole said there was a fifth, and it was 40 % as large as every
+non-compile phase put together.
+
 ### Open at the end of round nineteen
 
 1. **The remaining module prize is ~5.7 % of EL71 boot** — halving module
