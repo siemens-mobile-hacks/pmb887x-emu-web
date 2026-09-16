@@ -265,7 +265,8 @@ async function runPairWasm(args, flashPath, dir, log) {
                    meminsns: args.meminsns, mem: args.mem };
   const a = new Side("a", args.aBin, path.join(dir, "a"),
                      { ...common, stopAt: args.insns });
-  const b = new WasmSide("b", path.join(dir, "b"), { ...common, insns: args.insns });
+  const b = new WasmSide("b", path.join(dir, "b"),
+                         { ...common, insns: args.insns, env: args.env });
   await a.start(flashPath);
   await b.start(flashPath, args.port, args.dist);
 
