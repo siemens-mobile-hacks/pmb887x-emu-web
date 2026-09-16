@@ -144,27 +144,23 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    is the dispatch overhead of entering a one-off interpreter run from
    the wasm64 dispatcher without paying a module boundary.
 
-2. **A compile is 4–6× cheaper warm.** Nothing batches compile events
-   except compaction, which is already nearly free. If a second pending
-   compile ever exists, doing it adjacent to the first is worth ~68 µs.
-
-3. **CX70's device writes have no named device.** Post-0083 they are
+2. **CX70's device writes have no named device.** Post-0083 they are
    ~103 ns each at 56k/s — about **0.6 % of wall**, so this is a
    name-the-register task, not a prize. (Round eighteen measured 645 ns
    before 0083 landed; that figure is stale.) `iotrace2.mjs --board cx70`
    is the tool.
 
-4. **ke800 saw −2.1 % from 0083** (2 pairs, inside noise): the LG board
+3. **ke800 saw −2.1 % from 0083** (2 pairs, inside noise): the LG board
    does not toggle EBU readonly, so it should be a wash. Wants one longer
    run to confirm.
 
-5. **Does Firefox still need the GC nudge?** 0087 keeps it for Firefox
+4. **Does Firefox still need the GC nudge?** 0087 keeps it for Firefox
    and takes it off Chromium, but the gate can no longer reproduce the
    OOM it exists for: 202 s with `W64_GCNUDGE=0` reached 2.73 G insns and
    40 152 modules, `errors=0`. The original report was *mobile* Firefox
    on a Pixel, so it stays until someone retests there.
 
-6. **Instrument hygiene, unfinished.** The phase timer over-attributes
+5. **Instrument hygiene, unfinished.** The phase timer over-attributes
    short functions — it put hflags at 3.8 % of wall and the patch
    delivered ~1 %. `CAL_NS` removes the interval floor but not whatever
    else inflates a sub-50 ns measurement, and it has not been used with
@@ -174,34 +170,39 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    the call-count reduction and the A/B, and read any sub-50 ns per-call
    figure as an upper bound.
 
-7. **J2ME throughput** (`tools/stopwatch.mjs`, vratio ~0.60 after 0052):
+6. **J2ME throughput** (`tools/stopwatch.mjs`, vratio ~0.60 after 0052):
    the remaining third is the DIF FIFO word loop, the DMAC per-word MMIO
    writes and the SRB events — a device-path target, not an engine one.
    This meter drifts with host load; take alternating samples.
 
-8. **Timer storms / main-loop wakeups — sized and parked.** The
+7. **Timer storms / main-loop wakeups — sized, audited and parked.** The
    clock/timer path is ~2.5 % of the vCPU mid-boot at ~37k `timer_mod`/s.
    Halving it is below the noise floor of a single pair, so it only lands
-   bundled with something measurable. The exception was the LG board,
-   where the GPTU's per-byte-overflow deadline was a 100 kHz storm that
-   starved the vCPU outright (0049); the TPU/CAPCOM/STM models have never
-   been audited for the same "deadline = next hardware tick" pattern.
+   bundled with something measurable. The 0049-pattern audit is **done
+   (2026-09-16, by inspection — round twenty)**: `capcom.c` and `stm.c`
+   carry no QEMU timers at all; `tpu.c` re-arms only when the deadline
+   moved (0068's guard); `tpu2.c`'s `dyn_timer` arms at
+   min(next-unfired-IRQ, overflow); `gptu.c` is 0049 itself; `sccu.c` is
+   a one-shot sleep timer; `rtc.c` arms on calendar events; and
+   `timer.c`'s generic framework has **zero callers** — dead legacy
+   code. The "deadline = next hardware tick" shape exists nowhere else
+   in the tree.
 
-9. **The idle-warp share of a boot is a fidelity question, not a
+8. **The idle-warp share of a boot is a fidelity question, not a
     performance one.** A boot consumes ~42 s of virtual time, ~31.5 s of
     it idle warp on millisecond device timers. Whether that is what a
     real S75 takes needs a measurement against hardware before any device
     timer period is touched. Engine work can only move the first ~0.75 G
     instructions — about 27 of the 39 s a user waits.
 
-10. **Native has no real-time cap** (0032 defaults it off outside
+9. **Native has no real-time cap** (0032 defaults it off outside
     emscripten), so native and web agree on the timing model and disagree
     on pacing. **Reviewed and deliberately not done**: it is a fidelity
     change that makes every native run 2.7× slower, costing the cheapest
     gate in the ladder and buying the shipped build nothing.
     `QEMU_ICOUNT_RTCAP=banked` already reaches it for anyone who wants a
     paced native run. Flip the default only alongside the hardware
-    reference measurement item 9 needs.
+    reference measurement item 8 needs.
 
 ## Constraints (what still binds)
 
@@ -331,12 +332,41 @@ name per run and attach transaction handlers before issuing the put
 renderer on its first transaction after a wasm-heavy preamble;
 handlers-first ran 500× clean).
 
+### Two more items closed by inspection
+
+**"A compile is 4–6× cheaper warm" (old item 2) is unreachable by
+construction.**  The batcher is a *single global* `B` (`tcg/wasm64/
+wasm64.c`): one batch is open at a time, it closes the moment its
+opener executes (`close` == `specMiss`, round sixteen), and only then
+may the next open.  A second pending compile therefore never exists —
+there is nothing for warm-compile adjacency to batch with, except
+compaction, which is already 0.13 s per boot.  Closed with nothing to
+fix.
+
+**The 0049-pattern audit (old item 8's tail) is clean.**  Every
+`timer_mod` call site under `hw/arm/pmb887x/` was read for the
+"deadline = next hardware tick" shape that made the GPTU a 100 kHz
+storm: `capcom.c` and `stm.c` carry no QEMU timers at all (their cost
+is register-access cost, priced in rounds 11–13/18); `tpu.c` re-arms
+only when the deadline actually moved (0068's guard, `tpuRearm`
+counter); `tpu2.c` — the SGOLD TPU — goes through `dyn_timer.c`, which
+arms at min(next-unfired-IRQ-threshold, next-overflow), the
+observable-events-only shape; `gptu.c` is 0049 itself; `sccu.c` is a
+one-shot sleep timer plus calibration timers on fixed durations;
+`rtc.c` arms on calendar events; and `timer.c`'s generic framework has
+**zero callers** — dead legacy code, worth deleting next time anyone
+touches the directory.  The pattern exists nowhere else; the ~2.5 %
+clock/timer path stays parked as sized.
+
 ### Open at the end of round twenty
 
-*Superseded by § Open items at the top of this file.*  The list is
-round nineteen's minus the closed item: the module-pipeline probes
-(AOT cache / interpreter tier) remain the last big target, and nothing
-else moved — this round spent its budget on coverage, not throughput.
+*Superseded by § Open items at the top of this file.*  Three items
+closed this round — the op-suite hole (landed as 0090), the AOT cache
+(probed and rejected in both engines), and the 0049-pattern audit
+(clean by inspection) — plus one by inspection (warm-compile batching:
+structurally impossible with a single open batch).  The module pipeline's interpreter tier (~5.7 %, with its own
+probe question) is the last big target; the small items (CX70 device
+write naming, the ke800 confirmation run) are unchanged.
 
 ## Update (2026-09-16, round nineteen: a module costs 83 us, and almost none of it is compiling)
 
