@@ -206,11 +206,13 @@ const FULLFLASH_REPO =
 // its cache state has to fit on one ellipsised line.
 // Extend this list as the repo grows.
 export const PRESET_FULLFLASHES = [
-  { id: "s75v40lg1", label: "Siemens S75 — v40 lg1", short: "S75 v40 lg1",
+  { id: "s75v40lg1", label: "Siemens S75v40", short: "S75v40",
     files: ["S75v40lg1.bin"], size: 67108864 },
-  { id: "el71v41lg91", label: "Siemens EL71 — v41 lg91", short: "EL71 v41 lg91",
+  { id: "el71v41lg91", label: "Siemens EL71v41", short: "EL71v41",
     files: ["EL71v41lg91.bin"], size: 67108864 },
-  { id: "ke800v11b", label: "LG KE800 — v11b + EFA block", short: "KE800 v11b",
+{ id: "cx70v56lg3", label: "Siemens CX70v56", short: "EL71v41",
+    files: ["CX70v56lg3.bin"], size: 33554432 },
+  { id: "ke800v11b", label: "LG KE800v11b", short: "KE800v11b",
     files: ["KE800v11b.bin", "KE800v11b.bin.cfi-efa"], size: 134250496 },
 ];
 
