@@ -270,12 +270,16 @@ main {
 .krow-soft    { grid-template-columns: 1fr 1.2fr 1fr; }
 .krow-joy     { grid-template-columns: 1fr 1.2fr 1fr; }
 .krow-call    { grid-template-columns: 1fr 1.2fr 1fr; }
-.krow-digits  { grid-template-columns: repeat(3, 1fr); }
+/* the * / 0 / # keys carry their legend beside the digit instead of under it
+   (.key-inline), so their row is a line of text shorter than the three above
+   it — 1fr rows hand every row of the block the tallest row's height */
+.krow-digits  { grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; }
 
 /* S75 middle block (keyboards/S75-ru.webp): the joystick is one square pad —
    four arrow marks around the OK button, inside its own frame — and the keys
    beside it sit in two-column flanks, soft key across the top, call/media
    (left) and browser/hang-up (right) level with the middle of the pad */
+.krow-s75-mid { grid-template-columns: 1.68fr 1.6fr 1.68fr; }
 .kflank {
   display: grid; gap: 6px;
   grid-template-columns: 1fr 1fr; grid-template-rows: 0.8fr 2.2fr;
@@ -428,8 +432,23 @@ body.show-key-hints .key-hint { display: block; }
 @media (pointer: coarse) {
   .keypad .krow > button, .keypad .kflank > button,
   .aux-keys-left button, .aux-keys-right button { min-height: 44px; }
-  .keypad .kpad { min-height: 132px; }
   .keypad .kpad button { min-height: 0; }
+  /* A fingertip cannot land on the 17px edge strips the engraving gives the
+     S75 pad's arrows, so on a touch screen the arms are about twice as thick
+     in both directions. The pad keeps the height of the three key rows
+     beside it — growing it would take the height off the screen box, which
+     §3 of the acceptance criteria pins — so the thickness comes from the
+     row's middle column (widened at the flanks' expense), from the pad's own
+     inner padding, and from the three rows sharing the height evenly instead
+     of the arrows getting a ninth of it each. */
+  .keypad .krow-s75-mid { grid-template-columns: 1.45fr 2.1fr 1.45fr; }
+  .keypad .kpad {
+    min-height: 132px; padding: 0;
+    grid-template-columns: 1fr 1.4fr 1fr;
+    grid-template-rows: 1fr 1fr 1fr;
+  }
+  /* the arrow marks are drawn to the strip they sit on */
+  .keypad .kpad .key-nav { font-size: 0.85rem; }
 }
 
 /* ---------------- control panels ---------------- */

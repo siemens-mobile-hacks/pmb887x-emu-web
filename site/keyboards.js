@@ -133,7 +133,9 @@ export const KBD_BOARDS = {
       { key: "vol_down", label: "−", short: "−", title: "Volume down (right side)" },
     ],
     rows: [
-      { cls: "krow krow-s75-mid", cols: "1.68fr 1.6fr 1.68fr", keys: [
+      // no cols: .krow-s75-mid owns them, so a touch screen can widen the
+      // middle column to fit a thicker joystick pad (style.css)
+      { cls: "krow krow-s75-mid", keys: [
         { cls: "kflank", keys: [
           { key: "left_soft", label: "—", cls: "kspan2", title: "Left soft key" },
           { key: "send", label: CALL_ICON, cls: "key-send", title: "Green key (call)" },
@@ -328,7 +330,7 @@ export function applyKbdLayout(keyboardId, variantId, onRender) {
   for (const row of board.rows) {
     const rowEl = document.createElement("div");
     rowEl.className = row.cls ?? "krow";
-    rowEl.style.gridTemplateColumns = row.cols;
+    if (row.cols) rowEl.style.gridTemplateColumns = row.cols;
     for (const def of row.keys) rowEl.appendChild(keyNode(def, variant.subs));
     keypad.appendChild(rowEl);
   }
