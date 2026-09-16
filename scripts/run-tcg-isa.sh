@@ -106,22 +106,13 @@ else
     curl -sf "http://127.0.0.1:$PORT_TCG/" >/dev/null && break
     sleep 0.1
   done
-  # The wasm64 page leg is a KNOWN HOLE: it dies with "null function" in
-  # an Asyncify rewind before printing any TAP, and has since 2026-09-13
-  # on every revision tried.  So the shipping backend has no op-suite
-  # coverage at all -- lockstep and bootcheck are carrying it.  Run it
-  # anyway (bounded), report it loudly, and let WASM64_SUITE=1 make it
-  # fail the gate for whoever sits down to fix it.
-  if ! run_wasm_leg "wasm64 (page, dist-jit)" dist-jit tcgisa.mjs "$T/wasm64.log"; then
-    if [ "${WASM64_SUITE:-0}" = 1 ]; then
-      fail=1
-    else
-      echo "!! KNOWN HOLE: the wasm64 op-suite leg is broken (null function in an"
-      echo "   Asyncify rewind, since 2026-09-13).  The backend every perf patch"
-      echo "   edits has NO op-suite coverage; lockstep + bootcheck cover it."
-      echo "   WASM64_SUITE=1 makes this fail.  See performance-handoff.md."
-    fi
-  fi
+  # The wasm64 leg is the point of this gate: it is the backend every perf
+  # patch edits, with its own emitter, so native JIT-vs-TCI agreement says
+  # nothing about it.  (Fixed 2026-09-16: it had been a KNOWN HOLE since
+  # 2026-09-13 — an Asyncify rewind into an uninstrumented frame on the
+  # versatilepb machine-init path; the 0090 commit on the qemu branch
+  # added the missing onlylist names.)
+  run_wasm_leg "wasm64 (page, dist-jit)" dist-jit tcgisa.mjs "$T/wasm64.log" || fail=1
   run_wasm_leg "wasm TCI (page, dist)" dist tcgisa.mjs "$T/wasmtci.log" || fail=1
   kill "$SRV" 2>/dev/null || true
   SRV=""

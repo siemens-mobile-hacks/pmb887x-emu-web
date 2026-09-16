@@ -19,10 +19,12 @@ Once you have a candidate, [optimization-playbook.md](optimization-playbook.md)
 § The iteration ladder is how to test it, and [lessons.md](lessons.md) is
 what has already been paid for.
 
-**The workspace is ready** (checked 2026-09-16): both native builds,
-`build/qemu-wasm64`, `site/dist-jit` + `site/dist`, `tools/node_modules`,
-and the `qemu/` submodule at `c07259db94`, which matches
-`QEMU_PMB887X_REV` in `versions.env`. Nothing needs bootstrapping — if
+**The workspace is ready** (checked 2026-09-16, end of round twenty): both
+native builds, `build/qemu-wasm64`, `site/dist-jit`, `tools/node_modules`,
+and the `qemu/` submodule at `bad630a3e7` (0090), which matches
+`QEMU_PMB887X_REV` in `versions.env`. `site/dist` carries only the guest
+images (boards.tar, tcgisa.bin) — **its TCI engine is not built**, so the
+wasm-TCI op-suite leg skips. Nothing needs bootstrapping — if
 something *does* look unbuilt, `scripts/build-qemu-wasm64.sh` is the safe
 mid-session rebuild; `scripts/build-qemu.sh` re-fetches and may check the
 submodule out to a stale pin.
@@ -61,9 +63,12 @@ bash scripts/gate.sh quick               # 152 s, all jobs concurrent — start 
 - **Module count is speculation-miss count.** Measure `specMiss`, never
   `tbGen`, and read `mods` alongside wall on any codegen change: adding
   instructions to a hot path buys modules at ~83 µs each.
-- **The wasm64 op-suite leg is broken** (§ Open items 2), so lockstep
-  and bootcheck are the *only* correctness coverage the shipping backend
-  has. Treat a lockstep failure as real on the first occurrence.
+- **The wasm64 op-suite leg gates again** (0090 fixed the 2026-09-13 KNOWN
+  HOLE — an Asyncify rewind into uninstrumented versatilepb machine-init
+  frames). The wasm **TCI** leg still skips whenever `site/dist` has no
+  engine built; and a silent skip is worse than a red gate — read the leg
+  list, not the PASS line. Treat a lockstep failure as real on the first
+  occurrence.
 - **A silent skip is worse than a red gate.** `run-tcg-isa.sh` skips a
   leg whose dist is missing — read the leg list, not the PASS line.
 - **This is a container**: `/proc/loadavg` and `free` report the *host*,
@@ -138,95 +143,27 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    ~3.9-instruction TB really ~100× cheaper than the module it avoids?
    Playbook § Remaining 5 carries the AOT detail.
 
-2. **The wasm64 op-suite leg is broken, and has been since 2026-09-13** —
-   so **the backend every perf patch edits has no op-suite coverage**;
-   lockstep and bootcheck are carrying it. `scripts/run-tcg-isa.sh` now
-   runs the leg on every invocation, bails the moment the page dies and
-   says so loudly; `WASM64_SUITE=1` makes it fail the gate. This sat in a
-   round-log paragraph for six rounds without being actioned, which is
-   the argument for keeping open items at the top of this file.
-
-   The stack (2026-09-16, unchanged from the original report) is an
-   **Asyncify rewind calling a null function pointer**, on the pthread's
-   `onmessage`, immediately after an unsupported `__syscall_mprotect`:
-
-   ```
-   RuntimeError: null function
-     at qemu-system-arm.wasm:wasm-function[26650]
-     at Object.doRewind → finishContextSwitch → trampoline → maybeStopUnwind
-   ```
-
-   Note what is *not* wrong: the same backend boots four phones and holds
-   2.5 G-instruction lockstep against the native oracle. What differs
-   here is the target — `-M versatilepb` with semihosting, not pmb887x —
-   so the first suspect is a function reachable only on that path being
-   absent from `qemu/configs/meson/asyncify-only.txt` (0031's onlylist).
-   A rewind into a frame the Asyncify pass did not instrument is exactly
-   how a null index gets called. **Cheapest first test**: drop
-   `-sASYNCIFY_ONLY=@$ONLY` from the `LA=` line in
-   `scripts/build-qemu-wasm64.sh`, rebuild and re-run
-   `WASM64_SUITE=1 scripts/run-tcg-isa.sh`. If that goes green the fix is
-   a few names in the onlylist (capture them with `QEMU_COSTACK=1` on the
-   suite target, the way 0031 captured the originals); if it does not,
-   the hypothesis is wrong and the semihosting exit path is the next
-   suspect.
-
-   **Update 2026-09-16, later that day: hypothesis confirmed, missing
-   names in hand — only the landing is left.** The cheapest-first test
-   ran: a no-onlylist build (45 MB, everything instrumented) runs the
-   suite **green, 1156/1156**. The switch stacks were then captured
-   with `QEMU_COSTACK=1` on the suite target via `tools/costack-suite.mjs`
-   (kept — the `tcgisa.mjs` page setup with a COSTACK console tap;
-   `conlog.mjs` cannot reach the `?suite=` page): 7 distinct stacks,
-   resolved and audited against the onlylist — **20 missing names, every
-   one on the versatilepb machine-init / legacy-SCSI / board-reset
-   path**: `versatile_init`, `vpb_init`,
-   `lsi53c8xx_handle_legacy_cmdline`, `scsi_bus_legacy_add_drive`,
-   `scsi_bus_legacy_handle_cmdline`, `scsi_cd_realize`,
-   `scsi_qdev_realize`, `scsi_realize`, `sd_realize`, `sd_get_inserted`,
-   `sdbus_get_inserted`, `blkconf_blocksizes`, `qemu_devices_reset`,
-   `do_legacy_reset`, `bus_reset_child_foreach`, `resettable_reset`,
-   `resettable_assert_reset`, `resettable_phase_hold`,
-   `resettable_container_child_foreach`, `pl181_reset`. Capture + audit
-   saved in `tests/results/asyncify-costack-20260916/` (local only —
-   gitignored; the names are all inline above). Resolving the
-   indices against either link gives the same 20 — the onlylist does
-   not renumber functions). The faulting `wasm-function[26650]` is
-   `dynCall_jj`, which *is* listed: the null callee is the rewind
-   target, a frame above it that was never instrumented — exactly the
-   predicted mechanism. To land: add the names to
-   `qemu/configs/meson/asyncify-only.txt` (wildcards `scsi_*`/
-   `resettable_*` would cover several, but prefer the minimal explicit
-   set — these run once per machine init/reset, cold on every board, so
-   the instrumentation cost on a phone boot should be nil; still A/B
-   `workbench --board el71` per the playbook), rebuild via
-   `scripts/build-qemu-wasm64.sh` (NOT `ninja-fast.sh` — only the former
-   re-applies the link args), confirm `WASM64_SUITE=1
-   scripts/run-tcg-isa.sh` green, delete the KNOWN-HOLE special case in
-   `scripts/run-tcg-isa.sh` so the leg gates again, `gate.sh keep`,
-   commit on the qemu branch, bump `QEMU_PMB887X_REV`.
-
-3. **A compile is 4–6× cheaper warm.** Nothing batches compile events
+2. **A compile is 4–6× cheaper warm.** Nothing batches compile events
    except compaction, which is already nearly free. If a second pending
    compile ever exists, doing it adjacent to the first is worth ~68 µs.
 
-4. **CX70's device writes have no named device.** Post-0083 they are
+3. **CX70's device writes have no named device.** Post-0083 they are
    ~103 ns each at 56k/s — about **0.6 % of wall**, so this is a
    name-the-register task, not a prize. (Round eighteen measured 645 ns
    before 0083 landed; that figure is stale.) `iotrace2.mjs --board cx70`
    is the tool.
 
-5. **ke800 saw −2.1 % from 0083** (2 pairs, inside noise): the LG board
+4. **ke800 saw −2.1 % from 0083** (2 pairs, inside noise): the LG board
    does not toggle EBU readonly, so it should be a wash. Wants one longer
    run to confirm.
 
-6. **Does Firefox still need the GC nudge?** 0087 keeps it for Firefox
+5. **Does Firefox still need the GC nudge?** 0087 keeps it for Firefox
    and takes it off Chromium, but the gate can no longer reproduce the
    OOM it exists for: 202 s with `W64_GCNUDGE=0` reached 2.73 G insns and
    40 152 modules, `errors=0`. The original report was *mobile* Firefox
    on a Pixel, so it stays until someone retests there.
 
-7. **Instrument hygiene, unfinished.** The phase timer over-attributes
+6. **Instrument hygiene, unfinished.** The phase timer over-attributes
    short functions — it put hflags at 3.8 % of wall and the patch
    delivered ~1 %. `CAL_NS` removes the interval floor but not whatever
    else inflates a sub-50 ns measurement, and it has not been used with
@@ -236,12 +173,12 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    the call-count reduction and the A/B, and read any sub-50 ns per-call
    figure as an upper bound.
 
-8. **J2ME throughput** (`tools/stopwatch.mjs`, vratio ~0.60 after 0052):
+7. **J2ME throughput** (`tools/stopwatch.mjs`, vratio ~0.60 after 0052):
    the remaining third is the DIF FIFO word loop, the DMAC per-word MMIO
    writes and the SRB events — a device-path target, not an engine one.
    This meter drifts with host load; take alternating samples.
 
-9. **Timer storms / main-loop wakeups — sized and parked.** The
+8. **Timer storms / main-loop wakeups — sized and parked.** The
    clock/timer path is ~2.5 % of the vCPU mid-boot at ~37k `timer_mod`/s.
    Halving it is below the noise floor of a single pair, so it only lands
    bundled with something measurable. The exception was the LG board,
@@ -249,21 +186,21 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
    starved the vCPU outright (0049); the TPU/CAPCOM/STM models have never
    been audited for the same "deadline = next hardware tick" pattern.
 
-10. **The idle-warp share of a boot is a fidelity question, not a
+9. **The idle-warp share of a boot is a fidelity question, not a
     performance one.** A boot consumes ~42 s of virtual time, ~31.5 s of
     it idle warp on millisecond device timers. Whether that is what a
     real S75 takes needs a measurement against hardware before any device
     timer period is touched. Engine work can only move the first ~0.75 G
     instructions — about 27 of the 39 s a user waits.
 
-11. **Native has no real-time cap** (0032 defaults it off outside
+10. **Native has no real-time cap** (0032 defaults it off outside
     emscripten), so native and web agree on the timing model and disagree
     on pacing. **Reviewed and deliberately not done**: it is a fidelity
     change that makes every native run 2.7× slower, costing the cheapest
     gate in the ladder and buying the shipped build nothing.
     `QEMU_ICOUNT_RTCAP=banked` already reaches it for anyone who wants a
     paced native run. Flip the default only alongside the hardware
-    reference measurement item 10 needs.
+    reference measurement item 9 needs.
 
 ## Constraints (what still binds)
 
@@ -295,6 +232,63 @@ Cost model of a boot, from counters (rounds 17–19, spread 0.04 %):
 
 
 ## Round log (newest first)
+
+## Update (2026-09-16, round twenty: the op-suite hole is closed — 0090)
+
+Round nineteen's hand-off said of the broken wasm64 op-suite leg:
+"hypothesis confirmed, missing names in hand — only the landing is
+left."  This round landed it, and the shipping backend has op-suite
+coverage for the first time since 2026-09-13.
+
+The 20 names (all on the versatilepb machine-init / legacy-SCSI /
+board-reset path, captured with `QEMU_COSTACK=1` in round nineteen)
+went into `qemu/configs/meson/asyncify-only.txt` as the minimal explicit
+set — no wildcards — with a `#` comment at the top of the file naming
+where they came from (emscripten's one-symbol-per-line parser skips
+`#` lines, verified in the emsdk source first).
+
+**One new trap, paid for once so it is free forever: changing the
+onlylist's *content* does not relink.**  The link command embeds
+`-sASYNCIFY_ONLY=@/abs/path` — an unchanged string — and meson/ninja
+have no dependency on the file's bytes, so `build-qemu-wasm64.sh`
+completes "successfully" with the *old* instrumentation.  Deleting
+`build/qemu-wasm64/qemu-system-arm.{js,wasm}` (or touching a link input)
+forces the relink.  Symptom to remember: a rebuilt dist whose md5 did
+not change.
+
+Results, per the ladder:
+
+- wasm 27 804 606 → 27 817 238 bytes (+12.6 KB — the price of
+  instrumenting 20 once-per-machine-init functions).
+- `WASM64_SUITE=1 scripts/run-tcg-isa.sh`: **wasm64 page leg green,
+  1156/1156, serial byte-identical to native JIT** (as the no-onlylist
+  build had predicted).  The KNOWN-HOLE special case is deleted from
+  `scripts/run-tcg-isa.sh`; the leg gates unconditionally now, and
+  `WASM64_SUITE` is retired.
+- `gate.sh keep`: 11/11 GREEN in 152 s, the opsuite job now carrying the
+  wasm64 leg (its log shows the leg, not a skip).
+- el71 boot A/B (workbench, 100–1400 Mi, 3 interleaved pairs against the
+  pre-change dist): **tie** — medians 29.45 s both legs (base
+  29.46/29.45/29.25, new 29.45/31.07/29.05; the +1.6 s leg is host
+  noise, load 3.5–4.3), guest counters identical, `miss` == `close` as
+  always.  The instrumentation costs a phone boot nothing, as predicted.
+
+Landed as `bad630a3e7` (0090) on the qemu branch; `QEMU_PMB887X_REV`
+bumped.  The link-time warnings about non-existing onlylist names
+(`qemu_machine_creation_done`, `raw_co_preadv_20784`, …) are 0074-era
+cruft, harmless no-ops — none of the 20 new names is among them.
+
+Also corrected this round: the workspace-ready claim that `site/dist` is
+built — it holds only guest images; its TCI engine is absent, so the
+wasm-TCI op-suite leg skips (that is the documented normal state, but
+the claim was wrong).
+
+### Open at the end of round twenty
+
+*Superseded by § Open items at the top of this file.*  The list is
+round nineteen's minus the closed item: the module-pipeline probes
+(AOT cache / interpreter tier) remain the last big target, and nothing
+else moved — this round spent its budget on coverage, not throughput.
 
 ## Update (2026-09-16, round nineteen: a module costs 83 us, and almost none of it is compiling)
 
