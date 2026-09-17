@@ -91,6 +91,29 @@ measurement in the ladder: no rebuild, no build-dir skew.
 | `W64_NOLC=1` | off | 0046 inline next-TB lookup cache off |
 | `W64_IO_BARRIERS=<n>` | 4096 | usable io-barrier slots (power of two, 1..4096) |
 | `W64_GCNUDGE=0\|1` | Firefox only | force the 32 MB-per-256-instantiations GC nudge off/on. Default decides from the user agent (0087) |
+| `W64_COMPACT_LIVE=<n>` | ¾ `W64_LIVE_MAX` | live-module count at which compaction starts |
+| `W64_INTERP=<n>` | 64 | interpreter-tier threshold: executions a TB must reach before it earns a module. `0` turns the tier off; flat from 32 to 512 |
+| `W64_INTERP_ALL=1` | off | never compile — every TB stays interpreted. The tier's correctness gate, not a benchmark |
+| `W64_INTERP_RANGE=<lo>:<hi>` | all | restrict the tier to one span of `tidx` — how a tier divergence is bisected to one TB |
+| `W64_RAM1P=0` | on | turn off `do_ram_1p()`, the inline TLB probe the C-side memop callers got in 0114, so the interpreter tier's accesses go back through `mmu_lookup` (`ram1p` counts what it serves; `slowClean` is what it replaced) |
+| `W64_TPUSCAN=0` | narrow | restore 0068's wide `[ceap, eapt)` event-RAM scan window in place of 0115's three-word one (`tpuRamSkip`/`tpuRamW`/`tpuRearm` are the meter) |
+
+**TB-shape knobs** are the same class (one wasm, a leg per query) but they
+change what the translator emits, so they move `tbGen`, `tbIcount` and the
+exit mix as well as the clock. Each one is a landed mechanism with its off
+switch kept; the playbook's row for that number is the evidence.
+
+| Knob | Default | Effect |
+|---|---|---|
+| `W64_MERGE=0\|1` | 1 | defer a conditional branch's taken arm to the end of the TB so translation carries on into the fall-through (0110) |
+| `W64_FTMAX=<n>` | 2 | how many deferred taken arms one TB may hold at once (capped at `W64_FT_MAX`). 1 → 2 is 0112, +4.7 % |
+| `W64_JOIN=0\|1` | 1 | place a deferred arm's label where the fall-through reaches its target, so an `if (cond) { … }` costs no exit at all (0111, +6.0 %) |
+| `W64_LOOP=0\|1` | 1 | a back-edge to the TB's own first instruction becomes a wasm branch to the loop header instead of a TB exit |
+| `W64_ABSORB=<n>` | 256 | how many bytes an unconditional forward branch may skip and keep translating inside the same TB. The skipped bytes join the TB's guest range, so a write to them invalidates it |
+| `W64_ABSCHG=0\|1` | 1 | charge the skipped instructions to `max_insns`. Off looks like free absorbs and is not: with the distance also at 1024 it lifts absorbs 8 632 → 9 464 and `tbIcount` by 0.3 %, because `translator_is_same_page` binds first |
+| `W64_LINSPEC=<mask>` | 0 | which linear successors are offered to the speculation seed list. Off by default — see the flash-write hazard note above `note_linear_succ` before turning any bit on |
+| `W64_NORETSPEC=1` | off | stop seeding speculation with a call's return address (0109's A/B leg) |
+| `W64_NOPCREL=1` | off | drop `CF_PCREL`. Measured and closed: −0.7 % (2/3) and +2 % lookup misses, because TBs then key on the virtual pc and stop being shared |
 
 **Measurement knobs — these change the generated code**, so per-Mi rates
 stay exact (icount determinism) but wall-clock numbers under them are not
@@ -102,6 +125,17 @@ comparable to anything. Never use one as an A/B leg.
 | `W64_LDSTPAD=<n>` | emit `n` fold-resistant ALU units per memop — the ns-per-instruction calibration pad. Clean at n=4; at n=12 it grows emitted code enough to add thousands of modules and confound itself |
 | `W64_MODBENCH=1` | compile one real module's own bytes 200× back-to-back inside the vCPU worker (`modbenchNs`/`modbenchN`) — the warm-compile floor against the 83 µs a module really costs |
 | `W64_TBSTATS=1` | per-TB-entry counters under icount, so `wasm_tbs` reads non-zero |
+| `W64_XCOUNT=1` | count TB exits in the generated code — which chain an entry left by (`xGototb`, `xGototb1`, `xSelf`, `xGotoptr`), and whether a `goto_tb` went back to its own TB. The exit-mix meter every TB-shape knob is judged on |
+| `W64_TBHIST=1` | `++w64_tbhist[tidx]` in the prologue: the per-TB entry histogram, and the cheapest per-entry counter the backend can emit |
+| `W64_CALLPAD=<n>` | `n` extra calls to `w64_callpad_sink()` per TB entry — what a wasm→wasm import call costs *placed in a real TB*. Divides straight into ns per call against `padSink`. **14.5 ns**, against `import-probe.mjs`'s 2.1–2.4 ns in isolation: any helper on a hot path must move ≥ 15 ns of work |
+| `W64_LOCALPAD=<n>` | `n` extra never-referenced i64 locals per TB function — prices the backend's ~70 declared locals against the baseline tier, which zeroes every one on every call |
+| `W64_BYTEPAD=<n>` | `n` never-executed add/store pairs (~7 bytes each) per TB body — prices *emitted bytes* against module compile time (`modNs`) |
+| `W64_LSMCOUNT=1` | count `ldm`/`stm` blocks and the registers they transfer (`lsmN`, `lsmExec`) — the denominator for anything that batches a block's memops |
+| `W64_XWHY=1` | attribute each `goto_ptr` exit to the guest instruction that asked for it: `xwOther` (a direct branch refused a `goto_tb`, i.e. mostly calls), `xwBx` (their returns), `xwDefer`, `xwPsr` (`msr cpsr`), `xwPcst` (a store to r15), `xwRfe`. Indirect exits are two thirds of all TB boundaries, so this is the split that says which one is worth a mechanism — see § 0h of the playbook |
+| `W64_TLBDUP=<n>` | emit the inline TLB probe `n` times per memop, results folded so none is dead. The N=1→2 slope is what one probe costs (**1.16 ns**) |
+| `W64_TLBCHEAP=<n>` | the probe replaced by an `n`-word per-site check against a fake slot — the floor of a cheaper probe design |
+| `W64_TLBHIT=1` | run the per-site page cache for real (check, then fill on miss) and count hits/misses: the page-stability hit rate a real design would see between flushes |
+| `W64_TLBSIMD=<n>` | the same cache with both words read as one `v128.load` and the generation kept in a local — one load against the current probe's three |
 
 **Verification and debug** — correctness cross-checks and console noise.
 
@@ -114,6 +148,9 @@ comparable to anything. Never use one as an A/B leg.
 | `QEMU_LOG_PABT=1` | one stderr line per guest prefetch abort or BKPT (IFSR, IFAR, pc, lr, sp, cpsr) — combine with `tracebuf=1`, never with `-d int` |
 | `QEMU_COSTACK=1` | coroutine-stack audit (see the Asyncify work in lessons.md) |
 | `W64_LOCKSTEP*` | the page's built-in guest-state fold; driven by `tools/lockstep-wasm.mjs`, not set by hand |
+| `W64_COLOC=1` | with `W64_LC_VERIFY=1` (so every `goto_ptr` reaches the helper): how often an indirect exit lands in the batch module it is leaving — the ceiling on replacing the tail call with a branch inside one function |
+| `W64_MISSDUMP=1` | print every lookup-miss address, so the miss stream can be intersected offline with the flash image. The printf makes the run much slower; the counters stay valid because they count guest events |
+| `W64_DUMPTB=<n>` | hex of the `n`th TB's complete temp module, for `wasm-dis` |
 
 ## Exports on `window.__qemu` (the emscripten module)
 
@@ -145,6 +182,19 @@ in", not "did not happen". To get real rates, add `#define
 WASM_DIAG_HOT_COUNTERS 1` above that block in `wasm-diag.h` and rebuild;
 never take a wall-clock A/B against such a build. The cold counters are
 unconditional, so tb/flush/fill/warp diagnostics work everywhere.
+
+**Reading the dispatcher and the CPU (0116).** `execIter` is
+`cpu_exec_loop` iterations — since 0091 a chained TB never comes back, so
+this is the chain-unwind count. `execSjmp` is `cpu_exec` entries, *not*
+longjmps. `execLjmp` is the `cpu_loop_exit` longjmps actually taken, and
+it should stay near zero: a longjmp in this build is the emscripten
+JS-exception unwind, ~15 µs each. `armIrq` counts ARM exception entries
+and the `exc*` histogram splits them by kind — on an S75 boot that reads
+90 % `excSwi` (the guest's own syscalls, ~93 k/s) against 10 % `excIrq`,
+with every other slot zero, and `armIrq / execIter` = 77 %, i.e. the
+exception is what breaks a TB chain. All of these are cold by
+construction: the hottest is `armIrq`, two orders below the
+`WASM_DIAG_HOT()` paths above.
 
 ## Scripts that matter
 
@@ -187,6 +237,7 @@ Profiling and counters:
 |---|---|
 | `diagall.mjs` | **every** `wasm_memstat` counter by name plus a per-second DELTA block — the tool for deciding *where* time goes. Names come from `diagnames.mjs`, so it never goes stale |
 | `counters.mjs` | every unconditional counter for one board as a rate (`--board`, `--from`, `--window`) |
+| `exitrate.sh` | **the tight meter for a TB-shape change**: any counter per Mi, read at *matched instruction counts* rather than matched seconds. `run <secs> <rounds> <out> "<leg>:<query>"…` then `read <out> <Mi> [counter…]`. ~0.8 % spread against the clock's ±8 %, so it resolves a 2–3 % mechanism the clock cannot — 0113 landed on it. Give the legs as a palindrome; see the window trap in the playbook for why the milestone, not the second, is what must match. **A mechanism meter, not a verdict meter**: it prices the exits a change removes and is silent on what the change adds, which is how `W64_FTMAX=8` reads −1.7 % here and −1.1 % on the clock |
 | `memstat.mjs`, `diagprobe.mjs` | the memory-path subset over a boot / any counter by index (`name=idx`) |
 | `modcost.mjs` | what fraction of wall time goes into translation + module construction — the ceiling probe for any tiering scheme. Reads the C-side phase timers through `_wasm_memstat`, *not* from the worker: the vCPU worker runs the guest without yielding, so a worker-side `evaluate()` never gets scheduled and hangs the tool |
 | `modfloor.mjs` | synthesizes wasm modules of chosen shapes and times `new WebAssembly.Module` — the page-side floor to compare the emulator's own 83 µs against |

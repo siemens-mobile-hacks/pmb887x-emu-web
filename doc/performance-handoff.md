@@ -19,9 +19,9 @@ Once you have a candidate, [optimization-playbook.md](optimization-playbook.md)
 § The iteration ladder is how to test it, and [lessons.md](lessons.md) is
 what has already been paid for.
 
-**The workspace is ready** (checked 2026-09-16, end of round
-twenty-three): both native builds, `build/qemu-wasm64`, `site/dist-jit`,
-`tools/node_modules`, and the `qemu/` submodule at `6a11e50a23` (0099),
+**The workspace is ready** (checked 2026-09-17, end of round
+twenty-eight): both native builds, `build/qemu-wasm64`, `site/dist-jit`,
+`tools/node_modules`, and the `qemu/` submodule at `d78977e869` (0116),
 which matches `QEMU_PMB887X_REV` in `versions.env`. `site/dist` carries only the guest
 images (boards.tar, tcgisa.bin) — **its TCI engine is not built**, so the
 wasm-TCI op-suite leg skips. Nothing needs bootstrapping — if
@@ -101,6 +101,13 @@ they move with host speed and load — they are a health check, not a
 metric. The icount boards settle within ~1 % run to run; ke800 and cx70
 swing several percent. Use `workbench.mjs` for anything that has to
 resolve a patch.
+
+**The "module pipeline is 12.5 % of a boot" figure is retired** — it was
+measured before the interpreter tier and nothing below it survives.
+`modNs` now reads ~206 ms over a 40 s S75 boot window, i.e. **~0.5 % of
+wall**. Where a document below still argues from 12.5 %, read it as
+history: the tier collapsed module count and the pipeline stopped being
+a target in round 25.
 
 **Round 25 landed the interpreter tier and the cost model below it
 changed shape.** EL71, 12 s windows: **347 → 576.7 Mi, +66.2 %**.
@@ -189,6 +196,23 @@ are marked where they changed**):
   unresolved.
 
 ## Open items (ranked)
+
+**New in round 28 (0116), and it belongs near the top: the ARM exception
+entry path.** The guest takes **~93 k exceptions a second** and **90 % of
+them are its own `SVC`s** (`excSwi` 4.95 M against `excIrq` 0.54 M over
+40 s; every other kind reads zero). They account for **77 % of all
+dispatcher re-entries**, which is the only reason a TB chain ever
+unwinds. The rate is not reducible — it is what the firmware's RTOS
+does — so the question is entirely the per-exception cost of
+`arm_cpu_do_interrupt` → `take_aarch32_exception`, which this core
+(ARM926EJ-S: no M, no AArch64, no EL2/EL3, no PMSA, no v6) makes almost
+entirely constant-foldable, the same shape 0071 turned into +3.9 %.
+**Price it with a calibration pad before building anything** — the
+profiler's self-time on this cluster is an upper bound, not a budget
+(round 23's `arm_rebuild_hflags` row), and the standing budget entry is
+"cpsr / hflags / exceptions ~2.7 %". Closed by the same counters: this
+is *not* a device storm, and the `cpu_loop_exit` route is already gone
+(`execLjmp` = 34 per boot, against a ~15 µs JS-exception unwind each).
 
 **Item 1 of every hand-off since round nineteen — the interpreter tier —
 landed in round 25 (0101–0103), and with it the module pipeline stops
@@ -416,6 +440,433 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 
 ## Round log (newest first)
+
+## Update (2026-09-17, round twenty-eight cont.: the guest's own exceptions, counted — 0114–0116)
+
+**0114 (`b4559d83`): the C-side callers get the probe the generated code
+has. +0.81 %.** The emitted code carries an inline TLB probe and the C
+entry points into the memop slow path carry none — so the interpreter
+tier, which reaches the guest only through `helper_*_mmu`, took a full
+`mmu_lookup` for every access. A counter said **76 % of those found a
+matching entry with no flag set at all**: aligned, not page-crossing, no
+MMIO, no watchpoint, no notdirty — a round trip that bought nothing.
+`do_ram_1p()` is the backend's own one-compare test written once in C and
+wired into all eight one-page entry points. `slowClean` **5.69 M → 0**,
+`ram1p` picking up the same 5.7 M per 20 s. The trap on the way is worth
+carrying: **`TARGET_PAGE_MASK | a_mask` silently truncates to 32 bits** in
+`cputlb.c` (not a `COMPILING_PER_TARGET` TU, so `TARGET_PAGE_TYPE` is
+`int`, and `int | unsigned` zero-extends into a `vaddr`).
+
+**0114b (`fa470233`): halve the register file, +2.05 %** — and it
+**revises a number this document relied on**. Every TCG register costs
+*two* declared wasm locals in every TB function and the baseline tier
+zeroes all of them on entry; `tcgSpill` reads 0 over a whole boot at 13
+allocatable, so 28 allocatable was mostly locals TCG never used.
+`TCG_TARGET_NB_REGS` 32 → 16 is 33 fewer locals per TB (70 → 37,
+verified with `wasm-dis` on a `W64_DUMPTB` module), emitted bytes
+unchanged. 0093 had priced the spare locals at "under 1 %" — re-priced
+with `W64_LOCALPAD=192` the slope is **8.09 µs/Mi per declared local**,
+making 69 locals ≈ 6 % of wall. 0093 read the derivative at the bottom
+of a superlinear curve and generalized it upward: **a pad's slope is
+only valid near the N it was measured at.**
+
+**0115 (`764aa9eb`): the TPU event-RAM scan window is one event, not the
+rest of the list.** 0068 skips `tpu_update_state()` outside
+`[ceap, eapt)`; but `tpu_run_events()` breaks at the first event the
+counter has not reached and `p->next` comes from words `ceap..ceap+2`
+only, so the window is three words. The prize was proven with a counter
+*before* the code existed: of 8.7 M event-RAM writes in 25 s, 1.97 M
+passed the old test and **every one landed past `ceap+3`**. After:
+`tpuRamSkip` 77.5 % → **99.99993 %**, `tpuRearm` **−14 %**, `tpuTimer`
+flat. Wall effect is below the meter floor and is not claimed.
+
+**0116: the dispatcher's and the CPU's own rates — and this is the part
+that should drive the next round.** New cold counters `execIter`,
+`execSjmp`, `execLjmp`, `armIrq` and a seven-slot exception histogram.
+Three readings, each of which closes or opens something:
+
+1. **90 % of ARM exceptions are guest `SVC`s.** Over a 40 s S75 window,
+   `excSwi` 4 947 895 against `excIrq` 537 242, and `excUdef` /
+   `excPabt` / `excDabt` / `excOther` all **zero**. So the ~93 k
+   exceptions a second are **not** a device model firing too often —
+   this is not another 0049/0062/0068 — and the *rate* is guest
+   behaviour that cannot be reduced. One `SVC` per ~1 200 guest
+   instructions is simply what this firmware's RTOS does.
+2. **Exceptions are 77 % of all dispatcher re-entries** (`armIrq`
+   1.85 M against `execIter` 2.41 M in 20 s). Round 23 established that
+   the C dispatcher is re-entered once per 173 TB transitions and
+   "chains essentially never unwind" — this says *why* they unwind when
+   they do. The exception is the chain-breaker.
+3. **`execLjmp` = 34 per boot.** The exception path does not use
+   `cpu_loop_exit` at all: it leaves through a normal TB exit and
+   `cpu_handle_exception` picks `exception_index` up on the next pass.
+   This matters more than it looks. A longjmp in this build is the
+   emscripten **JS-exception unwind** — the artifact carries `setThrew`
+   and `_emscripten_throw_longjmp`, and `cpu_exec_setjmp`'s one call is
+   the profile's `invoke_ijj` — priced at **~15 µs** by the
+   `HELPER(wfi)` comment that removed the last hot one. At 93 k/s that
+   would have been the entire program. The counter stays as the
+   regression guard: if a future change puts a longjmp back on a hot
+   path, this number is where it shows up.
+
+**What that leaves, and how to price it.** The one cluster on this path
+still unpriced is the exception *entry work* itself:
+`arm_cpu_do_interrupt` → `arm_cpu_do_interrupt_aarch32` →
+`take_aarch32_exception`, which for every `SVC` runs `switch_mode`,
+`cpsr_read`, `arm_current_el`, two `cpu_isar_feature` loads, two
+`A32_BANKED_CURRENT_REG_GET`s and `arm_rebuild_hflags`. This core is an
+ARM926EJ-S: no M, no AArch64, no EL2/EL3, no PMSA, no v6 — which is
+**exactly the shape 0071 exploited for the hflags rebuild and got
++3.9 %**. But do not build it from the profile: round 23 established
+that `arm_rebuild_hflags` "at 11 %" was 9.5 µs/call for a 76 ns
+function, and the rule that came out of it is that **a self-time share
+for a small leaf is an upper bound, not a budget**. Price this one with
+a calibration pad placed inside `arm_cpu_do_interrupt` (N cheap
+non-foldable ops, extended until the slope is unambiguous), read ns per
+operation in situ, multiply by what the short path would delete, and
+only then decide. The budget table's "cpsr / hflags / exceptions ~2.7 %"
+is the number to beat or refute.
+
+**The BQL pair was priced and refused** — ~1 ns a call, ≈ 0.06 % of wall
+(`W64_BQLDUP=N`, N=32 reading −1.5 % over 25 s), against a profile
+self-time of 1.4 %. And `W64_NOBQL=1` is recorded as an unsound *probe
+shape*: deleting a lock stalls the guest at 15 M instructions, so no
+number comes out. Ceiling-probe-by-deletion works on redundant work, not
+on mutual exclusion; for a lock the sound instrument is a pad that adds
+more of the same.
+
+**A meter failed this round and the failure is instructive.** In a 20 s
+S75 window the four legs of a palindrome read `ram1p` identical to four
+digits and `halt` within 17 counts, while `insns` swung **18 %**. Both
+are true: those counters are boot-burst quantities that saturate, and
+`insns` then accrues in the guest's idle spin for however much of the
+window is left. The swing is not noise to be averaged down — **the meter
+is measuring a different thing in each leg**, and more rounds cannot
+fix it. Stay inside the boot, or use the fixed-guest-work milestones.
+Matching `halt` proves the legs are paced alike; it does not prove they
+measured the same work.
+
+## Update (2026-09-17, round twenty-eight: a meter that resolves what the clock cannot — 0113)
+
+**The round's real product is a meter.** Every TB-shape mechanism since
+0108 has been measured on a fixed-wall clock whose round-to-round spread
+is ±8 %, which means anything under ~3 % is unresolvable by it and has to
+be argued from counters. `tools/exitrate.sh` closes that gap: it reads
+exits (or any counter) **per Mi at matched instruction counts**, and its
+spread is **0.8 %**.
+
+The matching is the whole point, and the trap it avoids is one the
+playbook's own rule half-covered. "Normalize per Mi" is not the same as
+"the window does not matter": a per-Mi rate is exact for a *given* stretch
+of guest work, but the boot's mix changes as it runs, so the same binary
+reads **exits/Mi 100 759 at 1018 Mi and 114 857 at 839 Mi** — 14 % from
+the window alone. And a faster leg reaches further in a fixed 20 s, so
+sampling both legs at the same *second* hands the winning leg the
+flattering window: **the confound points the same way as the
+hypothesis**. An early mismatched pair read −12.3 % for a change that is
+really −2.8 %. diagall's per-second samples are cumulative, so the fix is
+to sample each leg at the first sample past a milestone.
+
+**0113 (`e58e2625`): `w64_ft_max()` 2 → 3, +0.8…+1.4 %.** One character,
+the same as 0112. Two independent five-round palindromes read **+1.4 %
+(3/5)** and **+1.1 % (3/5)** — both positive, neither outside the clock's
+floor. The new meter is not close: exits/Mi **110 380 → 107 253 at
+600 Mi (−2.83 %)** and **113 647 → 110 704 at 800 Mi (−2.59 %)**, three
+rounds each, and they move exactly where the mechanism says — `xGototb`
+20 193 → 16 081 against `xGototb1` 16 103 → 18 797, i.e. branches that
+used to leave through a `goto_tb` slot now leave as a fall-through the TB
+carried on into. Instructions per TB 6.436 → 6.723. At the standing
+"1 % fewer exits ≈ 0.3 % of wall" that predicts +0.8 %, which is what both
+clock runs read. Mechanism, magnitude and sign agree; only the clock
+alone is short of its own floor.
+
+**The lookup helper is 33 ns, not ~100 ns — and that retires a standing
+number.** `helper_lookup_tb_ptr_lc` has been quoted at ~102 ns since
+round 23, from a `WASM_DIAG_TIME_PHASES` timer sampling 1 call in 8 with
+emscripten's `gettimeofday`, i.e. a JS call on a path taken 600 k times a
+second. Priced instead by deletion, in one binary: `W64_NOLC=1` turns the
+inline cache off so every `goto_ptr` calls the helper, taking lookups per
+Mi from **14 793 to 73 313** and the clock from 2139.7 to 1773.2 Mi per
+20 s (three palindrome rounds, 16.6/16.6/18.2 %). That is
+**1.932 ms per Mi for 58 520 extra calls = 33.0 ns each**, marginal over
+the inline-hit path.
+
+So the helper's whole share of wall is **14 793 × 33 ns = 0.49 ms/Mi of
+9.35, i.e. 5.2 %** — that is the ceiling on a *perfect* next-TB cache,
+not on a better one. It also explains the round-15 result that never made
+sense: the second cache way cut `lcCall` by 39 %, which is worth 0.19
+ms/Mi ≈ 2 %, and the inline compare chain it added to every `goto_ptr`
+site ate all of it. **A ~100 ns helper would have made that experiment
+succeed; a 33 ns one makes it a wash, which is what it measured.**
+
+Where the boundary budget now sits, at 9.35 ms/Mi and ~107 k exits/Mi:
+boundaries ≈ **39 %** of wall (34 ns each), guest instructions ≈ **39 %**
+(3.68 ns each). Of the boundaries, **68 % are `goto_ptr`** — and that is
+the next question, which is why this round also lands `W64_XWHY=1`:
+indirect exits attributed to the guest instruction that asked for them
+(`xwPcst`, `xwBx`, `xwPsr`, `xwRfe`, `xwDefer`, `xwNochain`). The reason
+to want it is a comment already in the tree: `gen_set_psr` says the
+firmware's critical sections make `msr cpsr` "the most frequent TB exit
+of the boot", and that exit is an *indirect* one whose next pc is
+statically known.
+
+## Update (2026-09-17, round twenty-seven: two mechanisms priced and refused, and the one that was free — 0112)
+
+Round 26 emptied the cheap end of "do not end the TB". This round went
+looking for the next lever and found mostly walls — which is the useful
+result, because two of them were the ideas a reader of this file would
+have tried next, and both are now measured rather than assumed.
+
+### What landed
+
+**0112, `W64_FTMAX` 1 → 2: +4.7 %** (EL71, 20 s windows, five interleaved
+rounds × 2 legs/side, 2229.6 vs 2130.3 Mi, 3/5 rounds; `tbIcount/tbGen`
+6.44 against 5.81; `halt` unchanged). One character.
+
+The interesting part is that **this exact knob sits in the REJECTED table
+from earlier the same day, measured flat.** What made it flat was the
+cost of holding a deferral slot to the end of the TB; 0111 lets a
+deferral end at a join instead, and the slot comes back within a few
+instructions. Nothing about the knob changed — the mechanism it was
+competing against did. **Re-measure a rejected knob after the mechanism
+it was rejected against changes.**
+
+### What was refused, and why each one is worth knowing
+
+**Merging a batch's TBs into one wasm function** (§ The one idea left,
+above, now answered). Both preconditions hold — 55 % of indirect exits
+are co-located — and it still fails, because a `br` inside one function
+removes only ~39 % of a hand-off, not all of it: **~3 % of wall** for a
+module-assembler rewrite. `tools/merge-probe.mjs` has the numbers.
+
+**One helper call for a whole ldm/stm.** 33.7 % of every executed guest
+memory op is inside an ldm/stm (`ldstExec` 331.0 M vs `lsmExec` 111.4 M,
+3.61 registers each), so collapsing them deletes 80.6 M of 331 M inline
+TLB probes. Built, correct (`lockstep-wasm --insns 250e6` clean), and
+**−11.7 % then −6.3 %** across two 4-round interleaved sweeps.
+
+The arithmetic that says so was already in the tree: 0106 priced an
+import call *placed in a real TB* at **~14.5 ns**, and the probes it
+deletes are ~1.16 ns each — 14.5 ns spent to save 4.2 ns, every
+instruction. `tools/import-probe.mjs` says 2.1–2.4 ns for the same call
+and that is the trap: **a microbenchmark has nothing live across the
+call.** In a TB the engine spills every live wasm local and TCG marks all
+globals written, so each guest register the rest of the TB touches is
+reloaded from env. Restricting the helper to `ldm {…,pc}` — a return,
+where the TB ends and nothing follows — does not rescue it either
+(−8.3 / −7.9 / +3.6 / −8.9 %).
+
+**The rule to carry:** price a helper by the *nanoseconds* it deletes,
+not the operations. A helper on a hot path inside a TB has to move
+≥15 ns of work before it breaks even.
+
+### The absorb refusals, sized
+
+`w64_absorb` now counts every path that refuses (14 s EL71 window, static
+translation counts, `tbAbsorb` 8 609 successes):
+
+| refusal | count | share |
+|---|---|---|
+| `abCond` — a conditional branch's taken path | 53 094 | 46 % |
+| `abBackout` — backward, before this TB | 24 405 | 21 % |
+| `abFar` — forward, past `W64_ABSORB` | 17 252 | 15 % |
+| `abIset` — target runs in the other instruction set | 11 049 | 10 % |
+| `abPage` — forward and near, but next page | 499 | 0.4 % |
+| `abBackin` — backward, inside this TB's own range | 280 | 0.2 % |
+
+`abCond` is already handled (0108/0111 defer and join it). `abBackin`
+being 280 closes internal-loop absorption. **`abBackout` is structurally
+blocked and should not be attempted**: a TB's invalidation range is
+`[tb->pc, tb->pc + size)` and `tb->pc` is also its lookup key, so
+translating instructions *before* the entry point cannot be made to
+invalidate correctly. `abFar` does not respond to a bigger bound either —
+`W64_ABSCHG=0` with the distance at 1024 lifts absorbs only 8 632 → 9 464
+(+9.6 %) and `tbIcount` +0.3 %, because the same-page rule binds first.
+
+## Update (2026-09-16, round twenty-six: the TB boundary was 68 % of wall — 0104–0109)
+
+Round 25 left the pipeline cheap and the *execution* of TBs expensive.
+This round priced that and took two bites out of it.
+
+### The cost model, from dynamic counters
+
+`W64_XCOUNT=1` counts TB exits in the generated code by kind. Solving
+`t = c + e·b` across a mechanism that changes only the exit count gives:
+
+- **a TB boundary costs ~34 ns**, against **~3.7 ns** for a guest
+  instruction of real work;
+- boundaries were **68 % of an EL71 window's wall** before this round
+  and are **~40 % after**;
+- the exits left are **56 % `goto_ptr`** — indirect branches, mostly
+  returns, which no merge can remove.
+
+This is the number that should rank everything from here. It was
+reachable only because 0106's `W64_DUMPTB` made the emitted exit
+readable: it is a `return_call_indirect` through a table of thousands of
+TB functions, which `tools/dispatch-probe.mjs` had already priced at
+5.5 ns for a working set of 1 and **46 ns at 4096**. The dump also
+closed a standing hypothesis: **the register globals are not cached in
+wasm locals across a boundary** — env memory is the storage — so there
+is no "global sync" to delete at an exit. Only *fewer exits* help.
+
+### What landed
+
+Four mechanisms, all the same idea — **do not end the TB** — applied to
+the four reasons it was ending:
+
+- **0108, the conditional fall-through merge: +20.8 %.** A conditional
+  branch used to end the TB and produce two ~4-instruction TBs. The
+  taken path becomes a forward `br` to a label at the end of the TB and
+  translation carries on into the fall-through.
+- **0109, the guest-loop back-edge: +7.65 %.** One exit in five was a
+  TB tail-calling itself. It becomes a `br` to a label at the TB's top.
+- **0110, the forward absorb: +4.37 %.** An unconditional direct branch
+  to a nearby address on the same page just moves `pc_next` there.
+- **0111, the forward join: +6.0 %.** The deferred taken path of 0108 is
+  often reached by the fall-through a few instructions later — which is
+  what an `if (cond) { ... }` is — so the label goes there instead.
+- **0112, two deferrals per TB: +4.7 %.** `W64_FTMAX` > 1 was measured
+  *flat* earlier the same day and written into the REJECTED table. What
+  made it flat was the cost of holding a deferral slot to the end of the
+  TB; 0111 deleted that cost, and the same one-character change is now
+  worth +4.7 % (6.44 guest insns per TB against 5.81). **Re-measure a
+  rejected knob after the mechanism it was rejected against changes.**
+
+Exits per Mi across the round, from `W64_XCOUNT` at 14 s:
+
+| | xGototb | xGototb1 | xSelf | xGotoptr | total |
+|---|---|---|---|---|---|
+| before 0108 | | | | | **231 300** |
+| after 0108 | | | 26 334 665 abs | | **163 116** |
+| after 0109 | 32 386 | 24 462 | 439 | 75 151 | **132 458** |
+| after 0110 | 23 560 | 19 334 | 403 | 73 876 | **117 215** |
+| after 0111 | 21 146 | 17 057 | 381 | 67 376 | **105 972** |
+
+**231 300 → 105 972, a 54 % cut**, and the rule that fell out of it is
+worth carrying: over this round, **1 % fewer exits bought ≈ 0.3 % of
+wall**, consistently enough to predict each mechanism before measuring
+it. Use it to reject ideas cheaply.
+
+### Three traps this round walked into, all worth remembering
+
+**A mechanism that changes icount changes the workload.** The first
+back-edge build re-ran `gen_tb_start`'s prologue on every iteration and
+so charged icount twice. It measured **+36 %** — entirely artefact: an
+over-charged icount runs the guest's virtual clock fast, the guest
+spends less time halted, and a fixed-wall instruction meter reads work
+that is not there. `halt` is the tell, and it must match between legs.
+Corrected, the same mechanism is +7.65 %.
+
+**A counter can confirm a mechanism and still not predict the clock.**
+The first back-edge (frontend only) drove `xSelf` from 21.8 M to 0 and
+exits per Mi down 25.4 % — and measured **9 % slower**, because a
+backward branch dropped the TB out of the backend's nested-label mode
+into the `$bp` dispatch loop, where every *forward* branch is
+O(n_labels). The mechanism was perfect and the cost was somewhere else
+entirely.
+
+**This meter cannot see anything under ~15 % in one pair.** An 8-leg
+sweep read the same configuration at 1830 and then 2122 Mi. Every
+verdict below that needs interleaved legs and a per-round pairing, which
+is what settled `W64_NOOPT` (nothing), `W64_FTMAX` > 1 (flat) and the
+`W64_LC_JC` fast path (+0.10 %).
+
+### Where the remaining time is
+
+Boundaries are now **~27 % of wall** (106 k/Mi at ~22–34 ns against a
+~9.7 ms budget per Mi), and **64 % of what is left is `goto_ptr`** —
+indirect branches, mostly returns, which no merge can reach. The four
+direct kinds have been taken from 156 k/Mi to 38 k/Mi; what still exits
+directly is far branches and calls, and the distance knob is exhausted
+(`W64_ABSORB` 512/1024/4096 all read within 0.7 % of 256).
+
+**Three candidates for the other half were priced and closed this
+round, all of them before anything was built:**
+
+- **The ~70 wasm locals every TB function declares.** wasm zeroes locals
+  at entry and a baseline compiler has no liveness analysis, so this
+  looked like ~39 ns per TB entry (`tools/locals-probe.mjs`: 49.9 →
+  88.9 ns/call). But it is **~0 in the optimizing tier**, and only
+  ≈3.6 % of TB entries still run baseline code (round 24), so the whole
+  item is worth ~1.9 % and interleaving the locals to drop the trailing
+  run is not worth building.
+- **Redundant env loads in the emitted code.** A `W64_DUMPTB` read finds
+  guest register 4 loaded five times and the PC three times in a
+  6-instruction TB — TCG spills and invalidates every global at each
+  `set_label`, and 0108–0111 all *add* labels. Forwarding them in the
+  backend is a real mechanism, but it follows from the point above that
+  V8's optimizing tier is what runs ~96 % of entries, and it does
+  redundant-load elimination itself. Do not build this without first
+  showing, in a dump of *optimized* code, that the reloads survive.
+- **Instance locality / bigger modules.** Closed in round 21 and still
+  closed: 128-per-module against one module is 8–13 % of the dispatch,
+  and a *direct* `return_call` instead of an indirect one is worth
+  1.1 ns.
+
+The inline TLB probe is ~5 % of wall (0098) and the slow-memop path is
+~1 % (`ldstMiss` 3.78 M against 6.31 M helper entries per 14 s window,
+of which ≥2.49 M find a *clean* entry the inline probe could have
+served).
+
+### The one idea left that is worth its risk — ANSWERED, and the answer is no (round 27)
+
+**Both conditions below were measured, and the second one held: 55 % of
+indirect exits do land in the module they are leaving.** The idea still
+fails, because the premise underneath both of them — that a `br` inside
+one function removes the whole ~22 ns hand-off — is false.
+`tools/merge-probe.mjs` builds both shapes and times them: 1024 members,
+realistic bodies (66 locals, 20 env load/add/store of live work), cost of
+the hand-off over the work floor —
+
+| shape | ns |
+|---|---|
+| `direct-c` (direct call, consecutive targets) | 2.60 |
+| `ind-in-c` (indirect, consecutive targets) | 4.48 |
+| `ind-in` (indirect, shuffled — what we ship) | 13.38 |
+| `merged-c` (one function, `br_table`, consecutive) | 4.91 |
+| **`merged`** (one function, `br_table`, shuffled) | **8.18** |
+
+`ind-in` at 13.38 ns calibrates the probe against production's ~22 ns, so
+merging removes about **39 %** of a hand-off, not all of it. Carry that
+through: 64 % of exits are `goto_ptr`, 55 % of those are co-located, and
+each saves ~8.6 ns — **~3 % of wall**, for a module-assembler rewrite
+(depth fixups, group ids, packed chain words, eviction). The estimate
+below said ~8 % because it assumed the whole hand-off disappeared.
+
+It is consistent with everything else the tree knows: a TB boundary is
+worth ~44 ns marginal and the *call* is only 6-8 ns of it — the rest is
+the prologue, the PC store and the inline-cache check, none of which
+merging touches. Round 23 already said "a cheaper indirect call is worth
+nothing". **Fewer boundaries, not cheaper ones.** The original reasoning
+is kept below because it is how the number was arrived at.
+
+### The one idea left that is worth its risk (as written before it was priced)
+
+Every exit — direct or indirect — is a `return_call_indirect` out of one
+wasm function and into another, and the self-loop priced that mechanism
+at **~22 ns even when the callee is the caller**, i.e. with perfect
+locality and a perfectly predicted target. So the cost is the *function
+hand-off*, and the way to remove it for the indirect exits that no merge
+can reach is to put the TBs in one wasm function and branch between them.
+The batch assembler already builds one module per ~284 TBs with a
+`run(env, sp, tp, tidx)` thunk; making the members bodies of that one
+function, wrapped in a `loop` + `br_table`, turns an exit whose target is
+in the same module into a `br`.
+
+Two things have to be true first, and the second is now measurable:
+
+1. The bodies must survive being concatenated — they share a local
+   layout, and their branches are self-contained, but the final branch
+   depth differs per member, so the assembler has to patch a padded LEB
+   the emitter leaves (the fixup machinery already does this kind of
+   thing for union indices).
+2. **A useful share of exits must stay inside the module.**
+   `W64_COLOC=1` with `W64_LC_VERIFY=1` routes every `goto_ptr` through
+   `helper_lookup_tb_ptr_lc` and counts `xSamemod` / `xDiffmod` /
+   `xNomod` from the two TBs' `W64_TCP_BATCH` words. Read that ratio
+   before writing a line of the assembler: at 64 % of exits being
+   `goto_ptr` and ~22 ns each, a 50 % co-location rate is worth ~8 % of
+   wall and a 15 % one is not worth the risk.
 
 ## Update (2026-09-16, round twenty-five: the interpreter tier, and what it retired — 0101–0103)
 
