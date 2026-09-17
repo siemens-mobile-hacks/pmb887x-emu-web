@@ -210,7 +210,7 @@ export const PRESET_FULLFLASHES = [
     files: ["S75v40lg1.bin"], size: 67108864 },
   { id: "el71v41lg91", label: "Siemens EL71v41", short: "EL71v41",
     files: ["EL71v41lg91.bin"], size: 67108864 },
-{ id: "cx70v56lg3", label: "Siemens CX70v56", short: "EL71v41",
+{ id: "cx70v56lg3", label: "Siemens CX70v56", short: "CX70v56",
     files: ["CX70v56lg3.bin"], size: 33554432 },
   { id: "ke800v11b", label: "LG KE800v11b", short: "KE800v11b",
     files: ["KE800v11b.bin", "KE800v11b.bin.cfi-efa"], size: 134250496 },
