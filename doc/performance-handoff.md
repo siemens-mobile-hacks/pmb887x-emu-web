@@ -197,7 +197,443 @@ are marked where they changed**):
 
 ## Open items (ranked)
 
-**New in round 28 (0116), and it belongs near the top: the ARM exception
+### The module-local dispatch loop — merge a module's TBs into one wasm function
+
+**New in round 31, and it is the top item because it is the only way to
+collect the 3–6 % the baseline tier costs without a browser flag.**  (It
+may also address the TB boundary; that half is unproven — see below —
+and the item does not rest on it.)  A module holds
+~277 TBs (`modCount` 0.01/Mi against `tbGen` 3.45/Mi) and today emits one
+wasm function per TB.  Merge them into a *single* function whose body is
+a `br_table` cascade over the module's TBs, and two separate prices fall:
+
+- **Tier-up latency.**  V8's tier-up budget drains per *call* and is
+  charged per *function* (~1–2.4 × 10⁴ calls; see lessons.md, "Emitted
+  code runs in the baseline tier").  277 functions each need their own
+  10⁴ calls; one merged function needs 10⁴ calls *in total*, so it
+  reaches TurboFan roughly 277× sooner in TB-entry terms.  The prize is
+  the measured baseline-tier share on a running game: **3–6 %**
+  (`--js-flags=--no-liftoff`, round 31, +6.3 % on a four-leg palindrome;
+  0050's +3 % is the same number's lower end).  A browser flag is not a
+  shipping lever — this is the only way to collect that share from
+  inside the binary.
+- **The TB boundary — CLOSED, 2026-09-17, and it was never there.**  The
+  merge's second half was to turn intra-module successors into a `br`
+  back to the cascade head instead of a cross-module
+  `return_call_indirect`.  Swept properly it is worth **nothing, and at
+  a realistic body size it is a regression**.  See *The boundary
+  mechanism is not a lever* below.  The item now stands on tier-up
+  amortisation alone — which is fine, because that half never depended
+  on dispatch: it rests on `--no-liftoff`, which changes no call opcode.
+
+**Feasibility is established, and it is better than expected: the merge
+is a pure assembler-side transform that needs no backend change at
+all.**  Four facts, each verified in the source this round:
+
+1. *Staged bodies are copied verbatim.*  `wasm64.c:1443` does
+   `mb_put(&mod, body + W64_BODY_OFF, src->member[m].body_len)`; the only
+   bytes ever rewritten are union import indices, via the existing
+   per-member fixup list.
+2. *No TB body branches out of itself.*  `w64_br_to_label`
+   (`tcg-target.c.inc:1371`) resolves every branch to a depth of
+   `W.n_blk - 1 - i` with `i >= 0`, and `W.n_blk` counts only blocks the
+   body pushed.  The maximum depth reaches the body's own outermost
+   block, never function level — in nested mode *and* in the `$bp`
+   dispatch-loop mode, including the `W.selfloop` back-edge (1383–1387).
+   Branch depths are relative, so wrapping a body in N more enclosing
+   blocks cannot change its meaning.
+3. *The locals declaration is fixed and identical.*  `tcg-target.c.inc:
+   3400–3406` emits the same 9-byte run in every body (`0x04`, then
+   17 × i32, 16 × i64, 1 × i32, 3 × i64 = **37 locals**), preceded by a
+   5-byte padded size LEB.  Merging strips a constant 14-byte prefix
+   from each body and declares the run once.  (`W64_LOCALPAD` adds a
+   fifth run; the merge must read the count rather than assume four.)
+4. *The tail needs a two-byte rewrite and nothing else.*  A body ends
+   `i32.const 0` / `end` (3579–3580), i.e. with a live i32 the function
+   `end` consumes.  Copy the body minus its final `end` and append
+   `return` + `end`: the arm block becomes `[] -> []`, the value leaves
+   by `return`, and the code after it is unreachable so the `end`
+   validates.  Every other exit in the body is already a `return`
+   (`tcg_out_exit_tb` 1434, `w64_chain_go` 1448 under CHAINLOOP).
+
+So **merging alone is legal today**, and it collects the tier-up half
+without touching `tcg-target.c.inc` at all.  That is the increment to
+build and measure first — it is also the half with a real number behind
+it.  The boundary half is a second, separable increment: the merged
+function
+takes the successor index as a fourth parameter (the CHAINLOOP driver
+already holds it), subtracts a patched `BASE` constant, and at each
+chain exit tests `arm < N` — both constants patched at assembly time by
+the fixup machinery that already exists (`W64_MAX_FIXUPS` 1024).  In
+range it is `local.set $bp; br $cascade`; out of range it falls back to
+today's `return tidx | W64_EXIT_CHAIN`.
+
+**Price it before building.**  Two cheap probes, both queued behind the
+round-31 battery:
+
+- *The dispatch itself.*  **Written this round**: `tests/wasm/
+  dispatchbench.mjs` gained `merged` / `merged37`, one function holding
+  `DB_NFUNC` arms behind a `br_table` with the transition expressed as
+  `br` to the loop head.  It validates and runs; sweep
+  `DB_NFUNC` = 32 / 128 / 277 / 1024 against the existing `loop`
+  (`call_indirect`) and `stail` legs **on a quiet host**.  This prices
+  the `br`+`br_table` transition **and** exposes the one real risk:
+  TurboFan's register allocator on a ~263 KB function with a 277-arm
+  cascade and 37 declared locals.  If it stops scaling with `DB_NFUNC`,
+  the whole item dies there for the cost of one benchmark variant.  Run
+  `xtail` and `xloop` in the same invocation: if they are equal, that
+  also closes out CHAINLOOP's tie, which is the same topology question.
+  (A one-rep look at `DB_NFUNC=64` on a *loaded* host read merged 1.5 ns
+  against loop 3.3 ns — the right shape, but not a number: it was taken
+  while the round-31 battery was running and must be re-taken.)
+- *The locality.*  The ~60 % intra-module figure was an assumption.  It
+  has now been run, and **it is 37.6 %, not 60 %**
+  (`W64_XCOUNT=1&W64_COLOC=1`, game 1, 1925.6 Mi, 2026-09-17):
+
+  | | per Mi | share |
+  |---|---:|---:|
+  | `goto_ptr` | 79,939 | 67.7 % |
+  | `goto_tb` which=1 | 22,235 | 18.8 % |
+  | `goto_tb` which=0 | 15,860 | 13.4 % |
+  | self-chaining | 17 | 0.0 % |
+  | **total boundaries** | **118,033** | 8.47 guest insns per TB entry |
+  | `xSamemod` | 5,489 | **37.6 %** of the helper population |
+  | `xDiffmod` | 9,090 | 62.3 % |
+  | `lcCall` | 14,594 | the whole population: 12.4 % of boundaries |
+
+  Two things follow.  The merge's prize scales with that share, so at a
+  25 ns saving it is `0.376 × 25 × 118033/1e6 = 1.11 ns/insn` against
+  5.686 — **19.5 % of wall**, not the ~28 % the 60 % assumption implied.
+  And the share is not a constant of the workload: a batch is 259
+  consecutively-*translated* TBs, so `W64_BATCH` (already a knob,
+  clamped 1..1024) moves it mechanically — 27 modules give 37.6 %, and
+  seven modules of 1024 should give far more.  If the merge lands, batch
+  size stops being a compile-cost tradeoff and becomes a locality knob.
+
+#### The boundary mechanism is not a lever (closed 2026-09-17)
+
+`dispatchbench` had welded two axes together: `DB_NFUNC` set the table
+size *and* the instance count, so every cell was "N functions in N
+modules".  The emulator is 6,985 TBs in 27 modules.  `DB_NMOD` separates
+them.  Swept at a realistic table (4096) and body (64 pad ops), ns per
+transition:
+
+| NMOD | order | `direct` | `xtail` | `xloop` | `loop` | `stail` | `merged` |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | unpredictable | 20.88 | 59.73 | 17.68 | 17.44 | 59.23 | 34.79 |
+| 32 | unpredictable | 20.27 | 59.58 | 17.79 | 17.44 | 58.38 | 34.58 |
+| 4096 | unpredictable | 20.17 | **163.68** | 29.16 | 17.85 | 58.59 | 34.10 |
+| 1 | **strided** | 20.93 | **16.41** | 16.95 | 16.71 | 16.46 | 16.44 |
+| 32 | **strided** | 20.13 | **15.97** | 16.81 | 16.63 | 16.36 | 16.56 |
+| 4096 | **strided** | 19.79 | **17.75** | 16.90 | 16.68 | 16.35 | 16.30 |
+| 32, pad 144 | **strided** | 35.60 | **35.73** | 35.99 | 36.43 | 35.20 | **51.13** |
+
+Read the two orders, not the two mechanisms:
+
+- **Unpredictable targets** (an LCG): the driver loop beats the indirect
+  tail call by ~42 ns at every module count, and the merge only halves
+  the gap.  This is the regime every previous estimate was quoted from.
+- **Predictable targets** (each site's successor fixed): *every*
+  mechanism lands on the same 16–17 ns, which is the pad's own floor.
+  Dispatch costs nothing.  `direct` — a fixed chain with no dispatch at
+  all — is *slower* at 20, because its bodies differ; that is the
+  measurement saying there is no headroom left to find.
+
+The emulator has already told us which regime it is in.  `W64_CHAINLOOP`
+swaps exactly `xtail` for `xloop` and measured **−0.1 %** (87.00 vs
+87.08, n=4).  The sweep predicts +87 % of wall for that swap in the
+unpredictable regime — a seven-sigma effect against that leg's sd of 11.
+It did not appear.  **Therefore the emulator's TB dispatch is
+per-site-predictable**, which is also what one should expect from a
+mechanism whose whole purpose (`tb_add_jump`) is to nail each site to
+one successor.
+
+**What this does and does not close.**  It closes every *mechanism*
+proposal: the merge's boundary half, `W64_CHAINLOOP`, `stail`, and the
+`W64_BATCH`-as-locality-knob idea, which cannot be worth 19.5 % of wall
+when colocation's entire mechanism is worth nothing.
+
+It does **not** close the boundary.  The 27.9 ns is not a synthetic
+number — the four-point `w64_ft_max()` sweep measured it *in the
+emulator on this game*, fitting `ns/insn = 9.83 + 27.87 × exits/insn`
+to 1.2 %.  That fit varies how many exits there are, never which opcode
+performs one, and both readings are true together.  The only way they
+are both true is:
+
+> **A TB boundary costs 27.9 ns and almost none of it is the
+> dispatch.**
+
+Which says what the cost must be instead — everything a boundary does
+*besides* jump.  TCG allocates registers per TB, so every live guest
+register is written back to `env` at the exit and reloaded at the next
+entry; then there is the prologue, the icount decrement, the chain-slot
+load, and a cold function entry in V8.  At 8.47 guest instructions per
+TB entry that write-back/reload round trip is amortised over almost
+nothing.  It is also exactly why CHAINLOOP tied and why the synthetic
+ties: neither the driver loop nor `dispatchbench` has any guest state to
+spill.
+
+So the lever was never "make the transition cheaper".  It is **make
+boundaries rarer, or make one carry less state**, and the `w64_ft_max`
+fit has already priced the first at 27.9 ns each: raising guest
+instructions per TB entry from 8.47 to 12 would remove ~34,700
+boundaries per Mi, worth **~17 % of wall** at that slope.  That is the
+largest sized lever this workstream has, and it now has the mechanism
+family cleared away from in front of it.
+
+Worse than neutral, in fact: at a realistic body size (pad 144, strided)
+`merged` reads **51.13 against xtail's 35.73**.  A `br_table` on a
+runtime-loaded index replaces a *well-predicted* indirect branch with a
+poorly-predicted one.  Building the boundary half would have been a
+regression, and the only reason that was not obvious is that nobody had
+ever run the predictable column.
+
+The transferable rule, now in lessons.md: **a dispatch benchmark
+measures its target sequence, not its dispatch mechanism.**  Sweep the
+order before quoting a number from it — and prefer the order the real
+workload has, which for TB chaining is "almost always the same
+successor".
+
+  A counter confirms a mechanism, a clock only prices it — and round
+  31's own lesson is that a path is not priced until something has been
+  switched off.
+
+  **This counter did not need building: it already exists and already
+  ships.**  `W64_COLOC` (`cpu-exec.c:815–834`) reads the batch tag out
+  of the source and destination `tc.ptr` and splits every transition
+  into `xSamemod` / `xDiffmod` / `xNomod`; the knob is in the deployed
+  wasm and had simply never once been run.  An earlier revision of this
+  section listed it as work to do, which would have bought a duplicate.
+  Before writing a probe, `strings` the deployed build for `W64_` — it
+  carries 70 knobs and this round found three of them unused.
+
+  It is a *partial* answer, and quoting it as more is the trap.  The
+  counter sits in `helper_lookup_tb_ptr_lc`, so it sees only
+  transitions that missed the per-TB inline cache and reached the
+  helper — not the CHAINLOOP exit, and not the ~98 % of transitions
+  that are direct-chained and never look anything up.  It bounds the
+  locality of the *missing* population only.  Read against `lcCall`,
+  never against the TB execution count.
+
+**What CHAINLOOP's tie says about this, and it is the reason the
+TB-boundary half is marked unproven.**  CHAINLOOP measured **−0.1 %**
+where ~16 % was
+predicted, because its driver loop is built by `w64_driver()` as **its
+own module** (`wasm64.c:975–1009`): a CHAINLOOP transition crosses the
+instance boundary *twice* where `return_call_indirect` crosses once, so
+it is the synthetic's `xloop`, not its `loop`.  The prediction had
+priced it off the same-module leg.  Two readings follow, and they point
+opposite ways:
+
+- *For this item.*  The cost is the instance crossing, not the call
+  opcode — and the merged function is the only proposal that removes
+  crossings outright, since an intra-module successor becomes a `br`
+  inside one function with no call at all.
+- *Against trusting the 16 %.*  That number came from the same
+  synthetic-versus-topology mistake.  **Treat the TB-boundary half as
+  unmeasured** until `merged` has been swept on a quiet host *and* the
+  intra-module locality has been counted.  Tier-up amortisation is the
+  half that rests on a real measurement (3–6 %).
+
+The transferable rule, now in lessons.md: a synthetic leg prices the
+real thing only if it has the real thing's module topology.
+
+**What the pccin measurement says about this — less than it first
+appeared, and the retraction is the point.**  The inline TB probe — six
+words of compare chain emitted into every `goto_ptr` — first read
+**7.4 % slower than deleting it**, which this document reported as a
+hypothesis pointing at the baseline tier.  One of those four legs turns
+out to have measured a title screen rather than a game (see *A fixed
+guest-time window does not fix the workload*).  Guarded, it is g1
+−0.2 % and g2 −8.7 %, both overlapping: **no evidence either way**, and
+the eight-leg run has to decide it.  So this item rests on the
+`--no-liftoff` ceiling alone (+6.3 %, both halves, the flag provably
+live) and not on two independent measurements.  Two things still follow:
+
+- The one number that did survive the guard is `disp` at +17.4 / +17.7 %
+  with both games agreeing — which is a device win, not a tier win, and
+  is the reason the display chain outranks this item in the queue.
+- The follow-on stands regardless of which way pccin lands: **re-measure
+  the inline TB probe after the merge lands.**  If merged TBs reach
+  TurboFan 277× sooner, the compare chain gets cheap while the helper
+  call does not.  A probe that is wrong today can be right after a tier
+  change, which is why it gets a knob (`W64_NOPCCIN`) rather than a
+  deletion — but it does not get *defaulted off* on an overlapping
+  four-leg number with a contaminated leg in it.
+
+Known costs and non-risks: the merged function is ~263 KB, which is
+within every wasm limit; module *compile* stops being parallelisable
+across 277 functions, but module time is already only 2.8 % of a window
+and is off the hot path; 277 nested blocks for the cascade is legal wasm
+and well under `W64_MAX_BLK`'s concern (that limit is per-TB, and the
+cascade is assembled outside the per-TB emitter).
+
+**Built, behind `W64_MERGE=1`, default off** (round 31).
+`w64_assemble_instantiate` now has a second code-section shape: one
+function holding every member's expr as an arm of a `br_table` cascade
+over a module-local selector global, plus a small entry stub per member
+registered in the chain table in the member's place.  The merged
+function keeps **type 0**, the TB signature, rather than taking the
+selector as a fourth parameter — locals are indexed *after* parameters,
+so a fourth parameter would shift every local index in every body and
+the "copy bodies verbatim" property, which is the whole reason this is
+an assembler-side change, would be lost.  Bodies are copied byte for
+byte except the trailing `end`, which becomes a `return` so control
+cannot fall out of one arm into the next.  Four preconditions are
+checked before merging and the batch is assembled *unmerged* if any
+fails (`mergeSkip` counts it): ≥2 members, byte-identical locals
+declarations, every body ending in `0x0b`, every call fixup landing
+inside the copied expr.  Counters `mergeMod` / `mergeMemb` /
+`mergeSkip`; `mergeMemb / mergeMod` is the fan-in tier-up amortises
+over and is the thing to read before any clock.
+
+*The selector global is safe against re-entry*, which is the one
+non-obvious correctness argument: the stub sets it immediately before a
+tail call, and the merged function reads it exactly once, at the
+`br_table`.  Nothing that could re-enter the module runs between the
+`global.set` and that read, and a nested entry that clobbers it after
+the read cannot affect an invocation that has already dispatched.
+
+`tests/wasm/mergeshape.mjs` builds the identical byte layout — same
+section order, same type 0, same global, same cascade, same stubs, same
+thunk — and asserts every arm is selected by the arm its stub asked for.
+It validates and dispatches correctly at **1024 members**, which is
+`W64_BATCH_N_MAX`, i.e. the most this code can ever emit.  That retires
+the one feasibility question reading could not answer (deep block
+nesting) for a second of CPU instead of a rebuild.
+
+**The stub is probably the wrong design, and the synthetic said so
+before the emulator did.**  `dispatchbench.mjs` grew `xstub`/`sstub`,
+which differ from `xtail`/`stail` by the stub hop and nothing else.  On
+a loaded host at tiny N — a *shape*, not a verdict — the hop reads
+**+3–4 ns same-module** and worse across instances.  Price × rate:
+3 ns × ~108 k TB boundaries/Mi ÷ 10.03 ms/Mi ≈ **3.2 % of wall**, which
+is the entire 3–6 % prize.  A tail call is not free, and the merged
+design adds one to *every* TB entry.
+
+The alternative costs a store instead of a call: let the **caller**
+write the successor's table index to a fixed memory slot just before its
+`return_call_indirect` (the value is already in `SCR0` — `w64_chain_go`
+wraps it for CHAINLOOP today), point **every** one of a module's table
+slots at the merged function, and have the merged function open with
+`i32.load $slot; i32.const base; i32.sub; br_table`.  No stubs, no extra
+call, ~0.2 % instead of ~3 %.  It is not free to build: it changes
+`w64_chain_go`, the run thunk, the C dispatcher and the CHAINLOOP
+driver, so it is a backend change and not only an assembler one.  It
+also needs a module's tidx values to be near-contiguous — they are
+allocated one per TB at translation (`tcg-target.c.inc:3353`) in the
+same order members are appended, so a batch is contiguous except where a
+TB-overflow retry burns an index; the safe form is a `br_table` over
+`tidx - min_tidx` with holes mapped to a dead arm, declining to merge
+when the span exceeds ~2× the member count.
+
+**What that sketch leaves out, and it is the part that decides whether
+the boundary half is buildable at all.** Removing the stub is only the
+entry side. The *prize* is the intra-module transition becoming a `br`
+back to the cascade head with no call at all — and a `br` has to be
+emitted **inside a copied body**, by the backend, at translation time,
+when the TB does not yet know which batch it will land in, what its arm
+index will be, or how deep the cascade will nest it. In the nested-block
+cascade the assembler already emits, arm *m*'s body sits at depth
+`N − m` from the head, so the branch depth is **not a constant** and the
+backend cannot emit it.
+
+That is not fatal, because the machinery for exactly this already
+exists: bodies are copied verbatim *except* at positions named in the
+per-member fixup list, which is how union import indices are rewritten
+today (`W64_MAX_FIXUPS` 1024). So the backend emits a chain exit as
+
+```
+  <successor tidx already in $scr0, as today>
+  local.get $scr0
+  i32.wrap_i64
+  i32.const BASE   ; fixup, 5-byte padded
+  i32.sub
+  i32.const N      ; fixup, 5-byte padded
+  i32.lt_u
+  if
+    br DEPTH       ; fixup
+  end
+  <today's return_call_indirect, unchanged>
+```
+
+and registers three fixups per exit; the assembler patches all three
+once it knows `m` and `N`. Three things make this cheaper than the
+sketch it replaces:
+
+- **No new local, and no fourth parameter.** The successor's table index
+  is *already* in `$scr0` at this point (`w64_chain_go`,
+  `tcg-target.c.inc:1441`) and `$scr0` is a declared local, so it
+  survives the `br`. The cascade head reads it back —
+  `local.get $scr0; i32.wrap_i64; i32.const BASE; i32.sub; br_table` —
+  which is why the merged function can keep **type 0** without the local
+  renumbering the round-31 note rejected a fourth parameter to avoid.
+- **A batch that declines to merge patches `N = 0` and `DEPTH = 0`.**
+  `i32.lt_u` against zero is never true, so the arm never runs; `br 0`
+  inside its own `if` is a valid depth in *any* body, so the unmerged
+  module still validates. No second code path, and no precondition that
+  can strand a body.
+- **There is exactly one site to change.** Both `goto_tb` and `goto_ptr`
+  reach the transition through `w64_chain_go`, so the whole emitter-side
+  change is that one function, gated on `w64_merge_mode()` so a build
+  with merging off emits literally today's bytes.
+
+The in-TB machinery this leans on already exists and is proven: a TB
+whose labels form irreducible control flow is *already* emitted as
+`local.set $bp; br $loop` into a top-level dispatch loop
+(`tcg-target.c.inc:596–608, 1415–1416`). Selector-plus-branch-to-head is
+not a new shape for this backend — the merge extends it from within one
+TB to within one module.
+
+Three consequences worth having before anyone starts:
+
+- **The binding constraint is the fixup's *width*, not its count.**
+  The batch's fixup array grows on demand (`B.cap_fix` doubles through
+  `g_realloc`, `wasm64.c:2475`), and `W64_MAX_FIXUPS` 1024 is the
+  *per-TB* emitter's array (`tcg-target.c.inc:46`, checked at 1404) —
+  three fixups against one or two chain exits per TB is nowhere near it.
+  What does bind is that a fixup patches a **fixed two-byte ULEB**
+  (`p[0] = (uimp & 0x7f) | 0x80; p[1] = uimp >> 7`, `wasm64.c:1644`), so
+  a patched value must fit in 14 bits. `N` and `DEPTH` do; **`BASE` does
+  not** — it is a `tidx`, allocated one per TB globally, and reaches
+  millions. That wants a second fixup kind writing a 5-byte padded ULEB,
+  which is an idiom the file already has (`w64_read_leb5`).
+- **`br` out of an `if` is legal and cheap, but the value stack must be
+  empty at that point.** Every chain exit in the current emitter reaches
+  `w64_chain_go` with its result already materialised, so the `if` has
+  to be opened *after* the value is consumed into `$sel`, which the
+  sketch above does deliberately.
+- **The fan-in is real and it is ~259, not ~5.** Measured, not assumed,
+  from the counters of an ordinary J2ME leg: game 1 translates
+  `tbGen` 6985 TBs into `modCount` **27** modules (**258.7 members
+  each**, `modBytes` 8.87 MB → 328 KB a module); game 2 is 1474 into 4
+  (368.5 each). The "batches average 4.9 TBs" figure carried in the
+  pipeline notes is a *boot* number from before the interpreter tier
+  changed what closes a batch, and it must not be used here — it would
+  have made the merged function pointless by construction. At 259 arms
+  the cascade is exactly the shape `tests/wasm/mergeshape.mjs` already
+  validates to 1024.
+- **This is what makes locality the gating measurement rather than a
+  detail.** The scheme converts only same-module transitions; every
+  cross-module one still pays the full 27.9 ns *plus* the new compare.
+  At a same-module share `p`, the yield is `p × ~25 ns × 108 k/Mi`
+  against a budget of 5.686 ns/insn — **28 % of wall at p = 0.6, 9 % at
+  p = 0.2, and negative below about p = 0.05.** Nobody has measured `p`.
+  `W64_COLOC` bounds it from below (it sees only inline-cache misses,
+  the least local population); the honest number wants a translation-time
+  count of same-batch successors, which is a counter and not a lever and
+  can ride along with the next rebuild.
+
+**So the order is: measure the stub build, then decide.**  The stub
+version ships nothing and is default-off, but it is the only way to put
+a real number on the tier-up half, which nobody has — the 3–6 % is a
+*ceiling* read off a browser flag, not this mechanism's yield.  A
+measured stub result of ~0 would say tier-up ≈ stub cost ≈ 3 % and make
+the store design worth its backend change; a measured loss says the
+whole item is smaller than the flag suggested.  Either way the number
+comes from the emulator, not from the synthetic.
+
+**New in round 28 (0116): the ARM exception
 entry path.** The guest takes **~93 k exceptions a second** and **90 % of
 them are its own `SVC`s** (`excSwi` 4.95 M against `excIrq` 0.54 M over
 40 s; every other kind reads zero). They account for **77 % of all
@@ -376,10 +812,44 @@ translation is now the biggest single item at ~2.1 s (17 %).
    the call-count reduction and the A/B, and read any sub-50 ns per-call
    figure as an upper bound.
 
-7. **J2ME throughput** (`tools/stopwatch.mjs`, vratio ~0.60 after 0052):
-   the remaining third is the DIF FIFO word loop, the DMAC per-word MMIO
-   writes and the SRB events — a device-path target, not an engine one.
-   This meter drifts with host load; take alternating samples.
+7. **J2ME throughput — ANSWERED for the device path, round 30 (0118).**
+   The "remaining third" named here was right, and it is now spent: the
+   DMAC per-word MMIO write (**A**, 321 ns/word) and the DIF FIFO word
+   loop's byte-at-a-time bus walk (**B**, 137 ns/word) are both gone, and
+   a general TB-lookup cache (**C**) took another 6.8 % on top —
+   **51.49 → 77.53 MIPS/cpu, +50.6 %** on an actual running game.  The
+   meter is no longer `stopwatch.mjs`: use **`tools/j2mebench.mjs`**,
+   which boots CX70, walks the firmware menu to a game, plays it, and
+   reports **`MIPS/cpu`** — guest Mi over the CPU seconds the vCPU thread
+   itself burned, taken from `/proc/<pid>/task/<tid>/stat` at the
+   window's own two ends.  That denominator is why this no longer "drifts
+   with host load": the same ladder read 77.53 at load 43.7 and 75.30 at
+   load 54.1.  `tools/j2meab.sh` runs the four-config palindrome.
+   **What is left is not the device path.**  The counter-visible events
+   (`difTxWord` 12 828, `hflagsCalls` 1 896, `dmacBurst` 1 603, `lookup`
+   1 252, `execIter` 746, `excSwi` 677, `slowNotdirty` 428 per Mi) sum to
+   roughly 20 k events/Mi; even at 100 ns each that is ~15 % of the
+   13.47 ms/Mi the window costs.  **~85 % is the emitted code executing
+   1 M guest instructions at ~11.4 ns each** — ~34 host cycles per guest
+   instruction.  The next lever is code quality, not another device.
+
+   **Correction, round 31: that last sentence was wrong, and the way it
+   was wrong is the lesson.**  Three further *device* mechanisms —
+   `lcd_run_rows` walking rows instead of pixels, `dmac_coalesce_words`
+   taking a whole stream burst in one call, and the DIF's RX-tail skip —
+   are worth **+17.5 % of `MIPS/cpu`, 8/8 legs separated in both games**,
+   i.e. 1.83 of 12.25 ms/Mi = **15 % of wall**, after everything above
+   had already landed.  The arithmetic that closed the device path
+   ("~20 k events/Mi, even at 100 ns each is ~15 %") failed twice over:
+   it priced each event at a *guessed* 100 ns when a display burst is
+   ~600 ns and rises with its length, and — the larger error — it counted
+   only the events the device counters *name*.  One `dmacBurst` also buys
+   a `memory_region_dispatch_write`, a BQL round trip, a
+   `timer_mod`/`icount_get` re-arm and a VIC level change, none of which
+   has a counter of its own and all of which die with the burst.
+   **A path is not priced until something has been switched off**;
+   summing the counters you happen to have is a lower bound wearing the
+   costume of a total.
 
 8. **Timer storms / main-loop wakeups — sized, audited and parked.** The
    clock/timer path is ~2.5 % of the vCPU mid-boot at ~37k `timer_mod`/s.
@@ -440,6 +910,1273 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 
 ## Round log (newest first)
+
+## Update (2026-09-17, round thirty-two: the meter was wrong by a factor of two)
+
+**`MIPS/cpu` was built to be load-robust, was documented as load-robust,
+and had never been regressed against load.** It is not. Fitted *within
+identical configurations* — every `(tag, arm, game)` group mean-centred
+first, so a build that happened to run in a quiet hour cannot set its own
+correction — `log(MIPS/cpu)` on `log(1-minute load)` has slope **−0.29**
+with **r = −0.73** across 64 legs. Load ran **4.1 to 42.2** during this
+round's battery, so the confound alone spans **1.96×**, against A/B
+effects of 2–16 %. CPU time divides out how many *seconds* the host gave
+the vCPU thread. It cannot divide out how much work a second contains,
+and under SMT and memory-bandwidth contention on a 32-core shared host
+that is most of what moves.
+
+**What forced the issue, and it could only have been the counters.** Two
+legs of `lcdrow-on` game 2 — same binary, same query string, same
+`--game`, nothing between them but four minutes — read **82.25** and
+**144.35** MIPS/cpu. The per-Mi table settled it: every guest-side
+counter agreed to within **0.4 %** (`ssiByte` 1.004, `lcdPx` 1.004,
+`difTxWord` 1.004, `hflagsCalls` 1.006, `armIrq` 1.006, `excSwi` 1.006,
+`halt` 1.004, `tpuRamW` 1.003), so the guest executed the same
+instruction stream and the emulator did the same work. The 1.76× had
+nowhere left to live but the host — and the host's load had gone from
+29.5 to 16.6. A clock cannot make this diagnosis about itself.
+
+**Identical-config repeat spread, 28 groups: median 12.0 %, max 54.8 %.**
+Every verdict this round was quoted to a tenth of a percent against that.
+
+**The palindrome does not cover this, and it fails in the worst
+direction.** `off on on off` cancels *linear* drift because both arms
+average to the same midpoint. The host went quiet between leg 3 and leg 4
+— load 26.3, then 5.1 — so the step landed entirely on the second `off`,
+which is the one position that cannot cancel. `lcdrow` came out **−34.7 %**
+on game 1; corrected it is **−10.7 %**, with the arms sitting at mean
+load 27.9 against 13.1.
+
+### What this leaves standing
+
+Re-derived with the correction and the duty guard (`scratchpad/verdict.py`,
+which now prints each leg's load, a corrected column, and `LOAD-SKEWED`
+when the arms differ by more than 15 %):
+
+| tag | knob on the `off` leg | g1 raw → corrected | g2 raw → corrected | reading |
+|---|---|---|---|---|
+| `disp` | `DMACOAL=1 & NORXTAIL=1 & NOLCDROW=1` | +17.4 → **+15.6 %** | +17.7 → **+16.6 %** | n=4/4, load-balanced, tight — **stands** |
+| `txfast` | `NOTXFAST=1` | +3.5 → +4.4 % | +20.2 → +6.9 % | both positive, balanced — plausible |
+| `nested` | `NONESTED=1` | +17.4 → +17.1 % | — | g2's `off` arm wholly dropped by the duty guard |
+| `noliftoff` | `--js-flags=--no-liftoff` | +1.3 → +0.3 % | −13.6 → −11.4 % | games disagree — the V8-tier ceiling is **not** settled |
+| `chain` | `CHAINLOOP=1` | −5.5 → +1.3 % | +6.6 → +6.9 % | overlap both games — null |
+| `pccin` | `NOPCCIN=1` | −0.2 → −7.1 % | −15.4 → +0.8 % | correction makes the games *disagree* — unsettled |
+| `lcdrow` | `NOLCDROW=1` | −34.7 → −10.7 % | −11.7 → +10.8 % | contradictory — unsettled |
+
+Round thirty-one's **+17.5 % headline for the display bundle survives**
+(+15.6 / +16.6 %, four legs an arm, arms within 3 % of each other on
+load). It is also the only large effect in the round that does, and it is
+*already shipped* — the `on` arm is the default build. **Nothing new has
+been won yet this round; what has been won is the ability to tell.**
+
+### The repair
+
+- `hostBusy` — the host's non-idle fraction over **exactly** the
+  measurement window, from `/proc/stat`'s all-CPU line differenced at the
+  window's two ends. The 1-minute load average is smoothed over 60 s and
+  the window is 6–11 s of wall, so loadavg is mostly describing seconds
+  the window did not contain; this is the honest covariate, and
+  `verdict.py` switches to it automatically once 12 paired legs carry it.
+- `hostLoad0` alongside `hostLoad`, so drift *across* a window is visible
+  rather than inferred.
+- `--maxload N` / `--loadwait S` (file defaults `tests/.j2me-maxload`,
+  `tests/.j2me-loadwait`): wait for a quiet host before the window opens.
+  Three details, each of which was a bug first:
+  - It **measures anyway** after the budget runs out rather than failing.
+    Failing would retry three times and drop the leg, and a dropped leg
+    punctures the palindrome — worse than a leg the read-time correction
+    can partly undo.
+  - The wait goes **before the real-time cap comes off**. Uncapped, the
+    guest warps its own clock as fast as the host allows, so a ten-minute
+    wait after the uncap plays the game for hours of its own time and
+    opens the window on something the `--start` plan never aimed at.
+  - The budget is **one deadline for the process**, not one per wait. The
+    wait sits inside the three-attempt walk loop and a sweep runs one
+    window per `--game`, so a per-wait budget would let six waits spend
+    6 × 600 s and walk straight through `ab4.sh`'s 1800 s leg timeout.
+- The threshold has a **file** default because a battery already running
+  has its shell drivers' environments fixed at launch, and editing a
+  script bash is currently reading corrupts it mid-leg.
+- **The threshold was then set to a value the host can never reach, which
+  is the same bug in the other direction.** Armed at `10`, against a host
+  whose recorded load across 72 legs is min 4.1 / median **25.9** / max
+  42.2, with only **3 %** of legs ever at or below 10. That guard cannot
+  pass: it spends the full 600 s budget and measures anyway — ~40 min per
+  four-leg tag, bought nothing. Re-armed at **30 / 240 s**, which
+  truncates the *untrustworthy tail* (load > 30, the worst ~22 % of legs,
+  where a fitted exponent extrapolates worst) instead of chasing a quiet
+  hour that does not come. A gate's threshold is part of the gate: one
+  nothing passes is as useless as one everything passes.
+- **The load is not mine.** Sampled instantaneously (`/proc/<pid>/stat`
+  deltas, not `ps` lifetime averages), this container draws **1.3 cores**
+  while the host sits at **24.8** of 32. The 10 001 processes visible are
+  **9 950 zombies** — PID 1 here is `sleep infinity`, so every exited
+  process is reaped never. No leaked browsers, no self-inflicted load:
+  the confound is other tenants, and waiting is the only lever over it.
+
+### What the workload actually is, measured on counters rather than clocks
+
+The meter repair is worth having because it made the *clock* readable
+again, but every finding below comes from the counters, which agreed to
+0.4 % across a 76 % clock swing and are the only instrument this host
+cannot corrupt. All ratios are medians over **99 legs**, two games and
+every A/B configuration in the round.
+
+**Full speed is 125 MIPS.** icount `shift=3` puts 8 ns of guest time on
+every instruction, so the guest is at real time when the emulator retires
+125 Mi/s. This build delivers **113 MIPS (90 %)** on the loaded host and
+**144 MIPS/cpu (115 %)** when it is quiet. The gap the user asked to
+close is therefore **~11 %, and only under load** — not a factor.
+
+**There are no `cpu_loop_exit` longjmps left.** `execLjmp` is absent from
+all 99 legs, and absence *is* the reading (`j2mebench.mjs:687` skips a
+counter whose window delta is exactly zero). The emscripten JS-exception
+unwind is priced at ~15 µs, wasm-EH longjmp does not compose with
+ASYNCIFY (binaryen's pass crashes on `-sSUPPORT_LONGJMP=wasm`), and this
+workload takes 691 exceptions per Mi — at 15 µs that would be 10.4 ms
+against a 9.5 ms/Mi budget, i.e. impossible. Patches 0013 (SVC without
+the longjmp) and 0025 (WFI) already spent this. **`arm_excp_exit_ok()`
+has exactly one call site, `EXCP_SWI` at `translate.c:7914`** — and the
+counters say that is enough, because `excSwi` (680.5) + `excIrq` (10.65)
+= `armIrq` (691.2): in steady state this guest raises nothing else.
+
+**The whole dispatch layer is exception-driven, and that is one lever,
+not four.** Since 0091 a chained TB never returns to the loop, so what
+breaks a chain is what costs:
+
+| ratio | median | range over 99 legs |
+|---|---|---|
+| `execIter`/SWI | 1.10 | 1.08 – 1.24 |
+| `lookupJc`/SWI | 1.09 | 1.07 – 1.19 |
+| `armIrq`/SWI | 1.02 | 1.01 – 1.04 |
+| `hflagsCalls`/SWI | 2.80 | 2.70 – 2.90 |
+| `lookupQht`/SWI | 0.74 | 0.30 – 1.27 |
+
+The first four are constants of the workload: they hold across two games
+whose SWI rates differ by 1.6× (680 vs 1095 /Mi) and across every knob
+tried this round. The exec loop goes round **once per guest exception and
+essentially never otherwise** — the header's S75 boot put exceptions at
+77 % of unwinds; here it is ~91 %. Chaining is therefore already doing
+its job: the mean chain runs ~1000–1470 guest instructions and is broken
+by a syscall, not by a branch. `lookupQht`/SWI is the one ratio that
+*moves* with configuration, which is why it is what the `pcc`/`lc` A/Bs
+are actually measuring.
+
+**Two paths are closed and should not be re-opened.** Display: with
+DMACOAL on, `dmacRun` falls 1471 → 25.5 /Mi (58×) and `lcdRow` 1471 →
+100.9 (14.6×), leaving 127.7 px per row call decoded by a bulk loop —
+two byte loads, a shift, a decode, a store — at ~0.4 % of the budget.
+`ssiByte` reading exactly 2× the word rate is **not** a byte-at-a-time
+loop; `dif_v1.c:952` is `+= chunk * word_bytes`, a bulk increment, and
+`difRxskip`/`difTxWord` = 99.2 % says the per-word RX loop is already
+skipped. Module pipeline: `modNs` = 21.5 µs/Mi = **0.24 %**.
+
+**The per-exception cost is settled, and it is the small end of the
+spread: ~1.4 %, not ~7 %.** The 6× uncertainty is closed, and no new run
+was needed to close it — the reading was already on disk, in
+`j2me-2026-09-17-12-28-dist-jit-excns.json`. Over 1,304,369 timed
+exceptions:
+
+| span | measured | less one clock read | per Mi |
+|---|---|---|---|
+| `excCal` (one `get_clock_realtime`) | 163.3 ns | — | — |
+| `excDoNs` (`arm_cpu_do_interrupt`) | 286.7 ns | **123.4 ns** | 82.6 µs |
+| `excBqlNs` (BQL lock + unlock, two reads) | 375.7 ns | **49.1 ns** | 32.9 µs |
+
+At 669.7 SWI/Mi that is **115 µs/Mi**: 0.92 % of this leg's own 12.46
+ms/Mi, and 1.44 % against the 8 ms/Mi that 125 MIPS would spend. `excN`
+equals `excSwi` **exactly** (1,304,369 both), so every timed exception is
+a syscall and nothing else is hiding in the count. An ARMv5 exception
+fast path is therefore worth ~1.4 % at the absolute ceiling of a perfect
+implementation, which puts it in the same class as `pccin`, `chain`,
+`nopcc` and the inline-cache work — all of them fighting over ~1 %.
+
+Two things about the instrument, because both misled once.
+**`W64_EXCNS` arms two different spans and only one of them is live.**
+`EXC_LJ_NS`/`EXC_LJ_N` bracket the *longjmp unwind* — opened in
+`cpu_loop_exit` (`cpu-exec-common.c:91`) and closed inside the
+`sigsetjmp(...) != 0` branch (`cpu-exec.c:1985`) — and since `execLjmp`
+is zero that span never opens, which is why it reads empty and why it
+looks at first like a broken knob. The live one is the second site,
+`cpu-exec.c:1613`, which brackets `tcg_ops->do_interrupt` itself. It does
+price the ARM exception entry; it just does not announce that in its
+name. And **every raw value is an exact multiple of 1 ms** because the
+browser clock is ms-quantized: each individual span reads 0 or 1 ms, so
+the sums are Bernoulli estimates — unbiased over a million events,
+meaningless over a hundred.
+
+A caution for whoever reads `hflags`, `hflagsFast`, `hflagsBad` and finds
+them zero: they are gated behind `WASM_DIAG_HOT`, which the shipping
+build compiles to `((void) 0)`. That is a disabled counter tier, **not** a
+fast path that never fires, and the header says never to measure a
+wall-clock A/B against a hot-counter build.
+
+### Every leg on disk measured the engine's ceiling, not the game's speed
+
+**All 239 recorded legs ran `uncap=true`. There is not one capped
+measurement in `tests/results`.** That is deliberate and, for A/B work,
+correct: `--uncap` defaults to 1 (`j2mebench.mjs:131`) and drops the
+real-time cap for the play window alone, because "this window runs
+uncapped so that the engine's own ceiling shows" (`:798`). It is the
+wrong instrument for the question that started this work — *the game
+still doesn't run at full speed* — and it cannot be made to answer it.
+
+Uncapped `vratio` reads a median **2.03** on game 1 (n=167) and **4.35**
+on game 2 (n=72). Neither means the game runs at twice or four times real
+speed. Under icount a halted guest's virtual clock is advanced for free,
+so `vratio` is inflated by exactly the idle fraction, and `duty` says
+that fraction is large: **0.348 and 0.149**, i.e. the guest is halted for
+65–85 % of virtual time *while a game is being played*. `vratio` and
+`duty` are two views of one number and neither is a speed.
+
+So the throughput this round has been optimizing — MIPS/cpu, the ~11 %
+gap — describes only the compute-bound moments, and nothing on disk says
+what share of the wall clock those moments are. `--uncap 0` keeps the cap
+on through the window; `rtcapThrotNs` then counts the time the cap spent
+*holding the guest back*, which is headroom measured directly rather than
+inferred. `vratio ≈ 1` with a large `throt%` means throughput is not what
+binds and this round's whole target is worth less than it looks;
+`vratio < 1` with `throt% ≈ 0` means it is. `capchar-ab.sh` runs it.
+
+### The headroom is 2.1× and 4.5×, and "125 MIPS" was never the target
+
+This needs no new run either; it falls out of the 229 legs already on
+disk. To hold real time the emulator must retire `duty × 125` Mi per wall
+second — 125 MIPS is what a **100 %-duty** guest would need, and these
+games are 15–35 % duty:
+
+| | required | delivered (median) | headroom |
+|---|---|---|---|
+| game 1 | 43.5 MIPS | 91.0 | **2.09×** |
+| game 2 | 18.8 MIPS | 85.0 | **4.53×** |
+
+The model checks out: `mipsCpu / (duty × 125)` predicts the measured
+`vratio` to a median ratio of **1.04** (g1, n=155) and **1.05** (g2,
+n=74), with an inter-quartile range of 0.01. That tight, constant 4–5 %
+residual is the non-CPU work — display, timers, browser — and its
+constancy is what makes the accounting trustworthy.
+
+So **the "~11 % gap to 125 MIPS" is not a gap to anything the games
+need.** On this host they already run 2–4× faster than real time, and
+every lever this round has priced — the exception entry at 1.4 %, the
+inline cache at ~1 %, display at 0.25 %, the pipeline at 0.24 % — is a
+few percent of a budget that is already 2–4× oversubscribed. That is the
+honest reason the `pccin`, `chain`, `nopcc`, `merge` and `lc` A/Bs keep
+coming back null: they are real mechanisms, correctly instrumented,
+competing for a resource that is not scarce here.
+
+Which raises the question this round should have asked first: *where* is
+it not fast enough? Not on this machine, on this window. The candidates
+are a slower device (the header's own rule of thumb is **phone = desktop
+v/wall ÷ 5**, which turns game 1's 2.09× into 0.42× — slow motion, and
+exactly the reported symptom), or a phase the 45-guest-second play window
+never covers, such as game startup and class loading. Both are testable
+and neither is a micro-optimization. **Establish which before spending
+another round on 1 % levers.**
+
+### Answered: the mean was the wrong statistic, and the peak is duty 1.0
+
+The phase question above is now measured, and it corrects the section it
+follows. `--trace` samples frames and instructions every 2 virtual
+seconds, which is a duty series for free (`duty = Mi × 8 ns / width`).
+Run on game 1 on a quiet host, it does *not* show a flat 0.35:
+
+| virtual s | fps¹ | Mi | duty | MIPS needed |
+|---|---|---|---|---|
+| 6–43 (18 bins) | 5.5–10.5 | 31–55 | 0.12–0.22 | 15–28 |
+| **2** | 19.0 | 246 | **0.984** | **123.0** |
+| **45** | 19.5 | 246 | **0.984** | **123.0** |
+| **47** | 18.5 | 251 | **1.004** | **125.5** |
+| **49** | 19.5 | 251 | **1.004** | **125.5** |
+| **53** | 20.0 | 239 | **0.956** | **119.5** |
+| 55 | 14.5 | 186 | 0.744 | 93.0 |
+
+¹ frames-per-virtual-second, a warp artifact in an uncapped leg — see
+the caution below; it is listed only because the raw trace prints it.
+
+Five of 32 bins sit at duty ≈ 1.0 — the guest asking for *the entire*
+125 MIPS — inside the very window whose mean read 0.348. The mean was an
+average over phases that behave nothing alike, and it reported the idle
+one because that is where the instructions are not.
+
+So the answer is **both, and the phase is not where this section guessed
+it was**. It is not startup, and it is not before the window: it is
+*inside* it. `--shots 6` caught the panel at 49 s showing *"Atomic
+Skater — Level 2 — Lives left: 3"*, with ordinary platform gameplay at
+36 s and 61 s on either side. The saturated stretch is a **level
+transition**.
+
+Two things about it invert the natural reading:
+
+- **Do not read the fps column of an uncapped trace.** It is tempting to
+  say the saturated bins "draw more" because they show 18.5–20 fps
+  against the quiet bins' 5.5–10.5, but `fb_updates` is paced by *real*
+  time while the bin is measured in *virtual* time, and an uncapped leg
+  warps the two apart by exactly the factor that differs between these
+  phases. The same 45 virtual seconds of game 1 drew **468 frames
+  uncapped and 1063 capped**. Per bin the implied warp is 1.43× where
+  duty is 0.98 and 9.8× where duty is 0.14, which alone predicts a ~6.8×
+  spread in frames-per-virtual-second; the observed spread is 3.3×. The
+  column is a warp artifact with an unknown residue, not a rendering
+  measurement. **duty is the trustworthy series** — it is virtual-time
+  based and cap-independent — and the phase identification rests on the
+  `--shots` panels, which are direct evidence.
+- **The levers are not competing for a slack resource after
+  all.** The claim above — "a resource that is not scarce here" — holds
+  for 27 bins of 32 and fails for the five that matter. During a level
+  transition this host needs 123–125 MIPS and delivers 91 loaded (it
+  delivered 176 on the quiet host that took this trace). A user's browser
+  clears that bar by less, or not at all, which is the reported symptom
+  without needing the ÷5 phone rule at all.
+
+**Instrument cautions, both of which would have inverted the reading:**
+
+- **Trace bin 0 is not a bin.** The sampler pushes a *cumulative* insn
+  count (`j2mebench.mjs:583`) and the printer differences from `pf=pi=0`
+  (`:723`), so the first entry prints the absolute counter — every
+  instruction since the emulator started, i.e. the whole boot. For g1
+  that is 1521 Mi, which reads as duty 6.08 over 2 s. Drop it.
+- **Bins are polled, not scheduled.** `nextTrace = v + 2e9` is only
+  applied once a poll observes the deadline, so a bin can be wider than
+  2 s — the g1 series steps 36 s → 39 s. Divide by the real width or a
+  wide bin looks busier than it was.
+
+**Game 2 measures nothing here** and should not be read as a contrasting
+result: it sits at duty 0.084–0.092 and 5 fps for 55 of its 65 seconds,
+which is a screen the `--play` pattern never engages. The meter launches
+it but does not play it. Fixing that walk is a prerequisite to any claim
+about game 2, and the "4.53× headroom" row above is measuring an idle
+title screen.
+
+### The consequence: profile the bin, not the window
+
+The `perMi:` rollup spans both window ends, so on game 1 it is an average
+over 27 idle bins and 5 saturated ones. It is instruction-weighted, and
+the instructions are split far more evenly than the bin count suggests:
+
+| phase | virtual s | share of time | Mi | share of instructions |
+|---|---|---|---|---|
+| saturated (duty ≥ 0.8) | 10 | 15 % | 1233 | **46.6 %** |
+| middle (0.3–0.8) | 4 | 6 % | 363 | 13.7 % |
+| idle (duty < 0.3) | 51 | 78 % | 1052 | 39.7 % |
+
+So the rollup is roughly a 50/50 blend of two unlike workloads — it
+describes *neither*, rather than describing the idle one. The practical
+consequence for A/B design is milder than the bin count implies but still
+real: a lever that only bites in the saturated phase is diluted **2.15×**
+in any per-Mi counter or in MIPS/cpu. A genuine 10 % win on the phase
+that matters surfaces as 4.6 % window-wide, which is within the noise
+this workstream has been fighting all round. `--tracec` (added this
+round, default off) snapshots every counter at every trace sample and
+emits the series as `traceCs` in the JSON, so consecutive bins can be
+differenced and the duty ≈ 1.0 bins profiled on their own. That is the
+measurement the next lever should be chosen from — and it is the first
+one in this workstream aimed at a phase that is actually CPU-bound.
+
+### Why every A/B this round was null: the instrumented mechanisms are 2.6 %
+
+Priced against the same leg's own per-instruction cost, every mechanism
+this workstream has instrumented — together — is a rounding error. The
+g1 phase-trace leg ran at MIPS/cpu 175.86, i.e. **5.686 ns per guest
+instruction**, a budget of 5686 µs per Mi:
+
+| mechanism | µs/Mi | share |
+|---|---|---|
+| exception entry (`excSwi` 682.8/Mi × 172 ns) | 117.4 | 2.07 % |
+| display DMA (`dmacBurst` 25.46/Mi × 638.8 ns) | 16.3 | 0.29 % |
+| module pipeline (`modNs`, already ns/Mi) | 12.3 | 0.22 % |
+| **total accounted** | **146.0** | **2.57 %** |
+| **unaccounted — raw emitted-code execution** | **5540.4** | **97.43 %** |
+
+This is the round's real result, and it subsumes the rest. `pccin`,
+`chain`, `nopcc`, `merge`, `lc`, `lcdrow`, `rxtail`, `excns`, `dispns`
+all came back null or sub-1 % **not because they were mis-measured but
+because they are all inside that 2.6 %**. No arrangement of them reaches
+10 %. The 2.15× phase dilution above is a second-order worry next to
+this: a lever confined to the accounted 2.6 % cannot matter regardless of
+which phase it lands in.
+
+The cost is in the emitted code itself. 5.686 ns per guest ARM
+instruction is ~17 cycles of a ~3 GHz core to execute one guest
+instruction — where an optimised native TCG backend spends 2–4. The 2×
+Liftoff penalty is real but already banked (V8 tiers the TB functions up
+on its own; stock is within 5 % of TurboFan-only). So the remaining gap
+is **what the wasm64 backend emits per guest instruction**, and that is
+where the next round belongs:
+
+- `tcg/wasm64/tcg-target.c.inc` — instruction selection and the
+  per-op emission shape.
+- The TB call boundary and prologue/epilogue, now that the boundary
+  itself is known to be only ~2 ns.
+- Whether a TB-per-wasm-function structure is the right unit at all
+  (queue7's merged-module emitter is the standing experiment here, and
+  queue9's "where does the vCPU thread actually go" is the profile that
+  should pick the target — its truncation problem is precisely that a
+  profile of emitted code is thousands of one-sample frames).
+
+**Stop pricing peripheral mechanisms.** The measurement discipline was
+sound; it was aimed at 2.6 % of the machine.
+
+### The density number, which is where the 97.4 % goes
+
+Three counters already on disk size the emitted code, and they have never
+been divided into each other. From the same g1 leg (`tbGen` 6850,
+`tbBytes` 8,449,465, `tbIcount` 69,932):
+
+| | |
+|---|---|
+| bytes of wasm per TB | 1233 |
+| guest instructions per TB | 10.2 |
+| **bytes of wasm per guest instruction** | **120.8** |
+| mean re-executions of a translated TB | ~28,000× |
+
+At 2–3 bytes for a typical wasm opcode-plus-LEB128, 120.8 bytes is on the
+order of **40–50 wasm instructions emitted per guest ARM instruction**. A
+native x86-64 TCG backend emits roughly 10–20 *bytes*. wasm is a stack
+machine with LEB128 immediates and is inherently more verbose, but not by
+this margin.
+
+The re-execution factor matters as much: at ~28,000 executions per
+translated TB, *nothing about translation cost can matter* — which is
+why `modNs` prices at 0.22 % and why every module-pipeline lever from
+rounds nineteen and twenty-six is closed. The entire budget is in
+executing those ~45 wasm instructions, ~28,000 times each.
+
+So the metric that looks like the one to move is **emitted wasm
+instructions per guest instruction**. Two structural facts in the backend
+offer themselves as levers, and **both are already closed on disk.** They
+are written out here because the density number makes them look new, and
+they are not.
+
+- **The inline TLB probe is 37 % of emitted bytes and 5.07 % of wall.**
+  The byte share is real (`optimization-playbook.md` § 0b, per-opcode
+  histogram: `qemu_ld` 83.9 B/op, `qemu_st` 86.9 B/op) — but round
+  twenty-three priced the probe *directly*, with `W64_TLBDUP=N` emitting
+  N extra real probes per memop, and the N=1→2 slope reads **5.07 % of
+  EL71 wall, not 37 %**. Bytes are not time here, and the factor is
+  seven. Worse for the idea: the obvious replacement was then built end
+  to end and **reverted for being 4.4–5.0 % slower** (§ REJECTED, the
+  per-site TLB entry cache — `W64_SITECACHE`, 26.62 s off vs 27.83 s on,
+  and it is not slot locality: an unlimited pool loses as much as an
+  8192-entry one). The reason generalizes and is the part to carry: a
+  duplicate-probe instrument emits its copies **straight-line, outside
+  any branch**, so it prices the work and not the branch the replacement
+  would really live behind. **+5.07 % is an upper bound on deleting the
+  probe entirely, not a budget to spend** — and a scheme that *fronts*
+  the probe with a cheaper check can only add to the path. Retry only
+  with something that replaces it outright.
+- **The TB boundary is not an open question either — it is the answer,
+  and it is already measured on this exact game.** The "~2 ns boundary"
+  above was wrong, and so was the instinct to look for it in bytes.
+  Two numbers, taken independently, agree:
+
+  | source | per-boundary cost |
+  |---|---|
+  | four-point `w64_ft_max()` sweep, **this game**: `ns/insn = 9.83 + 27.87 × exits/insn`, fit to 1.2 % | **27.9 ns** |
+  | 0108's merge differential on EL71 (exits/Mi 231 300 → 172 650 against 87.1 → 105.2 Minsn/s) | ~33.7 ns |
+
+  A third row used to stand here — `dispatchbench`'s unpredictable
+  `return_call_indirect` at ~27 ns — and it agreed so well that it
+  looked like confirmation. It was coincidence, and the section below
+  (*The boundary mechanism is not a lever*) shows why: that 27 ns was
+  the cost of a **randomly chosen target**, not of a dispatch opcode,
+  and the emulator's own targets are per-site predictable. Round
+  twenty-three's 7.7 ns, long treated as the outlier, is the honest
+  price of the *transition*; the missing ~20 ns is everything else a
+  boundary does.
+
+  Which is the useful form of the number, because it says where to
+  push. `goto_ptr` is **67.8 %** of J2ME boundaries (`W64_XCOUNT=1`,
+  game 1, 1980 Mi: 80 781 `goto_ptr`, 22 371 fall-through, 16 010
+  `which=0`, 16 self-chaining, **119 161 per Mi = 8.4 guest insns per
+  TB entry**) — indirect, and so unabsorbable by any translator
+  heuristic. The 20 ns, by contrast, is spent on both kinds alike:
+  TCG allocates registers per TB, so every live guest register is
+  stored to `env` at the exit and loaded back at the next entry, over
+  and over, amortised across only 8.4 guest instructions.
+
+  **What changed is the denominator, and it changed by a factor of two.**
+  That sweep ran at 11.30 ns/guest-insn and the playbook records the
+  boundary as 27 % of wall there. Today's build runs at **5.686
+  ns/guest-insn**, and nothing in 0104–0118 touched the boundary — the
+  display-DMA, SSI and pc-cache work all removed cost from *elsewhere*.
+  A cost that does not move, over a budget that halved, roughly doubles
+  its share:
+
+  | | ns/insn | boundary share |
+  |---|---|---|
+  | round 31 build | 11.30 | 27 % |
+  | today (if 108 k boundaries/Mi still) | 5.686 | **~53 %** |
+
+  So the TB boundary is now plausibly **half the emulator**, and every
+  other lever this workstream has priced — the TLB probe at 5 %,
+  exception entry at 2.07 %, display DMA at 0.29 %, the module pipeline
+  at 0.22 % — is rounding error beside it. That is the reading the
+  "97.4 % is raw emitted-code execution" line above was missing: a large
+  part of that 97.4 % is not *inside* the emitted code at all, it is the
+  cost of leaving one TB and arriving at the next, which the density
+  metric cannot see because a boundary is a handful of bytes.
+
+  The one input that is genuinely stale is **exits/Mi**, since
+  `w64_ft_max()`'s default has since moved to 3 and 0118's pc-cache
+  changed what the lookup path does. That is one leg, not a re-sweep —
+  `W64_XCOUNT=1` (own wall meaningless, per-Mi rates exact), with
+  `W64_COLOC=1` riding along to measure the same-module share the merged
+  module's case rests on and which is recorded here as *assumed* ~60 %
+  and never once run. Queued as `scratchpad/lever-chain.sh` step 2.
+
+**The merged module is not that lever, and the sweep that was supposed
+to gate it killed it instead.** The reasoning that pointed here was:
+the boundary is ~53 % of wall, and the merge is the only scheme that
+removes the *instance crossing* rather than changing which call opcode
+performs it — an intra-module successor becomes a `br` back to a
+`br_table` cascade head, with no call at all. The gate was whether
+`merged` still beat `xtail` at the ~277 TBs a real module holds. It was
+run (`scratchpad/lever-chain.sh` step 1, swept properly over body size
+and module count), and at a realistic body size in the order the
+emulator actually exhibits, `merged` **lost**: 51.13 ns against
+`xtail`'s 35.73 at pad 144 strided. Not a tie to argue about — a
+regression, and one that reproduces across the sweep. Removing the
+crossing is not worth anything because the crossing is not worth
+anything; see *The boundary mechanism is not a lever* below. The merge
+item keeps only its tier-up half, which never depended on dispatch.
+
+**The lever the 27.9 ns actually points at is per-boundary state
+traffic.** Nothing in the mechanism family touches it, which is why the
+whole family tied. Two forms, in order of how well they are sized:
+
+1. **Fewer boundaries — already at its peak, do not re-propose it.**
+   This looks like the obvious move and the arithmetic is seductive:
+   8.4 → 12 guest instructions per entry removes ~34 700 boundaries per
+   Mi, which at 27.9 ns is ~17 % of wall. **It has been run and it
+   loses.** `W64_FTMAX` is exactly that knob, and the playbook's
+   REJECTED table has the four-point result: 1 → 2 is +4.7 %, 2 → 3 is
+   +1 %, and **3 → 4 and 3 → 8 remove the exits and cost wall anyway**
+   (exits/Mi 107 960 → 106 706 → 106 140, i.e. −1.16 % and −1.69 %, for
+   a clock reading of −1.06 %, 2/5). Three slots is the peak, and it is
+   a real peak, not a measurement floor: each extra deferral is another
+   label, and 0109 established that label count is what drops a TB out
+   of the backend's nested-label mode into the `$bp` dispatch loop where
+   every forward branch becomes O(n_labels).
+
+   Which is also the correct reading of the 27.9 ns fit, and the reason
+   it must not be quoted as a marginal price. It is a slope **across
+   configurations that change labels and TB size along with exit
+   count**, so it prices a bundle. Inside the bundle the terms have
+   opposite signs and they cross at FTMAX=3. The refusal counters
+   confirm there is nothing else to harvest: on game 1, `abCond` is
+   **82.2 %** of all refusals, and `abCond` is not a missed absorb at
+   all — it is `w64_absorb` handing the branch to `w64_defer_taken`,
+   which requires precisely that condition (`translate.c:2000` refuses
+   on `s->condjmp`, `:1900` requires it). The genuinely lost population
+   is `abBackout` 11.3 % and `abFar` 4.4 %, of 4.5 refusals per Mi
+   against 119 161 executed boundaries.
+
+2. **A lighter boundary — the one form nobody has tried.** TCG
+   allocates registers per TB, so the boundary's cost is a
+   store-to-`env`/load-from-`env` round trip on every live guest
+   register, amortised over 8.4 guest instructions. Every result above
+   is consistent with this and none of them touches it: the mechanism
+   family tied because neither `dispatchbench` nor the CHAINLOOP driver
+   has any guest state to spill, and FTMAX peaked because it traded
+   boundary weight it could not change against label cost it could.
+   `tcgSpill` per translated TB is the first number to look at, and
+   `nsbudget`'s `nsrate` leg collects it.
+
+The general lesson the first bullet earns: **an emitted-byte share is not
+a time share, and this backend has now proven it twice** — round
+fourteen closed emitted-byte count as a lever outright, and the probe is
+37 % of bytes for 5 % of wall. Count bytes to find *candidates*; never
+size a lever with them. The corollary the second earns is sharper:
+**this round spent its whole battery pricing mechanisms while the
+largest single cost sat already-measured in the playbook.** Before
+instrumenting anything, read § 0d and the J2ME budget table for a number
+that already exists.
+
+### Per-boundary state traffic, measured — and it is ~4.5 ns, not ~20
+
+Bullet 2 above is now instrumented rather than reasoned about. Two
+counters, `WASM_DIAG_TCG_GLD` / `WASM_DIAG_TCG_GST`, were added to the
+three places in `tcg/tcg.c` that actually emit a global's memory access
+— `temp_sync`'s `TEMP_VAL_CONST` (`tcg_out_sti`) and `TEMP_VAL_REG`
+paths, and `temp_load`'s `TEMP_VAL_MEM` path — so they count the
+store-to-`env`/load-from-`env` round trip at translation time, per TB.
+Two independent legs agree to **0.85 %**:
+
+| leg | env ops per TB generated | guest insns per TB translated |
+|---|---|---|
+| `nsrate` (more counters on, 148.7 MIPS) | 18.128 | 10.05 |
+| `nsclock` (174.3 MIPS) | 18.282 | 10.11 |
+
+The split is **7.68 loads + 10.45 stores**; more stores than loads is
+what a per-TB register allocator should produce, since every live global
+is written back at the exit but only the ones the next TB reads are
+loaded. Against the executed population — 8.4 guest instructions per TB
+*entry*, not the 10.1 translated — that is **≈ 2.16 env ops per
+executed guest instruction**, against the guest's own **0.421** memory
+operations per instruction. The emulator does roughly **five times the
+guest's own memory traffic** purely to move ARM registers in and out of
+`env` across boundaries.
+
+**And it is still not the missing 20 ns.** The first reading of this
+table priced an env op at ~1.1 ns and concluded the round trip was most
+of the 27.9 ns boundary. That is refuted by a number this workstream
+already measured: `optimization-playbook.md` § memory64 records
+**0.241 (m32) / 0.253 (m64) / 0.258 (m64 dynamic) ns per load** at a
+2 GB memory — memory64 bounds checks are free, and a load is a quarter
+of a nanosecond. So:
+
+| | |
+|---|---|
+| env traffic per boundary | 18.13 × 0.253 ns = **4.59 ns** |
+| transition mechanism (round twenty-three) | **7.7 ns** |
+| of a 27.9 ns boundary | 12.3 ns attributed, **~15.6 ns still not** |
+| share of wall at 0.253 ns/op | **9.6 %** |
+| share of wall at a pessimistic 0.5 ns/op | 19 % |
+
+The 0.253 ns comes from a tight synthetic loop where every access hits
+L1; the real ones are scattered across a 32 KB `CPUARMState`, so the
+true price is somewhere in that 9.6–19 % band and nearer the bottom than
+the top. Either way it is a large single line item — and **no mechanism
+to reduce it was found.** The two obvious ones are both closed on disk:
+fewer boundaries is `W64_FTMAX`, already at its measured peak at 3 (see
+above), and the emission itself is already minimal — `w64_memarg`
+(`tcg/wasm64/tcg-target.c.inc`) folds the offset into the memarg, so
+`tcg_out_ld` / `tcg_out_st` are **three wasm instructions each** with
+nothing to shave. Reducing it needs a register allocator with a scope
+larger than one TB, which is a TCG-wide change, not a backend one.
+
+A reading trap worth carrying, because it cost a wrong number here:
+`tbIcount` counts guest instructions **translated**, while everything in
+a `perMi` column is already *per million guest instructions executed*.
+A per-executed-instruction rate is therefore `counter / 1e6` and never
+`counter / tbIcount` — dividing by the latter once reported "14 301
+memory ops per guest insn" for a true value of 0.421, inflated by about
+34 000×. The two denominators differ by the ~28 000× re-execution
+factor, so the mistake is never small enough to notice by eye.
+
+### The boundary budget does not add up, and the gap is a factor of two
+
+Put the three directly-measured components of a boundary next to the
+slope that is supposed to price the whole thing, and they disagree
+badly. This is the most important open item at the end of this round,
+and it was only visible once the env traffic above was counted.
+
+| component | ns per boundary | how it was measured |
+|---|---|---|
+| transition mechanism | 7.7 | round 23 `dispatch-probe.mjs`, per-site predictable targets |
+| env load/store round trip | 4.59 | `tcgGld`/`tcgGst`, 18.13 ops × 0.253 ns (above) |
+| declared locals zeroed at entry | ~1.0–1.6 | 0114b's own A/B: +2.05 % for 33 fewer locals |
+| **sum of what is measured** | **13.3–13.9** | |
+| **the `w64_ft_max()` slope** | **27.9** | four-point fit, 1.2 % residual |
+
+Converted to wall at 5 686 µs/Mi, against either boundary count on
+record (107 960/Mi from the FTMAX sweep at the shipping default,
+119 161/Mi from `W64_XCOUNT` on game 1):
+
+| | boundary share of wall |
+|---|---|
+| sum of measured components | **25–28 %** |
+| the 27.9 ns slope | **53–58 %** |
+
+**A factor of 2.1, and it is not a rounding argument.** Three
+resolutions are live, and they imply completely different next rounds:
+
+1. **The 27.9 ns is a bundle price and overstates the marginal cost.**
+   This is the reading the lessons file already warns about (*A slope
+   fitted across configurations is a bundle price, not a marginal one*)
+   and the FTMAX row above states outright: the sweep changes labels
+   and TB size along with exit count, the terms inside have opposite
+   signs, and they cross at 3. If this is it, **the boundary is about a
+   quarter of the emulator, not half** — every proposal sized against
+   "~53 %" in this document is overstated by two, and the question of
+   where the other three quarters go is reopened rather than answered.
+2. **The 7.7 ns is the wrong transition.** `dispatch-probe.mjs` tail-calls
+   within one module; a production exit usually crosses a wasm
+   *instance*, and round 27's `merge-probe.mjs` put `ind-in` at
+   **13.38 ns** against `ind-in-c`'s 4.48 with its header calibrating
+   against "production's ~22 ns". Substituting 13.4 for 7.7 lifts the
+   sum to ~19 ns and closes most of the gap. Note what does *not*
+   refute this: `W64_CHAINLOOP`'s −0.1 % changes which opcode performs
+   the hand-off and **keeps the crossing**, so its null is silent here.
+   The only evidence against is `dispatchbench`'s `merged` losing — in
+   the synthetic whose target-order knob was shown the same round to
+   dominate its mechanism knob.
+3. **A component nobody has counted.** The named candidates are the two
+   *inline* checks that ride on every `goto_ptr` exit and that no
+   mechanism knob removes, because neither is the call: the `w64_lc`
+   inline-cache probe, and `gen_goto_ptr_pcc`'s eight TCG ops
+   (`target/arm/tcg/translate.c`). Both are emitted into guest code and
+   therefore invisible to every C-side counter — the same blind spot
+   that made `pccHit` unreadable (see the lessons file, *A counter on
+   the slow path is not a hit rate*). `W64_NOPCCIN` is the knob for the
+   second, and its recorded result is **unsettled**: −7.1 % on g1 and
+   +0.8 % on g2 after the duty correction, i.e. the games disagree.
+
+**What to run, in order, and none of it needs a new mechanism:**
+
+- Settle resolution 2 first, because it is the cheapest and it is a
+  pure-JS probe with no browser leg and no rebuild: `dispatchbench`
+  already has `DB_NMOD`, so run the *same* mechanism at one module and
+  at many and read the difference as the instance-crossing price.
+  Run it on a quiet host — it is a microbenchmark and host load
+  invalidates it.
+- Then build the instrument that has never existed: **a pad that adds a
+  boundary.** `W64_CALLPAD` prices an import call placed in a real TB
+  (14.5 ns); nothing prices a real *exit*. N extra
+  `return_call_indirect` hops through trampoline TBs that do nothing but
+  hand on would give the boundary's marginal cost directly, without
+  FTMAX's label-and-size confound — which is the whole reason the 27.9 ns
+  cannot be trusted as a marginal price.
+- Settle `W64_NOPCCIN` last, with the duty-aware method from this round
+  (profile the bin, not the window), since it is the one of the three
+  that could still be a lever rather than only a correction.
+
+### The 2× Liftoff penalty is real and already banked — at most 5 % left
+
+The one lever in the right order of magnitude was the execution tier:
+emitted TB code runs in V8's baseline (Liftoff) at ~2× the cost of the
+main module's optimized code, so if the emitted code were stuck there,
+tiering it up would be worth ~2×. Three tags on disk settle it (game 1,
+n=2 each, duty 0.34–0.37 throughout so the workload is matched):
+
+| V8 tier configuration | MIPS/cpu | vs base |
+|---|---|---|
+| `--liftoff-only` (never tier up) | 34.9, 37.2 → **36.1** | −49 % |
+| stock (Liftoff, then tier up) | 66.9, 73.9 → **70.4** | — |
+| `--no-liftoff` (TurboFan only) | 74.4, 73.3 → **73.9** | **+5 %** |
+
+The 2× penalty is real — Liftoff-only is half speed — but **stock is
+within 5 % of TurboFan-only, so V8's tier-up is already capturing almost
+all of it.** What is left is the residual time spent in Liftoff before
+tier-up completes, and the only way measured to get it is
+`--js-flags=--no-liftoff`, a Chromium launch flag that does not exist in
+the user's browser. Not shippable, and not big.
+
+The four-leg `noliftoff` A/B agrees and shows why it is not worth more
+legs: corrected, game 1 reads **+0.2 % (overlapping)** and game 2
+**−11.2 %**, on n=2 per arm. Some games concentrate in fewer, hotter TBs
+and tier up sooner; the spread is the workload, not the knob.
+
+### The display, re-confirmed — and why an aggregate lies about it
+
+`WASM_DIAG_DISP_NS` is not the dispatcher. It lives in `dmac.c:544` and
+"DISP" there means *display*: it brackets one `dmac_transfer_stream`
+burst. That burst costs **638.8 ns** (729.4 ns measured, less that site's
+own 90.6 ns clock read — 90.6 against the exception site's 163.3, so
+calibrate per site and never once for the file). At the coalesced
+default's ~35 bursts/Mi that is 22 µs/Mi, **0.25 %**, which confirms the
+~0.4 % above by a second route. Uncoalesced it is 1614.7 bursts/Mi =
+1.03 ms/Mi = **8.3 %**, which is what DMACOAL is worth and why it is on.
+
+The warning is for anyone aggregating counters over the results
+directory: **`dmacRun`/Mi is bimodal and the two modes are 46× apart.**
+One cluster sits at 25–48 /Mi and 127.6 px per row, the other at ~1600
+/Mi and 8.0 px per row. `disp-on` (34.9) and `dmacoal-on` (47.8) are the
+shipping default — those legs carry no env var, since `W64_DMACOAL=1`
+*disables* coalescing — against `disp-off` 2197.7 and `dmacoal-off`
+2111.8. But `ftA*`, `ftB*`, `cl-*`, `diag`, `xcount` and `tier-*` — some
+sixty legs — sit in the uncoalesced cluster. A median over "all legs"
+mixes them and lands somewhere between: the `excns` tag's own median is
+820 /Mi at 67.8 px/row, a configuration no leg has ever been in. Group
+by tag before believing any display number.
+
+## Update (2026-09-17, round thirty-one: the display path, which a sum had retired — 0118/0119)
+
+**The round's headline is +17.5 % of `MIPS/cpu` on a running J2ME game,
+and the interesting part is that round thirty had already closed this
+path.** Round thirty added up the device counters — ~29 k DMA bursts and
+~59 k FIFO words per Mi, at a guessed ~100 ns each — decided the display
+stream was worth ~0.9 ms against 11.30 ms/Mi, and wrote "the next lever
+is code quality, not another device" into the hand-off. Round thirty-one
+put three display mechanisms behind one knob, ran an eight-leg
+palindrome, and the path was worth **15 % of wall**. The lesson is
+written up in lessons.md ("A path is not priced until something has been
+switched off"); the short form is that the price was guessed rather than
+measured (a burst is ~600 ns, not ~100), and that only the events the
+counters *named* were counted — a `dmacBurst` also buys an MMIO
+dispatch, a BQL round trip, a `timer_mod`/`icount_get` re-arm and a VIC
+level change.
+
+**The bundle A/B** (`W64_DMACOAL=1 & W64_NORXTAIL=1 & W64_NOLCDROW=1`
+switches all three *off*), eight legs, two games, palindromic:
+
+```
+all       on 95.99 (n=8 sd 10.42)  off 81.66 (n=8 sd 7.27)  on/off +17.5 %
+1st half  on 94.70              off 81.20              +16.6 %
+2nd half  on 97.28              off 82.13              +18.4 %
+```
+
+Both halves agree, which is the only reason a spread this wide is
+readable at all — the host sat at load 26–36 throughout. The three
+mechanisms are being split into their own A/Bs so each commit carries
+its own number.
+
+**`DIF_RUN_CHUNK` is saturated, and it cuts every DMA burst into four.**
+Read off the four-game JSONs, the batch sizes are *identical to four
+significant figures in all four games* — `lcdPx`/`lcdRow` = 127.6,
+`ssiByte`/`ssiRun` = 255.3 (127.6 words), `difTxWord`/`difRun` = 505.1 —
+against `DIF_RUN_CHUNK` 128 (`dif_v1.c:862`). So the DMA hands the DIF
+~505 words per run and the DIF chops them into four full chunks, each
+costing its own `ssi_transfer_run`, its own `lcd_run_rows` and its own
+post-chunk FIFO/overrun bookkeeping. Raising the chunk to 512 would make
+that one pass and remove ~69 of each per Mi. That is worth **~0.1–0.3 %**
+at a few hundred ns of fixed cost per chunk, so it is a bundling
+candidate and not a headline — and it is a compile-time constant, since
+`tx[]`/`rx[]` are stack arrays sized from it (512 would make them 2 KB
+of frame), so it cannot be A/B'd inside one binary the way the three
+knobs above can.
+
+The same table is the cleanest statement of *why* the display bundle
+generalizes: four games whose `duty` spans 0.111–0.350 drive the
+DMA→DIF→LCD pipeline at literally the same shape. The chain does not
+respond to the guest's workload at all, which is what "fixed wall-rate
+cost" means when it is measured rather than asserted.
+
+**What the tooling learned to do, and it is the cheapest thing in this
+round.** `tools/j2mebench.mjs` now writes the **whole `wasm_diag`
+counter set** into every result JSON next to `mipsCpu`, `busy`, `fps` and
+`insnsPerFrame`, and `tools/diagnames.mjs` parses the counter names out
+of `wasm-diag.h` at run time instead of transcribing them. Five
+mechanism verdicts fell out of runs that had already happened, for no
+new measurement at all — which is what let a 16-minute `smcscan`
+palindrome be dropped rather than run. Per Mi, on the current build:
+
+| counter | /Mi | reads as |
+|---|---|---|
+| `lookup` | 1 283.7 | helper calls surviving the inline TB cache (was 15 839 before it) |
+| `pccFill` / `lcCall` | 508.4 / 531.4 | its refills |
+| `lcdRow` / `lcdPx` | 92.3 / 11 784.9 | 128 px per row call — the row walker is live |
+| `difTxWord` / `difTxfast` | 11 786.9 / 11 784.9 | ~100 % of TX words take the bswap16 path |
+| `difRxskip` | 11 692.6 | ≈1 RX-tail skip per word |
+| `dmacRun` = `dmacCoal` = `difRun` | 23.3 | ~505 words per scheduling walk |
+| `smcMiss` / `slowNotdirty` | 424.8 / 426.2 | 99.7 % take the notdirty skip |
+| `tpuRamW` / `tpuRamSkip` | 545.5 / 545.5 | every TPU-RAM write is skipped |
+| `armIrq` / `excSwi` / `excIrq` | 707.8 / 698.1 / 9.8 | one SWI per ~1 430 guest insns |
+| `tbGen` = `specMiss` = `irecN` | 3.37 | ~277 new TBs/s in steady state |
+| `modCount` = `closeN` | 0.011 | ~277 TBs and ~267 KB per module |
+
+**The C-side pcc buys ten hits per Mi and pays five hundred fills.**
+`pccHit` is **10.3 /Mi** against `pccFill` **504.3 /Mi**, and the
+structural reason is in the source rather than the numbers:
+`w64_pcc_idx()` *is* `tb_jmp_cache_hash_func()` (`cpu-exec.c:575-578`),
+so the pcc is a direct-mapped table carrying the jump cache's own hash.
+It aliases the jump cache exactly, which is the same root cause as
+`lookupConfl` being ~70 % of qht traffic: same hash, same conflicts, so
+the second table conflicts wherever the first one did.
+
+Read that as a hypothesis, not a verdict, because this counter has the
+round's favourite trap on it. `pccHit` is the **third** layer — the
+emitted inline chain probes the same `w64_pcc` array first
+(`w64_pcc_shape()` hands `shape.tab = w64_pcc` to the generator) — so a
+low C-side hit count is partly "the layer in front already took them",
+in exactly the way `lcCall` is the miss path and not the probe count and
+`difTxfast += chunk` is a word count and not a call count. Three
+counters in this round have now been misread that way on first
+inspection; the fills, though, are paid on the miss path no matter who
+hit in front of them.
+
+**What has never been run** is the A/B that would settle it.
+`W64_NOPCCIN` has one (round thirty-one, plus a confirmation
+palindrome); `W64_NOPCC` has only ever appeared *bundled* inside a
+three-knob config where it is redundant with `W64_LC_VERIFY`. Nothing
+has priced the C-side table alone, and nothing has priced removing the
+layer outright — `W64_NOPCC=1` alone leaves the emitted chain still
+generated and always missing, so only `W64_NOPCC=1 & W64_NOPCCIN=1`
+together is "the pcc removed". Both are disabling knobs, so both read
+with ordinary polarity.
+
+### Four games, and which of these costs actually generalize
+
+A single game cannot say what "J2ME performance" is, so the same 45
+virtual-second window was run on four games out of `CX70_games.bin`.
+The first thing it says is that **the games are not one workload**:
+
+| | game 1 | game 2 | game 3 |
+|---|---|---|---|
+| `duty` | 0.350 | 0.152 | 0.111 |
+| `MIPS/cpu` | 99.8 | 96.3 | 123.8 |
+| v/wall | 2.17 | 4.88 | 8.51 |
+| Mi in the window | 1 966 | 853 | 625 |
+
+`duty` is the fraction of virtual time the guest is not halted, so games
+2 and 3 are **85–89 % idle** and finish the window in 9.2 s and 5.3 s of
+wall against game 1's 20.7 s. Only game 1 is compute-bound, and only
+game 1 is the case the user is complaining about: at v/wall 2.17 and the
+established "phone = desktop v/wall ÷ 5", it lands at ~0.43× real time on
+the handset while games 2 and 3 have headroom to spare. **That is the
+correction to make to every A/B in this round that quoted game 2 as its
+non-overlapping arm** — pccin's did — because a knob measured on a
+workload that is halted seven eighths of the time is being measured
+against the idle path, not against J2ME compute.
+
+The second thing it says is which costs are *general*. Normalising per
+Mi (cost per unit of guest work) rather than per second separates them
+cleanly:
+
+- **Scales with idleness, not with the game.** `lcdPx`, `difTxWord`,
+  `difTxfast`, `difRxskip`, `ssiByte` all rise 2.4× from game 1 to game
+  3, exactly inverse to `duty`. Converted back to absolute rates they
+  are 558 k / 419 k / 421 k pixels per virtual second — near enough
+  constant. The display chain is a **fixed wall-rate cost**, so it is a
+  larger share of a cheaper game, which is why the display bundle
+  measured +17.5 % and why it is worth shipping regardless of game.
+- **Scales with guest work, in every game.** The exception rate is
+  698 / 1 109 / 802 / 444 per Mi across games 1–4 — a 2.5× spread across
+  workloads whose *device* rates swing the other way, and all of it in
+  the same band. One guest exception per roughly 900–2 250 instructions
+  is a property of the **JVM**, not of any game.
+
+  `armIrq` is the right counter for that rate, and it is **not** an
+  independent event to be added to `excSwi`: it counts
+  `arm_cpu_do_interrupt` calls, so it is the dispatch entry for every
+  taken exception and equals `excSwi + excIrq` — verified exactly, delta
+  zero, in all four games. Adding the two double-counts the path.
+- **The guest takes only two kinds of exception.** `excUdef`, `excPabt`,
+  `excDabt`, `excFiq` and `excOther` are **zero** in every game, and SWI
+  is 95.9–98.5 % of what remains (the rest is `excIrq`, 11–33 per Mi).
+  So the exception path here is a syscall path with a rounding error
+  attached, and anything aimed at it can specialise for SWI.
+- **`hflagsCalls` is the exception path's tail, not a separate cost.**
+  1 923 / 2 936 / 2 224 / 1 205 per Mi, and against the exception rate
+  the ratio is **2.76 / 2.65 / 2.77 / 2.71** — constant to 2.4 % across
+  four games that agree on nothing else. Each guest exception costs
+  about 2.7 hflags rebuilds. Its ~1.4 % belongs to the exception
+  cluster's ~5.7 %, not chased on its own.
+
+So the one mechanism that is uniformly expensive across all of J2ME,
+rather than an artefact of which game was picked, is **the guest's own
+exception path** — the same cluster round twenty-eight left unpriced.
+Treat the profile's ~5.7 % for the cluster plus hflags' ~1.4 % as an
+**upper bound and not a budget**, exactly as the round-23 rule below
+says; the corrected `excns2` leg and a calibration pad inside
+`arm_cpu_do_interrupt` are what turn it into a price.
+
+Two things the four games settle about that path for free:
+
+- **`execLjmp` is zero.** Not small — absent from all four result JSONs,
+  and `j2mebench.mjs` drops a counter only when its window delta is
+  exactly 0, while the increment in `cpu_exec_longjmp_cleanup` is live
+  under plain `CONFIG_TCG_WASM64` and not `WASM_DIAG_HOT`-gated. So
+  across 45 virtual seconds of play in four games, at 444–1 109
+  exceptions per Mi, the exception path unwound **not once**. This
+  confirms on J2ME what round twenty-eight found on an S75 boot, and it
+  retires the unwind for this workload: at the ~15 µs an emscripten
+  JS-exception unwind costs, even one per exception would be 10.3 ms/Mi
+  against a total of 10.5 ms/Mi — the whole program. Whatever the
+  exception path costs, none of it is the longjmp.
+- **`hflags` needs no further work either.** `rebuild_hflags_a32_el`
+  already carries the pre-v6 short path (hflags.c:316) with a
+  `-DHFLAGS_FAST_VERIFY` build that computes both answers and counts
+  disagreements, and `HELPER(cpsr_write)` and `HELPER(cpsr_write_eret)`
+  already suppress their own second rebuild via the `CPSR_HFLAGS_INPUTS`
+  mask test. The 2.7 rebuilds per exception are not duplicates that a
+  previous round missed; they are one on entry
+  (`take_aarch32_exception`), one on the `eret`, and ~0.7 from the
+  handler's own `msr`.
+
+That leaves `arm_cpu_do_interrupt` → `take_aarch32_exception` itself as
+the only unaddressed part of the cluster, which is what the paragraph on
+pricing it further down was written for — and the four games now say it
+is worth pricing on J2ME and not just on a boot, because the exception
+rate is the one thing they all agree on.
+
+A cross-game regression of `ms/Mi` on the exception and pixel rates was
+tried and **does not identify**: display comes back with a negative
+coefficient against an A/B that measured +17.5 %, and exceptions at
+5.8 ns each imply 38 % of game 1's cost against a profile that says
+5.7 %. Four points, three parameters, and every per-Mi device rate
+collinear with `duty` by construction. The spread across games is good
+for choosing *what* to A/B and useless as a price; see lessons.md.
+
+The module pipeline, by contrast, **retires for J2ME**. It was 12.5 % of
+boot in round nineteen; in steady-state play `modNs` is 27 464 ns/Mi on
+game 1, which is 54 ms across a 20.7 s window at ~0.76 cores busy — well
+under 1 % — and no compile or instantiate frame appears anywhere in the
+in-play profile. `tbGen/Mi` is 1.7–3.5 across the four games. Translation
+is a boot cost; nothing in this round should be aimed at it.
+
+Note that the inline TB cache is **silent by design** — it bumps no
+counter, so that its hit costs no read-modify-write in emitted code. It
+is confirmed by the *survivors*: `lookup` fell 15 839 → 1 283.7 per Mi,
+so 92 % of `goto_ptr` lookups never reach the helper. Read that as a
+confirmation that the mechanism **fires**, and nothing more — the next
+entry is the same mechanism failing to **pay**.
+
+**The inline TB probe is a reversal: switching it off reads faster, and
+this corrects a claim made earlier in this round.** The round log below
+once said "mechanism K confirmed" on the strength of the `lookup` drop
+above. A counter cannot say that. `W64_NOPCCIN=1` stops the emitted
+second way being generated at all, so the mechanism is A/B-able inside
+one binary; the polarity is `cpu-exec.c:517` (`on = getenv("W64_NOPCCIN")
+== NULL`), so the leg labelled "off" is the one **without** the probe.
+Four legs, two games:
+
+```
+all       inline on 90.54 (n=4 sd 14.44)   off 97.81 (n=4 sd 10.14)   -7.4 %
+1st half            87.87                     90.40                   -2.8 %
+2nd half            93.22                    105.23                  -11.4 %
+```
+
+Both halves are negative, which is what separates this from the
+CHAINLOOP tie. But the per-game split is where the honest reading is:
+
+```
+g1: inline-off 102.44   inline-on 102.22   -0.2 %   overlap=yes
+g2: inline-off  93.19   inline-on  78.87  -15.4 %   overlap=yes
+```
+
+**One game is a dead tie and the other loses 15 %**, and neither game's
+legs separate. So the whole-battery −7.4 % is a mean carried entirely by
+game 2 — and the next entry shows that game 2's number is carried
+entirely by one leg that measured a different workload. **After the
+guard below, pccin reads g1 −0.2 % and g2 −8.7 % (n=1 vs n=2, still
+overlapping): no evidence either way.** The eight-leg confirmation is
+still queued; nothing ships off either number.
+
+**Why a reversal here is not surprising, which is the thing to hold in
+mind when the eight legs land.** Every leg on disk carries the counter,
+and tagging them separates the two arms cleanly — the probe's effect on
+helper entries is enormous and completely unambiguous:
+
+```
+                 lcCall/Mi     lookup/Mi    qht/Mi
+g1  probe off    14738, 14730  1276, 1287   524, 533
+g1  probe on     516 .. 608    1256 .. 1337 506 .. 596   absorbed 96.3 %
+g2  probe off     7787,  7736  1562, 1522   377, 338
+g2  probe on     293 .. 794    1180 .. 2850 309 .. 803   absorbed 94.2 %
+```
+
+`lookup/Mi` and `qht/Mi` do **not** move. The probe changes neither how
+many lookups happen nor how many reach the qht — only how many cross
+the helper boundary. So the A/B isolates one thing: the cost of an
+inline check in emitted code against the cost of a helper entry.
+
+And that trade is close to even *by construction*. The probe removes
+~14.2 k helper entries per Mi on game 1 and adds one inline check to
+every one of the ~14.7 k exits per Mi — it buys 0.96 of a removed call
+per check performed. It therefore wins only if a check in emitted code
+is cheaper than a helper entry, and the standing lesson is that emitted
+TB code runs in the baseline tier at roughly **2× the cost of the same
+work in the main module's optimized C, while the call boundary itself
+is only ~2 ns** (`doc/lessons.md`, "move work INTO helpers"). A
+near-tie, or a loss, is exactly what that lesson predicts. The −7.4 %
+is not an anomaly needing a special explanation; it is the ordinary
+consequence of doing per-exit work on the slow side of the tier split.
+
+This does not decide anything — a counter confirms a mechanism, a clock
+prices it, and the clock here is still two overlapping legs. It says
+only that the eight-leg result should be read without a thumb on the
+scale for "the cache must help".
+
+### A fixed guest-time window does not fix the workload
+
+Every leg measures the same 45 **guest**-seconds, which is what makes
+MIPS/cpu comparable across legs of different wall length. It does not
+make the *workload* the same. Across every 45 s leg on disk, game 2's
+fifty-two legs fall into three separate modes, and **12 of them (23 %)
+are not the game being played**:
+
+```
+duty 0.147-0.153   40 legs   mi  825-859   fps 39-49   halts/s 1170-1961   MIPS/cpu 63.6-101.4
+duty 0.087-0.091   10 legs   mi  487-509   fps 58-61   halts/s 2382-3098   MIPS/cpu 65.9- 85.3
+duty 0.282          2 legs   mi     1588   fps 36      halts/s      738    MIPS/cpu      81.8
+```
+
+The last column is the one to read: every contaminated leg's rate falls
+**inside** the played legs' range — the played distribution *contains*
+both others. No outlier rule on the rate, and no amount of repetition,
+can separate them; only a statistic about the workload can.
+
+The light legs are runs where **the start keys missed and the game never
+left its title screen**. The heavy one is worse: `duty` 0.282, 36 fps,
+738 halts/s and 2.18 M insns/frame is **game 1's shape wearing game 2's
+label** — the walk through the menu went somewhere else and the leg
+played a different game. The window collected its 45 guest-seconds in
+all three cases. Game 1 is unimodal (0.341–0.397), so this is a property
+of one game's walk, not of the harness clock.
+
+MIPS/cpu at duty 0.087 is not comparable to MIPS/cpu at 0.150 — the
+fixed costs (module compiles, timer interrupts, halt handling) are spread
+over half the work. The four light legs read 85.29, 83.76, 72.61 and
+72.56, so the contaminant is mostly *variance*, not bias; that is exactly
+why it survived the palindrome and inflated game 2's sd instead of
+announcing itself. With n=2 per arm, one light leg decides the verdict.
+It hit `pccin` on the on-arm, `chain` on the on-arm and `nested` on the
+off-arm — three of the round's five A/Bs.
+
+`scratchpad/verdict.py` recomputes any verdict from the saved sweep
+JSONs, keeping only legs whose duty is within ±25 % of that game's
+median, and printing the raw figure beside the guarded one with the drop
+count. The band has to be two-sided: a floor catches the title screens
+and passes the wrong-game leg, which is the more dangerous of the two
+because its *rate* is unremarkable (81.79, mid-range) while its workload
+belongs to another game. It touches nothing that runs, works
+retroactively on every leg ever measured, and **should be used for every
+verdict in this round in place of the number `ab.sh` prints.** Re-read
+with the guard:
+
+```
+disp       g1 +17.4 % (n=4/4)   g2 +17.7 % (n=4/4)   dropped 0   <- separates
+nested     g1 +17.4 % (n=2/2)   g2   all legs dropped            sd 11 on off
+noliftoff  g1  +1.3 % (n=2/2)   g2 -13.6 % (n=2/2)   dropped 0
+pccin      g1  -0.2 % (n=2/2)   g2  -8.7 % (n=1/2)   dropped 1   overlap
+chain      g1  -5.5 % (n=2/2)   g2  +9.5 % (n=1/2)   dropped 1   overlap
+txfast     g1  +3.5 % (n=2/2)   g2  +8.7 % (n=1/2)   dropped 1   <- separates
+```
+
+`txfast` is the guard's clearest single demonstration. Its raw
+whole-battery read was **+10.7 %** and its raw g2 **+20.2 %**, both
+inflated by one leg that measured game 2's title screen (`Mi=487.9`,
+`duty` 0.087). With that leg dropped the mechanism still wins — g1
+**+3.5 %** at n=2 per arm with the arms not overlapping — but at a
+third of the advertised size. Same direction, different magnitude:
+contamination here did not invent a result, it exaggerated a real one,
+which is the failure mode that survives a sanity check.
+
+The three display mechanisms together are the round's one clean result:
+both games agree to within 0.3 points, at n=4 per arm, with no overlap.
+`nested` reads large and in the direction of the shipping default, but
+its off-arm legs are 91.03 and 75.35 — a 15-point spread at n=2 — so it
+confirms a default rather than establishing a size.
+
+**`noliftoff` is the one row in that table whose sign is inverted, and
+nothing in the row says so.** Every other line carries an `env=` knob on
+the off-leg, so "off" means the knob is applied and a minus sign means
+the knob lost. `noliftoff` carries no knob at all — its off-leg is a
+*Chrome argument*, `--js-flags=--no-liftoff`, and the "on" arm is the
+shipping default. So g2's **−13.6 %** says the default is 13.6 % slower
+than forced TurboFan, i.e. **forcing the optimizing tier buys +15.7 % on
+game 2**, at n=2 per arm with the arms not overlapping (on 63.63, 73.90;
+off 76.75, 82.39) and nothing dropped. Game 1 is a wash (+1.3 %,
+overlapping). Read as a knob that lost, this row closes the tier lever;
+read correctly, it is the only ceiling probe in the round that *opens*
+one. Tabulating an argument-leg beside knob-legs in one column is the
+defect — the polarity is a property of the leg, not of the table.
+
+Two cautions before it is spent. `--no-liftoff` forces TurboFan for the
+**main module too**, so the win may be the main module tiering up sooner
+on a lighter workload rather than anything about emitted TB code, and
+game 2 is the lighter workload (`Mi` ≈ 850 vs game 1's ≈ 1955 in the
+same 45 guest-seconds) — which is the shape that reading predicts. The
+module-compile counters do **not** separate the two: `modCompileNs/Mi`
+is 25640 and 12073 on the forced legs against 20687 and 23770 on the
+default legs, noise with no direction, and `tbGen/Mi` ≈ 3.6 with
+`modCount/Mi` ≈ 0 says this window creates almost no new modules and
+runs long-lived ones. So the ceiling is real but unattributed.
+
+`W64_MERGE` is the shippable mechanism aimed at that ceiling — merging a
+batch of TBs into one function raises that function's call count and
+tiers it up 277× sooner — which makes **queue7's merge verdict the
+round's highest-value pending item**, and makes this row the thing to
+re-read against it. If merge wins, the ceiling was emitted code; if
+merge loses while this ceiling holds, the +15.7 % was the main module
+and the emitted tier is not where the round should go next.
+
+The runner-side fix is **prepared but not applied**: the battery is in
+flight and `tools/j2mebench.mjs` is read fresh per leg, so editing it now
+would split legs before and after the edit. The guard is analysis-side
+for that reason. `scratchpad/runner-duty.py` holds the patch — exact
+anchors, idempotent, refuses to half-apply — and `scratchpad/queue7.sh`
+applies it after the battery drains and before the next rebuild. It adds
+`--duty <v[,v...]>` (one value per `--game` entry), rejecting a window
+outside ±25 % of the expectation and redoing the walk, and prints `duty`
+in the sweep line so contamination is visible in every future log without
+opening a JSON. The measured expectations are g1 **0.348** and g2
+**0.150**, which are the medians of 131 and 52 legs.
+
+Two properties make this the right statistic rather than a convenient
+one. `duty` is `insns × 8 ns / virtual-ns`, so under icount it is a
+property of the guest alone: **a faster build does not move it**, which
+is why the guard cannot quietly delete the winning arm's legs (`disp`,
+the round's largest effect, dropped zero). And the runner had already
+written the invariant down at `tools/j2mebench.mjs:728` — "legs whose
+`mi` disagrees played different games, and their wall times are not
+comparable" — while the accept test three hundred lines earlier was
+`fps >= 2`, which a 60 fps title screen passes. The rule was stated and
+never enforced.
+
+The mechanism, if it holds: a six-word compare chain emitted into every
+`goto_ptr` costs more than the optimized-C helper call it avoids,
+because **emitted code runs in the baseline tier and the helper does
+not** — the same asymmetry 0050 found, pointing the other way for once.
+The forward-looking half matters more than the verdict: this makes the
+inline probe wrong *until tier-up is fixed*, not wrong forever. If the
+module-local dispatch loop lands and TBs reach the optimizing tier 277×
+sooner, the compare chain gets cheap and the helper call does not, and
+the probe should be re-measured rather than assumed dead.
+
+This also closes `W64_LC2` honestly. That item wanted a second way to
+catch the 8 % of lookups the first way misses. Switching the first way
+*off* prices the entire surviving lookup path at once, and at 1 283.7
+helper calls per Mi against 10.03 ms/Mi the whole of it is ≤ ~0.8 % of
+wall. A second way cannot win a fraction of 0.8 % back; the item is
+closed, not deferred.
+
+**A ceiling, measured: the baseline tier is worth 3–6 % on a running
+game.** `--js-flags=--no-liftoff` read **+6.3 %** over the shipping
+default on a four-leg palindrome (on 77.23 n=4, off 82.10 n=4; game 2
+separated cleanly, game 1 did not), and the flag is provably live —
+`modCompileNs` per module went 1.06 → 1.76 ms. Read with 0050's +3 % as
+the same number's lower end. A browser flag is not a shipping lever, so
+this is a *ceiling* on tiering rather than a win — but 3–6 % is larger
+than every remaining device item except the display, which promotes
+**tier-up latency** to a first-class target and is why the module-local
+dispatch loop is now item one of the open list.
+
+**CHAINLOOP was predicted to be the round's biggest lever and it is a
+tie.** The prediction was ~108 k TB boundaries per Mi moving from
+`return_call_indirect` at 27.9 ns to a driver loop's `call_indirect` at
+12.7 ns — ~1.6 ms against 10.03 ms/Mi, i.e. ~16 %. Measured, on a
+four-leg palindrome over two games and read inverted (the knob defaults
+off, so the leg labelled "off" is the one *with* the mechanism):
+
+```
+all       CHAINLOOP on 87.00 (n=4 sd 11.14)   off 87.08 (n=4 sd 7.11)   -0.1 %
+1st half                 79.79                    90.04                -11.4 %
+2nd half                 94.22                    84.13                +12.0 %
+```
+
+The halves disagree by 23 points in opposite directions, so the spread
+is a statement about the window, not the mechanism. The mechanism is
+worth nothing.
+
+**Why, and it is a lesson about the synthetic rather than about the
+emulator.** `tests/wasm/dispatchbench.mjs` prices `loop`
+(`call_indirect` from a driver in the *same module*) at 12.7 ns and
+`xtail` (cross-module `return_call_indirect`) at 27.9 ns — and the
+12.7 ns leg was the one the prediction used. But `w64_driver()`
+(`wasm64.c:975–1009`) builds the driver as **its own module** and
+reaches TBs through the shared table, so a CHAINLOOP transition crosses
+the instance boundary **twice** — the TB returns across it into the
+driver, the driver calls across it into the successor — where
+`return_call_indirect` crosses once. The real thing is the synthetic's
+`xloop`, not its `loop`. Two crossings at ~14 ns is one at ~28 ns, and a
+tie is exactly what that arithmetic predicts.
+
+So the rule is: **a synthetic leg prices the real thing only if it has
+the real thing's module topology.** `xtail` vs `stail` was already on
+the page saying instance crossing is the expensive part; the prediction
+read past it. Check this directly when the host is quiet — if
+`xloop ≈ xtail`, the tie is fully explained and nothing else is needed.
+
+The consequence for the ranked list is not "dispatch is not a lever" but
+"the *call opcode* is not the lever, the instance crossing is" — which
+is an argument for the merged function at the top of the open items,
+whose intra-module transition crosses nothing and is not a call at all.
+It also means that item's win (a) is now **unproven**, and its measured
+half is win (b), tier-up amortisation, at 3–6 %.
+
+CHAINLOOP is being committed **default-off and labelled a tie**, not
+because it earns its place but because the merged function reuses its
+exit protocol (`W64_EXIT_CHAIN`, the successor index returned in a
+local) and re-deriving that costs a round. That is a judgement call and
+is flagged as one; it ships nothing.
+
+**Still in flight at the time of writing** (each a four-leg palindrome
+over games 1 and 2): `pccin`, `nested`, `txfast`, and the three display
+mechanisms split out as `lcdrow` / `dmacoal` / `rxtail`. Losers get
+reverted, not committed.
 
 ## Update (2026-09-17, round twenty-nine: the wake that was published too early — 0117)
 
@@ -2176,6 +3913,31 @@ that decouples "the guest needs this TB now" from "compile a module now".
   (`lookupConfl` == `lookupQht`, `jcFlush` = 0 there).  At 90 per million
   instructions a bigger jump cache is not worth it; during EL71 boot it
   is ~0.9 %.
+
+  **That 90/Mi does not transfer to J2ME.**  In play the rate is six
+  times higher and stable across games, configs and reruns: `lookup`
+  1260–1340/Mi, of which the jump cache serves 730–760 and the qht
+  510–600, with `lookupConfl` 356–377 — so **two thirds of the qht
+  traffic is a conflict miss, not a cold pc**, and on game 2 it is 85 %.
+  The spread across twenty stored runs is under 6 %, which makes it a
+  property of the working set against a 16384-entry direct-mapped cache
+  rather than noise.  Reading the idle figure as "the lever is closed"
+  was the wrong comparison, and so was my first attempt to close it on
+  the *absolute* qht rate being below the boot rate the 14-bit peak was
+  measured at: what a bigger cache removes is the conflict fraction, and
+  that fraction is what idle and in-play disagree about.
+
+  It closes anyway, on a price rather than a rate.  In the in-play
+  profile `qht_lookup_custom` is **296 ms of a 40 613 ms vCPU thread —
+  0.7 %**, and the rest of the probe (`tb_htable_lookup`, the
+  comparator) is static and inlines into it, so that 0.7 % is the whole
+  qht path and not one frame of it.  Removing *every* conflict is
+  therefore worth 0.675 × 0.7 % ≈ **0.5 %**, and no cache size removes
+  every conflict.  `TB_JMP_CACHE_BITS` is build-time, so testing it
+  costs two builds and four legs to chase half a percent that the guard
+  band would not even separate.  Left closed, now for a measured reason;
+  if it is ever reopened, 2-way at the same size is the better shape to
+  try, because the misses are conflicts and not capacity.
 
 ### 0081: a key event before the display exists killed the module
 

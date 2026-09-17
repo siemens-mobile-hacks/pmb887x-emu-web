@@ -219,6 +219,35 @@ garbage.
 
 ## Measurement methodology (and its traps)
 
+- **Count the browsers on the host before believing any number**
+  (2026-09-17, round 30).  A run that dies before its own `close()` —
+  a timeout, a `pkill`, an OOM — leaves its headless Chromium behind,
+  *still emulating a phone*, reparented to a PID 1 that is
+  `sleep infinity` and never reaps.  This host had accumulated **8 958**
+  of them, the oldest three days old, and the live ones among them were
+  holding ~20 cores and 30 GB of swap.  Two separate damages, and the
+  second is the nasty one:
+  1. every leg runs on a busier host than the leg before it, which is
+     monotone drift that looks exactly like a regression in the second
+     half of a palindrome;
+  2. `j2mebench`'s own CPU denominator was **counting them**.
+     `chromeTree()` has to sweep every chrome process on the host,
+     because chromium's zygote children reparent away from the launcher
+     and a run's real vCPU thread would otherwise be missed — so it
+     also swept the survivors, and `MIPS/cpu` is `insns / max-thread
+     CPU` over that set.  Fixed by snapshotting the live chrome PIDs
+     *before* launch and excluding them, by killing `ppid == 1` chrome
+     at startup (`J2ME_NOREAP=1` opts out), and by closing the browser
+     from `SIGINT`/`SIGTERM`/`SIGHUP`/`uncaughtException` so the tool
+     stops being the thing that creates them.  `hostLoad` and
+     `hostPids` now go into every result JSON.
+  `ps -eo comm | sort | uniq -c | sort -rn | head` is the whole check,
+  and `top -bn2` separates *this* container's load from the host's:
+  28.8 % of these cores were `ni`ced work belonging to nobody in the
+  container, which no amount of local hygiene can quiet.  That is the
+  real argument for palindromic interleaving and for a CPU-time
+  denominator — but the denominator only works if it is *this run's*
+  CPU.
 - **Measure the phase before optimising the loop inside it.** The
   single cheapest habit here, and the one most often skipped. Round
   nineteen's import-object cache was sound reasoning on an unmeasured
@@ -401,10 +430,29 @@ else.  A profile also goes stale the moment a mechanism lands: the one
 this round started from predated `do_ram_1p`, which deleted most of what
 its second-largest entry (`do_st4_mmu`) was doing.
 
+**A `wasm://wasm/<hash>` URL means a JIT'd TB module, and its name is
+noise.**  `wprof2` symbolicates every `wasm-function[N]` through the
+main module's symbol map, so a frame from a TB module comes back wearing
+whatever name sits at that index in an unrelated binary — round 30 read
+`invoke_ijjj` at 2.7 %, `helper_gvec_umax8` at 3.5 % and `__wasi_fd_seek`
+at 0.8 % on a board with no SIMD, no SjLj and no filesystem.  **Bucket
+by URL before believing any name**: `jit/qemu-system-arm.wasm` is the
+main module and is symbolicated correctly; everything under
+`wasm://wasm/` is generated guest code and the only honest thing to do
+with it is sum it.
+
+**Never pipe a profiler through `tail`.**  `tail` buffers to EOF, so a
+backgrounded `prof.sh | tail -80` prints nothing for four minutes and
+then hands back the *bottom* of the table — the small entries — having
+discarded the top self-times the run existed to produce.  Redirect to a
+file and set `PROF_SAVE` so the raw profile can be re-rendered without
+re-running the game.
+
 ## What landed (with numbers)
 
 | Patch | Mechanism | Measured effect |
 |---|---|---|
+| 0118 the J2ME round, three mechanisms: `memory/pmb887x: let a device take a DMA burst in one call` (`b76f6112`), `ssi: let a peripheral take a run of bytes in one call` (`0b248e44`), `accel/tcg: cache the next TB by PC, ahead of the jump cache` (`dc08b972`) | **A** — the display DMA dispatched one 16-bit word per `memory_region_dispatch_write()`, 12 888 times per Mi, paying the whole MMIO preamble (RCU lock, `adjust_endianness`, `access_with_adjusted_size`, reentrancy guard, trace check, indirect call) per pixel.  New optional `MemoryRegionOps::write_run` offers the device the whole run; strictly declinable (no hook, a subpage, or a live `memory_region_ops_write` trace point sends the caller back to its per-word loop).  **B** — the same burst one level down, where every word was still two `ssi_transfer()` calls; `SSIPeripheralClass::transfer_run` takes the whole byte run, refused unless the bus is the shape the hook can reason about (one child, default `transfer_raw`, CS asserted) and the panel is in the plain RAM-write state.  **C** — `HELPER(lookup_tb_ptr)` ran 15 459×/Mi in a settled J2ME window and the CPU jump cache answered 14 930 of them, still paying `cpu_get_tb_cpu_state()` + hashed probe + 4-field compare to return what the same branch returned last time; `w64_pcc` is a direct-mapped PC-keyed table in front of it, sound on `cpu->neg.tb_key_gen` (which already exists for the inline cache and ticks only 1.2–1.5/Mi).  All three carry off switches (`W64_NODMARUN`, `W64_NOSSIRUN`, `W64_NOPCC`) | **+50.6 % on a J2ME game, measured as `MIPS/cpu`** — guest Mi over the CPU seconds the vCPU thread itself burned, read from `/proc/<pid>/task/<tid>/stat` at the window's own two ends, which is the only throughput number that survives a host at load 45.  Four-config palindromic A/B **inside one binary** (`tools/j2meab.sh`, `none a ab abc abc ab a none`): **51.49 → 64.85 (+25.9 %) → 72.61 (+12.0 %) → 77.53 (+6.8 %)**, `busy` 0.957–0.966 on every leg.  `ms/Mi` 20.148 → 16.014 → 14.263 → 13.471 agrees to 0.3 pp.  Per-event prices, all in the cost model this workstream has been paying elsewhere: **A = 321 ns per display word**, **B = 137 ns/word = 68 ns/byte**, **C = 55.8 ns per absorbed helper call**.  C's effect is visible in counters **independent of its own**: `lookupJc` 14 930 → 740/Mi while `lookupQht` (523 → 507) and `lookupConfl` (374 → 363) do not move — the misses are identical, only the jump-cache hits vanish.  Soundness of C proven, not argued: `W64_PCC_VERIFY=1` re-runs the full `tb_lookup` behind every hit — **~68 M verified hits over 45 virtual s, `pccBad` 0** (note verify mode suppresses the per-TB inline-cache refill, so its `lookup/Mi` is not comparable with a normal run's).  Replicated at a different host load: 77.53 @ load 43.7, 75.30 @ load 54.1.  gate `keep` 10/11 — `key-ke800` RED, and **not from these commits**: it passes 3/3 and 12/12 standalone and fails only under the gate's own concurrency (see the freeze row below) |
 | 0117 util: publish the main-loop wake after the work it advertises (`42874496`) + `site/app.js` §6b, the page notices a dead guest | **Not a perf patch — the bug that made KE800 unbootable on a phone.**  The wasm main loop sleeps in `emscripten_futex_wait` on `ml_futex_seq`, snapshotted before the timeout is computed.  Two lost-edge defects in that protocol: `qemu_main_loop_wake()` incremented the sequence word with a **non-atomic read-modify-write** (wakers run concurrently as a matter of course — `qemu_notify_event` issues one itself and a second through `aio_notify`, and the vCPU notifies on every `timer_mod`), and `aio_notify()` issued its wake **at the top, before the `smp_wmb()`/`qatomic_set(&ctx->notified, true)` that publish the work** — the loop can wake, look, find nothing and sleep again on that same edge.  With **icount off the main loop is the only thing that runs `QEMU_CLOCK_VIRTUAL` deadlines**, so on the LG boards a lost edge is not a delay, it is a stop | **Mechanism proven deterministically, on an idle machine.**  A race that hits once every few boots cannot be A/B'd: the first attempt (14 boots/arm under CPU contention) read **2/14 frozen → 0/14**, which is directional and proves nothing.  What proved it was `W64_AIOLAG=<n>`, a probe that reinstates the wrong order **and widens its window**: `0` (wake after publish) boots at **44–108 MIPS**; `20` is **frozen at 977 M insns, 0.00 MIPS, 0 halt/s, vratio 1.00**; `200` frozen at 912 M — the phone's exact HUD signature, including the occasional 0.12 MIPS sliver, with no load at all.  Host speed only decides how often the natural window is hit.  During a natural freeze **every** diag counter is still, `execIter` and `mlWake` included — vCPU and main loop both parked, not a timer storm.  gate `close` **GREEN 15/15**.  The page half is the other half of the bug: it said "Running · 0:21" over a corpse, so §6b calls a stall when insns, halts and display reads are frozen *together* for 15 s and the overlay carries the last line qemu printed — a phone has no console, and the only report you get is the one the page makes by itself |
 | 0116 wasm-diag: the dispatcher's and the CPU's own rates (`d78977e8`) — `execIter`, `execSjmp`, `execLjmp`, `armIrq` + a seven-slot exception histogram | instrumentation, cold by construction (the hottest is `armIrq` at ~93 k/s against the 4 M/s the `WASM_DIAG_HOT` counters run at).  The dispatcher's profile share could not be turned into ns without knowing how often `cpu_exec_loop` goes round, how often `cpu_exec` is re-entered, how often a `cpu_loop_exit` longjmp is actually taken, and how often the CPU takes an ARM exception -- and once you have the last one, *which kind* decides whether a device is firing too often or the guest is making that many syscalls | Three results, all of which redirect the next round.  (1) **90 % of ARM exceptions are guest `SVC`s**: `excSwi` 4 947 895 against `excIrq` 537 242 over a 40 s S75 window, with `excUdef`/`excPabt`/`excDabt`/`excOther` all **zero** — so there is no device storm here of the 0049/0062/0068 kind, and the exception *rate* is not reducible.  (2) **Exceptions are 77 % of all dispatcher re-entries** (`armIrq` 1.85 M against `execIter` 2.41 M in 20 s), against 0098's "the dispatcher is re-entered once per 173 transitions" — i.e. a chain essentially only ever unwinds because the guest took an exception.  (3) **`execLjmp` = 34 per boot**: the exception path does *not* use `cpu_loop_exit`, it leaves through a normal TB exit and `cpu_handle_exception` picks `exception_index` up on the next pass.  That matters because a longjmp here is the emscripten JS-exception unwind, priced at **~15 µs** by the `HELPER(wfi)` comment that removed the last hot one; at 93 k/s it would have been the whole program.  Keep the counter as the regression guard for that design |
 | 0115 hw/pmb887x: the TPU event-RAM scan window is one event, not the rest of the list (`764aa9eb`) | 0068 skips `tpu_update_state()` for a write outside `[ceap, eapt)`, "the part of the current frame's list still to be scanned".  But that is **one event, not the rest of the list**: `tpu_run_events()` breaks at the first event the counter has not reached, leaving `p->ceap` on it, and `p->next` is that event's time — it read words `ceap..ceap+2` and nothing beyond.  A later event cannot move the deadline, because the list executes in order and nothing reaches it before `p->next` anyway, at which point the timer fires and the list is rescanned from RAM.  `W64_TPUSCAN=0` restores the wide window | **The prize was proven with a counter before the code was written**: of 8.7 M event-RAM writes in 25 s, 1.97 M passed the old test and **every one of them landed past `ceap+3`**.  After: `tpuRamSkip` **8 893 135 of 8 893 141 (99.99993 %, from 77.5 %)** and `tpuRearm` **−14 %** (681 155 → 587 308 per 25 s), with `tpuTimer` unchanged at 378.7 k / 382.4 k — the deadline itself does not move, which is the claim.  Wall effect is below this meter's floor at host load 4–5 and is **not claimed**; `halt` reads 70 267 / 70 255 / 70 272 across legs, so it does not shift virtual-clock pacing either.  gate `keep` GREEN 11/11.  One false alarm worth the row: `tpuTimer` appeared to *halve* (702 k → 382 k) against an earlier run — that was cross-run drift (TPU traffic varies ~2× with the guest's phase), and a same-binary knob comparison showed it flat.  **Compare legs, never runs** |
@@ -528,6 +576,9 @@ commit, then `ninja-fast.sh` and the ladder.
 
 | Experiment | Result | Why |
 |---|---|---|
+| **Every cheaper TB-boundary *mechanism*: the merged module's boundary half, `W64_CHAINLOOP`, `stail`, and `W64_BATCH`-as-a-locality-knob** (2026-09-17, round 32) | **All of them tie, and the merge is a regression.**  `tests/wasm/dispatchbench.mjs` was swept properly for the first time — over body size (`DB_PAD`), table size (`DB_NFUNC`), module count (`DB_NMOD`) and, the knob that turned out to matter, **target order**.  In the *strided* order every mechanism costs the same **16–17 ns at every module count**; only in the *unpredictable* (LCG) order does a 42 ns spread open up, and there `merged` — the no-crossing variant the whole merge case rested on — reads **51.13 ns against `xtail`'s 35.73** at pad 144.  The emulator's own knob had already settled which order it is in: `W64_CHAINLOOP` swaps the call mechanism and keeps everything else, and it measures **−0.1 %**, falsifying the unpredictable regime's prediction at ~7 sd | The benchmark's header described its LCG target sequence as "what a guest interpreter's dispatch looks like", and a TB chain is not that — a chained successor is **per-site predictable**, which is why round twenty-three's `dispatch-probe.mjs` read 7.7 ns and the LCG read 27.  **A dispatch benchmark has two independent knobs, the mechanism and the target sequence, and the second dominates.**  The 27 ns then propagated: three sections of the handoff sized proposals against it, and the four-point `w64_ft_max()` fit agreeing at 27.9 ns looked like confirmation when it was coincidence — see the lessons file, *A slope fitted across configurations is a bundle price*.  **When a knob in the real system already performs the synthetic's A/B, believe the knob** |
+| **Replacing emscripten SjLj with native wasm exception handling on the `cpu_loop_exit` path** (2026-09-17, round 30) | **Right that it is 2.2× cheaper, wrong that it matters: ≈ 0.13 % — rejected on the rate, not the price.**  A standalone microbenchmark (`tests/wasm/sjljbench.c`, `tools/sjljbench.mjs`) put one emscripten-SjLj `longjmp` round trip at **595.7 ns** and the same unwind under `-fwasm-exceptions` at **269.2 ns**, a real 326 ns saving per event.  But 0116 had already counted the events: `execLjmp` is **23 per Mi** in the J2ME window, so the whole lever is 23 × 326 ns = **7.5 µs/Mi against 13 471 µs/Mi** | The ARM exception path — the only thing on this workload that unwinds often — **does not longjmp at all**: it leaves through a normal TB exit and `cpu_handle_exception` picks `exception_index` up on the next pass (0116's third finding).  Price × rate, always in that order; this one was priced first and the rate then closed it |
+| **`bql_unlock()` on the ARM exception entry path** (2026-09-17, round 30) | ~~**~0.1 % — priced and dropped without building it.**~~  **WITHDRAWN 2026-09-17 (round 32): it is ~1.33 %, and both halves of the original arithmetic were wrong.**  The `excBqlNs` sampler measures the release at **98.4 ns**, not the ~20 ns assumed below — a factor of 4.9 — and the denominator has since halved, 13 471 → **5 738 µs/Mi**, for another 2.35×.  The sampler's own total is **1.33 % of wall**; 679/Mi × 98.4 ns is 66.8 µs/Mi = 1.16 %, and the balance is the IRQ entries, which take the same path.  `excSwi` is 679/Mi, and the *lock* half really is free: `bql_lock_impl()` adopts the deferred `bql_mmio_lazy` hold at no cost (round 13), so what is left is the `pthread_mutex_unlock` at `cpu-exec.c:1586` | **Two ways to mis-price a lever, in one row.**  The first is the one this table warns about elsewhere and this row did anyway: **the 20 ns was assumed, not measured** — "what an uncontended wasm mutex release costs" is a plausible number with no instrument behind it, and the instrument says five times that.  The second is subtler and applies to every percentage in this file: **a share is a ratio, and the denominator moves.**  Nothing about this cost changed; rounds 0104–0118 removed half the wall around it, and that alone turned 0.1 % into 1.16 %.  Re-price a rejected row against the current wall before trusting its verdict — the rejections that age are exactly the small ones.  Next step is not to build the deferral but to explain the 98.4 ns: an *uncontended* release should not cost that, so either it is waking the main thread (emscripten's `pthread_mutex_unlock` calls `emscripten_futex_wake` when a waiter is registered, which is round 12's expensive half arriving by a different door) or the sampler brackets more than the call.  Settle that first; the fix differs completely between the two |
 | **An inlinable fast path for `bql_lock_mmio()`** (`QEMU_DEFINE_STATIC_CO_TLS(bool, bql_locked)` makes `get_bql_locked()` `noinline` with an `asm volatile("")` in it, so the lock/unlock pair around every MMIO access is two calls the backend cannot fold) (2026-09-17, round 28) | **~1 ns a call, ≈ 0.06 % of wall — rejected on the price, never built.**  Priced with a calibration pad, `W64_BQLDUP=N` adding N *sound* extra lock/unlock pairs: at N=32 over a 25 s controlled window the guest reads **−1.5 %**, i.e. ~1 ns per pair, against ~800 k MMIO accesses/s | The profile's `bql_lock_impl` 1.4 % is self-time on a small leaf and is an upper bound, not a budget (§ the `arm_rebuild_hflags` row below).  **The pad at small N is unreadable**: N=8 first read −3.1 % and N=32 read *faster than base* on a 12 s window — extend N until the slope is unambiguous before believing any of it |
 | **`W64_NOBQL=1` as a ceiling probe** (skip `bql_lock_mmio()` entirely to price the pair by deletion) (2026-09-17, round 28) | **The guest stalled at 15 M instructions.**  No number came out of it | An unsound ceiling probe has to leave the guest *running* to be read at all, and deleting a lock does not: device state races and the boot dies before the meter's first sample.  Round 13's "ceiling-probe by deletion" works on **redundant work** (a second advance, a duplicate rebuild), not on a mutual exclusion someone relies on.  For a lock, the sound instrument is the other direction — a **calibration pad** that adds more of the same, which is the row above |
 | **A fourth and eighth deferred taken path** (`W64_FTMAX` 4 and 8 against the landed 3) (2026-09-17) | **The mechanism fires and the change still loses.** Exits per Mi at matched instruction counts: ft3 107 960, ft4 106 706 (**−1.16 %**), ft8 106 140 (**−1.69 %**), three rounds each — and instructions per TB 6.73 → 7.15.  The clock disagrees: ft8 against ft3, five palindrome rounds, **−1.06 %, only 2/5** (+2.1 / −9.3 / −0.2 / +6.4 / −3.7 %), and ft4 read −1.4 % (2/5) in an earlier run.  **Three slots is the peak** | The exits meter predicted +0.5 % and the clock delivered −1.1 %, so something costs more than the removed exits are worth.  The candidates are both per-TB: each extra deferred path is another label, and 0109 found that label handling is what drops a TB out of the backend's nested-label mode into the `$bp` dispatch loop where every *forward* branch is O(n_labels); and a TB carrying 7.15 instructions emits more bytes, which buys modules.  **The calibration is the point: `tools/exitrate.sh` is a mechanism meter, not a verdict meter.**  It prices the exits a change removes and is silent on what the change adds — the same shape of error as the round-15 hit-rate probe that was silent on the cost added to the path that still missed.  Use it to confirm a mechanism and to *size* it; keep the clock as the verdict |
@@ -860,6 +911,114 @@ commit, then `ninja-fast.sh` and the ladder.
      and no more.
    - **A perfect next-TB cache is worth 5.2 %** (§ the lookup helper,
      round 28), which is the ceiling on every inline-cache idea.
+
+0i. **Where a *running J2ME game* spends its time (profile + counters,
+   round 30).**  Everything above 0h was measured on a boot or an idle
+   menu.  A J2ME MIDlet is a different workload — a bytecode interpreter
+   inside the guest, driving a full-screen blit every frame — and it is
+   the one the user actually waits on.  `tools/j2mebench.mjs` boots
+   CX70_games.bin, navigates Centre → 3 → 1 → Centre, plays, and reports
+   `MIPS/cpu`; `scratchpad/prof.sh` holds the *played* game on screen and
+   attaches `wprof2` to the vCPU worker, so this is the game's steady
+   state and not an idle canvas.
+
+   Game 1, 60.8 s of vCPU samples at ~96 % busy, 11.30 ms/Mi:
+
+   | bucket | share of vCPU | what it is |
+   |---|---|---|
+   | JIT'd TB modules (`wasm://wasm/…` URLs) | **64.4 %** | emitted guest code |
+   | main module C | 32.8 % | helpers, devices, dispatch |
+   | `emscripten_futex_wait` | 2.2 % | genuinely idle |
+   | JS glue | 0.5 % | |
+
+   The C third, grouped (share of vCPU; × 11.30 ms/Mi gives ms/Mi):
+
+   | group | share | per-event price |
+   |---|---|---|
+   | TB dispatch + lookup | **10.7 %** | `helper_lookup_tb_ptr_lc` **28.5 ns** × 15 839/Mi |
+   | ARM exception round trip | ~6 % | see the discrepancy below |
+   | display chain (`dif_*`/`lcd_*` only — see the fifth bullet) | 4.3 % | **28.0 ns/word** in the DIF, **9.6 ns/px** in the LCD |
+   | softmmu slow paths | 2.5 % | |
+   | BQL / mutex | 2.6 % | |
+   | SMC / dirty | 1.5 % | `tb_invalidate_phys_range_fast` **286 ns** × 434/Mi |
+   | `arm_rebuild_hflags` | 0.9 % | **54 ns** × 1 874/Mi |
+   | module pipeline | **0.15 %** | — |
+
+   Four things this says that the boot profiles do not:
+
+   - **The module pipeline is gone.**  It is 10–20 % of a boot (0c, 0f)
+     and **0.15 %** of a running game: `tbGen/Mi` is 4.2 against the
+     boot's hundreds.  Every conclusion in 0c/0f/0d about compile time
+     is a *boot* conclusion and must not be carried into J2ME work.
+   - **The exit mix is more indirect than any boot's** (`W64_XCOUNT=1`,
+     game 1, 1980 Mi; the counters are in the generated code so the
+     per-Mi rates are exact and that run's wall is not comparable):
+
+     | exit | per Mi | share |
+     |---|---|---|
+     | `goto_ptr` | 80 781 | **67.8 %** |
+     | `goto_tb` which = 1 (fall-through) | 22 371 | 18.8 % |
+     | `goto_tb` which = 0 | 16 010 | 13.4 % |
+     | self-chaining `goto_tb` | 16 | 0.01 % |
+     | **total** | **119 161** | 8.4 guest insns per TB entry |
+
+     Of the 80 781 `goto_ptr` exits the inline cache answers 64 942
+     (**80.4 %**) inside emitted code and only 15 839 reach the helper.
+     So two thirds of all boundaries are an indirect call whose target
+     the *hardware* cannot predict either — which is the quantity the
+     row below is about.
+
+   - **A TB boundary is much more expensive here than on the boot.**  A
+     four-point `w64_ft_max()` sweep on this game fits
+     `ns/insn = 9.83 + 27.87 × exits/insn` to within 1.2 %, i.e.
+     **27.9 ns per boundary** against 0h's ~33 ns for EL71 — but at
+     ~108 k boundaries/Mi and 11.30 ms/Mi that is **27 % of wall**, and
+     `tests/wasm/dispatchbench.mjs` says the transition instruction
+     itself is the reason: an *unpredictable* `return_call_indirect` is
+     ~27 ns on this engine, the same call made from a `loop` is
+     ~12.7 ns, and the gap vanishes once the target is predictable.
+     That reopens the dispatch-locality row in § REJECTED, which
+     measured ~6 ns — it measured a **predictable** target.  See
+     `W64_CHAINLOOP` in `tcg/wasm64/wasm64.h`.
+   - **The inline cache is not the lookup lever — in C.**  The pc-cache
+     already catches 14 568 of 15 839 misses = **92.0 %**, so a second way
+     *in C* is duplicating it.  What costs is the 28.5 ns call, not the
+     miss.  The corollary is not "drop the second way", it is "put it
+     where the call isn't": a second way in *emitted* code answers the
+     same 92 % without the call at all, which is what `W64_NOPCCIN`
+     (mechanism K, `gen_goto_ptr_pcc`) A/Bs.  Two levels, not one — way 1
+     is the per-TB slot at ~5 ops and 80.4 % of exits, and pulling it out
+     in favour of a single pc-keyed way costs more than it saves, because
+     the pc-keyed compare is five times longer.
+   - **The DIF now costs 3× the pixels it feeds.**  After the burst work
+     (0104–0107) the DIF's own per-word TX packing is 28.0 ns/word
+     against `lcd_transfer_run`'s 9.6 ns/px, and the two cancel: the DIF
+     packs 16-bit words MSB-first into a byte buffer that `lcd_run_rows`
+     immediately reassembles with `tx[2i] << 8 | tx[2i+1]`.  37.6 ns/px
+     combined against a ~2–3 ns floor = **4.1 % of wall**.
+   - **A profile bucket drawn by symbol family undercounts a
+     cross-cutting path — here by 3.5×.**  The three display mechanisms
+     of round 31 (`W64_NOLCDROW`, `W64_DMACOAL=1`, `W64_NORXTAIL`,
+     A/B'd together as one bundle, 8-leg palindrome, games 1 and 2) are
+     worth **+17.5 % of `MIPS/cpu` = 1.83 of 12.25 ms/Mi = 15 % of
+     wall**, with every "on" leg above every "off" leg in *both* games
+     (g1 94.15/112.33/109.63/96.22 vs 87.78/89.35/91.58/82.47; g2
+     85.69/86.64/97.62/85.63 vs 73.98/73.69/79.78/74.69) and the two
+     halves agreeing to 1.8 pp.  The table above predicts 4.3 %.  It is
+     not wrong, it is *narrow*: it counts only symbols named
+     `dif_*`/`lcd_*`, while a display word also pays DMAC scheduling,
+     `memory_region_dispatch_write`, the BQL round trip and a
+     `timer_mod`/`icount_get` re-arm — which the same table books under
+     "softmmu slow paths", "BQL / mutex" and nothing at all.  **Group a
+     profile by the path an event takes, not by the prefix its symbols
+     share**, or the biggest lever on the board reads as the fourth
+     biggest.  `W64_DISPNS=1` splits the bundle by stage and the
+     per-knob palindromes say which of the three earned it.
+
+   **Unsettled:** the exception round trip prices at ~1 030 ns per SWI
+   from the profile (683 `excSwi`/Mi) but ~174 ns from the round-28 C
+   timer.  A factor of six is not a measurement error on one side; run
+   `W64_EXCNS=1` before believing either.
 
 1. **wasm64 early-boot deficit — REDUCED by 0019, still open.**  Was
    ~27 % behind TCI on the first 0.75 G insns (per-TB module compile =
