@@ -8,12 +8,14 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
                                             series branch (wasm-browser-port = origin/wasm-patches):
                                             the one qemu source tree, wasm and native builds alike —
                                             see upstream-branch.md for the commit list
-  pmb887x-emu/                              submodule: the meta-repo whose qemu pin matches (reference)
+  pmb887x-emu/                              submodule: the meta-repo @ master (reference; also the
+                                            source of the siemensfw library the page compiles)
   build.sh, versions.env, scripts/          build pipeline (WASM + native modes)
-  site-src/recalc/                          emcc glue around pmb887x-emu's siemens_recalc.cpp
-                                            → site/dist/siemens-recalc.wasm (Advanced ▸ Siemens keys)
-  site/                                     served web root (index.html / app.js /
-                                            keyboards.js / fullflashes.js); dist-jit/ = wasm64
+  site-src/recalc/                          emcc glue around pmb887x-emu's siemensfw library
+                                            (src/siemens) → site/dist/siemens-recalc.wasm
+                                            (Advanced ▸ Siemens keys + device detection)
+  site/                                     served web root (index.html / app.js / keyboards.js /
+                                            fullflashes.js / siemensfw.js); dist-jit/ = wasm64
                                             backend build (page default), dist/ = TCI build
                                             (?dist=dist) + boards.tar, dist-*/ = A/B snapshots
                                             (all gitignored)
@@ -159,25 +161,29 @@ linear Unix seconds, LG packed calendar).
   pmb887x-emu `load` tool uses. The panel is `disabled` while a guest runs.
 - Which phone a fullflash came from (`detectDevice()` in `fullflashes.js`):
   the filename first (`DEVICE_RULES`), then the image itself, so a dump named
-  `dump.bin` still selects its board. Offsets, all verified against the sample
-  dumps in `fullflashes/` (S75, EL71, C81, S66, KE800) — re-derive with
-  `grep -abo` for the model string if a new dump ever disagrees:
+  `dump.bin` still selects its board:
   - `0x3C` `"CJKT"` — every pmb887x NOR dump, LG included
     (`build/bsp/boot/fakesign.py`). Separates "not a fullflash" from
     "a fullflash I can't identify".
-  - Siemens/BenQ-Siemens firmware record, 16-byte NUL-padded ASCII fields at a
-    fixed offset, the same on SGold and SGold2: `0x8FC60` build tag (`lg1`),
-    **`0x8FC70` model** (`S75`), **`0x8FC80` vendor** (`SIEMENS`, even for the
-    BenQ-Siemens-era phones), `0x8FC90` version. Model + `v` + the version byte
-    at `0x8FC50` + the build tag reproduces the preset naming convention
-    (`S75v40lg1`).
-  - Fallback for an erased record: the bootcore header `siemens_recalc.cpp`
-    parses — magic `02 02 4C 53` / `00 02 4C 53` at `0x200` with the model at
-    `0x210`, or `00 03 4C 53` at `0x1200` with the model at `0x3E000`. Its own
-    version record names the model `BC65`/`BC75`/`BC85`; that is the bootcore,
-    not the phone, so those are discarded.
-  - LG has none of the above: the model comes from the J2ME user agent
-    (`LG-KE800 MIC/…`, ~4.2 MiB in), scanned over a bounded window.
+  - Siemens phones are the library's business: `probeFullflash()` in
+    pmb887x-emu's siemensfw (`src/siemens`), whose browser build the page
+    loads through `site/siemensfw.js` (entry point `sr_probe` in
+    `site-src/recalc/recalc_wasm.cpp`), reads the vendor/model records
+    straight out of the image and derives the board name — the same code
+    path the emulator itself takes when `--device` is not given, so what
+    the page detects and what boots agree by construction. It checks the
+    vendor at four fixed offsets (`0x8FC80`, `0x220`, `0x880`, `0xC80`) for
+    both `SIEMENS` and `BENQ-SIEMENS`, with the model in the 16 bytes
+    before it; the page hands it the head of the image (`PROBE_HEAD` =
+    `0x90000`, covering the farthest record) and it never reads further.
+    Its board name is used as-is; a model with no board of its own goes
+    through `MODEL_VARIANTS`, and the filename rules over the model string
+    are the last resort.
+  - LG carries none of the Siemens structures, so the fallback is a JS
+    scan: the model comes from the J2ME user agent (`LG-KE800 MIC/…`,
+    ~4.2 MiB in), over a bounded window. There is no bootcore-block reading
+    any more — if the library cannot place the image, walking the boot
+    area in JS would only re-guess what upstream decided not to read.
   - `MODEL_VARIANTS` maps a model with no board of its own onto the board that
     emulates it. Sourced, never guessed — a wrong row boots someone's phone as
     the wrong hardware, so a model that cannot be placed is left to the user.
@@ -199,13 +205,15 @@ linear Unix seconds, LG packed calendar).
   default) rewrites the bootcore HASH/IMEI and the confidential EEPROM
   blocks in this run's copy for the IMEI/ESN below; **Brute-force ESN**
   reads the identity out of the image and sweeps the 2^32 ESN space in
-  `min(hardwareConcurrency, 8)` Web Workers (~10M candidates/s per core;
+  `min(hardwareConcurrency, 8)` Web Workers (~25M candidates/s per core on
+  the library's batched MD5;
   progress on the pill, Cancel is the pill's action, the answer is kept in
   `localStorage["siemens-esn-v1"]` keyed on IMEI + stored key and
   re-verified on every hit) and then boots the image untouched with its own
   IMEI/ESN; **Run as is** hands it over unchanged. The arithmetic is
-  pmb887x-emu's `siemens_recalc.cpp` compiled to wasm, not a reimplementation
-  — see `site-src/recalc/recalc_wasm.cpp` for why it is `#include`d.
+  pmb887x-emu's siemensfw library compiled to wasm, not a reimplementation
+  — see `site-src/recalc/recalc_wasm.cpp` for how the sweep is re-expressed
+  over the library's batched MD5 without its std::thread pool.
 - The status pill above the screen carries the run state and the only
   Start/Stop/Cancel there is (`window.__ui` mirrors that state for the
   drivers in `tools/`). A capture in progress is a second pill beside it,

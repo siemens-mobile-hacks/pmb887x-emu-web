@@ -1,29 +1,25 @@
 // Siemens fullflash key handling for the page: the three modes the
-// "Siemens keys" radio offers, on top of dist/siemens-recalc.wasm
-// (scripts/build-recalc-wasm.sh, wrapping pmb887x-emu's siemens_recalc.cpp).
+// "Siemens keys" radio offers, on top of the browser build of pmb887x-emu's
+// siemensfw library (dist/siemens-recalc.{js,wasm}, loaded by
+// site/siemensfw.js).
 //
 // Siemens firmware binds itself to the NOR flash ESN: the keys stored in the
 // bootcore and EEPROM must match the ESN the phone is given, or it refuses to
 // boot. Either side can be moved — rewrite the keys for the ESN we hand it
 // (recalc), or find the ESN the keys already answer to (recover).
-//
-// The module is fetched from dist/ whatever ?dist= selects, the same rule
-// boards.tar follows.
 
-const MODULE_URL = "./dist/siemens-recalc.js";
+import { loadSiemensFW } from "./siemensfw.js";
+
+const load = loadSiemensFW;
 
 // PapuaUtils' service key. Only internal consistency matters to an emulated
 // phone, so pmb887x-emu pins it and so do we — see its main.cpp.
 const SKEY = 12345678;
 
-let modPromise = null;
-
-function load() {
-  if (!modPromise) {
-    modPromise = import(MODULE_URL).then((m) => m.default());
-  }
-  return modPromise;
-}
+// The library's batched MD5 works on MD5_BATCH_SIZE consecutive candidates
+// per md5Batch() call, and sr_scan's start/stride are multiples of it (see
+// site-src/recalc/recalc_wasm.cpp).
+const BATCH = 8;
 
 /* ---- the flat SrIdentity struct from site-src/recalc/recalc_wasm.cpp ---- */
 const ID_SIZE = 4 * 4 + 16 + 16 + 16;
@@ -171,11 +167,11 @@ function cachePut(id, esn) {
 /* the sweep                                                            */
 /* ------------------------------------------------------------------ */
 
-// 2^32 candidates at one MD5 compression each (two when the image has no
-// BootKey and the bootcore HASH is the target). One browser core manages
-// ~10M/s, so the whole space is minutes of work — hence the workers, the
-// progress and the cache. Slices are bounded per worker so a cancel lands
-// between them.
+// 2^32 candidates at one batched MD5 compression per MD5_BATCH_SIZE of them
+// (two batches when the image has no BootKey and the bootcore HASH is the
+// target). One browser core manages ~25M/s, so the whole space is a couple
+// of minutes of work — hence the workers, the progress and the cache. Slices
+// are bounded per worker so a cancel lands between them.
 const SLICE = 1 << 24;
 
 export function workerCount() {
@@ -225,12 +221,14 @@ export async function recoverEsn(identity, { signal, onProgress } = {}) {
             if (--live === 0) finish(null);
           }
         };
+        // worker i of n takes the batches at i*BATCH, i*BATCH + n*BATCH, … —
+        // together the workers partition the space exactly
         w.postMessage({
           skey: identity.skey,
           key: identity.key,
           useBootKey: identity.useBootKey,
-          start: i,
-          stride: n,
+          start: i * BATCH,
+          stride: n * BATCH,
           slice: SLICE,
         });
       }
@@ -239,7 +237,7 @@ export async function recoverEsn(identity, { signal, onProgress } = {}) {
     if (esn == null) return null;
     // sr_scan compares MD5 state words; run the plain derivation once over
     // the answer before anything boots with it — the same confirmation
-    // siemensRecoverEsn() does after its own parallel loop
+    // the library's recoverEsn() does after its own parallel loop
     if (!await verify(identity, esn)) return null;
     cachePut(identity, esn);
     return { esn, cached: false, seconds: (Date.now() - started) / 1000 };

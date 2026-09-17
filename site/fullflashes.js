@@ -6,7 +6,11 @@
 // later visits) read them from the local cache instead of re-downloading —
 // an alternative to uploading a full flash of your own.
 //
-// This module is data + cache plumbing only; the UI wiring lives in app.js.
+// This module is data + cache plumbing + the filename/device inference; the
+// image-reading half of detection is the Siemens library for Siemens phones
+// (site/siemensfw.js) and a JS scan for LG, below.
+
+import { probeFullflash } from "./siemensfw.js";
 
 /* ------------------------------------------------------------------ */
 /* filename helpers (shared with app.js — kept next to the inventory)   */
@@ -88,27 +92,30 @@ export function variantFor(model) {
 /* detecting the device from the image, when the filename cannot         */
 /* ------------------------------------------------------------------ */
 
-// Siemens/BenQ-Siemens firmware carries a record of 16-byte NUL-padded ASCII
-// fields at a fixed offset — verified on S75, EL71, C81 and S66 dumps across
-// both platform generations and both flash sizes, so a Siemens image only
-// needs a ~48-byte read rather than a scan:
+// Siemens phones are the library's business: probeFullflash() in
+// pmb887x-emu's siemensfw (site/siemensfw.js loads its browser build) reads
+// the vendor/model records straight out of the image and derives the board
+// name — the same code path the emulator itself takes when --device is not
+// given, so what the page detects and what boots agree by construction.
+// It also knows more than the JS ever did: both vendors (SIEMENS and
+// BENQ-SIEMENS), records at four fixed offsets rather than one, and the
+// exact NUL-padded field format.
 //
-//   0x8FC60 build tag ("lg1")   0x8FC70 model ("S75")   0x8FC80 vendor
-//
-// The bootcore header is the fallback for images whose main record is erased
-// (magic "LS" at 0x200 for SGold, 0x1200 for SGold2); its own version record
-// reports the model as BC65/BC75/BC85, which is the bootcore, not the phone.
-const SIEMENS_MODEL_OFF = 0x8fc70;
-const SIEMENS_VENDOR_OFF = 0x8fc80;
-const BOOTCORE = [
-  { magic: [0x02, 0x02, 0x4c, 0x53], at: 0x200, model: 0x210 },     // SGold, x75
-  { magic: [0x00, 0x02, 0x4c, 0x53], at: 0x200, model: 0x210 },     // SGold, x65
-  { magic: [0x00, 0x03, 0x4c, 0x53], at: 0x1200, model: 0x3e000 },  // SGold2
-];
-// Every pmb887x NOR dump carries this, LG included (bsp boot/fakesign.py).
+// Everything else — LG firmware, which carries none of the Siemens
+// structures and names itself in a J2ME user agent ~4.2 MiB in — stays a JS
+// scan: the upstream code has nothing to say about it. There is no longer
+// any reading of bootcore blocks here: when the library cannot place an
+// image, the records it did not find are not going to appear by walking the
+// boot area in JS.
+
+// Every pmb887x NOR dump carries this, LG included (bsp boot/fakesign.py):
+// the cheap gate that says "this is a phone dump at all" before the library
+// is fetched for it.
 const CJKT_OFF = 0x3c;
-// LG firmware has none of the Siemens structures; its model is in the J2ME
-// user agent, ~4.2 MiB into a KE800 dump.
+// The head probeFullflash() needs: its farthest record is the vendor at
+// 0x8FC80, 16 bytes long.
+const PROBE_HEAD = 0x90000;
+// LG's model is in the J2ME user agent, ~4.2 MiB into a KE800 dump.
 const LG_RE = /LG-(KE\d{3}) MIC\//;
 const LG_SCAN_BYTES = 8 << 20;
 const LG_CHUNK = 1 << 20;
@@ -136,25 +143,45 @@ const latin1 = new TextDecoder("latin1");
 
 /**
  * Work out which phone a fullflash came from by reading it, for the files
- * whose name gives nothing away. Never reads the whole image.
- * Returns { device, model, exact } — `device` is null when the model is
- * readable but has no board — or null when nothing could be read at all.
+ * whose name gives nothing away. Never reads the whole image: the Siemens
+ * half is the library's own probe over the head, the LG half a scan for the
+ * user agent. Returns { device, model, exact } — `device` is null when the
+ * model is readable but has no board — or null when nothing could be read
+ * at all.
  */
 export async function detectDevice(file) {
   try {
-    const head = await readAt(file, 0, 0x40);
+    const head = await readAt(file, 0, PROBE_HEAD);
     // not a pmb887x dump at all — worth saying differently from "no idea"
     if (field(head, CJKT_OFF, 4) !== "CJKT") return null;
 
-    const rec = await readAt(file, SIEMENS_MODEL_OFF, SIEMENS_VENDOR_OFF + 16);
-    let model = "";
-    if (rec && field(rec, SIEMENS_VENDOR_OFF - SIEMENS_MODEL_OFF) === "SIEMENS") {
-      model = field(rec, 0);
+    // Siemens: the library is the source of truth (probeFullflash). Its
+    // board name is used as-is when the model is a board of its own — which
+    // is when the page's own rules, kept for the filename path below, agree
+    // with it; a model that is not (S66, C66, ELF1…) goes through the
+    // stand-in table, and the filename rules are the last resort, the way
+    // they were the only resort before the library took over. A module that
+    // fails to load is "not a Siemens image" here, not the end of
+    // detection: the LG scan below needs no module.
+    let probed = null;
+    try {
+      probed = await probeFullflash(head.subarray(0, Math.min(PROBE_HEAD, head.length)));
+    } catch { /* the fallbacks below are still worth their chance */ }
+    if (probed) {
+      const { model, device } = probed;
+      if (device && inferDevice(model) === device)
+        return { device, model, exact: true };
+      const v = variantFor(model);
+      if (v) return { device: v.device, model, exact: v.exact };
+      const byRules = inferDevice(model);
+      if (byRules) return { device: byRules, model, exact: false };
+      return { device: null, model, exact: false };
     }
-    if (!model) model = await readBootcoreModel(file);
-    if (!model) model = await scanLg(file);
-    if (!model) return null;
 
+    // Not a Siemens image the library recognizes — LG's J2ME user agent is
+    // the one structure left worth a scan.
+    const model = await scanLg(file);
+    if (!model) return null;
     const device = inferDevice(model);
     if (device) return { device, model, exact: true };
     const v = variantFor(model);
@@ -163,18 +190,6 @@ export async function detectDevice(file) {
   } catch {
     return null; // an unreadable file is not a detection result
   }
-}
-
-async function readBootcoreModel(file) {
-  for (const b of BOOTCORE) {
-    const bytes = await readAt(file, b.at, b.at + 4);
-    if (!bytes || bytes.length < 4) continue;
-    if (!b.magic.every((v, i) => bytes[i] === v)) continue;
-    const name = field(await readAt(file, b.model, b.model + 16), 0);
-    // BC65/BC75/BC85 is the bootcore's own version record, not the phone
-    if (name && !/^BC\d/.test(name)) return name;
-  }
-  return "";
 }
 
 async function scanLg(file) {

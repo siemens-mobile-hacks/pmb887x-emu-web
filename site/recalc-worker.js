@@ -1,12 +1,18 @@
 // One core's share of the ESN sweep (site/recalc.js drives a pool of these).
 //
 // The worker owns its own instance of dist/siemens-recalc.wasm and walks
-// candidates start, start+stride, start+2*stride, ... in slices, posting a
-// progress message between them. Cancelling is the pool terminating the
-// worker, which is why the slice is bounded: the loop has to come back to the
-// event loop often enough for that to land promptly.
+// batches of MD5_BATCH_SIZE consecutive candidates — start, start+stride,
+// start+2*stride, … with start and stride multiples of the batch size, so
+// the pool partitions the 2^32 space exactly — posting a progress message
+// between slices. Cancelling is the pool terminating the worker, which is
+// why the slice is bounded: the loop has to come back to the event loop
+// often enough for that to land promptly.
 
 import createSiemensRecalc from "./dist/siemens-recalc.js";
+
+// site-src/recalc/recalc_wasm.cpp: one md5Batch() call covers this many
+// consecutive candidates.
+const BATCH = 8;
 
 // onmessage is installed before the module is awaited, and the job is held
 // until it is ready: a dedicated worker's port is enabled once the script has
@@ -27,7 +33,9 @@ function sweep({ skey, key, useBootKey, start, stride, slice }) {
   const useBK = useBootKey ? 1 : 0;
 
   let base = start >>> 0;
-  const step = stride * slice;
+  // one slice of `slice` candidates = slice/BATCH batches, each `stride`
+  // candidates apart, so the next slice starts stride * slice / 8 on
+  const step = stride * (slice / BATCH);
 
   const run = () => {
     if (mod._sr_scan(skey, keyPtr, useBK, base, stride, slice, esnPtr)) {

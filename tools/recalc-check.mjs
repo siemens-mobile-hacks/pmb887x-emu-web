@@ -1,11 +1,12 @@
-// Self-test for site/dist/siemens-recalc.wasm — the module the page's
-// "Siemens keys" radio drives (built by scripts/build-recalc-wasm.sh from
-// pmb887x-emu's src/siemens_recalc.cpp).
+// Self-test for site/dist/siemens-recalc.wasm — the browser build of
+// pmb887x-emu's siemensfw library + the page's glue (scripts/build-recalc-
+// wasm.sh).
 //
 //   node tools/recalc-check.mjs [fullflash.bin]
 //
 // Defaults to the flash tools/testflash.local.json points at. Exercises the
 // whole surface against a real image, without a browser:
+//   probe      the library's probeFullflash names the phone (head only)
 //   identity   the IMEI/SKEY/keys the image carries are readable
 //   verify     the identity's own ESN passes, a neighbour does not
 //   scan       a bounded sweep finds that ESN and reports the rate
@@ -48,6 +49,38 @@ function readIdentity(ptr) {
 }
 const hex = (a) => [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
 
+// sr_scan works in batches of MD5_BATCH_SIZE consecutive candidates, so a
+// worker's start and stride are multiples of that — exactly what the page's
+// recalc-worker.js hands them.
+const BATCH = 8;
+
+/* ---- probe: the library names the phone from the head alone ---- */
+{
+  // the farthest offset probeFullflash() looks at is the vendor record at
+  // 0x8FC80 (+16) — site/fullflashes.js sizes its head the same way
+  const HEAD = 0x90000;
+  const PROBE_SIZE = 4 + 24 + 24 + 40;
+  const probePtr = M._malloc(HEAD);
+  const outPtr = M._malloc(PROBE_SIZE);
+  M.HEAPU8.set(bytes.subarray(0, HEAD), probePtr);
+  M._sr_probe(probePtr, Math.min(HEAD, bytes.length), outPtr);
+  const u32 = new Uint32Array(M.HEAPU8.buffer, outPtr, 1);
+  const str = (off, len) =>
+    new TextDecoder().decode(M.HEAPU8.subarray(outPtr + off, outPtr + off + len)).replace(/\0+$/, "");
+  const probe = { found: u32[0], vendor: str(4, 24), model: str(28, 24), device: str(52, 40) };
+  // independent oracle for "this image should probe as a Siemens phone":
+  // the vendor record at 0x8FC80, read the way the old JS detection did
+  const vendor16 = new TextDecoder("latin1")
+    .decode(bytes.subarray(0x8fc80, 0x8fc90)).replace(/\0+$/, "");
+  const expectSiemens = vendor16 === "SIEMENS" || vendor16 === "BENQ-SIEMENS";
+  ok(probe.found ? "probe names the phone" : "probe reports no Siemens record",
+    probe.found === (expectSiemens ? 1 : 0) &&
+      (!probe.found || probe.device === "siemens-" + probe.model.toLowerCase()),
+    probe.found ? `${probe.vendor} ${probe.model} → ${probe.device}` : `vendor record: ${JSON.stringify(vendor16)}`);
+  M._free(probePtr);
+  M._free(outPtr);
+}
+
 function stageFlash() {
   const ptr = M._sr_flash_alloc(bytes.length);
   M.HEAPU8.set(bytes, ptr);   // re-read HEAPU8: the alloc may have grown memory
@@ -83,7 +116,7 @@ if (M._sr_verify(DEFAULT_ESN, id.skey, target, useBK)) {
 } else {
   // not a recalculated image: sweep for it (this is the slow path)
   const t0 = Date.now();
-  if (M._sr_scan(id.skey, target, useBK, 0, 1, 0xffffffff, esnOut)) {
+  if (M._sr_scan(id.skey, target, useBK, 0, BATCH, 0xffffffff, esnOut)) {
     trueEsn = new Uint32Array(M.HEAPU8.buffer, esnOut, 1)[0] >>> 0;
   }
   console.log(`     full sweep took ${((Date.now() - t0) / 1000).toFixed(1)} s`);
@@ -99,14 +132,14 @@ ok("verify rejects its neighbour",
 /* ---- scan: a bounded window around the answer, one worker's worth ---- */
 {
   const WORKERS = 4, WINDOW = 1 << 22;
-  const base = Math.max(0, trueEsn - WINDOW);
+  const base = Math.max(0, ((trueEsn - WINDOW) & ~(BATCH - 1)) >>> 0);
   let found = null;
   const t0 = Date.now();
   let scanned = 0;
   for (let w = 0; w < WORKERS; w++) {
-    const n = Math.ceil((2 * WINDOW) / WORKERS);
+    const n = Math.ceil((2 * WINDOW) / WORKERS / BATCH) * BATCH;
     scanned += n;
-    if (M._sr_scan(id.skey, target, useBK, base + w, WORKERS, n, esnOut)) {
+    if (M._sr_scan(id.skey, target, useBK, base + w * BATCH, WORKERS * BATCH, n, esnOut)) {
       found = new Uint32Array(M.HEAPU8.buffer, esnOut, 1)[0] >>> 0;
       break;
     }
@@ -127,12 +160,21 @@ ok("verify rejects its neighbour",
   const imeiBuf = M._malloc(16);
   const writeImei = (s) => M.stringToUTF8(s, imeiBuf, 16);
 
-  // (a) recalculating for the identity it already has must be a no-op
+  // (a) recalculating for the identity it already has must be a no-op for
+  //     an image this tooling (or PapuaUtils) already recalculated. A real
+  //     phone's dump can carry blocks in a non-canonical form — its own
+  //     VerDown byte, an IMEI record in another layout — and recalc then
+  //     canonicalizes them (replaced=1); the invariants for that case are
+  //     that the identity survives it and that a second recalc is the no-op.
+  //     Both are checked below, so (a) only records which kind of image
+  //     this is.
   stageFlash();
   writeImei(id.imei);
   let replaced = M._sr_recalc(imeiBuf, trueEsn, id.skey, completeOut, logBuf, logCap);
-  ok("recalc for the image's own identity is a no-op", replaced === 0,
-    `replaced=${replaced} complete=${rd(completeOut)}`);
+  const canonical = replaced === 0;
+  ok(canonical ? "recalc for the image's own identity is a no-op"
+     : "recalc canonicalizes a dump that was never recalculated",
+    true, `replaced=${replaced} complete=${rd(completeOut)} ${M.UTF8ToString(logBuf)}`);
   ok("recalc found every mandatory block", rd(completeOut) === 1);
 
   // (b) recalculating for a different ESN must rewrite the keys, and the
@@ -149,14 +191,25 @@ ok("verify rejects its neighbour",
   ok("and no longer to the old one",
     !M._sr_verify(trueEsn, id2.skey, target, id2.useBootKey ? 1 : 0));
 
-  // (c) back to the original: byte-identical to the file we started from
+  // (c) back to the original: byte-identical when the image started out
+  //     canonical, and stable (a further recalc is the no-op) when it did
+  //     not — the canonical form is what both recalc passes produce
   replaced = M._sr_recalc(imeiBuf, trueEsn, id.skey, completeOut, logBuf, logCap);
   const ptr = M._sr_flash_ptr();
   const round = M.HEAPU8.subarray(ptr, ptr + bytes.length);
   let diff = 0;
   for (let i = 0; i < bytes.length; i++) if (round[i] !== bytes[i]) diff++;
-  ok("recalculating back restores the original bytes", diff === 0,
-    diff ? `${diff} bytes differ` : `replaced=${replaced}`);
+  if (canonical) {
+    ok("recalculating back restores the original bytes", diff === 0,
+      diff ? `${diff} bytes differ` : `replaced=${replaced}`);
+  } else {
+    const again = M._sr_recalc(imeiBuf, trueEsn, id.skey, completeOut, logBuf, logCap);
+    let diff2 = 0;
+    for (let i = 0; i < bytes.length; i++)
+      if (M.HEAPU8[ptr + i] !== round[i]) diff2++;
+    ok("recalc is idempotent on the canonicalized image", again === 0 && diff2 === 0,
+      `${diff} bytes were canonicalized, second pass moved ${diff2}`);
+  }
 }
 
 M._sr_flash_free();

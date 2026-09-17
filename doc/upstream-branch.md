@@ -14,8 +14,14 @@ branch:     wasm-browser-port     local name; tracks origin/wasm-patches
 pin:        c07259db94            QEMU_PMB887X_REV in versions.env (0088,
                                   2026-09-16; 101 commits ahead of master)
 base:       8b9d485bc2            qemu-pmb887x master at the time of the switch
-companion:  pmb887x-emu/          the meta-repo, branch wasm-patches, whose
-                                  qemu submodule pin is the same revision
+companion:  pmb887x-emu/          the meta-repo @ master (4ba4a58). Its qemu
+                                  submodule is not used — the root qemu/
+                                  submodule is the build source — but the repo
+                                  is where the page's Siemens module comes
+                                  from: the siemensfw library (src/siemens)
+                                  that scripts/build-recalc-wasm.sh compiles
+                                  (key recalc, ESN recovery, and the Siemens
+                                  half of device detection, probeFullflash)
 ```
 
 ## Working on the tree
@@ -202,8 +208,11 @@ controller and is unaffected either way.
 exists as a standalone branch for a separate upstream PR:
 `origin/rtc-cnt-format` (22e23cfb5b, one commit that applies to Azq2
 master), with a companion pmb887x-dev change (`lg-ke800`/`lg-ke970`
-`[rtc] format = "calendar"`) that is already in the pinned bsp rev
-`e6e73d1`. The qemu commit defaults `[rtc] format` to `unix` (Siemens),
+`[rtc] format = "calendar"`) — that is PR#6 of
+siemens-mobile-hacks/pmb887x-dev (`e6e73d1`, branch `rtc-calendar-format`),
+still open, and it is what `PMB887X_BSP_FIX_REV` keeps merged onto the bsp
+master pin (scripts/sync-bsp.sh does the merge, so a fresh clone reproduces
+it). The qemu commit defaults `[rtc] format` to `unix` (Siemens),
 so the pmb887x-dev change is what keeps the LG boards on the packed
 calendar — submit both, qemu first. Once it lands, drop the top commit
-of the series on the next rebase.
+of the series on the next rebase and empty `PMB887X_BSP_FIX_REV`.

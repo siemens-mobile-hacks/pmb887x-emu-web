@@ -133,11 +133,19 @@ recalculated, so the modes have nothing to do there):
 | **Brute-force ESN** | The IMEI, SKEY and stored key are read out of the image and the 2³² ESN space is swept for the one they were built from; the flash then boots byte for byte with its own identity. ~10 M candidates/s per core in a browser (20 M under node) over `min(hardwareConcurrency, 8)` workers, so single-digit minutes at worst — with progress on the status pill and Cancel in place of Start. The answer is remembered (keyed on the IMEI + stored key, so it follows the image, not the filename) and re-verified on every reuse; **Clear ESN cache** drops it. Needs intact keys — there is nothing to recover from a cleared bootcore. |
 | **Run as is** | The fullflash goes to the phone unchanged. |
 
-The arithmetic is not a reimplementation: `site-src/recalc/recalc_wasm.cpp`
-compiles pmb887x-emu's own `src/siemens_recalc.cpp` to a 35 KB wasm module
-(`scripts/build-recalc-wasm.sh` → `site/dist/siemens-recalc.wasm`).
+pmb887x-emu's Siemens fullflash code is a library of its own upstream (`src/siemens`, "siemensfw", namespace
+`SiemensFW`), and `scripts/build-recalc-wasm.sh` compiles that library plus
+the page's glue (`site-src/recalc/recalc_wasm.cpp`) into
+`site/dist/siemens-recalc.wasm` — recalculation and ESN recovery are the
+library's own code, and the sweep re-expresses its BKEY/HASH method over the
+same batched MD5 primitive (25 M candidates/s per core) without the
+std::thread pool a browser cannot host. The module is also the Siemens half
+of the page's device detection (below).
 `node tools/recalc-check.mjs` exercises it against a real fullflash without a
-browser; `node tools/keysboot.mjs` boots one through every mode.
+browser; `node tools/keysboot.mjs` boots one through every mode. Device
+detection has its own pair: `node tools/detect-check.mjs` (headless, every
+dump in `fullflashes/`) and `node tools/detect-web.mjs` (through the page,
+including the boards.tar wiring).
 
 ## Native (Linux) build
 
@@ -181,9 +189,11 @@ and the lockstep gate cover.
                         qemu-pmb887x master; the ONLY qemu source tree
                         (wasm and native builds alike). See doc/upstream-branch.md.
   pmb887x-emu/          git submodule: the siemens-mobile-hacks meta-repo
-                        (branch wasm-patches) whose qemu submodule pin is
-                        the same revision; initialised for reference, not
-                        built from
+                        @ master; its qemu submodule is not used (the root
+                        qemu/ submodule is the build source), but the repo is
+                        the source of the siemensfw library the page compiles
+                        for key recalculation, ESN recovery and Siemens
+                        device detection (scripts/build-recalc-wasm.sh)
   build.sh              one-shot WASM build (toolchain → deps → qemu →
                         site/dist-jit, the page default; TCI=1 also builds
                         site/dist)
@@ -200,7 +210,8 @@ and the lockstep gate cover.
     sync-bsp.sh         bsp checkout @ pin → build/bsp
     pack-boards.sh      build/bsp board configs → site/dist/boards.tar (run by
                         every deploy path)
-    build-recalc-wasm.sh  site-src/recalc + pmb887x-emu's siemens_recalc.cpp →
+    build-recalc-wasm.sh  pmb887x-emu's siemensfw library (src/siemens) +
+                        the page's glue (site-src/recalc) →
                         site/dist/siemens-recalc.wasm (likewise)
     build-qemu.sh       submodule → wasm64 TCG backend build → site/dist-jit/
                         (the default) + boards.tar; TCI=1 also builds the
@@ -220,7 +231,7 @@ and the lockstep gate cover.
     run-tcg-isa.sh      guest op-suite gate (every built backend,
                         byte-compared against the native JIT)
     run-lockstep.sh     native cross-backend lockstep gate
-  site-src/recalc/      emcc glue around pmb887x-emu's siemens_recalc.cpp
+  site-src/recalc/      emcc glue around the siemensfw library
                         (the only C++ here outside the submodules)
   tests/
     tcg-isa/            guest op-suite (bare-metal ARM926 versatilepb image
@@ -283,11 +294,17 @@ Select with `-display wasm` — the same way `-display none` works.
   already here verbatim (same patch-id), and its remaining differences are
   a `dsp_hexdump()` that indexes words where the offset counts bytes, the
   pre-fix `dsp_realize()`, and two `#if 0` debug blocks.
-- bsp (pmb887x-dev) `21fdacb` — bsp master merged into the branch that
-  carries the LG `[rtc] format = "calendar"` the LG firmware needs.
-  Master is where `[peripheral.RF] type = "hd155153np"` — a device the
-  emulator has no table entry for — got commented out, which is why
+- bsp (pmb887x-dev) `23fc945` — bsp master (END_CALL on SGOLD, WHBABCON
+  flags), plus perk11's LG `[rtc] format = "calendar"` (PR#6 of
+  siemens-mobile-hacks/pmb887x-dev, still unmerged upstream) kept on top:
+  `scripts/sync-bsp.sh` does the merge itself, so a fresh clone reproduces
+  it. Master is also where `[peripheral.RF] type = "hd155153np"` — a device
+  the emulator has no table entry for — got commented out, which is why
   there is no longer a `bsp-patches/` directory to apply.
+- pmb887x-emu `4ba4a58` — master. Not built from (qemu comes from the root
+  submodule); it is the source of the siemensfw library (`src/siemens`)
+  that `scripts/build-recalc-wasm.sh` compiles for the page's Siemens-key
+  and device-detection module.
 - emsdk 4.0.10, glib 2.84.0, pixman 0.44.2, zlib 1.3.2, libffi v3.5.2
   (mirrors qemu's `emsdk-wasm64-cross.docker`).
 
