@@ -441,6 +441,92 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 ## Round log (newest first)
 
+## Update (2026-09-17, round twenty-nine: the wake that was published too early — 0117)
+
+**Not a perf round.** KE800 did not boot on Android at all: the splash
+logo came up and the HUD sat at `1.00× · 0.0 MIPS · 0 fps · 0 halt/s`
+forever. The cause was a **lost main-loop wakeup in the wasm build**, and
+it has been on this port since the futex wait was written.
+
+**The protocol.** Emscripten's `poll()` cannot sleep, so
+`os_host_main_loop_wait` sleeps in `emscripten_futex_wait(&ml_futex_seq,
+ml_wait_seq, timeout)`, with `ml_wait_seq` snapshotted in
+`main_loop_wait()` *before* the timeout is computed. Every waker goes
+through `qemu_main_loop_wake()`. Two defects, each of which loses an
+edge:
+
+- `qemu_main_loop_wake()` incremented the sequence word with a **read, an
+  add and a store in the open**. Wakers run concurrently as a matter of
+  course — `qemu_notify_event()` issues one itself and a second through
+  `aio_notify()`, and the vCPU notifies on every `timer_mod` — so a waker
+  preempted between its read and its store writes back a value the waiter
+  has already snapshotted, erasing its own wake.
+- `aio_notify()` issued its wake at the **top of the function**, before
+  the `smp_wmb()` / `qatomic_set(&ctx->notified, true)` that publish the
+  work. The main loop can wake on it, look, find nothing published and
+  sleep again — and the store that follows carries no wake of its own.
+
+**Why it is fatal on KE800 and invisible on the Siemens boards.** The LG
+boards boot with **icount off** (`site/app.js`), and with icount off the
+main loop is the only thing that runs `QEMU_CLOCK_VIRTUAL` deadlines —
+the vCPU never exits for a virtual deadline (the comment at
+`main_loop_wait` already says so, from the *previous* hang this caused).
+So a lost edge is not a delay, it is a stop: the loop sleeps out its
+timeout, `INFINITY` when no timer is armed, the vCPU blocks on the device
+completion that timer owed it, and the guest is dead. Under icount the
+vCPU runs those timers itself and the same defect never shows.
+
+**How it was proven, which is the transferable part.** A race you hit
+once every few boots cannot be A/B'd on a clock. The first attempt — 14
+boots per arm under CPU contention, two dists — read **2/14 frozen
+against 0/14**: directional, not a result. What settled it was
+`W64_AIOLAG=<n>`, a temporary probe that **reinstates the wrong order and
+widens its window**. On a completely idle machine:
+
+| `W64_AIOLAG` | order | result |
+|---|---|---|
+| 0 | wake after publish (the fix) | boots, 44–108 MIPS |
+| 20 | wake before publish, widened | **frozen at 977 M insns, 0.00 MIPS, 0 halt/s, vratio 1.00** |
+| 200 | same | **frozen at 912 M** |
+
+That is the phone's exact signature, including the occasional
+0.12–0.16 MIPS sliver, produced deterministically with no load. **When
+the suspected mechanism is a race, do not try to make the race more
+likely — build the knob that makes it certain**, and let host speed be
+the thing that decides only how often the natural window is hit. Also
+worth keeping: during a natural freeze **every** diag counter is still,
+`execIter` and `mlWake` included — vCPU and main loop both parked, which
+is what rules out a timer storm without another build.
+
+**Ruled out along the way**, each cheaply: the module budget; memory
+(KE800 RSS 1.70 GB against S75 1.65 GB, within 50 MB despite KE800's
+128 MiB flash); the real-time cap (**inert without icount** — `-icount`
+is not passed for LG, so `icount_configure()` never runs); the dist
+default (already `dist-jit`); the SCU watchdog (it reboots, it does not
+freeze); plain host slowness (`W64_INTERP_ALL=1` at 12.7 MIPS boots
+fine). Two tool traps cost real time: **`taskset` does nothing to
+Chrome** (it resets its own affinity — `taskset -cp` reads back `0-31`),
+so CPU contention is the only way to model a slow host; and a
+`pgrep -f <script>` waiter **matches its own command line**, so a chained
+run never starts.
+
+**`site/app.js` §6b is the other half of the fix.** The page claimed
+"Running · 0:21" over a corpse and surfaced nothing — on a phone there is
+no console to read. It now calls a stall when instructions, halts *and*
+display reads are frozen **together** for 15 s (all three, because a
+guest asleep in WFI stops retiring instructions but its halt count still
+moves; 15 s because a slow phone boot must never be called dead), shows
+an overlay with the last line qemu managed to print, marks the pill
+`· stopped`, and puts `stalled`/`fatal`/`log` into **Copy diagnostics**.
+Worker deaths are captured too: a pthread that aborts or traps surfaces
+only as a main-thread `error` event, and without that hook the vCPU dying
+is completely silent.
+
+**Still open on the phone.** If a KE800 boot stalls again with the fix
+in, `?icount=shift=3,sleep=off` is a one-URL, no-build experiment that
+implicates the timing model instead, and would argue for changing the LG
+default.
+
 ## Update (2026-09-17, round twenty-eight cont.: the guest's own exceptions, counted — 0114–0116)
 
 **0114 (`b4559d83`): the C-side callers get the probe the generated code

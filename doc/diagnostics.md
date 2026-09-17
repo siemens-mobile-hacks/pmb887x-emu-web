@@ -196,6 +196,33 @@ exception is what breaks a TB chain. All of these are cold by
 construction: the hottest is `armIrq`, two orders below the
 `WASM_DIAG_HOT()` paths above.
 
+## When the guest stops dead (`site/app.js` §6b)
+
+The vCPU is a worker thread and the page's state machine never hears
+about one that dies or wedges, so a dead guest used to read "Running ·
+0:21" behind a frozen splash screen — which is exactly what the round-29
+lost-wakeup bug looked like on a phone, where there is no console to read
+a log from.
+
+The page now watches three counters and calls a stall when instructions
+(`_wasm_insns`), halts (`wasm_memstat[halt]`) and display reads
+(`_wasm_fb_updates`) are frozen **together** for 15 s. All three,
+because a guest asleep in WFI stops retiring instructions while its halt
+count keeps moving and the display keeps being read — one counter alone
+cannot tell idle from dead. Fifteen seconds because a GC pause, a
+compile burst or a merely slow phone must never be called dead, and it
+still lands while the user is still looking at the splash.
+
+What you get: the pill goes `· stopped` and turns red, an overlay says
+how long it has been still plus either the worker's fatal message or the
+last non-blank line qemu printed, and **Copy diagnostics** carries
+`stalled`, `fatal` and a 40-line `log` tail (also on `window.__qemutail`).
+The fatal message needs its own hook — a pthread that aborts, traps or
+fails an allocation surfaces on the main thread as an `error` event and
+nowhere else, so without the listener and `onAbort` the vCPU dying is
+completely silent. The detector clears itself if any of the three
+counters moves again, so a guest that recovers un-stalls.
+
 ## Scripts that matter
 
 **Gates** (correctness — parallel-safe, run them through

@@ -758,6 +758,57 @@ It is not a budget to spend on a cheaper thing placed before it.  On
 this backend, only a scheme that *replaces* the probe outright can
 collect any of the 5 %.
 
+## A wake must be published after the work it advertises
+
+The emscripten main loop cannot sleep in `poll()`, so it sleeps in
+`emscripten_futex_wait` on a sequence word (`ml_futex_seq`,
+`util/main-loop.c`), snapshotted before the timeout is computed.  Every
+waker goes through `qemu_main_loop_wake()`.  Two rules fall out of that,
+and the wasm port had both wrong:
+
+- **The sequence word is an atomic counter, not a variable.** It was
+  incremented with a read, an add and a store in the open.  Two threads
+  wake concurrently as a matter of course — `qemu_notify_event()` issues
+  one itself and a second through `aio_notify()`, and the vCPU notifies
+  on every `timer_mod` — so a waker preempted between its read and its
+  store writes back a value the waiter has already snapshotted, erasing
+  its own wake.
+- **The wake goes last.** `aio_notify()` issued the futex wake at the
+  *top*, before the `smp_wmb()` / `qatomic_set(&ctx->notified, true)`
+  that publishes the work.  The main loop can wake on it, look, find
+  nothing published and sleep again — and the store that follows carries
+  no wake of its own.  A wake spent on an empty look is a wake lost.
+
+Either one loses an edge, and on a board with **icount off the main loop
+is the only thing that runs `QEMU_CLOCK_VIRTUAL` deadlines** (see
+Timing model, and the comment at `main_loop_wait`).  So a lost edge is
+not a delay, it is a stop: the loop sleeps out its timeout — `INFINITY`
+when no timer is armed — the vCPU blocks on the device completion that
+timer owed it, and the guest is dead with every counter frozen.  That is
+the KE800-on-Android bug: 0.00 MIPS on the splash screen, `halt/s` 0,
+vratio 1.00, `execIter` and `mlWake` still along with everything else.
+Under icount the same defect is invisible, because the vCPU runs those
+timers itself.
+
+**How it was established, and the rule behind that.** A race you hit
+once every few boots cannot be A/B'd on a clock — the first attempt,
+14 boots per arm under CPU contention, read 2/14 frozen against 0/14,
+which is directional and proves nothing.  What proved it was a
+`W64_AIOLAG=<n>` probe that **reinstated the wrong order and widened its
+window**: on a completely idle machine, `0` (wake after publish) boots
+at 44–108 MIPS, `20` freezes at 977 M instructions and `200` at 912 M,
+both with the phone's exact HUD signature.  When the suspected mechanism
+is a race, do not try to make the race more likely — build the knob that
+makes it *certain*, and let the host's speed be the thing that decides
+only how often the natural window is hit.
+
+Corollary for tooling: the page could not tell a dead guest from a slow
+one, so it said "Running · 0:21" over a corpse.  `site/app.js` §6b now
+calls it: instructions, halts and display reads frozen *together* for
+15 s is a thread that is gone, and the overlay carries the last line
+qemu managed to print.  A phone has no console; the only report you will
+get is the one the page can make by itself.
+
 ## What a cross-thread wake really costs (round twelve)
 
 The wake is not the futex call.  It is the **BQL round trip behind it**:

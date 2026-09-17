@@ -174,6 +174,29 @@ let slow = false;
 // budgets: a stall is repaid, but never by more than 500 ms of sprinted
 // clock. §6 stays quiet while banked (see trackSpeed).
 let rtcapMode = 0;
+// §6b: the guest has stopped executing while the page still believes it is
+// running. The vCPU is a worker thread and the state machine above never
+// hears about one that dies or wedges — the run stays "Running · 0:21" with
+// a dead guest behind it, which is what an Android KE800 boot looks like.
+// Only the counters can tell: insns, halts and display updates frozen
+// *together* is a thread that is gone, not a guest that is idle or slow.
+let stalled = false;
+// the last thing qemu said before it stopped, and whatever killed a worker
+let fatalMsg = null;
+const logTail = [];
+window.__qemutail = logTail;
+
+// A pthread worker that throws — an abort(), a wasm trap, a failed
+// allocation — surfaces on the main thread as an error event and nowhere
+// else: emscripten rethrows it out of worker.onerror. Without this the
+// vCPU dying is completely silent, which is why a stalled guest could not
+// be told apart from a slow one.
+function noteFatal(what) {
+  fatalMsg ??= String(what);
+  console.log("[qemu fatal]", what);
+}
+addEventListener("error", (e) => noteFatal(e.message || e.error || "error"));
+addEventListener("unhandledrejection", (e) => noteFatal(e.reason));
 
 const statusEl = $("status");
 const statusTextEl = $("status-text");
@@ -673,7 +696,7 @@ function pillText() {
   const bare = !!recorder && phoneLayout.matches;
   // "· slow" is the pill's half of §6: the amber colour says something is
   // wrong, the word says what
-  const tail = slow ? " · slow" : "";
+  const tail = stalled ? " · stopped" : slow ? " · slow" : "";
   switch (emuState) {
     case "downloading": return `Downloading · ${fmtProgress(dlLoaded, dlTotal)}`;
     case "recovering": return `Recovering ESN · ${esnPct}%`;
@@ -729,7 +752,8 @@ function render() {
   const live = emuState === "running" || emuState === "paused";
 
   statusEl.dataset.state = emuState;
-  statusEl.className = "status" + (errorMsg ? " error" : slow && locked ? " warn" : "");
+  statusEl.className = "status"
+    + (errorMsg || (stalled && locked) ? " error" : slow && locked ? " warn" : "");
   statusTextEl.textContent = pillText();
   renderAction();
   const cap = captionText();
@@ -1394,6 +1418,14 @@ async function boot() {
     const logBuf = tracebuf ? [] : null;
     window.__qemulog = logBuf;
     const printErr = (t) => {
+      // Kept whether or not ?tracebuf=1 is on: when the guest stops dead
+      // these are the only account of why, and a phone has no console to
+      // read them back from (§6b). qemu ends most messages with a newline
+      // of their own, so blank lines would be most of the window.
+      if (t.trim()) {
+        logTail.push(t);
+        if (logTail.length > 40) logTail.shift();
+      }
       if (tracebuf) {
         logBuf.push(t);
         if (logBuf.length > 30000) logBuf.splice(0, 10000);
@@ -1435,6 +1467,7 @@ async function boot() {
     qemuModule = await factory({
       arguments: args,
       printErr,
+      onAbort: noteFatal,
       log: debug ? (t) => console.log("[log]", t) : undefined,
       onExit: (code) => {
         // hand the finished logs out before the runtime tears the page
@@ -2394,7 +2427,41 @@ function hudTick() {
     trackSpeed(hudNow.vratio, s.t);
     if (!hudEl.hidden) drawHud();
   }
+  trackStall(s);
   hudLast = s;
+}
+
+// §6b. Fifteen seconds is past any legitimate gap — a GC pause, a compile
+// burst, a phone that is merely slow — so a boot in slow motion is never
+// called dead, and it still lands while the user is looking at the splash.
+// All three counters must be still: a guest asleep in WFI stops retiring
+// instructions, but the halt count moves every time it wakes, and the
+// display keeps being read.
+const STALL_MS = 15000;
+let stallMark = null, stallSince = 0;
+
+function trackStall(s) {
+  if (!stallMark || s.insns !== stallMark.insns || s.halts !== stallMark.halts
+      || s.fb !== stallMark.fb) {
+    stallMark = s;
+    stallSince = s.t;
+    if (stalled) { stalled = false; hideOverlay(); render(); }
+    return;
+  }
+  if (stalled || s.t - stallSince < STALL_MS) return;
+  stalled = true;
+  showOverlay("Guest stopped", stallReason());
+  render();
+}
+
+// The guest is gone and the page is the only witness: say what the last
+// thing qemu managed to say was, so a report from a phone carries it.
+function stallReason() {
+  const secs = Math.round((performance.now() - stallSince) / 1000);
+  const why = fatalMsg ? `Failed with: ${fatalMsg}`
+    : logTail.length ? `Last log: ${logTail.at(-1)}`
+    : "Nothing was logged.";
+  return `No guest instructions for ${secs}s. ${why} — Copy diagnostics has the rest.`;
 }
 
 // §6: three consecutive seconds under 0.80x turn the pill amber, three back
@@ -2429,6 +2496,8 @@ function hudReset() {
   hudLast = null; hudNow = null; hudV0 = null; hudT0 = performance.now();
   lagV0 = null; lagT0 = hudT0;
   slowSince = 0; fastSince = 0; slow = false; rtcapMode = 0;
+  stalled = false; stallMark = null; stallSince = hudT0; fatalMsg = null;
+  logTail.length = 0;
   if (!hudEl.hidden) drawHud();
 }
 
@@ -2574,6 +2643,9 @@ function diagnostics() {
     // rtcap makes vratio readable: 0.6x is a slow host under strict or
     // budget, but a guest still catching up under banked
     device: currentDevice(), state: emuState, slow, exitCode,
+    // §6b: a run that says "running" with a dead guest behind it, and the
+    // last thing qemu said — the whole report a stalled phone can give
+    stalled, fatal: fatalMsg, log: logTail.slice(),
     // the phone column's height budget, for "the keypad does not fit"
     // reports: the viewport runs behind the system bars, so `inner` can
     // exceed what is actually on screen by `safeArea` (Android's gesture bar)
