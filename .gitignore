@@ -55,3 +55,9 @@ tests/tcg-isa/*.elf
 
 # playwright browser download (tools/chrome) — a local binary, never committed
 tools/chrome/
+
+# sjlj microbenchmark build output (regenerate: tools/sjljbench.mjs)
+/site/sjlj/
+
+# j2mebench local host-tuning state, not shared
+/tests/.j2me-*

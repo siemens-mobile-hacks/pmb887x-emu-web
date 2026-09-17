@@ -45,7 +45,8 @@ const errs = [];
 p.on("pageerror", (e) => errs.push(String(e).slice(0, 200)));
 p.on("console", (m) => { const t = m.text(); if (/RuntimeError|Aborted\(/.test(t)) errs.push(t.slice(0, 200)); });
 
-await p.goto(`http://127.0.0.1:${port}/?dist=${dist}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+const extraQ = process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : "";
+await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ}`, { waitUntil: "domcontentloaded", timeout: 120000 });
 await p.selectOption("#startup", "ONLINE");
 await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", [here + "../fullflashes/" + flash]);

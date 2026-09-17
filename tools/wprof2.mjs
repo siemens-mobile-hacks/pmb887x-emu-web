@@ -168,11 +168,41 @@ try {
     perWorker.push({ idx: i++, sum: wsum, totals: wtotals });
   }
   const topN = Number(process.env.PROF_TOP || 40);
+  // Which module a frame belongs to, which is the only attribution here
+  // that is trustworthy.  A dynamically instantiated TB module has no
+  // symbol table, so V8 reports the nearest name from the main module's
+  // -- "helper_gvec_smax32 wasm://wasm/002e024e" is emitted TB code, not
+  // that helper.  The url is right even when the name is nonsense.
+  const bucketOf = (key) => {
+    if (key.includes("wasm://wasm/")) return "emitted TB code";
+    if (key.includes("qemu-system-arm.wasm")) return "main module (C)";
+    if (key.includes("qemu-system-arm.js")) return "glue JS";
+    if (/\b(idle|program|garbage collector)\b/.test(key)) return "idle / v8";
+    return "page JS + browser";
+  };
   for (const w of perWorker) {
     const label = w.idx === 0 ? "page main thread" : "worker #" + (w.idx - 1);
     console.log("\n=== " + label + " self-time (total " + (w.sum / 1000).toFixed(0) + "ms) ===");
     for (const [k, v] of [...w.totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN)) {
       console.log((v / 1000).toFixed(0).padStart(8) + "ms", (100 * v / w.sum).toFixed(1).padStart(5) + "%", k);
+    }
+    // The rollup covers every sample, not just the printed ones: on the
+    // vCPU the top-40 is a minority of the worker and the tail is
+    // thousands of one-sample TB functions.
+    const roll = new Map();
+    let busy = 0;
+    for (const [k, v] of w.totals) {
+      const b = bucketOf(k);
+      roll.set(b, (roll.get(b) || 0) + v);
+      if (b !== "idle / v8" && !k.startsWith("emscripten_futex_wait ") &&
+          !k.startsWith("qemu_cond_wait_impl ")) busy += v;
+    }
+    console.log("  -- all " + w.totals.size + " frames by module, busy=" +
+                (busy / 1000).toFixed(0) + "ms --");
+    for (const [k, v] of [...roll.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log((v / 1000).toFixed(0).padStart(8) + "ms",
+                  (100 * v / w.sum).toFixed(1).padStart(5) + "% of thread",
+                  (busy ? (100 * v / busy).toFixed(1) : "-").padStart(5) + "% of busy", k);
     }
   }
   // inclusive time (self + everything called from it) per function, for
