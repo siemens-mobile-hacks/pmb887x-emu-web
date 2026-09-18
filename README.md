@@ -277,6 +277,39 @@ emscripten builds`) adds `ui/wasm.c` (compiled only for `host_os ==
 
 Select with `-display wasm` — the same way `-display none` works.
 
+## Sound
+
+`audio/wasmaudio.c` (again `host_os == 'emscripten'` only) is a mixeng
+backend selected with `-audio wasm`. It publishes S16 frames into a fixed
+ring that lives in the wasm heap; because the heap is a `SharedArrayBuffer`,
+`site/audio-worklet.js` reads those same bytes on the audio render thread.
+Nothing is copied per buffer and the main thread is never on the path.
+
+The page passes `out.frequency=<AudioContext.sampleRate>,out.channels=2`, so
+the guest's mixer resamples the AFE's 8/11/22 kHz mono straight to the output
+device and the worklet copies frames rather than interpolating them.
+
+Pacing is the ring itself: a full ring means a short `write()`,
+`audio_generic_run_buffer_out()` stops there, the AFE FIFO backs up and the
+HLE DSP stops asking for refills — so a guest running faster than real time
+is held to the speed its audio is actually consumed at. Muting is *not* the
+same as having no audiodev: the backend keeps consuming at the nominal rate
+when nobody is listening, so a mute drops audio instead of stalling the
+phone. `?sound=off` leaves the machine without an audiodev at all, which is
+what the benchmarks use.
+
+Verify with `tools/audioprobe.mjs` (`TOGGLE_AT=` exercises mute/unmute):
+
+```sh
+TESTFLASH=fullflashes/KE800-v11b.bin node tools/audioprobe.mjs
+```
+
+The LG KE800 startup jingle lands ~31 s in at peak 27844, matching a native
+`-audio wav` capture. The Siemens boards stay silent: their DSP firmware
+issues a PCMPLAY variant (`switch=0x0140`/`0x0240`, plus unknown CH2 commands
+0x31/0x32) that `hw/arm/pmb887x/dsp.c` rejects as unknown — a separate
+reverse-engineering job, unrelated to this backend.
+
 ## Pins
 
 `versions.env` pins:

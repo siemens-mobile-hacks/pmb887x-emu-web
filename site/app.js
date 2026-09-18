@@ -805,6 +805,10 @@ function render() {
   // fullscreen stands down while a capture runs — it is not something to
   // toggle mid-capture anyway, since it resizes the canvas under the recorder.
   if (fsSupported) fsBtn.hidden = pillRec;
+  // The speaker belongs to the LG boards — on anything else the button
+  // would be a dead switch, so it only appears once one of them is
+  // selected (in either mode; the dropdown is locked while a run is live).
+  soundBtn.hidden = !currentDevice()?.startsWith("lg-");
   const finishing = !!recorder && !pillRec;
   recBtn.title = finishing ? "Finish recording and save the .webm"
     : recBtn.dataset.unsupported ? "this browser has no MediaRecorder"
@@ -1450,8 +1454,16 @@ async function boot() {
       (device.startsWith("lg-") ? "none" : "shift=3,sleep=off");
     const trace = qsp.get("trace");
     const extraArgs = (qsp.get("qargs") ?? "").split(/\s+/).filter(Boolean);
+    // The guest's mixer resamples straight to the output device's own rate,
+    // so the worklet copies frames instead of interpolating them. ?sound=off
+    // leaves the machine without an audiodev at all — the benchmark harnesses
+    // use it so the audio timer never enters a measurement.
+    const audioArgs = qsp.get("sound") === "off"
+      ? []
+      : ["-audio", `wasm,out.frequency=${audioRate()},out.channels=2`];
     const args = [
       "-display", "wasm",
+      ...audioArgs,
       ...(icount === "none" ? [] : ["-icount", icount]),
       "-machine", "pmb887x",
       // always writable: the image lives in MEMFS, so the firmware's writes
@@ -1568,6 +1580,7 @@ async function boot() {
   exportsReady = true;
   runStartedAt = Date.now();
   setEmuState("running");
+  attachAudio();   // needs liveModule(); the worklet loads on its own time
   if (noEfa) {
     captionEl.textContent = "No EFA block — the firmware may factory-reset.";
     captionEl.hidden = false;
@@ -1900,6 +1913,114 @@ for (const [chk, key, apply] of [
 }
 
 /* ------------------------------------------------------------------ */
+/* Sound                                                                */
+/* ------------------------------------------------------------------ */
+
+// qemu's emscripten audio backend (qemu/audio/wasmaudio.c) publishes S16
+// frames into a ring that lives in the wasm heap; audio-worklet.js drains it
+// on the audio render thread, reading the same SharedArrayBuffer. Nothing is
+// copied through here per buffer — this side only sizes the guest's mixer to
+// the output device, hands the worklet the ring's address, and owns the one
+// word the backend reads to decide whether anybody is listening.
+//
+// Muted is not the same as "no audiodev": the backend keeps consuming at the
+// nominal rate when nobody listens, so the guest's PCM pipeline drains either
+// way and a mute never changes what the firmware is timing against.
+const RING_WORDS = 16, RING_ACTIVE = 6, RING_UNDERRUNS = 8;
+const SOUND_KEY = "opt-sound";
+let audioCtx = null;      // one per page — boots reuse it
+let audioNode = null;
+let audioHdr = null;      // Int32Array over the ring header while attached
+let workletReady = null;  // addModule() promise, resolved once
+let soundOn = localStorage.getItem(SOUND_KEY) !== "0";
+
+function audioContext() {
+  if (audioCtx) return audioCtx;
+  const AC = window.AudioContext ?? window.webkitAudioContext;
+  if (!AC) return null;
+  try {
+    audioCtx = new AC({ latencyHint: "interactive" });
+  } catch {
+    return null;
+  }
+  // A backgrounded tab suspends the context: stop claiming a listener, or the
+  // ring fills and back-pressure stalls the guest's audio pipeline.
+  audioCtx.onstatechange = () => setRingActive(soundOn && audioCtx.state === "running");
+  return audioCtx;
+}
+
+// What the guest's mixer resamples to. Matching the device's own rate leaves
+// the worklet copying frames instead of interpolating them.
+function audioRate() {
+  return audioContext()?.sampleRate ?? 48000;
+}
+
+function setRingActive(on) {
+  if (audioHdr) Atomics.store(audioHdr, RING_ACTIVE, on ? 1 : 0);
+}
+
+async function attachAudio() {
+  const m = liveModule();
+  const ac = audioContext();
+  if (!m?._wasm_audio_ring_ptr || !ac) return;
+  const ptr = Number(m._wasm_audio_ring_ptr());
+  if (!ptr) return;
+  try {
+    workletReady ??= ac.audioWorklet.addModule(new URL("./audio-worklet.js", import.meta.url));
+    await workletReady;
+    audioNode = new AudioWorkletNode(ac, "qemu-audio", {
+      numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+    });
+    audioNode.connect(ac.destination);
+    audioNode.port.postMessage({ type: "ring", buffer: m.HEAPU8.buffer, ptr });
+    audioHdr = new Int32Array(m.HEAPU8.buffer, ptr, RING_WORDS);
+    if (soundOn) await ac.resume();
+    setRingActive(soundOn && ac.state === "running");
+  } catch (e) {
+    workletReady = null;   // a failed addModule must not poison the next boot
+    console.log("[audio]", e);
+  }
+}
+
+function detachAudio() {
+  setRingActive(false);
+  audioHdr = null;
+  if (audioNode) {
+    audioNode.port.postMessage({ type: "stop" });
+    audioNode.disconnect();
+    audioNode = null;
+  }
+}
+
+const soundBtn = $("btn-sound");
+function renderSound() {
+  soundBtn.setAttribute("aria-pressed", soundOn ? "false" : "true");
+  soundBtn.setAttribute("aria-label", soundOn ? "Mute sound" : "Unmute sound");
+  soundBtn.title = soundOn ? "Mute the phone's speaker" : "Unmute the phone's speaker";
+}
+soundBtn.addEventListener("click", async () => {
+  soundOn = !soundOn;
+  localStorage.setItem(SOUND_KEY, soundOn ? "1" : "0");
+  renderSound();
+  const ac = audioContext();
+  if (!ac) return;
+  if (soundOn) {
+    try { await ac.resume(); } catch { /* no gesture yet: the next Start has one */ }
+  }
+  setRingActive(soundOn && ac.state === "running");
+});
+renderSound();
+
+// Everything above is module-scoped, so a harness driving the page has no
+// other way to ask whether the context actually started (tools/audioprobe.mjs).
+window.__audio = () => ({
+  state: audioCtx?.state ?? null,
+  rate: audioCtx?.sampleRate ?? 0,
+  on: soundOn,
+  attached: !!audioHdr,
+});
+
+/* ------------------------------------------------------------------ */
 /* LCD painting                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -1946,6 +2067,7 @@ function stopPainting() {
   cancelAnimationFrame(rafHandle);
   clearInterval(serialTimer);
   stopHudTimer();
+  detachAudio();
 }
 
 /* ------------------------------------------------------------------ */

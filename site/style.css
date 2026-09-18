@@ -200,6 +200,16 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   display: block; font-size: 0.72rem; color: #ffc4c4;
   font-variant-numeric: tabular-nums;
 }
+/* the speaker's waves (and the cross that replaces them) are strokes, not
+   fills — the body of the speaker is the only filled shape */
+.snd-wave {
+  fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+#btn-sound .snd-off { display: none; }
+#btn-sound[aria-pressed="true"] { color: var(--muted); opacity: 0.75; }
+#btn-sound[aria-pressed="true"] .snd-on { display: none; }
+#btn-sound[aria-pressed="true"] .snd-off { display: block; }
 
 /* ---------------- page layout ---------------- */
 /* The phone is the page: one column that fills whatever the header leaves,

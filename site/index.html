@@ -162,6 +162,22 @@
           <button type="button" id="btn-rec-finish" class="pill-btn outline danger"
             aria-label="Finish recording">Finish</button>
         </div>
+        <!-- The phone's own speaker. Off mutes the output device but leaves
+             the guest playing, so nothing it is timing against changes.
+             Only the LG boards drive a speaker, so app.js keeps this hidden
+             until one of them is the selected device. -->
+        <button type="button" id="btn-sound" class="icon-btn"
+          title="Mute the phone's speaker" aria-label="Mute sound"
+          aria-pressed="false" hidden>
+          <svg class="snd-on" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9.5v5h3.2L12 18.8V5.2L7.2 9.5H4z"/>
+            <path class="snd-wave" d="M14.6 9.2a4 4 0 0 1 0 5.6M17.2 6.7a7.5 7.5 0 0 1 0 10.6"/>
+          </svg>
+          <svg class="snd-off" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9.5v5h3.2L12 18.8V5.2L7.2 9.5H4z"/>
+            <path class="snd-wave" d="M15 9.5l5 5M20 9.5l-5 5"/>
+          </svg>
+        </button>
         <!-- The browser and system bars are most of the height the keypad is
              competing for on a phone, and fullscreen is the only way to get
              them back. app.js hides this where the Fullscreen API is not
