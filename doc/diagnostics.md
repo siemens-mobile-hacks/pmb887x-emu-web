@@ -136,6 +136,8 @@ comparable to anything. Never use one as an A/B leg.
 | `W64_TLBCHEAP=<n>` | the probe replaced by an `n`-word per-site check against a fake slot — the floor of a cheaper probe design |
 | `W64_TLBHIT=1` | run the per-site page cache for real (check, then fill on miss) and count hits/misses: the page-stability hit rate a real design would see between flushes |
 | `W64_TLBSIMD=<n>` | the same cache with both words read as one `v128.load` and the generation kept in a local — one load against the current probe's three |
+| `W64_TLBHOIST=<n>` | duplicate exactly the mask/table pair of `i64.load`s `n` times per memop, so the N=1→2 step prices what hoisting the pair into TB locals could remove. **+2.61 % of wall, and the second step is −0.004 ms/Mi** — the first pair is the whole cost, so a hoist that keeps only the first memop of a run collects `ldstRun/ldstGen` = 66 % of it. Closed in round thirty-eight |
+| `W64_GDUP=<n>` | emit `n`−1 extra copies of every guest-register load and store in `temp_sync`/`temp_load`, so the slope prices the whole env-traffic row. Built and unrun |
 
 **Verification and debug** — correctness cross-checks and console noise.
 

@@ -6,6 +6,57 @@ for it, and how it was established. The live working rules for perf
 work are in [optimization-playbook.md](optimization-playbook.md); this
 file is the "why" behind them and behind the timing model.
 
+## A second `--cross-file` replaces the first one's built-in options
+
+**A build flag that appears in the cross file is not thereby on a compile
+line. Check `build.ninja`, not the file you wrote it into.**
+
+`--extra-cflags="-O3 -pthread -DWASM_BIGINT -sMEMORY64=2 -DW64_MEM32"`
+reached `config-meson.cross` exactly as intended (`configure:1856`,
+`c_args = [...]`). None of it reached a compile command. meson is invoked
+with two cross files —
+
+```
+--cross-file=build/qemu-wasm64/config-meson.cross        (generated, has the flags)
+--cross-file=qemu/configs/meson/emscripten.txt           (checked in, line 2)
+```
+
+— and the later one's `c_args = ['-pthread']` **replaces** the earlier
+list rather than extending it. So every wasm build in this tree has
+compiled at meson's default `-O2 -g`: 2240 `-O2` against 0 `-O3` in the
+deployed `build/qemu-wasm64/build.ninja`.
+
+Two flags rode through anyway, and the difference is the rule. `-pthread`
+survived because the *overriding* file names it. `-sMEMORY64=2` survived
+because configure puts it in `CPU_CFLAGS`, which becomes the compiler's
+own argv in `[binaries] c = ['emcc','-m64','-sMEMORY64=2']` — not an
+option meson merges, but part of the command. **Flags that must not go
+missing belong in the binary spec, beside the flag they have to agree
+with, not in a list something else can replace.**
+
+The failure was silent for as long as nothing read the dropped value.
+`-DWASM_BIGINT` is inert (no source tests it) and `-O3` only costs speed,
+so both sat unnoticed. `-DW64_MEM32` was the first one with teeth: the
+modules the JIT emits declare the memory type they import, the main
+module's memory had been lowered to 32-bit, and the mismatch surfaced as
+`LinkError: cannot import i32 memory as i64` on the first TB instantiated
+— a linker-shaped error whose actual cause was a missing `-D`.
+
+*How it was established:* the smoke leg of the A/B failed; `grep -c
+W64_MEM32 build.ninja` returned 0 while the same grep on
+`config-meson.cross` returned 5; `meson-log.txt`'s "Build Options:" line
+showed the two `--cross-file` arguments in order.
+
+*The check, which costs one line:* after configuring, grep `build.ninja`
+for a define you passed. It is the file the compiler is actually driven
+from. `meson configure <builddir>` with no other argument is the blunter
+version and reads the loss straight out: this tree reports
+`c_args  [-pthread]`, with `-O3`, `-DWASM_BIGINT` and `-sMEMORY64=1` —
+everything `--extra-cflags` asked for — simply absent. It also prints the
+built-in options beside it, which is how `optimization = 2` and
+`b_ndebug = false` turned up; both were invisible from the build script,
+because neither is anything the build script says.
+
 ## Timing model
 
 - **Siemens firmware needs virtual time decoupled from wall time.** The
@@ -426,6 +477,32 @@ rate when both counters stand on the same path.  The cheapest way to
 find them is to read the emitter, not the helper: work that TCG writes
 into the guest code is invisible to every C-side probe by
 construction, and mechanism K here was exactly that.
+
+**It happened again on 2026-09-17, on this same counter, with this
+lesson already written above.**  A handoff section read `pccHit`
+2.746/Mi against `lookup` 962.943/Mi as a "0.28 % hit rate", concluded
+the table was "redundant by construction", and queued an A/B to
+justify deleting it.  The A/B disagreed: with both PCC knobs off,
+`tbBytes/tbGen` fell 13.3 % (so the knob engaged) but wall rose 3.9 %
+and **`lookup` went 972.7 → 8688.4 /Mi, a factor of 8.9**.  The emitted
+probe was silently resolving seven-eighths of all exits; its hits are
+the lookups that never happen, so they appear in no counter at all —
+exactly what this lesson says.
+
+Two things generalise from the repeat:
+
+- **An effective cache can be invisible in the counter that bears its
+  name.**  Its successes are *absent events*.  The way to size one is
+  never its own hit counter — it is to turn it off and watch what the
+  downstream counter does.  `lookup` × 8.9 is a measurement; `pccHit`
+  was never one.
+- **Writing the lesson down did not prevent the repeat, because nothing
+  consulted it at the point of use.**  The section that erred cited
+  `pccHit` by name.  So: when a lesson is about a *specific named
+  counter*, put the warning where the counter is defined — in
+  `wasm-diag.h` next to `WASM_DIAG_PCC_HIT` — not only in this file.
+  A reader who greps the counter must meet the caveat; a reader who
+  greps this file is already being careful.
 
 ## A convenient hypothesis is the dangerous kind
 
@@ -1329,7 +1406,705 @@ Round eleven (0058–0064) profiled the device access path and found that
   counters that made it obvious took ten minutes to add — add the
   counter first.
 
-## Emscripten runtime
+## A comment explaining why you need not measure is the thing to measure
+
+The knob-sweep script carried a note saying wasm bound checks were not
+worth an arm, because V8 serves this memory with trap handlers and the
+checks therefore cost nothing.  It read as settled.  Round 35 spent one
+leg on `--js-flags=--no-wasm-bounds-checks` anyway: **−26.0 %**, larger
+than every improvement this workstream had shipped in thirty-four rounds
+put together.  About 1.08 ns of the 4.15 ns each guest ARM instruction
+costs — roughly three host cycles per guest instruction.
+
+The number refutes the comment by existing.  If trap handlers really
+served this memory, there would be no explicit checks for the flag to
+remove and the arm would have read 0 %.  So an effect size is evidence
+about the *mechanism*, not only about the magnitude: a flag that does
+nothing tells you the code is absent, and one that does a great deal
+tells you it is present and hot.  The comment had an argument where it
+needed an observation.
+
+Why it was so large here is worth keeping: it is not one check per
+access.  Every `CPUState` field touch is a check (~1.33 env memory ops
+per guest instruction), and every *guest* load or store is **four** —
+the inline TLB probe is three loads plus the data access.  Nor is it
+additive with the standing budget; the boundary row, the 5.07 % TLB
+probe and the ~23 % TB-entry row each already contain a share of it.
+
+The rule: when a one-line flag would reprice the entire budget if it
+moved, it costs one leg and you do not get to *reason* it to zero.  Sweep
+the cheap disprovable thing before the expensive plausible one.
+
+**It happened again on 2026-09-17, and the second instance shows the
+shape more clearly than the first.** `hflags.c` carried: "called 11.6 k
+times a second, which at any believable cost per call is under 0.3 %."
+Same structure — an arithmetic argument standing in for an observation,
+and persuasive enough that the row was nearly dropped a second time.
+When it was finally timed: **31.6 ns/call, 0.8–2.3 % of wall** depending
+on the game.
+
+What makes this instance instructive is *why* the argument failed, which
+was not the arithmetic.  "11.6 k/s" was measured, correct, and taken on
+an **idle** CX70; a J2ME game drives the same function 5× harder still
+between its own games, because the rate tracks the guest's SWI rate at
+~2.7 rebuilds per SWI.  The comment was true about what it measured and
+false as a dismissal, and nothing in its text said which.
+
+So the rule has a second half: **a rate is a property of a workload, not
+of a function.** Any comment that prices code from a measured rate must
+name the workload beside the number, or it will be read as general by
+the next person — including the person who wrote it.
+
+## Grep the logs before declaring a measurement owed
+
+The handoff carried a section arguing that pricing `arm_rebuild_hflags`
+needed "one build with `-DWASM_DIAG_TIME_PHASES`", called it "the
+cheapest unpriced row on the list", and queued it for the next rebuild.
+The counters were already in two logs on disk, from a build earlier the
+same day.  One `grep hflagsNs` would have closed the row; instead it was
+scheduled behind a forty-minute compile.
+
+The error was a **scope creep in a true statement**.  What was verified
+was narrow: *the 18:38 `postsweep.sh` rebuild* did not carry the flag —
+checked, correct.  What got written down was general: the measurement
+does not exist.  The gap between those two is invisible when you are the
+one who checked, because you remember the check and not its scope.
+
+This is cheap to defend against and the defence is mechanical:
+
+- Before writing "needs a build", grep the existing logs for the
+  counter's **output name**, not the macro.  `hflagsNs` appears in a
+  `perMi:` line; `WASM_DIAG_TIME_PHASES` appears nowhere in a log, and
+  grepping for the macro finds nothing and feels like confirmation.
+- A per-Mi counter from a spoiled run is still exact.  An
+  over-instrumented leg has a useless wall but correct ratios, so a leg
+  rejected for one purpose is not rejected for all — `nsrate` was 17 %
+  slow and still gave a `hflagsCalls/excSwi` ratio agreeing with the
+  clean leg to 2 %.
+- State the scope you actually checked.  "This build lacks the flag" and
+  "no build has the flag" differ by one grep and forty minutes.
+
+## A share's denominator must be the population its numerator came from
+
+The five `GSYNC_*` counters attribute each guest-register write-back to the
+liveness site that demanded it, and the natural thing to print is each
+cause as a percentage of `tcgGst`, the write-back counter.  Doing that
+printed `attributed 19.938 of 14.756 per Mi (135.1 %)`, with the surplus
+waved off in the script's own words as "the residue is allocator
+pressure".  A residue cannot exceed the whole, and that line should have
+stopped the round on the spot.
+
+The two counters count different populations.  `la_charge` fires once per
+global output arg that liveness marks `SYNC_ARG` — a sync **demand** —
+while `WASM_DIAG_TCG_GST` fires inside `temp_sync`, which emits nothing
+when the global is already coherent.  Demands ran 1.32–1.35× the stores.
+Nothing was miscounted; the ratio was simply between a numerator and a
+denominator that were never drawn from the same set.
+
+**The test costs one line: sum the parts.**  Against the demand total the
+five causes come to 100.0 % and 99.9 % — an exact partition, which is the
+positive evidence that the denominator is now the right one.  Against
+`tcgGst` they came to 135 % and 132 %, and two numbers that miss by
+different amounts are not a partition of anything.  Any counter family
+that claims to decompose a total owes this check before any share it
+prints is quoted.
+
+The correction moved a lever's bracket from 11.3–15.2 % down to
+8.3–11.5 % and changed no decision, which is the easy case.  It is worth
+noticing that the previous round's commit is titled *"the meter was wrong
+by a factor of two"*: two rounds running, the defect was in the
+denominator rather than in the mechanism being measured.  When a
+conversion factor is suspicious, suspect the meter before the machine.
+
+## Per-TB is not per-instruction: vary the denominator or you cannot falsify
+
+`tcgGst` counts guest-register write-back stores.  Divided by generated
+TBs it is 9.46 per TB, which reads unmistakably like a boundary cost —
+`wasm-diag.h` had filed it under one since round eleven, and the handoff
+doc drew the obvious conclusion in as many words: "neither grows with TB
+length, so they amortise directly: doubling the average TB halves both."
+
+Normalise by *guest instruction* instead and sweep TB length across a
+60 % range.  Stores per translated instruction are **0.939** at FTMAX 1,
+**0.972** at the default, **1.026** at FTMAX 4: as TBs lengthen they do
+not fall, they **rise**.  The mechanism is immediate once seen — folding
+through a branch is *what lengthens a TB*, every branch folded in is
+another brcond, and every brcond demands a write-back.  So lengthening
+TBs does not amortise register sync, it buys more of it, and that cost
+sits against the entry saving it was bought for.  It is also a candidate
+explanation for why the fold-through optimum turns over: FTMAX 4 is
+−2.0 %, but 6 is only −1.5 %.
+
+Flatness is the crude test.  The constructive one is to regress the
+per-TB count on TB length and read the two coefficients: the intercept
+is the boundary cost, the slope is the per-instruction cost.  Seven legs
+spanning 6.83 to 10.91 guest instructions per TB, R² ≥ 0.99 on all
+three:
+
+| counter | fixed per TB | per guest insn | what it says |
+|---|---|---|---|
+| env **loads** | 1.77 | 0.555 | 25 % fixed at base — the prologue reload, and this half really does amortise |
+| env **stores** | −1.45 | 1.149 | intercept *negative*: super-linear, no boundary term at all |
+
+A negative intercept is not a cost.  It is the fit reporting that the
+curve bends the wrong way for the story you brought it.  The two halves
+of "env traffic" are not the same kind of cost, and the single per-TB
+number had been wrong about both.
+
+**Then the units bit back, in the same way.**  The first run of that fit
+used `tbIcount` as the mean TB length and produced a clean, plausible,
+entirely wrong table — 2.82 fixed loads and 0.69 fixed stores per TB,
+stores flat at 0.68 per instruction.  But `WASM_DIAG_TB_ICOUNT` is the
+**sum** of `tb->icount` over translated TBs (`wasm-diag.h:112`), and
+every `perMi` value carries the same denominator already
+(`j2mebench.mjs:776`).  So mean TB length is `tbIcount/tbGen`, and a
+per-instruction rate is `x/tbIcount` — never `x/tbGen/tbIcount`, which
+divides by the TB count twice.  The wrong version put mean TB length at
+12.60 instructions instead of 9.73 and turned a rising store trend into
+a flat one, which is to say it inverted the finding.
+
+Both versions fit at R² ≈ 0.99.  **A high R² certifies that a line fits
+the points; it says nothing about whether the x-axis is the quantity you
+named it.**  Downstream the error was large: TB entries per Mi 79,340
+versus 102,745, and the entry price ~12 ns versus ~17 ns — the
+difference between the TB entry being a quarter of wall and nearly half
+of it.
+
+So: before dividing, read the counter's *definition*, not its name.
+`tbIcount` sounds like a mean and is a sum.
+
+The error was structural, not arithmetic.  "Per TB" was a ratio whose
+denominator had never been varied, so no observation could ever have
+contradicted it; it was a unit, being read as a claim.  The correction
+also shrank a downstream item: passing guest registers as call
+parameters can only remove the sync at block ends, never the sync that
+a faulting op or a helper requires, so the "17 env accesses per TB" it
+was priced against badly over-stated it.
+
+The rule: to test whether a cost is per-X, hold the work fixed, vary X,
+and normalise by something that is not X.  A ratio is only evidence
+about its denominator if you have moved the denominator.
+
+## A difference is only a denominator if it clears its own noise
+
+Round thirty-five priced a TB entry by dividing the wall that FTMAX 3→4
+bought by the fraction of entries it removed.  The entry count itself is
+not measured on this workload — `wasm_tbs()` returns 0 on the wasm64
+backend under icount unless `W64_TBSTATS=1`, so every result JSON carries
+`insnsPerTb: null` — so three rounds running, somebody substituted a count
+derived from whichever counter looked like a mean TB length.  It was
+`tbIcount` twice (79,340 then 81,096 entries/Mi, and a "13.6 % of wall"
+that stood in the budget for months) and `tbIcount/tbGen` once (102,745).
+
+Writing the algebra out looked like the fix, and it is a good trick worth
+keeping: with `L` the mean executed TB length, `r` the factor the arm
+multiplies it by and `Δt` the wall it buys, entries are `1e6/L`, the arm
+removes `1e6/L·(1 − 1/r)` of them, the per-entry price is
+`Δt·L/(1e6(1 − 1/r))` — and the total, price × count, is
+**`Δt/(1 − 1/r)`.  `L` cancels.**  The unmeasured quantity was never needed
+for the number anyone wanted.  Before hunting for a missing denominator,
+always ask whether the answer is a *ratio* of things already in hand.
+
+Then the cancelled form produced **43 % of wall**, three times the
+standing figure, and it was wrong too.  `r` was 1.048, so `1 − 1/r` was
+0.046 — and the round-to-round spread of translated TB length *within a
+single arm* is about 11 % (ft4 alone reads 9.449, 9.927, 10.481 across
+three rounds).  The divisor's error bar spanned zero.  A quotient whose
+denominator might be anything from 0 to 0.09 can be anything at all, and
+the algebra had made that invisible by turning two clean-looking
+measurements into one clean-looking number.
+
+Fitting instead of sloping fixed it.  `ms/Mi = 3.48 + 6.19/len` over all
+ten legs (R² = 0.89, `scratchpad/entryfit.py`) puts the entry at **15.8 %
+of wall** — restoring the 13.6 % the budget had carried and agreeing with
+round 23's independent 7.7 ns per transition.  Of the four pairings
+available in the same data, three give 18–22 % and only the one with the
+smallest, noisiest denominator gives 43 %.  The leg that makes the fit
+trustworthy is `ft1`, whose length change (−28 %) is the only one that
+dominates its own noise.
+
+Three rules, in the order they would have saved time.  **Before dividing
+by a difference, compare that difference to the spread of the same
+quantity within one arm** — if it does not clear it, there is no
+measurement there, however many digits the quotient has.  **Prefer a fit
+over all legs to a slope between two**, because a fit is visibly wrong
+when the points do not line up and a slope never is.  And **a derived
+count is not a measurement; the give-away is that it never disagrees with
+anything** — 79,340 and 102,745 differ by 29 % and neither was ever
+contradicted by an observation, because neither was one.
+
+## A translation-time counter weights by compilation, never by execution
+
+Even after `tbIcount/tbGen` was fixed to mean what it says — the mean
+length of a *translated* TB — it was still the wrong quantity for
+pricing a TB entry, and the error is bigger than the units error was.
+On J2ME the translated mean is 9.4 guest instructions; the exit census
+(`xGotoptr + xGototb + xGototb1` = 55.4 k/Mi, already sitting in
+`scratchpad/xcensus.out`) puts the *executed* mean at ~18. Nearly a
+factor of two, in the direction nobody would guess wrong on purpose.
+
+The mechanism is obvious once stated and invisible until then: every TB
+contributes to `tbGen` exactly once no matter how often it runs, so the
+translated mean is a histogram over *compilations*, and a cold TB
+translated once and abandoned weighs as much as the interpreter's inner
+loop. Hot code is loops, loops are long, so the executed mean is pulled
+up. Any counter incremented in `tb_gen_code` has this property — and the
+wasm64 backend has a lot of them, because translation-time counters are
+cheap and do not perturb the wall.
+
+The rule: **a counter incremented at translation time can only answer
+questions about translation.** To price something that happens per
+execution, count it in the generated code (`W64_XCOUNT`, `W64_TBSTATS`,
+`W64_LDSTCOUNT` are all this class) and accept that the leg's wall time
+is no longer comparable — per-Mi rates stay exact, which is what a rate
+question needs. The give-away that you have crossed the line is a ratio
+whose numerator counts events and whose denominator counts compilations.
+
+## Never edit a shell script that is currently running
+
+Bash does not load a script; it reads it **by byte offset, as it goes**.
+Insert lines above the point it has reached and every subsequent read is
+shifted — the next chunk starts mid-statement and bash executes whatever
+the shifted bytes happen to spell.
+
+This was nearly done here, mid-A/B, to fix a cosmetic guard: the script
+was blocked on a benchmark leg, an edit added ~300 bytes above its read
+position, and only the fact that it was parked in a command substitution
+kept the damage from landing. The fix is to restore the exact original
+bytes at once (length included), then make the change after the run, or
+to `cp` the script and edit the copy.
+
+The bug being fixed is worth its own note, because the idiom is
+everywhere: **`grep -c` prints `0` and exits `1` when nothing matches.**
+So `n=$(grep -c PAT file || echo 0)` sets `n` to the two-line string
+`"0\n0"`, and every `[ "$n" != 0 ]` test on it fires. A guard written
+that way reports the condition it was built to rule out — here, "-O2 is
+still present" against a `build.ninja` containing exactly zero of them.
+Use `n=$(grep -c PAT file); true` and default with `${n:-0}`.
+
+## Two intervals from differently-shaped experiments cannot be subtracted
+
+Round 35 measured a V8 flag at −24.51 % ± 1.53 of wall. Round 36 measured
+a build change at −15.92 % ± 1.78. Both intervals were tight, neither
+overlapped, and subtracting them said **8.6 % of wall is unexplained** —
+a number large enough to justify a round of its own, complete with a
+ranked candidate list and a mechanism (the table bounds check on the
+indirect call every TB exit makes).
+
+Measured directly, the residue is **zero**: +5.73 % ± 6.30 on ms/Mi,
+−3.59 % ± 5.11 on MIPS/cpu, unresolved on both meters over six paired
+legs on a quiet host.
+
+The subtraction was never valid. The two experiments had different
+shapes — 4 single-game legs against one binary, versus 6 paired
+two-game legs against another — and the games, the pairing, the window
+and the baseline all differed. Each interval was a correct statement
+about its own experiment. Neither was a statement about the other's
+quantity, so their difference described nothing.
+
+**The rule: a quoted ± is a property of one experiment, not a portable
+measurement of a mechanism.** Two such numbers may be compared only when
+the same instrument produced both under the same protocol. When you want
+the difference between two effects, run the arm that isolates it — here
+that was one script, no rebuild, 23 minutes, and it replaced a ranked
+list of three hypotheses with an answer.
+
+The corroboration came from the variance, not the mean. The flag arm's
+legs spread 43 % where the plain arm's spread 21 % — *the same binary,
+noisier with the flag than two different binaries were against each
+other*. A flag with no mean effect that still perturbs codegen looks
+exactly like that, and it retro-explains why the same flag had read so
+tightly on the older build: there, it was removing explicit checks on
+every memory access. **When an instrument's own variance grows, it has
+stopped being able to answer; record it as spent.** `--no-wasm-bounds-
+checks` can no longer resolve anything under ~10 % on this build.
+
+## Per-Mi does not make a host-paced counter guest-relative
+
+Normalising a counter per mega-instruction is supposed to remove the
+speed of the arm from it, so that two arms running the same guest agree.
+It does that only when the guest *causes* the event. Round thirty-six's
+mem32 A/B nearly lost a good result to the gap.
+
+The paired analysis printed five translation-side counters under the
+heading "should be unchanged", and they read −25 % to −32 %: `tcgGst`,
+`tcgGld`, `tbGen`, `tbIcount`, `tbBytes`. On its face that says the two
+arms translated different code, which would have voided the +19 % as a
+comparison of different work.
+
+Two separate errors, and the second is the one worth keeping. The first
+was reading a ratio of means: taking the delta *inside* each (repeat,
+game) pair first collapsed the raw 70–90 % within-arm spread to
+−16.17 % ± 7.34 %, because which code a leg translates is a property of
+which game it played and that cancels in a pair. Incidentally the 70–90 %
+also retires a house assumption — the hand-off's "counter spread is
+0.04 %" is a *boot* fact. In a steady-state J2ME window translation is
+rare and bursty (`tbGen` ≈ 2.1/Mi), so those counters are among the
+noisiest things in the file, not the quietest.
+
+The second error was the heading. A TB flush here is driven by module GC,
+a `mlWake` is a worker wake, a compile is a compile: all of them happen
+at a rate per *second*. Their rate per guest instruction is therefore
+`rate_per_second / (guest instructions per second)`, so an arm that runs
+the guest 19 % faster shows `1 − 1/1.19 = −16 %` on every one of them,
+having changed nothing. Inverting them recovers the speedup they were
+hiding in:
+
+| counter | paired Δ | implied speed-up |
+|---|---|---|
+| `tbGen` | −16.17 % | +19.3 % |
+| `mlWakeDup` | −15.36 % | +18.2 % |
+| `mlWake` | −14.72 % | +17.3 % |
+
+against +19.16 % ± 2.47 % measured from the wall clock. The genuinely
+guest-paced counters stayed flat across the same pairs — `execIter`
+−0.37 %, `excSwi` −0.36 %, `armIrq` −0.35 %, `hflagsCalls` −0.34 %, and
+all 24 device counters (`lcdPx`, `ssiByte`, `dmacRun`, `tpuTimer`, …)
+identical to three digits — which is the check that actually answers "did
+both arms run the same guest".
+
+So: **classify a counter as guest-paced or host-paced before reading a
+per-Mi delta from it.** For a host-paced counter that delta is not an
+observation about the change, it is the speed-up restated — which makes
+it useless as a validity check and rather good as a free second opinion
+on the clock, since it is derived from counts rather than from timing.
+The tell is that a whole cluster of unrelated-looking counters moves by
+the same percentage and that percentage is `1 − 1/speedup`.
+`scratchpad/ctrdiff.py` diffs all of them paired, with each one's
+within-arm spread beside it, which is what makes the cluster visible as a
+cluster.
+
+(It also turned up `irecBytes` reading **−46.2**/Mi in the baseline arm.
+A byte count cannot be negative; something is differencing a counter that
+wraps or is read unsigned. Unused so far, so nothing downstream is
+wrong — but it is a live bug in the diagnostic set, not a quirk. Found
+and fixed in round thirty-eight — see the next section.)
+
+## A gauge cannot share a slot with counters, and the tell is a negative rate
+
+`irecBytes` was a **gauge**: `w64_irec_bytes` tracked bytes of interpreter
+records *currently live*, so recording over a slot subtracted the old
+record's size before adding the new one. Every other entry in
+`wasm_diag_stat` only ever goes up, and the harness differences
+consecutive samples to get a rate — so the one slot that could go down
+printed a negative rate whenever a window dropped more records than it
+added. That is the whole bug: not an unsigned wrap, not a read race.
+
+The fix is to split it into two monotonic counters, `IREC_BYTES`
+(recorded, cumulative) and `IREC_FREED` (released, cumulative), and let
+the reader subtract for the live figure. Both now read positive —
+1056.3 recorded against 579.7 freed per Mi on a J2ME window, which also
+says something the gauge never could: **the tier churns**, retiring more
+than half the bytes it records.
+
+Generalised: **a value that can go down cannot share a slot with values
+that only go up**, because the container's contract — differencing — is
+defined on the majority. The tell is cheap and worth looking for
+whenever a new counter appears: a rate that is negative, or that is
+implausibly small because two real movements cancelled inside one sample
+window.
+
+## A construct that emits two boundaries charges two counters — price both
+
+`GSYNC_*` splits guest-register write-backs by the liveness site that
+demanded them, and the split is exact. That exactness is what made the
+mistake possible: A32 predication was priced at
+`GSYNC_CBR × (PRED_SEL/PRED_A32)` and declared dead at 0.2–0.75 % of
+stores, because `CBR` is the counter whose comment says "a brcond, which
+on this guest is mostly predication".
+
+A predicated instruction emits **two** block boundaries. `arm_skip_unless`
+emits the `brcond` over it; `arm_post_translate_insn` emits the
+`gen_set_label` after it. Liveness walks backwards, so the label is seen
+first and claims the instruction's *own outputs* (`BBEND`); the
+instruction's write then clears `TS_MEM` (`tcg.c:4234`, "Output args are
+dead"), which restarts the blame span, so the `brcond` claims only what
+was dirty *before* it (`CBR`). If-conversion deletes both boundaries and
+therefore both charges — and `CBR` is the half it does **not** remove.
+Pricing the lever off it priced the wrong half, and the upper bound is
+11–15 % of stores rather than 0.75 %.
+
+The give-away was available without any new measurement: `BBEND` was 42 %
+of sync causes and sitting in the same table, labelled "the open
+question", while the lever next to it was being closed on a 0.8 % row.
+**Before converting a counter into a lever's ceiling, enumerate every op
+the transformation deletes and check which counter each one charges.**
+Exact attribution tells you where a cost landed; it does not tell you
+which costs a change would remove, and a per-site counter family invites
+exactly this confusion — the finer the split, the easier it is to price a
+construct off one of its pieces.
+
+Corollary on confirmation: `BBEND/PRED_A32` came out 5.55 and 5.64 across
+two games and looked like a mechanism. It was shared denominator —
+everything translation-side tracks `tbIcount`. A ratio that is stable
+across legs is evidence only if its two terms are known not to track a
+common third.
+
+## A waiter that greps the process table can match itself
+
+Chaining a build behind a benchmark looks like one line:
+
+```sh
+until ! pgrep -f '[a]fter.sh' >/dev/null; do sleep 20; done
+```
+
+The `[a]` bracket is the old trick to stop the pattern matching the
+`pgrep` process itself, and it works.  What it does not stop is the
+pattern matching *any other process whose command line contains the
+text* — including a second waiter written to report on the first:
+
+```sh
+until ! pgrep -f '[a]fter.sh' >/dev/null; do sleep 20; done
+echo "after.sh chain finished at $(date +%H:%M:%S)"
+```
+
+That one's own command line carries the literal `after.sh` in its `echo`,
+so it matches itself and waits forever; and the build waiter matches *it*
+and waits forever too.  The benchmark had finished; both waiters sat in
+their sleep loops, and from outside it looked exactly like a build that
+was merely slow.  Ten minutes went by before anyone asked why a 0-byte
+log had a live writer.
+
+**Wait on an artifact, not on the process table.**  A file cannot match
+itself:
+
+```sh
+until grep -q '^== exit ' build.log; do sleep 20; done
+```
+
+It is also strictly more informative — the same poll that says *finished*
+can say *finished how*, which `pgrep` never can, so the chained step gets
+to refuse to run after a failure instead of benchmarking a stale binary.
+
+The trap recurs whenever a command's own text is the thing being searched
+for.  Killing the waiter later in the same session, `pgrep -af mem32ab`
+listed three matches that were all the monitor's own `tail` and `grep`,
+and a `pgrep -af 'bash scratchpad/mem32ab'` matched nothing but itself.
+Read what a process-table match actually *is* before acting on it: the
+only safe test names the interpreter and the script path together, and
+even then the answer is worth a second look.
+
+## A host burst inflates a contiguous run of legs — reject them, don't model them
+
+Round 35's FTMAX sweep ran six arms in rounds. Its control moved:
+
+| leg | ran at | ms/Mi |
+|---|---|---|
+| k1_base | 17:17 | 4.151 |
+| k2_base | 17:47 | 4.209 |
+| **k3_base** | **18:01** | **4.543** |
+
+A 9.4 % spread on the *control*, against the 1.4 % this workstream quotes
+as base noise. A control does not move 9.4 %, and that — not any
+statistic — is the tell worth training on.
+
+**The wrong model is drift.** Regressing legs on time after removing each
+arm's mean gives a tidy **+0.111 %/min**, and it is an artefact. Two
+things falsify it. The rate is unstable: one more leg moved it to
++0.156 %/min, a 40 % swing. And the host, sampled directly, was caught
+switching off — `vmstat` showed 24 k pages/s swapped out and ~1 GB/s of
+block reads at 18:00, and flatly **zero** swap-out with 35 GB available by
+18:05, with nothing changed inside the container.
+
+**The right model is a burst over a contiguous run of legs.** Round 3 ran
+ft4 17:50, ft6 17:53, pg12 17:56, nobc 17:59, base 18:01, ft1 18:04.
+Against the same arms in round 1 those read **+0.0, +2.0, +1.5, +9.3,
++9.4, +9.0 %** — a step between pg12 and nobc, exactly where the sampled
+burst began. Three legs were hit; fifteen were clean.
+
+Rejecting those three restored everything, and the restoration is the
+point:
+
+| quantity | with the 3 bad legs | with them rejected |
+|---|---|---|
+| entry-cost fit R² | 0.472 | **0.891** |
+| entry cost | ~20 %, band 9–28 % | **15.8 %, band 12.3–18.9 %** |
+| `ft4` vs base | −5.4 % ± 3.7 (unresolved) | **−2.85 % ± 0.88** † |
+| per-round intercepts | 3.293 / 3.282 / 3.502 | **3.496 / 3.484 / 3.481** |
+
+† A fourth round later withdrew this one: `ft4` is **−2.09 % ± 1.81**,
+unresolved, once the sweep's *position* effect is in the model. Rejecting
+the bad legs was necessary and did what this table says; it was not
+sufficient. See the next lesson.
+
+**Three bad legs in eighteen were enough to make a settled number look
+unsettled and a good fit look like small-`n` luck.** The collapse in R²
+read exactly like "the earlier result was overfitted to ten points",
+which is the trap: a fit that degrades when you add data usually means
+bad data, not a bad fit. Check what you added before rewriting what you
+had.
+
+Both corrections attempted before rejection were wrong. Detrending
+against time *lowered* R² to 0.63, because a linear correction cannot fit
+a bursty driver. A per-round intercept barely moved the slope (8.163 →
+7.985), because the arms being contrasted already run adjacently inside a
+round — **contamination shifts levels, not within-round contrasts.** And
+within-round ratios are not a defence either when the burst is shorter
+than a round: it cut round 3 in half.
+
+**The cause was outside the container.** Two suspects were wrong first.
+There were 10,193 zombie processes — every orphaned Chromium child of
+every leg, since PID 1 here is `sleep infinity` and reaps nothing — but
+`pid_max` is 4,194,304, so 10 k zombies is 0.24 % of PID space, they hold
+no memory, and they cost nothing. There were 29.8 GB of swap in use,
+which looked like the answer until the arithmetic: our entire process
+table is ~1.5 GB RSS against `AnonPages` **70.8 GB**. ~100 GB of
+anonymous memory belongs to processes in another namespace, invisible
+from in here.
+
+The rules that follow:
+
+- **A control that moves more than its known noise is a rejection
+  signal, not a new result.** Find which legs moved and when, before
+  touching the analysis.
+- **Prefer rejection to correction.** A burst you can locate lets you
+  drop three legs; a rate you have to estimate adds error to the other
+  fifteen.
+- **Sample host pressure alongside the legs** (`scratchpad/hostmon.sh`:
+  `pswpout`, `allocstall_movable`, `MemAvailable`, runq, every 10 s).
+  Without a timestamped pressure record, a contaminated leg is
+  indistinguishable from an effect.
+- **Order the legs and line them up against the clock.** The step
+  between pg12 and nobc was visible only once the legs were sorted by
+  mtime; by arm they looked like scatter.
+- **A shared host is an uncontrolled variable.** Check it by arithmetic —
+  sum your own RSS against `AnonPages` — not by reading `free`. And do
+  not trust `load=`: it sat at 4–6 through both the quiet and the
+  thrashing samples.
+- **A large number is not automatically the cause.** 10,193 zombies
+  explained nothing; the 100 GB that was never in the process table
+  explained everything.
+
+## A rotating sweep is a Latin square — analyse it as one, or position becomes the effect
+
+Rejecting the three burst legs above fixed the contamination and left a
+second error untouched for another round. Adding a fourth round to the
+same sweep moved `ft4` from a settled **−2.85 % ± 0.88** to **−0.22 % ±
+3.79**. The reflex — one more bad leg, find it and reject it — was wrong,
+and chasing it would have burned the round.
+
+**The design had an effect nobody had modelled.** `ftsweep2.sh` rotates
+the arm order by one each round so no arm is permanently first. That
+makes the sweep four rows of a cyclic 6×6 Latin square, and it is a good
+design: arm, round *and position* are all estimable from it. What it is
+not is self-correcting. Rotation only cancels position when the rows
+cover the positions evenly, and four rows of six do not — `ft6` averaged
+position 2.5 against `base`'s 4.0.
+
+Position mattered:
+
+```
+pos:slope   +0.87 % ± 0.32 per position   95 % [+0.22, +1.53]
+```
+
+Legs run later in a round are slower by ~0.9 % per slot. `ft4` sat at
+positions 3, 2, 1 in the first three rounds, reading 4.069 / 4.052 /
+4.068 — a 0.4 % spread — and at position 6 in the fourth, reading 4.456.
+**The arm did not change; where it ran did.**
+
+**Within-round ratios do not see this.** Dividing each leg by its own
+round's base — the discipline this workstream adopted precisely to beat
+host drift, and the right call against *round-level* drift — removes the
+round effect and nothing else. Against a within-round gradient it is
+blind, because the base it divides by occupies one position and the arm
+occupies another. A defence built for one confound is not a defence
+against confounds.
+
+The fix is to fit the design instead of working around it:
+`log(ms/Mi) ~ arm + round + position`, 14 parameters against 24 legs, 10
+residual df (`scratchpad/square.py`; pure Python, because this host has
+no numpy and installing one mid-measurement perturbs the thing being
+measured). Then let the model say which terms it needs — an F-test put
+position's curvature at F = 0.26 on 4 and 10 df, p = 0.90, so the five
+dummies collapse to one slope and hand four degrees of freedom back to
+every arm estimate.
+
+What survived, and what did not:
+
+| arm | ratios (3 rounds) | Latin square (24 legs) | verdict |
+|---|---|---|---|
+| `nobc` | −24.56 % ± 1.25 | **−25.29 % ± 1.79** | stands |
+| `pg12` | +8.17 % ± 1.14 | **+6.31 % ± 1.79** | stands |
+| `ft1` | +5.70 % ± 1.64 | **+6.18 % ± 1.79** | stands |
+| `ft4` | −2.85 % ± 0.88 | −2.09 % ± 1.81 | **withdrawn** |
+| `ft6` | −2.77 % ± 1.27 | −2.34 % ± 1.84 | **withdrawn** |
+
+**The large effects never moved and the small ones never survived.** That
+is the shape to expect: a confound worth ~1 % per position cannot touch a
+25 % arm and can invent or destroy a 2 % one. The three arms that stood
+were the three already far outside the confound's reach — so the extra
+rounds and the better model bought nothing on them, and everything on the
+two that mattered for a landing decision.
+
+The rules that follow:
+
+- **Know what design you ran.** "Rotate the order so nothing is always
+  first" is an experimental design, not a precaution. Write down what it
+  makes estimable and then estimate it; rotation alone balances position
+  only when every arm visits every position.
+- **A result that moves when you add a clean round is a model error, not
+  a data error.** Reject legs for evidence collected *about the host*
+  (`clean.py` reads `hostmon.tsv` before looking at any result), never
+  because a number became inconvenient. The k4 `ft4` leg showed
+  `allocstall +75` against 0/15/19/25 elsewhere — three times the next
+  highest and nowhere near a rejection — and rejecting it would have
+  restored the answer and kept the bug.
+- **Fit the nuisance parameters you can afford.** 24 legs against 14
+  parameters still leaves 10 df. Degrees of freedom are cheap here;
+  a wrong landing decision is not.
+- **Report the band, not the point.** −2.09 % ± 1.81 is an honest "we
+  cannot tell 2 % from 0 % with this instrument", and it is what stopped
+  a one-character default change that three rounds of analysis had
+  called ready to land.
+- **When wall cannot resolve it, stop buying wall.** Per-leg rmse was
+  2.5–2.8 % against a ≤2 % effect, so ±0.5 % needs ~13× the rounds —
+  about forty hours. The mechanism is counted instead: fold-through acts
+  by making TBs longer and entries rarer, and entries are a guest-side
+  count with no host drift in them at all.
+
+## An instrumentation knob that changes codegen can disable the mechanism under test
+
+The follow-up to the sweep above was going to settle fold-through the
+honest way: run two legs with `W64_TBSTATS=1` to count executed TB
+entries directly, once at the default fold and once at `FTMAX=4`, and
+read the ratio. The design is right and the instrument was wrong.
+
+`W64_TBSTATS` arms `wasm_tb_stats`, and `tcg/wasm64/tcg-target.c.inc:3311`
+says what that costs: leaving it in "switched off TB lengthening — the
+fold target and the conditional loop back-edge merge both". **The knob
+that counts the entries disables the transform that removes them.** The
+`FTMAX=4` leg could only ever have returned the same number as the base
+leg, and `dt/(1 − 1/r)` with `r ≈ 1` is the same division-by-noise that
+had already priced a TB entry at 43 % of wall two rounds earlier.
+
+The evidence was in the first leg's own output, before its partner ran:
+
+| | census leg (`XCOUNT` only) | `tbs_base` (`+TBSTATS`) |
+|---|---|---|
+| `tbIcount` | 13.833 | **5.555** |
+| exits/Mi | 55,385 | **182,786** |
+| implied executed length | 18.05 | **5.47** |
+| ms/Mi | 4.252 | 5.582 |
+
+Both are internally consistent; neither is wrong; they describe different
+machines. The one that ships is the left column, and it is the one the
+budget uses.
+
+The partner leg, run anyway, confirmed the diagnosis to four digits:
+`FTMAX` 3→4 moved the exit count from **182,786.3** to **182,804.9** per
+Mi, **+0.01 %**. So r = 1.0001 and `dt/(1 − 1/r)` divides by 0.0001. It
+would not have errored — it would have returned a large, confident,
+meaningless number, which is the failure mode worth fearing.
+
+- **Read what an instrumentation knob does to codegen before trusting a
+  pair that rides on it.** The comment naming the side effect was in the
+  backend the whole time, three lines from the function the knob gates.
+- **A counter that halves a structural quantity is the tell.** `tbIcount`
+  5.555 against 12.83 was visible in the first leg; nothing needed to
+  wait for the second.
+- **Prefer the instrument that does not participate.** `W64_XCOUNT`
+  counts exits without touching TB formation, which is why the census it
+  produced is still the number in the budget.
 
 - **Asyncify breaks cross-worker `pthread_cond` wakeups**: signals from
   another worker are never delivered, waiters return only by timeout
@@ -1369,6 +2144,202 @@ Round eleven (0058–0064) profiled the device access path and found that
 - **Firefox caps live wasm modules (~16k)** and does not treat code
   memory as GC pressure; a periodic throwaway allocation keeps its
   worker GC collecting dropped modules (0019).
+
+## JS written inside C: two traps an EM_JS body sets
+
+Both cost a build cycle if found the slow way, and both were found by
+reading rather than by building, during the `-sMEMORY64=2` migration.
+
+- **An index narrows; a pointer does not.** `-sMEMORY64=2` lowers the
+  *memory and the table* to 32-bit (`link.py` runs `--memory64-lowering`
+  **and** `--table64-lowering`) while leaving pointers as i64 values.
+  Emscripten encodes exactly that distinction in two macros —
+  `toIndexType()` wraps in `BigInt` only for `MEMORY64 == 1`, `to64()`
+  wraps for both — so its own glue is right by construction and
+  hand-written JS is not. `wasmTable.get(BigInt(i))` is correct under
+  `=1` and a `TypeError` under `=2`. Auditing the wasm we *emit* does not
+  cover this: the other surface is every JS-side handle on a wasm index
+  (table reads, `Memory`/`Table` construction, `grow`). When a mode
+  switch changes a type, enumerate both surfaces.
+- **Modern JS operators can be C trigraphs.** An `EM_JS` body is
+  stringified `__VA_ARGS__`, so it goes through translation phase 1 like
+  any other source. `??=` is the trigraph for `#`, and `?? (` is `[`. GNU
+  modes disable trigraphs, so this usually only warns — and with
+  `--disable-werror` a warning does not fail the build, which is the
+  dangerous half. Write `if (x === undefined)` rather than `x ??= …`.
+  For the same reason `#ifdef` cannot be used inside an `EM_JS` body to
+  switch on a build mode; probe at runtime and cache on `globalThis`.
+
+## A path worth optimizing has to be shown to execute at all
+
+The J2ME exception path looked like the round's best lever on paper.
+A playing game takes 265–1877 guest exceptions per Mi, ~98 % of them
+SWI, against a comparable number of dispatcher iterations — so on this
+workload the exception path *is* the C dispatcher. Emscripten's default
+`-sSUPPORT_LONGJMP=js` turns every `siglongjmp` into `throw Infinity`
+in JS, unwound out of the wasm frames into an `invoke_*` catch that
+calls `setThrew` back in: two boundary crossings and a real JS throw
+per exception. `-sSUPPORT_LONGJMP=wasm` removes all of it. The build
+knob was written, wired through `CPU_CFLAGS` (the only route that
+reaches a compile line, see the cross-file lesson above), and was one
+command from being spent.
+
+`WASM_DIAG_EXC_LJ_NS`/`_N` — the timer opened in `cpu_loop_exit`
+immediately before the `siglongjmp` and closed on the `sigsetjmp != 0`
+return in `cpu_exec_setjmp` — came back **absent from the counter dump
+in all five titles**, while `EXC_BQL_NS`, `EXC_DO_NS`, `EXC_CAL` and
+`EXC_N` beside them all moved. `j2mebench` omits a counter whose delta
+is zero (`if (!dv) continue;`), so absent means exactly zero: **not one
+of 223 302 guest exceptions unwound.** `cpu->jmp_env` has only one
+`siglongjmp` site (`cpu-exec-common.c:95`; `tb-maint.c:451` is a
+different jmp_buf), so there is no second path to have taken instead.
+The wasm64 port's exception delivery never unwinds, and the flag had
+nothing to act on.
+
+Two things made this cheap to catch and would have made it expensive to
+miss:
+
+- **The absent counter is the result, not a gap in the instrument.**
+  Four counters from the same six-member enum group moved, so a
+  positional name shift would have *misnamed* values rather than
+  dropped two — the one alternative explanation was ruled out by the
+  neighbours, not by re-reading the code.
+- **The mechanism story was detailed, sourced and correct, and still
+  predicted nothing.** `throw Infinity` and the 18 `invoke_*` wrappers
+  really are in the emitted JS; the only false step was assuming a
+  path that exists is a path that runs. Grep proves a path exists. A
+  counter proves it executes.
+
+The residue is worth keeping: the *other* halves of the exception path
+were timed at the same time and are real but small — `EXC_BQL_NS` +
+`EXC_DO_NS` total 0.0–1.6 % of wall, mean 0.9 %. Priced beside it, the
+whole DMA → DIF → SSI → LCD display chain is 0.9–2.1 %, mean 1.5 %.
+Both candidate levers of the round measured small by direct
+measurement rather than by argument.
+
+## Separate fixed per-frame cost from marginal per-instruction cost
+
+Ranking per-Mi counters by correlation with `ms/Mi` across five titles
+produced a confident, entirely spurious answer: `lookup`, `dispNs`,
+`tpuRearm`, `halt`, `lcdPx` and a dozen others all came back at
+r = 0.91–0.95. They share one cause. Every slow title is also a
+low-`duty` title, and `duty` is the fraction of virtual time the guest
+executes rather than halts. Work paced by *frames* rather than by
+instructions — display, timers, halt/wake — is roughly constant per
+virtual second, so dividing it by a smaller instruction count inflates
+it automatically. Per-Mi normalization does not make a host-paced or
+frame-paced counter guest-relative (see the earlier lesson of that
+name); here it manufactured a correlation with the metric being
+explained.
+
+Regress the two terms apart instead. Per title take
+x = `duty` × 125 Mi of guest work per virtual second, y = wall ms spent
+per virtual second; the slope is the marginal cost of a guest
+instruction and the intercept is the fixed per-frame overhead:
+
+    slope     3.126 ns per guest instruction
+    intercept 39.0 ms per virtual second  (3.9 % of real time)
+    r         0.912 over 5 titles
+
+So execution, not frame overhead, is 45–91 % of the wall in every
+title, and the ~3.1 ns/insn — about 11 host cycles on this desktop — is
+the thing to attack. Two caveats the fit itself states: n = 5 with one
+large residual (g4 at −29.5 ms/vsec is genuinely cheaper per
+instruction than the line), so the intercept is a cross-title average
+and not any single title's overhead.
+
+## A counter census prices a call site only if the cost per call is constant
+
+The budget table carried "notdirty stores | ~0.5 % | 203.7/Mi, 100 %
+SMC-miss | structural, no lever found" for several rounds. The number
+came from a census: count the calls, multiply by an assumed per-call
+cost. It was wrong by more than a factor of ten, and the reason is that
+nobody had counted the work *inside* the call. `tb_page_covers` walks
+the page's TB list, and on a J2ME title that list is 51 entries long, so
+each of those 203.7 calls was 51 dependent loads into randomly placed
+`TranslationBlock`s rather than the handful of instructions the census
+implicitly assumed.
+
+This is the same error the TB-entry row of that table already warns
+about, arrived at from the other direction: there, arithmetic replaced
+timing; here, a call count replaced a work count. A census answers "how
+often" and nothing else. Before believing one, add a second counter for
+the work the call performs -- here `smcWalk`, incremented once per call
+by the number of list steps, which turned "203.7 calls" into "24,453
+list steps" and made the real size obvious. Accumulate that counter
+once per call, not once per step: a store inside the loop inflates the
+very baseline it is measuring.
+
+Found the same round by a sampling profile, which put the call site at
+14.7 % of the vCPU -- 30x the table's figure -- and prompted the
+counter that confirmed it.
+
+## A/B a knob that removes the whole mechanism, not just its payoff
+
+The first version of the code-granule mask rebuilt the mask exactly
+during the list walk, on the reasoning that `PAGE_FOR_EACH_TB` visits
+every TB anyway so the rebuild rides along free. `W64_NOSMCMASK` then
+disabled only the early-out, leaving the rebuild in both legs. The OFF
+leg was therefore *not* upstream: it was upstream plus a
+`tb_page_granules` and a `tb_gmask_set` on every step of a 51-step walk,
+plus a 32-byte `memcpy` per call. The A/B measured the early-out against
+a baseline the change itself had slowed down.
+
+Two consequences, and the second is the general one. The comparison
+flatters the change, which is the obvious hazard. But it also hid the
+design error: the rebuild's whole justification was that the walk is
+free, and the walk is precisely the path the mask exists to avoid, so
+paying per step to accelerate a path you intend never to take is
+backwards. Removing the rebuild entirely made the hot path identical to
+upstream plus one mask test -- and the mask needs no rebuild anyway,
+because on this workload stores outrun TB removals 5500:1, so a
+grow-only mask never goes stale.
+
+Make the knob restore the untouched upstream path byte for byte. If it
+cannot, the honest A/B needs three legs, not two.
+
+## An observational slope across runs can invent a price
+
+Round 1 of the mask A/B was inconclusive (+0.97 % +/- 4.61 %, n=4), so
+the run-level aggregates were regressed instead: `ms/Mi` against the
+walk-step counter, over the four baseline runs where the only variation
+is how much walking the guest happened to do. It gave 23.4 ns per list
+step at r = 0.861, which put the whole walk at 14.4 % of wall -- in
+near-perfect agreement with the sampling profile's 14.7 %.
+
+It was noise. Six more baseline runs turned the same regression into
++4.0 ns/step at r = 0.297, and at one intermediate point it was
+*negative* (-13.6 ns/step, r = -0.644). Four points spanning a 23 %
+range of the x-axis will produce a confident-looking slope out of host
+drift alone, and the agreement with the profile was coincidence, which
+is exactly what made it persuasive.
+
+The knob-driven contrast survived: 6.50 % +/- 2.54 % (se 1.04 %) over
+six counterbalanced pairs, every pair positive. Only a knob prices a
+mechanism. A regression across run-level aggregates is a way to *find*
+a candidate, never to size one -- and when a weak design happens to
+agree with a strong one, that is not corroboration, because the weak
+design had every opportunity to agree by accident.
+
+## A module-bucketed sampling profile splits JIT from C by construction
+
+"How much of the vCPU is emitted TB code and how much is the C
+runtime?" cannot be answered with a timer. A bracket around
+`cpu_tb_exec` costs two clock reads, roughly 140 ns, against a 3.1
+ns/insn budget -- a 15-instruction TB's entire execution is a fraction
+of the instrument.
+
+The JIT emits every TB as its own `WebAssembly.Module`, so a sampling
+profile already carries the answer: bucket the frames by module URL.
+`wasm://wasm/<hash>` is a JIT TB, the main module is C. The split on a
+J2ME title came out 70.9 % emitted / 28.7 % main module / 0.4 % other,
+at zero instrumentation cost.
+
+One trap makes this look unreliable when it is not. JIT modules have no
+symbol table, so V8 labels those frames with the nearest main-module
+symbol -- the *names* are nonsense, borrowed. The URL is not. Bucket on
+the URL and the split is sound; read the borrowed names as function
+attribution and it is worthless.
 
 ## TCG / backend design
 
@@ -1423,6 +2394,33 @@ Round eleven (0058–0064) profiled the device access path and found that
 
 ## Measuring
 
+- **An estimate assembled from two legs is not a measurement** (round
+  thirty-four).  The display chain was carried in this file at 0.25 % of
+  wall for three rounds.  That figure was one leg's post-fix burst time
+  (638.8 ns) multiplied by a burst rate read off a *different* leg.
+  Measured properly — both quantities from one binary, with a
+  calibration counter for the clock read — a burst is 1810–1933 ns and
+  the chain is **1.74 %, seven times the carried number**.  Neither
+  input was wrong; multiplying across legs was.  The same leg also
+  showed why the calibration counter is not optional: the exception path
+  reads 142,594 ns/Mi raw and **45,250 ns/Mi** once the ~66–75 ns clock
+  read is subtracted from each ~110 ns span, so the naive number is 3×
+  the truth.
+- **A diagnostic counter can cost more than it measures, and the bill
+  lands somewhere else** (round thirty-four).  `wasm_tb_stats` is read
+  only by a MIPS display.  Keeping it exact per TB entry meant a
+  frontend could not emit a TB that leaves early, which switched off
+  *both* TB-lengthening mechanisms — on exactly the boards the counter
+  was armed for, since its gate was `!icount_enabled()`.  A counter that
+  a fast path must preserve is a constraint on that fast path; check
+  what the constraint forbids before deciding the counter is cheap.  The
+  repair is usually not deletion but making the counter **refundable**,
+  the way icount already handles the identical problem.
+- **Do not chain background work on `kill -0`** in this container.  PID 1
+  is `sleep infinity` and reaps nothing, so an orphaned process stays a
+  zombie, keeps its pid slot, and `kill -0` succeeds forever — a waiting
+  loop never ends.  Put the chain in one shell instead:
+  `(setsid nohup bash -c "a.sh; b.sh" &)`.
 - **Close the budget before choosing a lever** (round thirty-two).  Every
   A/B of this round — nine of them — came back null or under 1 %, and the
   reason was arithmetic that took ten minutes and was never done: the leg
