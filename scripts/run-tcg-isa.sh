@@ -112,7 +112,12 @@ else
   # 2026-09-13 — an Asyncify rewind into an uninstrumented frame on the
   # versatilepb machine-init path; the 0090 commit on the qemu branch
   # added the missing onlylist names.)
-  run_wasm_leg "wasm64 (page, dist-jit)" dist-jit tcgisa.mjs "$T/wasm64.log" || fail=1
+  # TCGISA_DIST re-points the wasm64 leg at a variant build.  It was hard
+  # wired to dist-jit, which made this gate silently test the wrong binary
+  # whenever a variant was under evaluation: `gate.sh --dist X` passes X to
+  # every other job, so the summary read PASS for a dist nobody had run.
+  run_wasm_leg "wasm64 (page, ${TCGISA_DIST:-dist-jit})" "${TCGISA_DIST:-dist-jit}" \
+      tcgisa.mjs "$T/wasm64.log" || fail=1
   run_wasm_leg "wasm TCI (page, dist)" dist tcgisa.mjs "$T/wasmtci.log" || fail=1
   kill "$SRV" 2>/dev/null || true
   SRV=""

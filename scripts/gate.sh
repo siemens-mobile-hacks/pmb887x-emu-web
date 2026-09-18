@@ -65,7 +65,7 @@ done
 # has exposed races the single-board runs miss (see the bootcheck notes in
 # optimization-playbook.md).
 JOBS=(
-  "opsuite|quick keep close|no|bash '$ROOT/scripts/run-tcg-isa.sh'"
+  "opsuite|quick keep close|no|TCGISA_DIST=$DIST bash '$ROOT/scripts/run-tcg-isa.sh'"
   "boot-s75|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash s75"
   "boot-el71|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash el71"
   "boot-ke800|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke800"
