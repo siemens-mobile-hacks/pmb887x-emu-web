@@ -61,3 +61,6 @@ tools/chrome/
 
 # j2mebench local host-tuning state, not shared
 /tests/.j2me-*
+
+# python bytecode caches (scratchpad/ analysis scripts)
+__pycache__/

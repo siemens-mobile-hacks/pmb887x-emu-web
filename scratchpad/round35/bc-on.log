@@ -1,0 +1,20 @@
+engine: Chrome/153.0.8010.12
+
+kernel: one opaque base, 8 constant offsets -- the shape of CPUState register traffic.
+  An engine may legally check this once and share it across all 8.
+  i64 shared (production)      39.4 ms  0.219 ns/access
+  i32 shared (MEMORY64=2)      39.6 ms  0.220 ns/access
+  i64 unshared                 38.8 ms  0.216 ns/access
+  i32 unshared                 40.7 ms  0.226 ns/access
+  -> i32 vs i64, both shared: +0.4% per access (-0.001 ns)
+  -> unshared vs shared, both i64: -1.6% per access -- sharing is not the discriminator
+
+kernel: load a pointer, then follow it -- the shape of the inline TLB probe.
+  Each base is a loaded value, so no check can be shared with another.
+  i64 shared (production)      49.7 ms  0.146 ns/access
+  i32 shared (MEMORY64=2)      40.0 ms  0.118 ns/access
+  -> i32 vs i64, both shared: -19.6% per access (0.029 ns)
+
+Control: re-run with --js-flags=--no-wasm-bounds-checks.
+Each i64 leg must fall to about its i32 leg; where it does
+not, that kernel exposed no check and its delta is void.
