@@ -227,14 +227,11 @@ const FULLFLASH_REPO =
 // its cache state has to fit on one ellipsised line.
 // Extend this list as the repo grows.
 export const PRESET_FULLFLASHES = [
-  { id: "s75v40lg1", label: "Siemens S75v40", short: "S75v40",
-    files: ["S75v40lg1.bin"], size: 67108864 },
-  { id: "el71v41lg91", label: "Siemens EL71v41", short: "EL71v41",
-    files: ["EL71v41lg91.bin"], size: 67108864 },
-{ id: "cx70v56lg3", label: "Siemens CX70v56", short: "CX70v56",
-    files: ["CX70v56lg3.bin"], size: 33554432 },
-  { id: "ke800v11b", label: "LG KE800v11b", short: "KE800v11b",
-    files: ["KE800v11b.bin", "KE800v11b.bin.cfi-efa"], size: 134250496 },
+    { id: "cx70v56lg3", label: "Siemens CX70v56", short: "CX70v56", files: ["CX70v56lg3.bin"], size: 33554432 },
+    { id: "el71v41lg91", label: "Siemens EL71v41", short: "EL71v41", files: ["EL71v41lg91.bin"], size: 67108864 },
+    { id: "sl65v49lg1_TIM", label: "Siemens SL65v49 (TIM)", short: "SL65v49 (TIM)", files: ["SL65v49lg1_TIM.bin"], size: 33554432 },
+    { id: "s75v40lg1", label: "Siemens S75v40", short: "S75v40", files: ["S75v40lg1.bin"], size: 67108864 },
+    { id: "ke800v11b", label: "LG KE800v11b", short: "KE800v11b", files: ["KE800v11b.bin", "KE800v11b.bin.cfi-efa"], size: 134250496 },
 ];
 
 function fileUrl(file) {
