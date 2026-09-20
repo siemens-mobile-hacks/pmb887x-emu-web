@@ -58,7 +58,7 @@
 //     memory-bandwidth contention that is what varies.  Two legs of one
 //     unchanged build read 82.25 and 144.35 with every guest-side counter
 //     equal to 0.4 %.  So: hostBusy and hostLoad are recorded as
-//     covariates, scratchpad/verdict.py corrects by the fitted exponent
+//     covariates, tools/perf/verdict.py corrects by the fitted exponent
 //     and marks a verdict LOAD-SKEWED when its arms sat at different load,
 //     and --maxload waits for a quiet host before opening the window.
 //     busy = those seconds over wall: 1.0 is a quiet host, and a low busy

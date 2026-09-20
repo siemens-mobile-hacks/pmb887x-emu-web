@@ -88,7 +88,7 @@ bash scripts/gate.sh quick               # 152 s, all jobs concurrent — start 
   damage is real: `base` read 4.151, 4.209 and **4.543** ms/Mi across one
   sweep, a 9.4 % spread on the control against the 1.4 % this file
   quotes — and rejecting the three legs the burst hit restored the 1.4 %
-  and every number derived from it. Run `scratchpad/hostmon.sh` alongside
+  and every number derived from it. Run `tools/perf/hostmon.sh` alongside
   any sweep and **reject** legs that overlapped a burst rather than
   correcting them; a within-round ratio is not a defence, because a burst
   is shorter than a round. See lessons, "A host burst inflates a
@@ -143,11 +143,11 @@ minutes apart, read **4.604 and 4.126 ms/Mi**. Consequently:
   algebraically `1e9/fps ÷ ms/Mi` and tells you only what `ms/Mi` already
   said. Using it to screen games is circular.
 - **Never compare legs that ran at different times.** Rotate the arms and
-  repeat rounds (`scratchpad/ftsweep2.sh` is the template), score each arm
+  repeat rounds (`tools/perf/ftsweep2.sh` is the template), score each arm
   against the baseline *inside its own round*, print the baseline's own
   round-to-round spread as the error bar, and carry a positive control so
   a null can be told apart from a lack of resolution.
-- Round 32's load correction (`scratchpad/verdict.py`, log-log slope −0.29
+- Round 32's load correction (`tools/perf/verdict.py`, log-log slope −0.29
   on 1-minute load, fitted within-config) is the post-hoc fallback when a
   leg cannot be re-run. It is a repair, not a licence.
 
@@ -552,7 +552,7 @@ emission order (a command-line `-D` beats both cross files):
 
 Wired up as `W64_O3=1` in `scripts/build-qemu-wasm64.sh`
 (`build/qemu-wasm64-o3/`, `site/dist-jit-o3/`); the A/B is
-`scratchpad/o3ab.sh`.
+`tools/perf/o3ab.sh`.
 
 Do **not** fold a build flag in while another A/B is in flight — it changes
 both arms and confounds whatever is being measured. Run each as its own
@@ -607,7 +607,7 @@ rather than additive to them — the boundary row, the TLB-probe row and
 the TB-entry row each carry a share.
 
 The whole sweep, fitted as a Latin square over all 24 legs — arm + round
-+ linear position, `scratchpad/square.py` — rather than as within-round
++ linear position, `tools/perf/square.py` — rather than as within-round
 ratios, because the sweep has a position effect of +0.87 % ± 0.32 per
 slot that `ratios.py` cannot see and that biases the small arms (see
 "Fold-through does *not* have a resolved optimum"):
@@ -879,7 +879,7 @@ Because this project emits its own wasm, both sides must agree:
    **The opcode split says where a wrap may legally go; it does not say
    how big the diff is.** What decides that is which expression pushed
    the address, because a wrap belongs *there* and many sites share one
-   pusher. Classified that way (`scratchpad/addrsrc.py`, which walks back
+   pusher. Classified that way (`tools/perf/addrsrc.py`, which walks back
    from each `w64_memarg` and takes the last push for a load, the
    second-to-last for a store):
 
@@ -960,7 +960,7 @@ Because this project emits its own wasm, both sides must agree:
    | `w64_addr` | " | now wraps the folded sum |
 
    All 38 sites resolve to a narrowed address push.
-   `scratchpad/addrcheck.py` is the gate: it re-derives the load/store
+   `tools/perf/addrcheck.py` is the gate: it re-derives the load/store
    shape from the opcode byte rather than carrying a line list (so it
    survives editing this file), reports the pusher per site, and exits
    non-zero on any that is still 64-bit. Six functions defeat the
@@ -1072,7 +1072,7 @@ from a heap pointer — and the index it guards is wrapped at `:1464`
 like every other.
 
 **`tools/bcprobe.mjs` has been run, both legs, and its result is the
-table above** (`scratchpad/round35/bc-on.log`, `bc-off.log`,
+table above** (`tools/perf/round35/bc-on.log`, `bc-off.log`,
 Chrome/153). This paragraph used to read "do `bcprobe` first" and was
 left standing after the probe was done — the same stale-instruction
 failure as the `arm_rebuild_hflags` row, in this same document. **Check
@@ -1127,14 +1127,14 @@ get.
 ### What a TB entry costs: 14.6 % of wall, band 10.1–18.7 %
 
 Fitting wall against inverse TB length over the ten clean FTMAX legs
-(`scratchpad/entryfit.py`, ft1/base/ft4/ft6, R² = 0.891):
+(`tools/perf/entryfit.py`, ft1/base/ft4/ft6, R² = 0.891):
 
 > **ms/Mi = 3.4845 + 6.188 / len**, slope ± 0.767
 
 > **Updated to four rounds, and it held.** Fourteen legs give
 > **ms/Mi = 3.586 + 5.719/len**, slope ± 1.010 — **14.4 % of wall, band
 > 9.8–18.6**. Adding the sweep's position effect as a linear term
-> (`scratchpad/entrypos.py`) moves it to **14.6 %, band 10.1–18.7**,
+> (`tools/perf/entrypos.py`) moves it to **14.6 %, band 10.1–18.7**,
 > with position itself at +0.44 %/slot ± 0.0124, not significant on this
 > subset. **This row is robust to the confound that withdrew `ft4`**, and
 > the reason is worth keeping: this fit is anchored by `ft1`, whose
@@ -1206,7 +1206,7 @@ The census is the one to believe. On J2ME game 1, `xGotoptr` 38,394 +
 `xw*` family sums to `xGotoptr` exactly (14,787 + 17,166 + 1,630 + 3,326
 + 419 + 1,067 = 38,395), so `xw*` is a breakdown of `goto_ptr` and the
 three counters together are the whole exit population. It has been in
-`scratchpad/xcensus.out` since the census ran.
+`tools/perf/xcensus.out` since the census ran.
 
 That ~18 is nearly **twice the translated mean**, and the gap is the
 point: `tbGen` counts each TB once however often it runs, so
@@ -1443,7 +1443,7 @@ instruction *before the guest's own work*.
 > **Refined, same round.** Loads and stores are not the same kind of
 > cost, and averaging them hid both. Regressing per-TB counts on TB
 > length over seven legs spanning 6.83–10.91 instructions per TB
-> (R² ≥ 0.99, `scratchpad/envfit.py`):
+> (R² ≥ 0.99, `tools/perf/envfit.py`):
 >
 > | | fixed per TB | per guest insn | reading |
 > |---|---|---|---|
@@ -1468,7 +1468,7 @@ instruction *before the guest's own work*.
 > so mean length is `tbIcount/tbGen` = 9.73, not 12.60, and a
 > per-instruction rate is `x/tbIcount`, not `x/tbGen/tbIcount`. Both
 > versions fit at R² ≈ 0.99; the wrong one inverted the store trend.
-> `scratchpad/gsync.sh` carried the same error and is fixed.
+> `tools/perf/gsync.sh` carried the same error and is fixed.
 
 That leaves the entry cost as the case for the fold target, the join,
 absorb and the loop merge. Round 27 measured FTMAX 1→2 at +4.7 % and
@@ -1678,7 +1678,7 @@ Two costs, and the second is the one worth having:
 
 **No rebuild is needed to test it.** `W64_NOPCC=1` disables the C halves
 and `W64_NOPCCIN=1` the emitted one; both are read once via `getenv`.
-The matched pair is queued in `scratchpad/after.sh` as `pcc_on` /
+The matched pair is queued in `tools/perf/after.sh` as `pcc_on` /
 `pcc_off`, reporting `msPerMi`, `tbBytes/tbGen` and the four counters
 above.
 
@@ -2591,7 +2591,7 @@ global load (`temp_load`) and every global write-back (`temp_sync`), so
 the slope is the cost of one whole round of guest-register traffic — the
 ceiling for pinning globals to TB-lifetime wasm locals, which this
 backend can do and a register-poor native backend cannot.
-`scratchpad/gdupsweep.sh` and `scratchpad/gdupan.py` are written and not
+`tools/perf/gdupsweep.sh` and `tools/perf/gdupan.py` are written and not
 run. **Check the emitted-byte count, not just the clock**: the probe
 relies on V8's baseline tier doing no store-to-store or load-to-load
 elimination, so a zero slope must be read as "the probe is inert" until
@@ -2733,8 +2733,8 @@ built it and measured it on the workload it was meant for.
 ### The result
 
 Against `CX70_FW56_clean.bin`, two games, three interleaved repeats,
-30 s windows under icount (`scratchpad/mem32ab2.sh`, analysis
-`scratchpad/mem32an.py`):
+30 s windows under icount (`tools/perf/mem32ab2.sh`, analysis
+`tools/perf/mem32an.py`):
 
 | metric | delta | se | pairs |
 |---|---|---|---|
@@ -2794,7 +2794,7 @@ Three plumbing facts, each of which silently produced a wrong build first:
   exactly like the two arms having translated different code. They had
   not: per-Mi normalisation only removes the arm's speed from a counter
   the *guest* causes. See lessons.md, "Per-Mi does not make a host-paced
-  counter guest-relative". `scratchpad/ctrdiff.py` now diffs every counter
+  counter guest-relative". `tools/perf/ctrdiff.py` now diffs every counter
   paired, with each one's within-arm spread beside it.
 - **The gate's `opsuite` job ignored `--dist`.** It hard-wired
   `dist-jit`, so `gate.sh --dist dist-jit-mem32` passed that dist to all
@@ -2903,9 +2903,9 @@ a slowMiss delta as a result.
 
 **Status: the sweep finished at 24 legs and this section's numbers have
 been superseded twice.** The single-round numbers first written here were
-replaced by within-round ratios over the clean legs (`scratchpad/
+replaced by within-round ratios over the clean legs (`tools/perf/
 ratios.py`), and those in turn by a Latin-square fit over all 24 legs
-(`scratchpad/square.py`) once the sweep was found to carry a position
+(`tools/perf/square.py`) once the sweep was found to carry a position
 effect that ratios cannot see. **The figures below are the ratio-stage
 ones; § Open items 1 has the final table.** The `nobc` row barely moved
 between the two (−24.51 → −25.29 %) but the fold-through rows did not
@@ -3023,7 +3023,7 @@ therefore lands on the arm and imitates an effect. That is the same
 failure `ratios.py` was written to fix one level up, reappearing one
 level down.
 
-`scratchpad/square.py` fits the square properly — arm + round + position
+`tools/perf/square.py` fits the square properly — arm + round + position
 on `log(ms/Mi)`, 14 parameters against 24 legs, 10 residual df, standard
 errors from (X′X)⁻¹ and F-tests by pure-Python incomplete beta (no numpy
 on this host). With position as one linear trend (14 df):
@@ -3047,7 +3047,7 @@ are dropped, while `rnd:k2` and `rnd:k4` do not move at all.
 against an effect of at most 2 %, so the standard error shrinks as
 1/√rounds and reaching ±0.5 % needs roughly 13× the rounds — about forty
 hours of this host to price a lever that may be zero. The counters are
-the cheaper route, and `scratchpad/mech.py` reads them, but they only
+the cheaper route, and `tools/perf/mech.py` reads them, but they only
 price the **cost** side: chained exits are counted solely under
 `W64_XCOUNT`, and `lookup` sees just the slow lookups a chained exit
 never reaches, so the benefit fold-through is supposed to deliver is not
@@ -3660,7 +3660,7 @@ does not refuse. `W64_PAGEBITS` is default-off and harmless.
 
 ### The repair: rotate, repeat, pair
 
-`scratchpad/ftsweep2.sh` is now a rotated block design rather than a
+`tools/perf/ftsweep2.sh` is now a rotated block design rather than a
 sequence of blocks. Five arms (`base`, `ft1`, `ft4`, `ft6`, `pg12`), one
 leg each per round, **the arm order rotated one position each round** so
 no arm sits systematically early or late in the drift; each arm is then
@@ -3754,7 +3754,7 @@ load 27.9 against 13.1.
 
 ### What this leaves standing
 
-Re-derived with the correction and the duty guard (`scratchpad/verdict.py`,
+Re-derived with the correction and the duty guard (`tools/perf/verdict.py`,
 which now prints each leg's load, a corrected column, and `LOAD-SKEWED`
 when the arms differ by more than 15 %):
 
@@ -4390,7 +4390,7 @@ they are not.
   `W64_XCOUNT=1` (own wall meaningless, per-Mi rates exact), with
   `W64_COLOC=1` riding along to measure the same-module share the merged
   module's case rests on and which is recorded here as *assumed* ~60 %
-  and never once run. Queued as `scratchpad/lever-chain.sh` step 2.
+  and never once run. Queued as `tools/perf/lever-chain.sh` step 2.
 
 **The merged module is not that lever, and the sweep that was supposed
 to gate it killed it instead.** The reasoning that pointed here was:
@@ -4399,7 +4399,7 @@ removes the *instance crossing* rather than changing which call opcode
 performs it — an intra-module successor becomes a `br` back to a
 `br_table` cascade head, with no call at all. The gate was whether
 `merged` still beat `xtail` at the ~277 TBs a real module holds. It was
-run (`scratchpad/lever-chain.sh` step 1, swept properly over body size
+run (`tools/perf/lever-chain.sh` step 1, swept properly over body size
 and module count), and at a realistic body size in the order the
 emulator actually exhibits, `merged` **lost**: 51.13 ns against
 `xtail`'s 35.73 at pad 144 strided. Not a tie to argue about — a
@@ -4972,7 +4972,7 @@ announcing itself. With n=2 per arm, one light leg decides the verdict.
 It hit `pccin` on the on-arm, `chain` on the on-arm and `nested` on the
 off-arm — three of the round's five A/Bs.
 
-`scratchpad/verdict.py` recomputes any verdict from the saved sweep
+`tools/perf/verdict.py` recomputes any verdict from the saved sweep
 JSONs, keeping only legs whose duty is within ±25 % of that game's
 median, and printing the raw figure beside the guarded one with the drop
 count. The band has to be two-sided: a floor catches the title screens
@@ -5043,8 +5043,8 @@ and the emitted tier is not where the round should go next.
 The runner-side fix is **prepared but not applied**: the battery is in
 flight and `tools/j2mebench.mjs` is read fresh per leg, so editing it now
 would split legs before and after the edit. The guard is analysis-side
-for that reason. `scratchpad/runner-duty.py` holds the patch — exact
-anchors, idempotent, refuses to half-apply — and `scratchpad/queue7.sh`
+for that reason. `tools/perf/runner-duty.py` holds the patch — exact
+anchors, idempotent, refuses to half-apply — and `tools/perf/queue7.sh`
 applies it after the battery drains and before the next rebuild. It adds
 `--duty <v[,v...]>` (one value per `--game` entry), rejecting a window
 outside ±25 % of the expectation and redoing the walk, and prints `duty`

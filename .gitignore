@@ -62,5 +62,9 @@ tools/chrome/
 # j2mebench local host-tuning state, not shared
 /tests/.j2me-*
 
-# python bytecode caches (scratchpad/ analysis scripts)
+# python bytecode caches (tools/perf/ analysis scripts)
 __pycache__/
+
+# perf sweep run output ($S / PERF_LOGS — see tools/perf/README.md).  Raw
+# evidence the docs cite is committed under tools/perf/round35/ instead.
+/tools/perf/logs/

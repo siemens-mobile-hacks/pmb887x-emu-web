@@ -918,7 +918,7 @@ commit, then `ninja-fast.sh` and the ladder.
    inside the guest, driving a full-screen blit every frame — and it is
    the one the user actually waits on.  `tools/j2mebench.mjs` boots
    CX70_games.bin, navigates Centre → 3 → 1 → Centre, plays, and reports
-   `MIPS/cpu`; `scratchpad/prof.sh` holds the *played* game on screen and
+   `MIPS/cpu`; `tools/perf/prof.sh` holds the *played* game on screen and
    attaches `wprof2` to the vCPU worker, so this is the game's steady
    state and not an idle canvas.
 

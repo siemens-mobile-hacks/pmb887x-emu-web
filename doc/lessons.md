@@ -1615,7 +1615,7 @@ the algebra had made that invisible by turning two clean-looking
 measurements into one clean-looking number.
 
 Fitting instead of sloping fixed it.  `ms/Mi = 3.48 + 6.19/len` over all
-ten legs (R² = 0.89, `scratchpad/entryfit.py`) puts the entry at **15.8 %
+ten legs (R² = 0.89, `tools/perf/entryfit.py`) puts the entry at **15.8 %
 of wall** — restoring the 13.6 % the budget had carried and agreeing with
 round 23's independent 7.7 ns per transition.  Of the four pairings
 available in the same data, three give 18–22 % and only the one with the
@@ -1640,7 +1640,7 @@ length of a *translated* TB — it was still the wrong quantity for
 pricing a TB entry, and the error is bigger than the units error was.
 On J2ME the translated mean is 9.4 guest instructions; the exit census
 (`xGotoptr + xGototb + xGototb1` = 55.4 k/Mi, already sitting in
-`scratchpad/xcensus.out`) puts the *executed* mean at ~18. Nearly a
+`tools/perf/xcensus.out`) puts the *executed* mean at ~18. Nearly a
 factor of two, in the direction nobody would guess wrong on purpose.
 
 The mechanism is obvious once stated and invisible until then: every TB
@@ -1770,7 +1770,7 @@ it useless as a validity check and rather good as a free second opinion
 on the clock, since it is derived from counts rather than from timing.
 The tell is that a whole cluster of unrelated-looking counters moves by
 the same percentage and that percentage is `1 − 1/speedup`.
-`scratchpad/ctrdiff.py` diffs all of them paired, with each one's
+`tools/perf/ctrdiff.py` diffs all of them paired, with each one's
 within-arm spread beside it, which is what makes the cluster visible as a
 cluster.
 
@@ -1879,7 +1879,7 @@ to refuse to run after a failure instead of benchmarking a stale binary.
 The trap recurs whenever a command's own text is the thing being searched
 for.  Killing the waiter later in the same session, `pgrep -af mem32ab`
 listed three matches that were all the monitor's own `tail` and `grep`,
-and a `pgrep -af 'bash scratchpad/mem32ab'` matched nothing but itself.
+and a `pgrep -af 'bash tools/perf/mem32ab'` matched nothing but itself.
 Read what a process-table match actually *is* before acting on it: the
 only safe test names the interpreter and the script path together, and
 even then the answer is worth a second look.
@@ -1960,7 +1960,7 @@ The rules that follow:
 - **Prefer rejection to correction.** A burst you can locate lets you
   drop three legs; a rate you have to estimate adds error to the other
   fifteen.
-- **Sample host pressure alongside the legs** (`scratchpad/hostmon.sh`:
+- **Sample host pressure alongside the legs** (`tools/perf/hostmon.sh`:
   `pswpout`, `allocstall_movable`, `MemAvailable`, runq, every 10 s).
   Without a timestamped pressure record, a contaminated leg is
   indistinguishable from an effect.
@@ -2012,7 +2012,7 @@ against confounds.
 
 The fix is to fit the design instead of working around it:
 `log(ms/Mi) ~ arm + round + position`, 14 parameters against 24 legs, 10
-residual df (`scratchpad/square.py`; pure Python, because this host has
+residual df (`tools/perf/square.py`; pure Python, because this host has
 no numpy and installing one mid-measurement perturbs the thing being
 measured). Then let the model say which terms it needs — an F-test put
 position's curvature at F = 0.26 on 4 and 10 df, p = 0.90, so the five
@@ -2734,7 +2734,7 @@ attribution and it is worthless.
   - So **check the workload shape of every leg before reading its
     rate** — `duty`, `mi` and `haltsPerS` are all in the record already.
     The guard must be **two-sided**: a band of ±25 % around that game's
-    median duty (`scratchpad/verdict.py`).  A floor would have caught the
+    median duty (`tools/perf/verdict.py`).  A floor would have caught the
     title screens and waved the wrong-game leg straight through, and the
     wrong-game leg is the more dangerous of the two because its *rate*
     looks perfectly ordinary (81.79, mid-range) while its workload is
@@ -2790,7 +2790,7 @@ attribution and it is worthless.
   three `[ab.sh] <defunct>` from two days earlier match that pattern
   forever, so the loop spins until the session ends and the work behind
   it silently never runs.  The existing drivers were accidentally immune
-  because they matched `scratchpad/ab4?\.sh` — a zombie's `comm` carries
+  because they matched `tools/perf/ab4?\.sh` — a zombie's `comm` carries
   no directory — which also means **the moment one driver is launched by
   a relative path, a path-anchored waiter stops seeing it**: the pattern
   that dodges the zombie is the pattern that misses the job.  `queue6`
