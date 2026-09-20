@@ -10,11 +10,16 @@ any more.
 
 ```
 submodule:  qemu/                 (Azq2/qemu-pmb887x)
-branch:     wasm-browser-port     local name; tracks origin/wasm-patches
-pin:        c07259db94            QEMU_PMB887X_REV in versions.env (0088,
-                                  2026-09-16; 101 commits ahead of master)
+branch:     wasm-browser-port     local name; tracks origin/wasm-browser-port
+                                  (was origin/wasm-patches; the two tips
+                                  moved together in 2026-09-18's push)
+pin:        9146059e35            QEMU_PMB887X_REV in versions.env
+                                  (2026-09-20: the review pass + audio +
+                                  the merged sgold-regression-fix and
+                                  usart-rx-pacing topic branches;
+                                  149 commits ahead of master)
 base:       8b9d485bc2            qemu-pmb887x master at the time of the switch
-companion:  pmb887x-emu/          the meta-repo @ master (4ba4a58). Its qemu
+companion:  pmb887x-emu/          the meta-repo @ master (eb53c78). Its qemu
                                   submodule is not used — the root qemu/
                                   submodule is the build source — but the repo
                                   is where the page's Siemens module comes
@@ -208,11 +213,11 @@ controller and is unaffected either way.
 exists as a standalone branch for a separate upstream PR:
 `origin/rtc-cnt-format` (22e23cfb5b, one commit that applies to Azq2
 master), with a companion pmb887x-dev change (`lg-ke800`/`lg-ke970`
-`[rtc] format = "calendar"`) — that is PR#6 of
-siemens-mobile-hacks/pmb887x-dev (`e6e73d1`, branch `rtc-calendar-format`),
-still open, and it is what `PMB887X_BSP_FIX_REV` keeps merged onto the bsp
-master pin (scripts/sync-bsp.sh does the merge, so a fresh clone reproduces
-it). The qemu commit defaults `[rtc] format` to `unix` (Siemens),
+`[rtc] format = "calendar"`) — that was PR#6 of
+siemens-mobile-hacks/pmb887x-dev (`e6e73d1`, branch `rtc-calendar-format`);
+**it landed in bsp master as `e8d490e` (2026-09-20), which retired
+`PMB887X_BSP_FIX_REV` and the merge scripts/sync-bsp.sh used to recreate**.
+The qemu commit defaults `[rtc] format` to `unix` (Siemens),
 so the pmb887x-dev change is what keeps the LG boards on the packed
-calendar — submit both, qemu first. Once it lands, drop the top commit
-of the series on the next rebase and empty `PMB887X_BSP_FIX_REV`.
+calendar. The qemu half (0033 / `origin/rtc-cnt-format`) is still to go
+upstream separately.

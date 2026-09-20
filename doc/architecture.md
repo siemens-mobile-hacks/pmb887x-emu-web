@@ -196,8 +196,11 @@ linear Unix seconds, LG packed calendar).
     the UI that it is substituting, because same-family is not the same board:
     the configs carry per-model `HW_DET_MOB_TYPE` strap bits (S65 `01100`,
     C65 `10010`) that firmware can read. Deliberately not mapped: `CL61A` is a
-    different part from CL61 (flash `0x880D` vs `0x8819`), and `M75`, `C70`
-    and `ME75` have no source putting them on the same silicon as a board here.
+    different part from CL61 (flash `0x880D` vs `0x8819`), and `C70` has no
+    source putting it on the same silicon as a board here. (`M75` and `ME75`
+    left that table for `DEVICE_RULES` when bsp `e79169f` added boards of
+    their own — the 2026-09-20 round that also brought `M65`, `SK65` and
+    `SL65`.)
 - Advanced ▸ Siemens keys (`site/recalc.js`, `site/recalc-worker.js`): for a
   `siemens-*` device in Own file mode only — the presets are published
   already recalculated — the three ways pmb887x-emu reconciles a fullflash

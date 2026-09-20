@@ -327,17 +327,21 @@ reverse-engineering job, unrelated to this backend.
   already here verbatim (same patch-id), and its remaining differences are
   a `dsp_hexdump()` that indexes words where the offset counts bytes, the
   pre-fix `dsp_realize()`, and two `#if 0` debug blocks.
-- bsp (pmb887x-dev) `23fc945` — bsp master (END_CALL on SGOLD, WHBABCON
-  flags), plus perk11's LG `[rtc] format = "calendar"` (PR#6 of
-  siemens-mobile-hacks/pmb887x-dev, still unmerged upstream) kept on top:
-  `scripts/sync-bsp.sh` does the merge itself, so a fresh clone reproduces
-  it. Master is also where `[peripheral.RF] type = "hd155153np"` — a device
-  the emulator has no table entry for — got commented out, which is why
-  there is no longer a `bsp-patches/` directory to apply.
-- pmb887x-emu `4ba4a58` — master. Not built from (qemu comes from the root
+- bsp (pmb887x-dev) `e79169f` — bsp master (2026-09-20). Adds the M65, M75,
+  ME75, SK65 and SL65 boards (the device list grew matching rules), reworks
+  CX75 onto the `siemens-sgl-sirius` include, and carries the WHBABCON/
+  WHBABSTAT bits and USART RX pacing. perk11's LG `[rtc] format = "calendar"`
+  (PR#6) landed in master as `e8d490e`, so there is no fix pin and no merge
+  in `scripts/sync-bsp.sh` any more — a plain checkout of the pin is the
+  whole tree. Master is also where `[peripheral.RF] type = "hd155153np"` — a
+  device the emulator has no table entry for — got commented out, which is
+  why there is no longer a `bsp-patches/` directory to apply.
+- pmb887x-emu `eb53c78` — master. Not built from (qemu comes from the root
   submodule); it is the source of the siemensfw library (`src/siemens`)
   that `scripts/build-recalc-wasm.sh` compiles for the page's Siemens-key
-  and device-detection module.
+  and device-detection module. The 2026-09-20 bump (7819a6c..eb53c78) moves
+  only its own bsp/qemu submodule pointers and adds tests — `src/siemens`
+  is unchanged.
 - emsdk 4.0.10, glib 2.84.0, pixman 0.44.2, zlib 1.3.2, libffi v3.5.2
   (mirrors qemu's `emsdk-wasm64-cross.docker`).
 

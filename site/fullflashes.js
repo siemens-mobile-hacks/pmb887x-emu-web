@@ -27,17 +27,22 @@ export const SIDE_CAR_RE = /\.cfi-[a-z0-9]+$/i;
 // LG phones: their EEPROM lives in the NOR flash EFA block, so their
 // fullflashes need the .cfi-efa sidecar (see SIDE_CAR_RE above).
 // Longer tokens come first wherever one contains another: EL71 before E71,
-// CL61A before CL61 — the first hit wins.
+// CL61A before CL61, ME75 before M75 — the first hit wins. The M65/M75/ME75/
+// SK65/SL65 rows arrived with the bsp round that added those boards
+// (e79169f); C70 still has neither a board nor a sourced stand-in.
 const DEVICE_RULES = [
   ["KE800", "lg-ke800"], ["KE970", "lg-ke970"],
   ["EL71", "siemens-el71"], ["E71", "siemens-e71"], ["C81", "siemens-c81"],
-  ["S75", "siemens-s75"], ["S65", "siemens-s65"], ["CX75", "siemens-cx75"],
+  ["S75", "siemens-s75"], ["S65", "siemens-s65"], ["SK65", "siemens-sk65"],
+  ["CX75", "siemens-cx75"],
   ["CX70", "siemens-cx70"], ["CX65", "siemens-cx65"], ["SL75", "siemens-sl75"],
+  ["SL65", "siemens-sl65"],
   ["CL61A", "siemens-cl61a"], ["CL61", "siemens-cl61"],
   ["SL98", "siemens-sl98"],
   ["C75", "siemens-c75"], ["C72", "siemens-c72"],
   ["C65", "siemens-c65"], ["S68", "siemens-s68"], ["M81", "siemens-m81"],
-  ["M72", "siemens-m72"],
+  ["M72", "siemens-m72"], ["ME75", "siemens-me75"], ["M75", "siemens-m75"],
+  ["M65", "siemens-m65"],
   ["705P", "panasonic-705p"], ["VS7", "panasonic-vs7"],
 ];
 
@@ -49,8 +54,9 @@ const DEVICE_RULES = [
 // platform family the board configs differ in their HW_DET_MOB_TYPE straps
 // (S65 is 01100, C65 10010), which firmware can read.
 // Deliberately absent: CL61A is *not* a CL61 (different flash part, 0x880D vs
-// 0x8819); M75, C70 and ME75 have no source that puts them on the same
-// silicon as a board we ship. See doc/architecture.md.
+// 0x8819); C70 has no source that puts it on the same silicon as a board we
+// ship. (M75 and ME75 left this table for DEVICE_RULES when bsp e79169f gave
+// them boards of their own.) See doc/architecture.md.
 const MODEL_VARIANTS = [
   // upstream's own supported-hardware table (pmb887x-emu/README.md)
   ["C1F0", "siemens-el71", true],
