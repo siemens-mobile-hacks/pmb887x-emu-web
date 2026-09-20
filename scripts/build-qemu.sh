@@ -30,7 +30,13 @@ export EM_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
 # --- qemu source: qemu submodule (patches committed on the
 # wasm-patches branch, see versions.env) ---
 QEMU_SRC="$WEB_DIR/qemu"
-bash "$WEB_DIR/scripts/fetch-qemu.sh"
+# init only the top-level submodules (not pmb887x-emu's nested qemu) and
+# move qemu to the pin (a detached HEAD elsewhere is moved, not an error)
+git -C "$WEB_DIR" submodule update --init
+if [ "$(git -C "$QEMU_SRC" rev-parse HEAD)" != "$QEMU_PMB887X_REV" ]; then
+  git -C "$QEMU_SRC" checkout -q -B "$QEMU_PMB887X_BRANCH" "$QEMU_PMB887X_REV" 2>/dev/null \
+    || git -C "$QEMU_SRC" checkout -q -f "$QEMU_PMB887X_REV"
+fi
 # optional teakra submodule (used by older qemu-pmb887x trees; the current
 # tree has its own native DSP). HTTPS rewrite like the sie-mcp Dockerfile.
 if grep -q 'subprojects/teakra' "$QEMU_SRC/.gitmodules" 2>/dev/null; then

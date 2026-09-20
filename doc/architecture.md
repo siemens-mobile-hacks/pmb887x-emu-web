@@ -54,7 +54,7 @@ engines are served side by side, built from the same tree:
    `tests/docker/dockerfiles/emsdk-wasm64-cross.docker`; pins in
    `versions.env`).
 2. `scripts/build-qemu.sh` initialises the `qemu/` submodule at the
-   pinned rev (`scripts/fetch-qemu.sh`), checks out the bsp at its pin
+   pinned rev (and moves it there whenever HEAD differs), checks out the bsp at its pin
    (`scripts/sync-bsp.sh`), packs the board configs into
    `site/dist/boards.tar` (`scripts/pack-boards.sh`), builds the Siemens
    key module into `site/dist/siemens-recalc.wasm`

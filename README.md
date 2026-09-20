@@ -205,8 +205,9 @@ and the lockstep gate cover.
   versions.env          pinned qemu-pmb887x / bsp / toolchain revisions
   scripts/
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
-    fetch-qemu.sh       initialise the qemu (+ pmb887x-emu) submodules and
-                        check qemu out at the pinned rev
+    build-qemu.sh       initialise the qemu (+ pmb887x-emu) submodules, check
+                        qemu out at the pinned rev, sync bsp/boards/siemensfw
+                        and build the wasm dists
     sync-bsp.sh         bsp checkout @ pin → build/bsp
     pack-boards.sh      build/bsp board configs → site/dist/boards.tar (run by
                         every deploy path)
@@ -345,7 +346,8 @@ reverse-engineering job, unrelated to this backend.
 - emsdk 4.0.10, glib 2.84.0, pixman 0.44.2, zlib 1.3.2, libffi v3.5.2
   (mirrors qemu's `emsdk-wasm64-cross.docker`).
 
-Bumping: change the pin, `scripts/fetch-qemu.sh`, rebuild; `tests/run.mjs`
+Bumping: change the pin, rebuild (`build-qemu.sh` moves the submodule to
+the pin); `tests/run.mjs`
 is the A/B harness — it boots
 s75/el71/c81/ke800 natively and benchmarks before/after, and
 `node tools/bootcheck.mjs --dist dist-jit` is the browser-side gate.

@@ -1207,10 +1207,10 @@ inline on wasm64 anyway).
   patch (0007's `tci_tbhdr`, 0008's `_ri` forms); keep new DEFs appended
   so numbering stays stable, and remember `#ifdef __EMSCRIPTEN__` blocks
   in `tcg-target-opc.h.inc` shift numbering between builds.
-- **fetch-qemu.sh resets the submodule checkout to the pin** whenever
-  HEAD differs from `QEMU_PMB887X_REV` — `build-qemu.sh` runs it, so
-  commit *and pin* before a full rebuild (`ninja-fast.sh` never touches
-  the tree).
+- **build-qemu.sh resets the submodule checkout to the pin** whenever
+  HEAD differs from `QEMU_PMB887X_REV` (the submodule init/checkout is
+  inlined there), so commit *and pin* before a full rebuild
+  (`ninja-fast.sh` never touches the tree).
 - **wasm64 batching invariant**: every translated TB must be staged in
   an open batch (`w64_batch_begin_tb` at TB start, 0053).  A TB that
   runs from a per-TB temp module works in Chrome and silently eats

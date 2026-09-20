@@ -21,7 +21,7 @@ needs_build=0
 [ -f "$PLUGIN" ] || needs_build=1
 [ "$needs_build" = 0 ] && [ "$ROOT/tests/lockstep.c" -nt "$PLUGIN" ] && needs_build=1
 if [ "$needs_build" = 1 ]; then
-  [ -d "$QEMU_HDR" ] || { echo "!! $QEMU_HDR missing — scripts/fetch-qemu.sh + build-native.sh first" >&2; exit 2; }
+  [ -d "$QEMU_HDR" ] || { echo "!! $QEMU_HDR missing — scripts/build-native.sh first" >&2; exit 2; }
   echo "== building tests/lockstep.so"
   gcc -O2 -Wall -fPIC -shared -I "$QEMU_HDR" $(pkg-config --cflags glib-2.0) \
       "$ROOT/tests/lockstep.c" -o "$PLUGIN"

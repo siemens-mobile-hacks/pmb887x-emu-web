@@ -32,7 +32,6 @@ companion:  pmb887x-emu/          the meta-repo @ master (eb53c78). Its qemu
 ## Working on the tree
 
 ```bash
-scripts/fetch-qemu.sh                  # init the submodule, check out the pin
 # edit qemu/**, then:
 bash scripts/ninja-fast.sh             # incremental wasm64 rebuild + deploy
 git -C qemu commit -a                  # one mechanism per commit, measured header
@@ -40,11 +39,11 @@ git -C qemu push origin wasm-browser-port:wasm-patches
 # bump QEMU_PMB887X_REV in versions.env to the new tip, commit both here
 ```
 
-`scripts/fetch-qemu.sh` resets the checkout to `QEMU_PMB887X_REV`
-whenever HEAD differs from it, so a commit that is not yet pinned is
-lost from the working checkout (not from the repo) on the next full
-build — pin before rebuilding with `build-qemu.sh`. `ninja-fast.sh`
-does not touch the tree.
+`scripts/build-qemu.sh` (and the native build scripts) reset the
+submodule checkout to `QEMU_PMB887X_REV` whenever HEAD differs from it,
+so a commit that is not yet pinned is lost from the working checkout
+(not from the repo) on the next full build — pin before rebuilding.
+`ninja-fast.sh` does not touch the tree.
 
 Rebase note: the series sits on qemu-pmb887x master plus the AFE/DSP
 fix from alula's `dsp-stuff` (the commit master lacks; see versions.env).

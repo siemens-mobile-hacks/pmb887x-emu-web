@@ -3,9 +3,9 @@
 # them for static deployment (dist/).
 #
 # What "latest code" means here: versions.env is the source of truth —
-#   - qemu/ is hard-synced to the pinned rev (fetch-qemu.sh inits, then
-#     a forced checkout discards any local edits — an edited file in the
-#     tree must never leak into a release artifact)
+#   - qemu/ is hard-synced to the pinned rev (the submodule is inited,
+#     then a forced checkout discards any local edits — an edited file in
+#     the tree must never leak into a release artifact)
 #   - bsp is re-synced at the pin (sync-bsp.sh, idempotent)
 #   - build/qemu-wasm64 and build/qemu-wasm are wiped, so no ninja object
 #     from an earlier tree can survive into the artifacts
@@ -35,9 +35,10 @@ note() { echo "build-release: $*"; }
 git -C qemu fetch origin "$QEMU_PMB887X_REV" 2>/dev/null ||
   note "fetch of $QEMU_PMB887X_REV failed (offline?) — continuing with local objects"
 
-bash scripts/fetch-qemu.sh
-# fetch-qemu.sh only checks out when HEAD moved; force the worktree to
-# the pin unconditionally so local edits cannot ride along.
+# init only the top-level submodules (not pmb887x-emu's nested qemu);
+# the checkout below is forced unconditionally, so local edits cannot
+# ride along.
+git submodule update --init
 git -C qemu checkout -q -f -B "$QEMU_PMB887X_BRANCH" "$QEMU_PMB887X_REV"
 [ -z "$(git -C qemu status --porcelain)" ] ||
   note "WARNING: qemu/ still dirty after forced checkout (untracked files — inspect with: git -C qemu status)"
@@ -61,7 +62,7 @@ fi
 
 # ---- 3. rebuild + bundle ------------------------------------------------
 
-# build.sh: deps (cached unless DEPS_CLEAN) → fetch-qemu/sync-bsp/
+# build.sh: deps (cached unless DEPS_CLEAN) → submodule init/sync-bsp/
 # pack-boards/build-recalc-wasm (idempotent re-syncs) → build-qemu-wasm64
 # → site/dist-jit (+ site/dist with TCI=1).  Native build dirs
 # (qemu-native*) are not part of the deploy path and are left alone.

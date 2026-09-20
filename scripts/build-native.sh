@@ -18,7 +18,11 @@ BUILD="$ROOT/build/qemu-native-build"
 # It is moved to the pin on every run, not only created: an existing
 # worktree left behind at an older rev used to build silently and hand
 # tests/run.mjs a stale binary as if it were the gate.
-bash "$ROOT/scripts/fetch-qemu.sh" "$SRC"
+git -C "$ROOT" submodule update --init
+if [ "$(git -C "$SRC" rev-parse HEAD)" != "$QEMU_PMB887X_REV" ]; then
+  git -C "$SRC" checkout -q -B "$QEMU_PMB887X_BRANCH" "$QEMU_PMB887X_REV" 2>/dev/null \
+    || git -C "$SRC" checkout -q -f "$QEMU_PMB887X_REV"
+fi
 if [ ! -d "$WT" ]; then
   git -C "$SRC" worktree add --detach "$WT" "$QEMU_PMB887X_REV"
 elif [ "$(git -C "$WT" rev-parse HEAD)" != "$QEMU_PMB887X_REV" ]; then
