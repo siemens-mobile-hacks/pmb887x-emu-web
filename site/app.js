@@ -18,6 +18,7 @@ import {
 import {
   readIdentity, recalc, recoverEsn, cachedEsnCount, clearEsnCache, workerCount,
 } from "./recalc.js";
+import { loadSiemensFW } from "./siemensfw.js";
 
 /* ------------------------------------------------------------------ */
 /* phone key tables (mirrors pmb887x-emu-mcp/src/keys.ts + otp.ts)      */
@@ -149,7 +150,8 @@ let pendingDevice = null; // device inferred from a fullflash picked before
 let emuState = "idle";
 let runStartedAt = 0;     // uptime origin, reset on every Start
 let uptimeTimer = 0;
-let dlLoaded = 0, dlTotal = 0; // preset download progress, for the pill
+let dlLoaded = 0, dlTotal = 0; // the download in progress, for the pill
+let dlWhat = "fullflash";      // ...and whether it is the preset's or the engine's
 let esnPct = 0;                // ESN sweep progress, likewise
 let errorMsg = null;      // shown in place of the pill's state text
 let startBlocked = false; // a failure Start cannot recover from (isolation)
@@ -308,6 +310,13 @@ let presetState = { complete: false, count: 0, totalSize: 0 };
 let ownBin = null, ownEfa = null; // the picked File objects
 let presetBusy = false;     // preset download in flight (during boot)
 let downloadAbort = null;   // its AbortController while it runs — Cancel uses it
+// The engine wasm prefetch (see the engine section by the ?dist block):
+// engineAbort is the engine's twin of downloadAbort — set only while
+// boot() itself waits the download out, Cancel uses it — and
+// engineCancelled tells boot()'s catch which of the two an AbortError
+// came from.
+let engineAbort = null;
+let engineCancelled = false;
 
 const BIN_RE = /\.bin$/i;
 const EFA_RE = /\.cfi-efa$/i;
@@ -691,6 +700,13 @@ function firmwareLine() {
 function pillText() {
   if (errorMsg) return "Error";
   if (emuState === "idle" && phoneLayout.matches) return firmwareLine();
+  // the background engine prefetch, so an instant Start has a visible
+  // explanation — desktop widths only: on phones the idle pill is the
+  // firmware line and doubles as the Firmware sheet's opener
+  if (emuState === "idle" && engineSt)
+    return `Prefetching emulator · ${engineSt.total
+      ? Math.round((engineSt.loaded / engineSt.total) * 100) + "%"
+      : fmtMiB(engineSt.loaded)}`;
   // while the recording pill is up the two have to share one 32px row:
   // the uptime alone, no "Running · " in front of it
   const bare = !!recorder && phoneLayout.matches;
@@ -698,7 +714,9 @@ function pillText() {
   // wrong, the word says what
   const tail = stalled ? " · stopped" : slow ? " · slow" : "";
   switch (emuState) {
-    case "downloading": return `Downloading · ${fmtProgress(dlLoaded, dlTotal)}`;
+    case "downloading": return dlWhat === "engine"
+      ? `Downloading emulator · ${dlTotal ? fmtProgress(dlLoaded, dlTotal) : fmtMiB(dlLoaded)}`
+      : `Downloading · ${fmtProgress(dlLoaded, dlTotal)}`;
     case "recovering": return `Recovering ESN · ${esnPct}%`;
     case "booting": return "Booting" + tail;
     case "running": return (bare ? "" : "Running · ") + mmss(Date.now() - runStartedAt) + tail;
@@ -1147,6 +1165,142 @@ const DIST = new URLSearchParams(location.search).get("dist") ||
              (new URLSearchParams(location.search).has("dist") ? "dist" : null);
 const DIST_DEFAULT = "dist-jit";
 
+/* ---- engine prefetch ------------------------------------------------ */
+/* The qemu wasm (~28 MiB, ~4 on the wire) is the long pole of a first
+ * Start, so it is fetched and compiled in the background once the page
+ * itself is up (kick-off lives in the startup section at the bottom). A
+ * Start that lands before the download is over rides the very same
+ * in-flight fetch out — Cancel aborts it — and a prefetch that fails
+ * outright costs nothing: boot falls back to the emscripten loader
+ * fetching for itself, the pre-prefetch behaviour. The compiled module is
+ * handed to the factory through Module.instantiateWasm, so a ready
+ * prefetch means instantiation only at Start — and emscripten posts the
+ * module to the pthread workers exactly as it would its own. */
+let engineSt = null;    // the in-flight prefetch: { ctl, promise, loaded, total }
+let engineMod = null;   // the compiled WebAssembly.Module, once it is in
+
+function startEngine() {
+  if (engineMod || engineSt) return engineSt; // single-flight
+  const ctl = new AbortController();
+  const st = { ctl, loaded: 0, total: 0 };
+  st.promise = (async () => {
+    const url = `${DIST || DIST_DEFAULT}/qemu-system-arm.wasm`;
+    const res = await fetch(url, { signal: ctl.signal });
+    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+    // a gzipped body (serve.mjs' sidecar) decodes to more bytes than
+    // content-length says, so a total — and with it a percent — only
+    // exists when the response is uncompressed; otherwise the byte
+    // counter runs without one
+    st.total = res.headers.get("content-encoding") ? 0
+      : Number(res.headers.get("content-length")) || 0;
+    // tee: one branch compiles while the body streams in, the other only
+    // counts bytes for the pill and the overlay
+    const [forCompile, forCount] = res.body.tee();
+    const count = (async () => {
+      const rd = forCount.getReader();
+      for (;;) {
+        const { done, value } = await rd.read();
+        if (done) return;
+        st.loaded += value.byteLength;
+        engineTick();
+      }
+    })();
+    count.catch(() => {}); // a failed fetch errors both tee branches
+    try {
+      return await WebAssembly.compileStreaming(new Response(forCompile, {
+        headers: { "content-type": "application/wasm" },
+      }));
+    } finally {
+      // the compile is what failed: stop draining the counter branch (on
+      // success this is a no-op on an exhausted stream)
+      forCount.cancel().catch(() => {});
+    }
+  })()
+    .then((m) => {
+      engineMod = m;
+      // clear before render(): the pill must not read a finished
+      // prefetch as a live one (the .finally only runs after this, and
+      // nothing re-renders between the two)
+      if (engineSt === st) engineSt = null;
+      try { render(); } catch (e) { console.error("[engine] render:", e); }
+      return m;
+    })
+    .finally(() => { if (engineSt === st) engineSt = null; });
+  st.promise.catch(() => {}); // the background kick starts this unawaited
+  engineSt = st;
+  return st;
+}
+
+// Live prefetch state for drivers/debugging (null: not started, "ready":
+// compiled and cached, otherwise the in-flight byte counters).
+window.__engine = () => engineSt
+  ? { loaded: engineSt.loaded, total: engineSt.total }
+  : engineMod ? "ready" : null;
+
+// Progress surfaces: the pill, and while boot() waits the download out,
+// the overlay bar too. Direct text writes, not render() — this fires once
+// per received chunk.
+function engineTick() {
+  const st = engineSt;
+  if (!st) return;
+  if (dlWhat === "engine") {
+    dlLoaded = st.loaded;
+    dlTotal = st.total;
+    statusTextEl.textContent = pillText();
+    const pct = st.total ? Math.round((st.loaded / st.total) * 100) : null;
+    $("ov-sub").textContent = st.total ? fmtProgress(st.loaded, st.total)
+      : fmtMiB(st.loaded);
+    overlayBar.hidden = pct == null;
+    if (pct != null) overlayBar.firstElementChild.style.width = pct + "%";
+  } else if (emuState === "idle" && !phoneLayout.matches) {
+    statusTextEl.textContent = pillText();
+  }
+}
+
+// What boot() calls before importing the loader: the prefetched module,
+// or the rest of the in-flight download with pill, overlay and Cancel on
+// it. Returns null after a non-abort failure (boot falls back to the
+// loader's own fetch); rethrows AbortError for boot()'s cancelled path.
+async function ensureEngine() {
+  if (engineMod) return engineMod;
+  const st = startEngine();
+  engineAbort = st.ctl;
+  dlWhat = "engine";
+  dlLoaded = st.loaded;
+  dlTotal = st.total;
+  setEmuState("downloading");
+  showOverlay("Downloading emulator", fmtMiB(st.loaded));
+  engineTick();
+  try {
+    return await st.promise;
+  } catch (e) {
+    // an aborted compileStreaming rejects with a TypeError ("network
+    // error"), not an AbortError — the signal is the authoritative check
+    if (st.ctl.signal.aborted || e?.name === "AbortError") {
+      engineCancelled = true;
+      throw e;
+    }
+    console.warn("[engine] prefetch failed — fetching at boot instead:", e);
+    return null;
+  } finally {
+    engineAbort = null;
+    dlWhat = "fullflash";
+    setEmuState("booting");
+  }
+}
+
+// Module.instantiateWasm for a factory call: hand it the prefetched,
+// already-compiled module. The success callback takes (instance, module)
+// — the module is what emscripten keeps and posts to the pthread workers.
+const engineInstantiate = (mod) => mod ? {
+  instantiateWasm: (imports, receive) => {
+    // instantiate(Module, imports) resolves to the Instance itself (the
+    // {module, instance} shape is the bytes overload)
+    WebAssembly.instantiate(mod, imports)
+      .then((instance) => receive(instance, mod), noteFatal);
+  },
+} : {};
+
 let exitCode = null;
 
 async function bootSuite(url) {
@@ -1160,6 +1314,7 @@ async function bootSuite(url) {
   showOverlay("Loading suite…");
   try {
     const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    const engineWasmMod = await ensureEngine();
     const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
     let modRef = null; // FS access in onExit (qemuModule not yet assigned)
     /* ?icount=1: the phones' stock timing model — measures the icount
@@ -1176,6 +1331,7 @@ async function bootSuite(url) {
         "-serial", "file:/serial.log",
         "-monitor", "none",
       ],
+      ...engineInstantiate(engineWasmMod),
       printErr: (t) => console.log("[qemu]", t),
       onExit: (code) => {
         // hand the finished serial log out before the runtime tears the
@@ -1326,6 +1482,7 @@ async function boot() {
         downloadAbort = new AbortController();
         dlLoaded = 0;
         dlTotal = selectedPreset.size;
+        dlWhat = "fullflash";
         setEmuState("downloading");
         await refreshPresetUi(); // say so on the preset line before byte one
         let doneBytes = 0, curFile = null, curTotal = 0;
@@ -1365,6 +1522,10 @@ async function boot() {
       sidecars = ownEfa && device.startsWith("lg-") ? [ownEfa] : [];
     }
 
+    // The engine wasm is normally prefetched and compiled by now (the
+    // background download starts once the page is up); a Start that beat
+    // it waits the rest of the download out inside ensureEngine.
+    const engineWasmMod = await ensureEngine();
     // Compile the factory fresh per boot (the emscripten ES6 factory is
     // single-use once main() has run through exit()).
     showOverlay("Loading emulator…");
@@ -1478,6 +1639,9 @@ async function boot() {
     let modRef = null; // FS access in onExit (qemuModule not yet assigned)
     qemuModule = await factory({
       arguments: args,
+      // the prefetched module, when there is one: instantiation only —
+      // no download, no re-compile
+      ...engineInstantiate(engineWasmMod),
       printErr,
       onAbort: noteFatal,
       log: debug ? (t) => console.log("[log]", t) : undefined,
@@ -1559,9 +1723,13 @@ async function boot() {
     });
   } catch (e) {
     setEmuState("idle");
-    if (e?.name === "AbortError") {
-      showOverlay("Ready to boot",
-        "Download cancelled — whatever finished stays cached");
+    if (e?.name === "AbortError" || engineCancelled) {
+      // a cancelled preset keeps whatever files finished; the engine's
+      // partial fetch leaves nothing behind
+      showOverlay("Ready to boot", engineCancelled
+        ? "Download cancelled"
+        : "Download cancelled — whatever finished stays cached");
+      engineCancelled = false;
     } else {
       console.error(e);
       setError(String(e));
@@ -1603,6 +1771,12 @@ function stop() {
   if (downloadAbort) {
     downloadAbort.abort();
     return; // boot()'s catch reports it and re-arms Start
+  }
+  // ...or "cancel the engine download" a too-soon Start is riding out
+  // (the very download the background prefetch began)
+  if (engineAbort) {
+    engineAbort.abort();
+    return; // ensureEngine() rethrows it to boot()'s catch
   }
   // ...or "cancel the ESN sweep", the other pre-guest wait worth stopping
   if (esnAbort) {
@@ -3002,6 +3176,24 @@ boardsReady = loadBoards().catch((e) => {
   setError("boards.tar: " + e, { block: true });
   return null; // resolved-with-null: boot() re-checks boardsBuf below
 });
+
+// The engine prefetch: once the page itself is up — an idle callback
+// where there is one, a short timeout where there is not; either way the
+// fetch is async and page load never waits for it — pull the qemu wasm
+// and the small Siemens keys tool in the background, so Start finds them
+// ready instead of downloading them then. ensureEngine() (what boot()
+// calls) shares the very same in-flight download when Start beats it.
+{
+  const kick = () => {
+    startEngine();
+    loadSiemensFW().catch(() => {});
+  };
+  const idle = "requestIdleCallback" in window
+    ? (f) => requestIdleCallback(f, { timeout: 4000 })
+    : (f) => setTimeout(f, 800);
+  if (document.readyState === "complete") idle(kick);
+  else addEventListener("load", () => idle(kick), { once: true });
+}
 
 // ?suite= runs headlessly (phase-0a runner): submit the boot form — the same
 // path as pressing Start. Last, so the whole UI is wired before it fires.

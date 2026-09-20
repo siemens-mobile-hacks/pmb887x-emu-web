@@ -58,7 +58,14 @@ git submodule update --init qemu   # build.sh does this too; the qemu
 `serve.mjs` keeps a gzip'd sidecar of the wasm (dist-jit: 28 MB → ~4 MB
 on the wire; `GZIP=0` disables) and revalidates with ETags, so repeat
 visits skip the re-download (`tools/loadbench.mjs` measures the startup
-path).
+path). The page also prefetches the engine wasm (plus the small Siemens
+keys tool) in the background once the page itself is up — fetched *and*
+compiled ahead of time, so Start only instantiates; the idle status pill
+shows the progress (`Prefetching emulator · …`, no percent while the body
+arrives gzip-compressed). A Start that beats the download rides the very
+same in-flight fetch out (`Downloading emulator · …`, Cancel aborts), and
+a failed prefetch falls back to the loader fetching at boot as before
+(`tools/engine-prefetch-web.mjs` covers the flow end to end).
 
 Everything runs client-side: the picked fullflash is written into the
 emscripten MEMFS, board configs are unpacked from `site/dist/boards.tar`
