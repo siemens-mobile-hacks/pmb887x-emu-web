@@ -85,9 +85,9 @@ What is left is now two things, both sized in the handoff: the main
 loop being woken ~12 k times a second to do nothing (~21 % of the vCPU
 at idle), and `icount_get` still costing ~50 ns/call.
 
-Since 2026-09-12 the qemu tree is the `qemu/` submodule: a "patch" is
+qemu tree is the `qemu/` submodule: a "patch" is
 a commit on its branch (numbering continues as before), and
-`versions.env` pins the tip — see [upstream-branch.md](upstream-branch.md).
+`versions.env` pins the tip.
 
 ## Measure, then gate — they are different activities
 
@@ -1474,5 +1474,5 @@ throttle through a compute-bound stretch instead).
 5. `bash scripts/gate.sh close` before the session's last commit —
    Firefox included, because Chrome hides module-budget bugs.
 6. Update the tables here (landed/rejected/remaining), § Open items in
-   the hand-off, the commit list in upstream-branch.md, and lessons.md
+   the hand-off, and lessons.md
    when something was learned the hard way.

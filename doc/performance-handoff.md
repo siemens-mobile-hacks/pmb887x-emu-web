@@ -1,7 +1,8 @@
 # Performance hand-off
 
 Where the work stands, what is open, and what binds. Patch numbers are
-commits on the `qemu/` submodule branch ([upstream-branch.md](upstream-branch.md));
+commits on the `qemu/` submodule branch (the tip is pinned in
+`versions.env`);
 the per-patch numbers live in the playbook's "What landed" table, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
@@ -550,10 +551,6 @@ emission order (a command-line `-D` beats both cross files):
 ( cd "$BUILD" && meson configure -Doptimization=3 -Dc_link_args="$LA" … )
 ```
 
-Wired up as `W64_O3=1` in `scripts/build-qemu-wasm64.sh`
-(`build/qemu-wasm64-o3/`, `site/dist-jit-o3/`); the A/B is
-`tools/perf/o3ab.sh`.
-
 Do **not** fold a build flag in while another A/B is in flight — it changes
 both arms and confounds whatever is being measured. Run each as its own
 single-variable A/B. For `-O3` that was done and it came back a tie: it
@@ -596,8 +593,6 @@ off makes an uninitialized read observable instead of deterministic. Price
 it first; it is the user's call whether a browser-sandboxed emulator wants
 to spend that, and it should not be switched off merely because it is
 faster.
-
-### Move the linear memory to wasm32 — the bound check is 25.3 % of wall, and wasm32 collects the dependent-load half of it
 
 Round 35's `nobc` arm (`--js-flags=--no-wasm-bounds-checks`) is
 **−25.29 % ± 1.79**: about three host cycles of every guest instruction

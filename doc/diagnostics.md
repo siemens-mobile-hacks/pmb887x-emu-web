@@ -279,7 +279,7 @@ Profiling and counters:
 | `haltprobe.mjs` | why is this board awake? — halt/wake attribution |
 | `wprof2.mjs` | per-worker CDP profiler with `wasm-function[N]` → symbol resolution via the `.symbols` sidecar; `PROF_DELAY=<s>` picks the boot phase, `PROF_FN=<substr>` prints caller stacks, `PROF_ATTACH=` profiles a page another tool drove, `PROF_SAVE=<json>` keeps the raw profile. **Self-time names a neighbourhood, not a function** — confirm with a counter or a volatile-spin probe before believing a rank |
 | `profcat.mjs`, `profjit.mjs` | categorize a saved profile by cost class; distribution of JIT-guest self time over TB functions |
-| `threadmap.mjs`, `syscallprobe.mjs` | thread census / syscall CPU attribution (see wasm-threads-audit.md) |
+| `threadmap.mjs`, `syscallprobe.mjs` | thread census / syscall CPU attribution |
 | `asyncify-audit.mjs` | which frames the Asyncify onlylist still needs (`QEMU_COSTACK=1` is the evidence half) |
 
 Probes and traces:

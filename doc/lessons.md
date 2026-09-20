@@ -2895,8 +2895,7 @@ attribution and it is worthless.
   time covered inlined `tb_lookup`; parked workers show
   `emscripten_fiber_init_from_current_context` when they are in
   `emscripten_futex_wait`; sample counts are not CPU for parked threads
-  and V8 function indices include imports
-  ([wasm-threads-audit.md](wasm-threads-audit.md)). Add a cold counter
+  and V8 function indices include imports. Add a cold counter
   before chasing a frame.
 - **Remove measurement scaffolding before the final A/B**: two
   `g_get_monotonic_time` calls per commit (JS round trips) cost ~0.4 s

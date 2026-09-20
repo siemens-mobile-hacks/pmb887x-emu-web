@@ -67,3 +67,7 @@ pair (`bc-on.log` / `bc-off.log`) behind the bound-check finding. The
 analysis scripts read leg logs as `k<round>_<arm>.log`, so point them at
 that directory to reproduce any number in the round-35 sections of the
 handoff.
+
+`xcensus.out` is the same kind of committed evidence — the executed-mean
+TB size that `lessons.md` and the handoff cite — kept with its generator
+`xcensus.sh` beside it.

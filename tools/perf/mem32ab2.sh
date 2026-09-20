@@ -2,6 +2,11 @@
 # Rebuild the mem32 variant with the define that never landed, prove it
 # landed this time, then run the A/B.
 #
+# Historical driver — kept because performance-handoff.md § round thirty-six
+# cites it as the A/B behind the +19.16 % number. It cannot be re-run as-is:
+# mem32 WON that round, -sMEMORY64=2 became the default and the W64_MEM32
+# build knob was removed.
+#
 # Round one failed at the module boundary, exactly as tcg/wasm64/wasm64.h
 # warns it would: "cannot import i32 memory as i64".  Binaryen had lowered
 # the main module's memory to 32-bit, but the modules the JIT emits still

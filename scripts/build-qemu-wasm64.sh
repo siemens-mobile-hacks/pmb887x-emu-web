@@ -10,9 +10,9 @@
 # pointers, i32 memory index.  It is worth +19.2 % on J2ME (round thirty-six)
 # because a wasm32 memory is guard-page bounded and needs no explicit bound
 # check; it gates green and the op-suite is byte-identical to native.
-# W64_MEM64=1 builds the old -sMEMORY64=1 model into build/qemu-wasm64-mem64/
-# and site/dist-jit-mem64/ for comparison.  W64_O3=1 does the same for an -O3
-# build (build/qemu-wasm64-o3/, site/dist-jit-o3/).
+# (The W64_MEM64 / W64_O3 comparison variants this script used to build
+# were removed once their rounds closed — the record is in
+# doc/performance-handoff.md, rounds thirty-six and thirty-seven.)
 #
 # Prereqs (already present in this tree):
 #   - build/deps/emsdk (emsdk env + wasm64 sysroot under build/deps/target)
@@ -54,28 +54,10 @@ SRC="$ROOT/qemu"
 # and caches their system libraries in one wasm64-emscripten lib dir; only the
 # link differs.
 #
-# Each variant gets its own build and dist directory for two reasons: the
-# configure guard below does not reconfigure an existing build dir, so a
-# shared one would silently keep the other mode's flags; and an A/B wants
-# both artifacts on disk at once.  The knobs compose, and they have to: once
-# one of them is winning, the next experiment has to be priced on top of it
-# rather than against a build nobody intends to ship.
-VARIANT=
-MEMFLAGS="-sMEMORY64=2"
-CONF_MEM=(--wasm64-32bit-address-limit)
-if [ "${W64_MEM64:-0}" = 1 ]; then
-  VARIANT="$VARIANT-mem64"
-  MEMFLAGS="-sMEMORY64=1"
-  CONF_MEM=()
-fi
-if [ "${W64_O3:-0}" = 1 ]; then
-  # qemu's configure pins meson's optimization option to 2; the -O3 in
-  # --extra-cflags below has never applied to a compile line and never could.
-  # The option is set on the meson configure line further down.
-  VARIANT="$VARIANT-o3"
-fi
-BUILD="build/qemu-wasm64$VARIANT"
-DIST="site/dist-jit$VARIANT"
+# The build dir is never reconfigured once it exists (the configure guard
+# below), so a flags change means wiping build/qemu-wasm64 first.
+BUILD="build/qemu-wasm64"
+DIST="site/dist-jit"
 
 if [ ! -f "$BUILD/build.ninja" ] || [ ! -f "$BUILD/meson-private/coredata.dat" ]; then
   echo "== configuring $BUILD"
@@ -83,7 +65,7 @@ if [ ! -f "$BUILD/build.ninja" ] || [ ! -f "$BUILD/meson-private/coredata.dat" ]
   ( cd "$BUILD" && emconfigure "$SRC/configure" \
       --static \
       --cpu=wasm64 \
-      "${CONF_MEM[@]}" \
+      --wasm64-32bit-address-limit \
       --target-list=arm-softmmu \
       --without-default-features \
       --enable-system \
@@ -95,7 +77,7 @@ if [ ! -f "$BUILD/build.ninja" ] || [ ! -f "$BUILD/meson-private/coredata.dat" ]
       --disable-install-blobs \
       --disable-werror \
       -Dcpp_std=gnu++20 \
-      --extra-cflags="-O3 -pthread -DWASM_BIGINT $MEMFLAGS" )
+      --extra-cflags="-O3 -pthread -DWASM_BIGINT -sMEMORY64=2" )
 fi
 
 # wasm64 backend: the hot path is JIT'd per-TB modules, not the TCI
@@ -114,11 +96,10 @@ LA="['-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFOR
 # does not need it
 # A command-line -D is the one route a cross file loaded later cannot
 # override, which is why every flag that has to survive goes through here.
-VOPT=()
-if [ "${W64_O3:-0}" = 1 ]; then
-  VOPT=(-Doptimization=3)
-fi
-( cd "$BUILD" && meson configure -Dc_link_args="$LA" -Dcpp_link_args="$LA" -Dqom_cast_debug=false "${VOPT[@]}" >/dev/null )
+# (qemu's configure pins meson's optimization to -O2 through the same
+# built-in option; -O3 was measured a tie in round thirty-seven and
+# rejected — see doc/performance-handoff.md § Open items.)
+( cd "$BUILD" && meson configure -Dc_link_args="$LA" -Dcpp_link_args="$LA" -Dqom_cast_debug=false >/dev/null )
 
 echo "== ninja qemu-system-arm.js"
 ninja -C "$BUILD" qemu-system-arm.js
@@ -136,20 +117,13 @@ for f in "$BUILD"/qemu-system-arm.js.symbols; do
   [ -f "$f" ] && cp "$f" "$DIST/" && break
 done
 # board configs (site/dist/boards.tar, what the page always fetches) are not
-# part of this build's ninja graph — refresh them with the deploy
-#
-# Both of these live in the shared site/dist/, are identical in either memory
-# mode, and are live inputs to whatever is being benchmarked out of it, so the
-# W64_MEM32 variant only creates them when they are missing: rebuilding them
-# would add CPU noise to a run in progress and buy nothing.
-if [ -z "$VARIANT" ] || [ ! -f site/dist/boards.tar ]; then
-  bash scripts/pack-boards.sh
-fi
+# part of this build's ninja graph — refresh them with the deploy.
+# Both of these live in the shared site/dist/ and are live inputs to whatever
+# is being benchmarked out of it.
+bash scripts/pack-boards.sh
 # same for the Siemens key module (site/dist/siemens-recalc.wasm), which is
 # built from the pmb887x-emu submodule, not from qemu
-if [ -z "$VARIANT" ] || [ ! -f site/dist/siemens-recalc.wasm ]; then
-  bash scripts/build-recalc-wasm.sh
-fi
+bash scripts/build-recalc-wasm.sh
 # The lockstep fold reads the insn budget + grid from the URL (ls-* params).
 ls -la "$DIST"/qemu-system-arm.{js,wasm}
-echo "== done. Serve: node scripts/serve.mjs 8094   Run: cd tools && node lockstep-wasm.mjs --runs 3"
+echo "== done. Serve: node serve.mjs   Run: cd tools && node lockstep-wasm.mjs --runs 3"

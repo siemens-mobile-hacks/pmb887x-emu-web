@@ -40,8 +40,8 @@ tests/results/
 # tcg-isa build artifacts (binaries covered by *.bin; keep the elf/objects out too)
 tests/tcg-isa/*.o
 tests/tcg-isa/*.elf
-# A/B snapshot dists (baselines saved before candidate deploys — see doc/
-# wasm-tcg-backend-progress.md; /site/dist/ and /site/dist-jit/ above are
+# A/B snapshot dists (baselines saved before candidate deploys;
+# /site/dist/ and /site/dist-jit/ above are
 # the live ones)
 /site/dist-*/
 

@@ -32,13 +32,6 @@ if [ ! -d "$WT" ]; then
 elif [ "$(git -C "$WT" rev-parse HEAD)" != "$QEMU_PMB887X_REV" ]; then
   git -C "$WT" checkout -q -f --detach "$QEMU_PMB887X_REV"
 fi
-if grep -q 'subprojects/teakra' "$WT/.gitmodules" 2>/dev/null \
-   && [ ! -e "$WT/subprojects/teakra/.git" ]; then
-  (cd "$WT" \
-    && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
-    && git submodule update --init --depth 1 subprojects/teakra \
-    && (cd subprojects/teakra && git checkout -q -f HEAD))
-fi
 
 mkdir -p "$BUILD"
 cd "$BUILD"

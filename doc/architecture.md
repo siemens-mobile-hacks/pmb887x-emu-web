@@ -6,8 +6,7 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
 .
   qemu/                                     submodule: Azq2/qemu-pmb887x @ the pinned rev on the
                                             series branch (wasm-browser-port = origin/wasm-patches):
-                                            the one qemu source tree, wasm and native builds alike —
-                                            see upstream-branch.md for the commit list
+                                            the one qemu source tree, wasm and native builds alike
   pmb887x-emu/                              submodule: the meta-repo @ master (reference; also the
                                             source of the siemensfw library the page compiles)
   build.sh, versions.env, scripts/          build pipeline (WASM + native modes)
@@ -80,9 +79,8 @@ deploy + boards.tar refresh, no tree reset). One-shot: `./build.sh`.
 
 ### The series
 
-All qemu changes are commits on the submodule branch —
-[upstream-branch.md](upstream-branch.md) has the full list with scope.
-The structural ones:
+All qemu changes are commits on the submodule branch (`versions.env`
+pins the tip; the structural ones are listed below with scope).
 
 `0001 ui: add wasm display/input backend`
 - `ui/wasm.c`, compiled only for `host_os == 'emscripten'`; select with
@@ -365,7 +363,7 @@ host.
 | native boot suite | s75/el71/c81/ke800 boot-init/progress/no-exit | `node tests/run.mjs` |
 | browser boot gate | s75/el71/ke800/cx70 boot on a wasm dist (progress in executed insns) | `node tools/bootcheck.mjs --dist dist-jit` |
 | early key | a key delivered before the machine exists does not kill the module | `node tools/earlykey.mjs --board <b>` |
-| guest op-suite | 1156 (value, NZCV) cases byte-identical across every backend built. **The wasm64 page leg is a known hole** — see performance-handoff.md § Open items 2 | `scripts/run-tcg-isa.sh` |
+| guest op-suite | 1156 (value, NZCV) cases byte-identical across every backend built (the wasm64 page leg is one of them since 0090 fixed its Asyncify hole) | `scripts/run-tcg-isa.sh` |
 | lockstep | whole-boot cross-backend value equality (regs + SRAM/SDRAM digests); full 2.5e9-insn gate | `scripts/run-lockstep.sh`, `tools/lockstep-wasm.mjs` |
 | Firefox smoke | the module budget: throwaway modules (`temp=`) stay at 0 | `BROWSER=firefox node tools/ffboot.mjs` |
 

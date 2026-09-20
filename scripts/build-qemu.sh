@@ -2,7 +2,7 @@
 # Build qemu-system-arm (pmb887x) as WebAssembly + assemble dist.
 #
 # Uses the qemu submodule at the pinned rev (the series branch — all
-# patches committed there, see doc/upstream-branch.md), then builds:
+# patches committed there), then builds:
 #   default: the wasm64 TCG backend -> site/dist-jit/ (the page default)
 #   TCI=1 : additionally the TCG-interpreter dist -> site/dist/ (the
 #           comparison baseline, reachable as ?dist=dist; every board
@@ -36,14 +36,6 @@ git -C "$WEB_DIR" submodule update --init
 if [ "$(git -C "$QEMU_SRC" rev-parse HEAD)" != "$QEMU_PMB887X_REV" ]; then
   git -C "$QEMU_SRC" checkout -q -B "$QEMU_PMB887X_BRANCH" "$QEMU_PMB887X_REV" 2>/dev/null \
     || git -C "$QEMU_SRC" checkout -q -f "$QEMU_PMB887X_REV"
-fi
-# optional teakra submodule (used by older qemu-pmb887x trees; the current
-# tree has its own native DSP). HTTPS rewrite like the sie-mcp Dockerfile.
-if grep -q 'subprojects/teakra' "$QEMU_SRC/.gitmodules" 2>/dev/null; then
-  (cd "$QEMU_SRC" \
-    && git config submodule."subprojects/teakra".url https://github.com/siemens-mobile-hacks/teakra.git \
-    && git submodule update --init --recursive --depth 1 \
-    && (cd subprojects/teakra && git checkout -q -f HEAD))
 fi
 
 # --- board configs from bsp (pinned rev) ---

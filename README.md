@@ -118,11 +118,9 @@ measurement method + what landed/rejected),
 [doc/performance-handoff.md](doc/performance-handoff.md) (current
 status, open items, constraints) and [doc/lessons.md](doc/lessons.md)
 (the conclusions behind the timing model, the io-recompile accounting,
-the emscripten runtime traps and the measurement rules). Also
-[doc/wasm-threads-audit.md](doc/wasm-threads-audit.md): the runtime
-threading audit — the build really is multi-threaded in the browser (5
-pthread workers; one vCPU thread executing guest code, the rest parked in
-futex waits; no spin).
+the emscripten runtime traps and the measurement rules). The build
+really is multi-threaded in the browser (5 pthread workers; one vCPU
+thread executing guest code, the rest parked in futex waits; no spin).
 
 ## Siemens keys
 
@@ -194,7 +192,7 @@ and the lockstep gate cover.
                         wasm-browser-port (= origin/wasm-patches) — the
                         whole wasm/TCI/perf series committed on top of
                         qemu-pmb887x master; the ONLY qemu source tree
-                        (wasm and native builds alike). See doc/upstream-branch.md.
+                        (wasm and native builds alike).
   pmb887x-emu/          git submodule: the siemens-mobile-hacks meta-repo
                         @ master; its qemu submodule is not used (the root
                         qemu/ submodule is the build source), but the repo is
@@ -214,21 +212,24 @@ and the lockstep gate cover.
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
     build-qemu.sh       initialise the qemu (+ pmb887x-emu) submodules, check
                         qemu out at the pinned rev, sync bsp/boards/siemensfw
-                        and build the wasm dists
+                        and build the wasm dists (wasm64 backend →
+                        site/dist-jit/, the default; TCI=1 also builds the
+                        interpreter dist → site/dist/)
     sync-bsp.sh         bsp checkout @ pin → build/bsp
     pack-boards.sh      build/bsp board configs → site/dist/boards.tar (run by
                         every deploy path)
     build-recalc-wasm.sh  pmb887x-emu's siemensfw library (src/siemens) +
                         the page's glue (site-src/recalc) →
                         site/dist/siemens-recalc.wasm (likewise)
-    build-qemu.sh       submodule → wasm64 TCG backend build → site/dist-jit/
-                        (the default) + boards.tar; TCI=1 also builds the
-                        interpreter dist → site/dist/
     build-qemu-wasm64.sh  the wasm64 backend build itself (build/qemu-wasm64;
                         configure via qemu's configure, Asyncify onlylist,
                         qom_cast_debug off, atomic deploy + symbol map)
     build-native.sh     native Linux JIT build (worktree of the pinned rev)
     build-native-tci.sh native TCI build (plugins on — the lockstep b-side)
+    build-release.sh    release build: hard-sync to the pins, rebuild the
+                        dists, bundle for static deployment
+    bundle-dist.sh      assemble the deployable static bundle in dist/ (what
+                        deploy/nginx/ serves; pre-gzip'd + manifest)
     run-native.sh       native launcher (same boot recipe as the web page)
     ninja-fast.sh       incremental rebuild + deploy (default: wasm64 →
                         site/dist-jit; TCI=1: dist) — the iteration loop
