@@ -16,6 +16,8 @@ scripts/bundle-dist.sh          # → dist/ (see -- usage header for flags)
 
 Ships exactly what the page loads (`site/app.js` knows the list):
 `index.html`, `app.js`, `style.css`, `keyboards.js`, `fullflashes.js`,
+`siemensfw.js`, `recalc.js`, `recalc-worker.js`, `audio-worklet.js`
+(drained by the AudioWorklet — leave it out and the page is silent),
 `dist/boards.tar` (always fetched from `dist/`), both engines
 (`dist-jit/` — the page default — and `dist/` when a TCI build exists),
 each with a `.gz` sidecar (the ~28 MB wasm ships as ~4 MB), plus

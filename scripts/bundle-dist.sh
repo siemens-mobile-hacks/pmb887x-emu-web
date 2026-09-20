@@ -36,7 +36,7 @@ if [ "${BUNDLE_SYMBOLS:-0}" = 1 ]; then note "including .symbols maps"; fi
 # --------------------------------------------------------------- contents --
 
 # The editable page (site/ top level; index.html pulls in the rest).
-page="index.html app.js style.css keyboards.js fullflashes.js siemensfw.js recalc.js recalc-worker.js"
+page="index.html app.js style.css keyboards.js fullflashes.js siemensfw.js recalc.js recalc-worker.js audio-worklet.js"
 
 # The two engines: dist-jit = wasm64 TCG backend, the page default
 # (required); dist = TCI interpreter, the ?dist=dist fallback (only built
