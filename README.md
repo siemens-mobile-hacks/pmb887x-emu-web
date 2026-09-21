@@ -371,7 +371,7 @@ boot on the JIT (0034–0038), the display path + TLB growth (0039–0041)
 and the TB-lookup / hflags / range-flush work (0042–0045); since then
 the device access path, the wake cost, wasm atomics and the BQL, the
 SGOLD boards, the flat-view variant cache and the module pipeline, to
-0088. The per-patch table with numbers is the playbook's "What landed";
+0088. Per-patch numbers are in the commit messages on the `qemu/` branch;
 **the ranked open items are `doc/performance-handoff.md` § Open items**.
 
 - `site/dist-jit/` — the wasm64 TCG backend build, what the page runs

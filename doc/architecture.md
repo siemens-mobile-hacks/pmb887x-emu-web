@@ -126,8 +126,8 @@ single-insn TBs so the rewind stops recurring).
 `0007–0016` is the TCI performance series — one mechanism per commit
 (TB chaining, immediate forms, main-loop futex wait, io-recompile skip,
 inline ldst fast path, size-specialized memory ops, SVC inline exception
-exit, io barriers, romd FlatView variants). Numbers:
-[optimization-playbook.md](optimization-playbook.md) "What landed".
+exit, io barriers, romd FlatView variants). Numbers in the commit
+messages on the `qemu/` branch.
 
 `0017` is the wasm64 TCG backend (`tcg/wasm64/` + small hooks); 0019,
 0020, 0022, 0026, 0029, 0030, 0034, 0038 are its follow-ups

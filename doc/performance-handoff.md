@@ -3,7 +3,7 @@
 Where the work stands, what is open, and what binds. Patch numbers are
 commits on the `qemu/` submodule branch (the tip is pinned in
 `versions.env`);
-the per-patch numbers live in the playbook's "What landed" table, the
+the per-patch numbers live in the commit messages on that branch, the
 method in [optimization-playbook.md](optimization-playbook.md), the
 hard-won conclusions in [lessons.md](lessons.md).
 
@@ -101,9 +101,10 @@ bash scripts/gate.sh quick               # 152 s, all jobs concurrent — start 
 **Landing a change:** one mechanism per commit on the `qemu/` submodule
 branch with the measured numbers in the message, bump
 `QEMU_PMB887X_REV` in `versions.env`, `scripts/gate.sh keep` before the
-commit and `close` before the session's last one. Whatever happened, it
-gets a row — the playbook's **What landed** if it shipped, **REJECTED**
-with its numbers if it did not, so nobody retries it blind.
+commit and `close` before the session's last one. Whatever happened,
+it gets a row — **REJECTED** in the playbook with its numbers if it
+did not ship (if it shipped, the numbers go in the commit message),
+so nobody retries it blind.
 
 ## Where it stands
 
@@ -122,6 +123,17 @@ they move with host speed and load — they are a health check, not a
 metric. The icount boards settle within ~1 % run to run; ke800 and cx70
 swing several percent. Use `workbench.mjs` for anything that has to
 resolve a patch.
+
+**There is a second measurement workload since round thirty-nine: video
+playback** (`tools/videobench.mjs`, SL65v49 TIM, My stuff ▸ Videos ▸
+Berlin.3gp). Use it for anything aimed at the *guest's exception path*,
+because it takes one every 424 instructions — 2 360 `excSwi`/Mi against
+J2ME's 444–1 109 — while doing 6× fewer TB lookups per Mi, so the two
+workloads rank levers in opposite orders. Its number is `rt` (virtual s
+per wall s, 1.0 = real time on a real SL65) and it stands at **2.04** on
+this desktop, i.e. roughly 0.4 on a phone: the user's "video is below
+real time on Android" is this number, and it needs ~2.5× more, not 5 %.
+`duty` = 1.000 and `halts/s` = 0 there too.
 
 **The J2ME measurement workload is `fullflashes/CX70_FW56_clean.bin`**,
 not `CX70_games.bin`. All four of its titles play at **`duty = 1`,
@@ -2463,6 +2475,115 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 
 ## Round log (newest first)
+
+## Update (2026-09-20, round thirty-nine: a meter for video playback, and the exception plumbing it found — +4.9 %)
+
+The user's report: **on an Android phone the SL65 plays video below real
+time.** No meter covered that workload, so this round built one
+(`tools/videobench.mjs`) and then optimised against it.
+
+**The workload, measured.** `SL65v49lg1_TIM.bin`, Menu ▸ `8` (My stuff)
+▸ Videos ▸ `Berlin.3gp` (370 KB, ~26 virtual s, 15 fps). A 12-virtual-second
+window inside the steady decode, uncapped:
+
+| | |
+|---|---|
+| `rt` (virtual s per wall s) | **1.94** on this desktop — so ~0.39 on a phone at the usual ÷5 |
+| `duty` | **1.000** — the player *never* idles; it wants a whole 125 MHz SL65 for the whole clip |
+| `ms/Mi` | 4.12 — 2.7× cheaper per guest instruction than J2ME's 11.3 |
+| `excSwi` | **2 360 /Mi** — one guest syscall every 424 instructions, 2–5× the J2ME rate |
+| `hflagsCalls` | 5 936 /Mi (2.51 per exception, the constant ratio § round 30 found) |
+| `lookup` | 2 683 /Mi — *6× fewer* TB lookups per Mi than J2ME |
+| `halt` | 0 |
+
+Two things follow and they set the whole round's direction. `duty` = 1.0
+means there is no idle to warp over, so `rt` is the honest number and
+nothing but engine speed can move it. And the workload is the *inverse*
+of J2ME: far cheaper straight-line code, far more syscalls — so the
+per-exception fixed costs, which are ~1 % on a game, are worth several
+here, while the dispatch levers that dominate J2ME are worth much less.
+
+**Two patches, both in the syscall plumbing, ABBA-measured together:
+`rt` 1.942 → 2.038, +4.9 %** (legs 1.968/1.916 vs 2.019/2.056 — the arms
+do not overlap; `mi` 1 499.3–1 501.1 across all four, so the guest work
+is identical to 0.12 %).
+
+1. **`cpu_handle_interrupt()` takes `CPU_INTERRUPT_EXITTB` without the
+   BQL.** Every guest exception leaves that bit set
+   (`arm_cpu_do_interrupt`), and the next loop iteration spent a full
+   `bql_lock`/`bql_unlock` pair plus a `cpu_exec_interrupt()` call —
+   which, with no other bit pending, can only return false — to clear
+   it. The fast path clears it with the same atomic-and and nulls
+   `last_tb`. `exittbFast` = **2 360.4 /Mi against 2 360.7 `excSwi`**:
+   it fires on every exception and on nothing else.
+2. **The exception dispatch uses the lean BQL pair** (`bql_lock_mmio`/
+   `bql_unlock_mmio`, cputlb.c's), so a run of syscalls with nobody
+   contending costs a thread-local read each instead of a pthread mutex
+   round trip. Bounded exactly as the MMIO use is — `cpu_exec_loop`
+   gives the lock back on its next iteration when `bql_wanted_by_other()`.
+
+**Pricing that was wrong before this round, in both directions.**
+`W64_EXCNS=1` on *this* workload says `arm_cpu_do_interrupt` is **52.3 ns**
+net of the 75.1 ns clock read and the BQL pair inside it is under the
+instrument's floor — together 1.7 % of wall, not the ~9.5 % that carrying
+round 30's 172 ns forward would have predicted. The 4.9 % that the two
+patches actually bought is therefore mostly **the second BQL round trip,
+in `cpu_handle_interrupt`, which no instrument was watching at all**.
+The profile's mutex cluster (5.4 % of vCPU self time) pointed at the
+right neighbourhood while being unusable as a price, exactly as
+[lessons.md](lessons.md) says.
+
+**The exit and memory census of this workload** (`W64_XCOUNT=1`,
+`W64_XWHY=1`, `W64_LDSTCOUNT=2`, `W64_LSMCOUNT=1`, `W64_TLBHIT=1` — all
+in-generated-code counters, so the per-Mi rates are exact and those legs'
+wall times are not comparable):
+
+| per Mi | | |
+|---|---|---|
+| TB exits, total | **166 834** | **6.0 guest instructions per TB entry** (J2ME: 8.4) |
+| …`goto_ptr` | 144 344 | 86.5 % of exits, but only **300** reach the lookup helper — the inline cache answers 99.8 % |
+| …of those, `bx`/`blx reg` | 60 607 (42 %) | a call-heavy decoder: returns are the boundary |
+| …`msr cpsr` | 8 902 (6.2 %) | 3.8 per guest exception |
+| executed memops | **533 989** | 0.53 per guest instruction |
+| …from `ldm`/`stm` | 279 892 (52.4 %) | in only **74 331** instructions — 3.8 registers each |
+| per-site page-cache hit rate | **93.1 %** | `tlbcHit` 497 390 / `tlbcMiss` 36 600 |
+
+**Ranked next steps for this workload**, none built:
+
+1. **One address translation per `ldm`/`stm`, not per register.** 205 561
+   of the 533 989 memops per Mi (38.5 %) are the second and later
+   registers of a multi-register transfer, each paying its own inline TLB
+   probe and address add. This is *not* the TLB mask/table hoist round
+   thirty-eight closed — that one had to survive calls and branches and
+   died on a wild pointer; this stays inside one guest instruction. Price
+   it by re-running that round's `W64_TLBHOIST=N` ceiling probe **on this
+   workload** and multiplying by 0.385.
+2. **The cheaper inline TLB check** (`W64_TLBCHEAP`, two loads to the
+   addend instead of four, priced at 2.3 % on EL71) needs a site to keep
+   hitting the same guest page, and here it does **93.1 %** of the time —
+   the highest hit rate measured on any workload so far.
+3. **The TB boundary**, which at 6.0 instructions per entry is the
+   largest single thing in the budget and the subject of rounds 26–38.
+   Nothing new is offered here except the rate.
+
+**A third patch was built, validated and then reverted: memoising
+`arm_rebuild_hflags`.** A 16-entry memo indexed by CPSR mode (one entry
+misses on every syscall — the rebuilds alternate between SVC and the
+caller's mode), keyed on SCTLR_EL1 plus four CPSR bits, which is the
+*complete* input set of the pre-v6 short path. It worked exactly as
+designed: **100.00 % hit rate** on 5 937 calls/Mi, and a
+`-DHFLAGS_FAST_VERIFY` build that computes the generic answer as well
+counted **`hflagsBad` = 0 over 8 907 736 rebuilds**. It is still not
+shippable, because it does not move the meter: over eight windows the
+verdict is **−1.2 %**, over the four that ran on a quiet host
+(`hostBusy` ≤ 0.08) it is **+0.8 %**, i.e. nothing. The verify build is
+also a free ceiling probe for the whole idea — it adds a full *generic*
+rebuild to all 5 937 calls/Mi and costs ~6 %, so the short path it
+replaces is worth well under 1 % and the memo can only recover part of
+that. **The pre-v6 hflags short path is already cheap enough; the
+`hflagsCalls` rate is not a lever.** Do not re-derive this from the call
+rate alone — 5 936 calls/Mi at round 30's "31.6 ns" reads as 4.4 % of
+wall, and that multiplication is what sent this round down the path.
 
 ## Update (2026-09-17, round thirty-eight: two levers measured and both closed — the TLB hoist and branchless predication)
 
@@ -7256,8 +7377,9 @@ reasoning, which is the part a later round needs.*
 ## Earlier rounds (0042–0076) — ledger
 
 The blow-by-blow for these rounds was removed on 2026-09-16: the durable
-parts are the playbook's **What landed** (per-patch mechanism + numbers)
-and **REJECTED** (per-experiment numbers + why) tables and
+parts are the playbook's **REJECTED** table (per-experiment numbers +
+why), the per-patch numbers in the commit messages on the `qemu/`
+branch, and
 [lessons.md](lessons.md), and the narrative had begun to do harm —
 several of its cost figures were superseded by later measurement while
 still reading as current. One line per round, with where to look:
