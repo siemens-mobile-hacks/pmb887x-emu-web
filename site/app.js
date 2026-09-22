@@ -1089,6 +1089,7 @@ const FULLFLASH_PATH = "/data/fullflash.bin";
 // is the user's own choice and rides along unchanged.
 function inferKeyboard(dev) {
   if (dev === "siemens-s75") return "s75";
+  if (dev === "lg-ke970") return "ke970";
   if (dev?.startsWith("lg-")) return "ke800";
   if (dev?.startsWith("siemens-")) return "siemens";
   return null;
@@ -3076,14 +3077,19 @@ function fillSelect(sel, entries, value) {
 }
 
 // apply the pickers and remember them; keeps the chosen variant across a
-// keyboard switch whenever the new keyboard also has it (see pickVariant)
-function selectKeyboard(wanted = varSel.value) {
+// keyboard switch whenever the new keyboard also has it (see pickVariant).
+// What is remembered is the letter set the user *asked for*, not the one
+// that ended up on screen: hopping through a keyboard that has only English
+// (the KE970) would otherwise drop a Russian choice for good.
+let wantedVariant = "en";
+function selectKeyboard(wanted = wantedVariant) {
+  wantedVariant = wanted;
   const kbd = KBD_KEYBOARDS[kbdSel.value];
   const variant = pickVariant(kbdSel.value, wanted);
   fillSelect(varSel, Object.entries(kbd.variants), variant);
   applyKbdLayout(kbdSel.value, variant, renderKeypad);
   localStorage.setItem("kbd-keyboard", kbdSel.value);
-  localStorage.setItem("kbd-variant", variant);
+  localStorage.setItem("kbd-variant", wanted);
 }
 
 fillSelect(kbdSel, Object.entries(KBD_KEYBOARDS), DEFAULT_KEYBOARD);
@@ -3095,7 +3101,8 @@ if (!(kbdSel.value in KBD_KEYBOARDS)) kbdSel.value = DEFAULT_KEYBOARD;
 selectKeyboard(localStorage.getItem("kbd-variant")
   ?? (legacy.endsWith("ru") ? "ru" : "en"));
 
-for (const sel of [kbdSel, varSel]) sel.addEventListener("change", () => selectKeyboard());
+kbdSel.addEventListener("change", () => selectKeyboard());
+varSel.addEventListener("change", () => selectKeyboard(varSel.value));
 
 // key-binding hints: on by default on a desktop (a pointer that hovers and
 // can point precisely => a real keyboard is attached, and a window wide

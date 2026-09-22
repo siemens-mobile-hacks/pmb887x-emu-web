@@ -298,6 +298,14 @@ main {
   --asm-w: min(100cqw,
     calc(var(--box-w) + var(--cols) * (var(--tab-w) + var(--row-gap))));
 }
+/* A board whose side keys carry a word rather than a glyph (the KE970's MP3)
+   raises the floor the box is sized against: keyboards.js sets .tabs-wide
+   when it renders such a flank, and the tab is then wide enough to print on
+   even where the leftover width alone would have left it at 14px — on a tall
+   phone that leftover is under 20px. The screen box pays for it, which is
+   the trade a board with a word on its edge is asking for. */
+.phone-panel.tabs-wide { --tab-min: 32px; }
+
 /* How many edge-key columns this board actually has — an empty flank is not
    laid out at all, so it costs the screen box no width — and, from that, how
    much of the row the box leaves the tabs. The box was sized against the
@@ -459,9 +467,52 @@ main {
   background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
   font-size: clamp(0.9rem, calc(var(--key-h) * 0.38), 1.6rem);
 }
+/* KE970: the wheel is the real one, photographed (site/img/ke970-wheel.webp)
+   — the knurled roller with a click cap either side of it — lying across the
+   middle row of the pad, which is the row the keys of that row already sit
+   in. So the picture is the row's own background layer (::before, a grid
+   item like any other) and the three keys ride on top of it: OK on the
+   roller, left and right on the caps. Nothing about the grid changes, so
+   every hit area is still the pad's. */
+.kwheel { background: none; border: none; padding: 0; gap: 0; }
+/* width first, whatever the row's height: what has to line up is the caps
+   under the left/right keys, and a row a little shorter than the picture
+   trims its rims rather than shrinking it away from those keys */
+.kwheel::before {
+  content: ""; grid-area: 2 / 1 / 3 / -1;
+  background: url("img/ke970-wheel.webp") center / 100% auto no-repeat;
+}
+/* the rows carry the picture's own proportions (it is ~4:1), so the roller
+   is not stretched and the arrows above and below it grow rather than shrink */
+.kwheel { grid-template-rows: 1fr 1.6fr 1fr; }
+/* the keys on the metal: no button of their own, dark ink on the chrome */
+.keypad .kwheel .kpad-left, .keypad .kwheel .kpad-right, .keypad .kwheel .kpad-ok {
+  background: none; border: none; color: #10151b;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, .55);
+}
+/* the press highlight has to beat the picture under it */
+.keypad .kwheel .kpad-left:active, .keypad .kwheel .kpad-left.pressed,
+.keypad .kwheel .kpad-right:active, .keypad .kwheel .kpad-right.pressed,
+.keypad .kwheel .kpad-ok:active, .keypad .kwheel .kpad-ok.pressed {
+  background: rgba(96, 195, 255, .55); color: #08131f; border-radius: 6px;
+}
 /* the pad's arrow marks are too small to carry a hint under them, and the
    binding is the matching arrow key anyway — only the OK button keeps one */
 body.show-key-hints .kpad .key-nav .key-hint { display: none; }
+/* nor does the KE970's OK: it is the roller itself, and a binding printed
+   across the photographed metal reads as a smudge. Enter still presses it */
+body.show-key-hints .kwheel .kpad-ok .key-hint { display: none; }
+/* KE970 middle block (keyboards/LG KE970.jpg): a scroll wheel between two
+   dash soft keys and nothing else. The wheel rolls up/down and presses for
+   OK, so it takes the same pad — two rows tall rather than the S75's three,
+   which leaves it wider than it is high, the shape of the roller it stands
+   for. The dashes are marks beside the wheel, not keys the height of it. */
+.krow-ke970-mid { flex: 2 1 0; grid-template-columns: 1fr 2.2fr 1fr; }
+.keypad .krow-ke970-mid > button { align-self: center; height: var(--key-h); }
+/* the pad's own content is three key rows tall; in two it has to be allowed
+   to shrink to the row it is in — a grid item's automatic minimum is its
+   content, which would spill the pad over the call keys below it */
+.krow-ke970-mid .kpad { min-height: 0; }
 .kpad-up    { grid-area: 1 / 2; }
 .kpad-left  { grid-area: 2 / 1; }
 .kpad-ok    { grid-area: 2 / 2; }
@@ -657,10 +708,17 @@ body.show-key-hints .aux-keys-right .key-hint { display: none; }
    sharing the height evenly instead of the arrows getting a ninth each. */
 @media (pointer: coarse) {
   .keypad .krow-s75-mid { grid-template-columns: 1.45fr 2.1fr 1.45fr; }
+  .keypad .krow-ke970-mid { grid-template-columns: 0.85fr 2.9fr 0.85fr; }
   .keypad .kpad {
     padding: 0;
     grid-template-columns: 1fr 1.4fr 1fr;
     grid-template-rows: 1fr 1fr 1fr;
+  }
+  /* the wheel keeps the picture's proportions instead: its keys are on the
+     roller and its caps, and thirds would slide them off both */
+  .keypad .kwheel {
+    grid-template-columns: 0.9fr 2.6fr 0.9fr;
+    grid-template-rows: 1fr 1.6fr 1fr;
   }
 }
 
@@ -679,6 +737,7 @@ body.show-key-hints .aux-keys-right .key-hint { display: none; }
   .krow { min-height: var(--key-h); }
   .krow-digits { min-height: calc(4 * var(--key-h) + 3 * var(--kgap)); }
   .krow-s75-mid { min-height: calc(3 * var(--key-h)); }
+  .krow-ke970-mid { min-height: calc(2 * var(--key-h)); }
   .screen-cell { flex: 1 1 auto; width: auto; min-width: 0; margin: 0; }
   .lcd-wrap { width: auto; height: 100%; max-width: 100%; }
   .status-row { width: 100%; }

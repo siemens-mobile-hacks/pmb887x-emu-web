@@ -121,9 +121,13 @@ const CJKT_OFF = 0x3c;
 // The head probeFullflash() needs: its farthest record is the vendor at
 // 0x8FC80, 16 bytes long.
 const PROBE_HEAD = 0x90000;
-// LG's model is in the J2ME user agent, ~4.2 MiB into a KE800 dump.
+// LG's model is in the J2ME user agent, and how far in depends on the phone:
+// ~4.2 MiB into a KE800 dump, ~32.1 MiB into a KE970 one (KE970v10d, first
+// hit at 0x1EA7E4C). The scan is bounded all the same — it runs only for an
+// image the Siemens library could not place, and 40 MiB of a File read in
+// 1 MiB slices is a fraction of a second.
 const LG_RE = /LG-(KE\d{3}) MIC\//;
-const LG_SCAN_BYTES = 8 << 20;
+const LG_SCAN_BYTES = 40 << 20;
 const LG_CHUNK = 1 << 20;
 
 async function readAt(file, start, end) {
@@ -232,6 +236,7 @@ export const PRESET_FULLFLASHES = [
     { id: "sl65v49lg1_TIM", label: "Siemens SL65v49 (TIM)", short: "SL65v49 (TIM)", files: ["SL65v49lg1_TIM.bin"], size: 33554432 },
     { id: "s75v40lg1", label: "Siemens S75v40", short: "S75v40", files: ["S75v40lg1.bin"], size: 67108864 },
     { id: "ke800v11b", label: "LG KE800v11b", short: "KE800v11b", files: ["KE800v11b.bin", "KE800v11b.bin.cfi-efa"], size: 134250496 },
+    { id: "ke970v10d", label: "LG KE970v10d", short: "KE970v10d", files: ["KE970v10d.bin", "KE970v10d.bin.cfi-efa"], size: 134250496 },
 ];
 
 function fileUrl(file) {

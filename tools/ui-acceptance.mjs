@@ -411,9 +411,12 @@ ok("v2.1 pill + four 28px buttons", await page.evaluate(() => {
     return Math.round(r.width) === 28 && Math.round(r.height) === 28;
   };
   // rec-pill sits in the record button's place and is hidden until a
-  // capture runs (recording criteria §2); fullscreen follows the recorder
-  return ids.join() === "status,btn-shot,btn-record,rec-pill,btn-fullscreen,btn-settings"
+  // capture runs (recording criteria §2); btn-sound is hidden until an LG
+  // board — the only ones that drive a speaker — is the selected device;
+  // fullscreen follows the recorder
+  return ids.join() === "status,btn-shot,btn-record,rec-pill,btn-sound,btn-fullscreen,btn-settings"
     && document.getElementById("rec-pill").hidden
+    && document.getElementById("btn-sound").hidden
     && sq("btn-shot") && sq("btn-record") && sq("btn-fullscreen") && sq("btn-settings")
     && document.getElementById("btn-settings").getAttribute("aria-label") === "Settings";
 }), await page.evaluate(() => [...document.querySelector(".status-row").children].map((e) => e.id).join()));
@@ -576,7 +579,9 @@ await page.selectOption("#ff-preset", "el71v41lg91");
 await page.click("#sheet-firmware .sheet-done");
 await page.waitForTimeout(300);
 ok("5.4 Done closes the sheet", await page.$eval("#sheet-firmware", (e) => e.hidden));
-ok("5.4 pill follows the sheet", (await text("#status-text")).startsWith("EL71 v41 lg91"),
+// the pill names the preset by its short label (fullflashes.js `short`,
+// what fits one ellipsised line) and then its cache state, not the file
+ok("5.4 pill follows the sheet", (await text("#status-text")).startsWith("EL71v41"),
   await text("#status-text"));
 await page.click("#btn-settings");
 await page.waitForTimeout(300);

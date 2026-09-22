@@ -37,13 +37,15 @@ if [ "${BUNDLE_SYMBOLS:-0}" = 1 ]; then note "including .symbols maps"; fi
 
 # The editable page (site/ top level; index.html pulls in the rest).
 page="index.html app.js style.css keyboards.js fullflashes.js siemensfw.js recalc.js recalc-worker.js audio-worklet.js"
+# page images (style.css references them by relative path)
+images="img/ke970-wheel.webp"
 
 # The two engines: dist-jit = wasm64 TCG backend, the page default
 # (required); dist = TCI interpreter, the ?dist=dist fallback (only built
 # with TCI=1 — optional).
 engines="dist dist-jit"
 
-for f in $page; do
+for f in $page $images; do
   [ -f "$SITE/$f" ] || fail "site/$f missing"
 done
 # app.js fetches "dist/boards.tar" unconditionally, whatever ?dist= selects
@@ -58,9 +60,9 @@ done
 # ---------------------------------------------------------------- assemble --
 
 rm -rf "$OUT"
-mkdir -p "$OUT/dist" "$OUT/dist-jit"
+mkdir -p "$OUT/dist" "$OUT/dist-jit" "$OUT/img"
 
-for f in $page; do
+for f in $page $images; do
   cp "$SITE/$f" "$OUT/$f"
 done
 

@@ -336,10 +336,20 @@ reverse-engineering job, unrelated to this backend.
   already here verbatim (same patch-id), and its remaining differences are
   a `dsp_hexdump()` that indexes words where the offset counts bytes, the
   pre-fix `dsp_realize()`, and two `#if 0` debug blocks.
-- bsp (pmb887x-dev) `e79169f` — bsp master (2026-09-20). Adds the M65, M75,
-  ME75, SK65 and SL65 boards (the device list grew matching rules), reworks
-  CX75 onto the `siemens-sgl-sirius` include, and carries the WHBABCON/
-  WHBABSTAT bits and USART RX pacing. perk11's LG `[rtc] format = "calendar"`
+- bsp (pmb887x-dev) `63b56fa` — bsp master as of 2026-09-22, stopping one
+  commit short of the tip. It brings the KE970 board config that wires the
+  jog dial up (`[peripheral.SCROLL] type = "ke970-scroll"`, bound to
+  `NAV_UP`/`NAV_DOWN`), so the wheel the on-screen KE970 keypad draws as a
+  pad reaches the firmware. The tip itself (`eb4f9fc`, "lib: fix pad names")
+  is held back on purpose: it swaps the names of GPIO 39 and 99
+  (`DIF_HD` ↔ `MMCI_DAT1`), names 32/33 `I2S2_RX`/`I2S2_TX` and rewrites
+  five board configs against the new names, while qemu's pad table is
+  generated from bsp and committed in the submodule (`gen/cpu_regs.h`, still
+  the old names) — those configs would alias the wrong pins. Take it once
+  qemu regenerates. The earlier `e79169f` round added the M65, M75, ME75,
+  SK65 and SL65 boards (the device list grew matching rules), reworked CX75
+  onto the `siemens-sgl-sirius` include, and carries the WHBABCON/WHBABSTAT
+  bits and USART RX pacing. perk11's LG `[rtc] format = "calendar"`
   (PR#6) landed in master as `e8d490e`, so there is no fix pin and no merge
   in `scripts/sync-bsp.sh` any more — a plain checkout of the pin is the
   whole tree. Master is also where `[peripheral.RF] type = "hd155153np"` — a

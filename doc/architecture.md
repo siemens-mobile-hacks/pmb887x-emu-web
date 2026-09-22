@@ -178,10 +178,13 @@ linear Unix seconds, LG packed calendar).
     through `MODEL_VARIANTS`, and the filename rules over the model string
     are the last resort.
   - LG carries none of the Siemens structures, so the fallback is a JS
-    scan: the model comes from the J2ME user agent (`LG-KE800 MIC/…`,
-    ~4.2 MiB in), over a bounded window. There is no bootcore-block reading
-    any more — if the library cannot place the image, walking the boot
-    area in JS would only re-guess what upstream decided not to read.
+    scan: the model comes from the J2ME user agent (`LG-KE800 MIC/…`), over
+    a bounded window. How far in the string sits is the phone's business —
+    ~4.2 MiB on a KE800 dump, ~32.1 MiB on a KE970 one — so the window is
+    40 MiB, read in 1 MiB slices and only for an image the library could
+    not place. There is no bootcore-block reading any more — if the library
+    cannot place the image, walking the boot area in JS would only re-guess
+    what upstream decided not to read.
   - `MODEL_VARIANTS` maps a model with no board of its own onto the board that
     emulates it. Sourced, never guessed — a wrong row boots someone's phone as
     the wrong hardware, so a model that cannot be placed is left to the user.

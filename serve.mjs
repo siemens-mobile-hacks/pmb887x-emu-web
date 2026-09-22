@@ -39,6 +39,7 @@ const MIME = {
   ".css": "text/css; charset=utf-8",
   ".wasm": "application/wasm",
   ".png": "image/png",
+  ".webp": "image/webp",
   ".tar": "application/x-tar",
   ".json": "application/json",
 };

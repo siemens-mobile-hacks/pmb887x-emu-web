@@ -25,6 +25,13 @@ const NAV_CHEVRON = {
   left: '<svg class="key-icon-line" viewBox="0 0 9 14"><path stroke-width="2.2" d="M7.2 2 1.8 7l5.4 5"/></svg>',
   right: '<svg class="key-icon-line" viewBox="0 0 9 14"><path stroke-width="2.2" d="M1.8 2 7.2 7 1.8 12"/></svg>',
 };
+// KE970 volume rocker: solid triangles, as engraved either side of its
+// dividing line (keyboards/LG KE970-3.jpg). The side column runs down the
+// screen, so they point up and down rather than along the phone.
+const VOL_ARROW = {
+  up: '<svg class="key-icon" viewBox="0 0 14 14"><path d="M7 3.4 12.6 10.6H1.4Z"/></svg>',
+  down: '<svg class="key-icon" viewBox="0 0 14 14"><path d="M7 10.6 1.4 3.4h11.2Z"/></svg>',
+};
 // side power button: broken circle + bar, stroke-drawn (see .key-icon-line)
 const POWER_ICON = '<svg class="key-icon-line" viewBox="0 0 14 14"><line x1="7" y1="1.2" x2="7" y2="7.2"/><path d="M4.2 3.5a4.8 4.8 0 1 0 5.6 0"/></svg>';
 // one-glyph alternates for the aux columns on narrow screens (.key-short in
@@ -48,8 +55,9 @@ const BROWSER_ORBIT_ICON = '<svg class="key-icon-line icon-wide" viewBox="0 0 24
   + '<circle cx="12" cy="8.5" r="7.6"/>'
   + '<ellipse cx="12" cy="8.5" rx="11" ry="2.8" transform="rotate(20 12 8.5)"/>'
   + '</svg>';
-// KE800 call key: the hung-up receiver lying in its cradle (arch with the
-// ends curling down — material "call_end"), as engraved on the real phone
+// LG call key: the hung-up receiver lying in its cradle (arch with the
+// ends curling down — material "call_end"), as engraved on the real phones.
+// Both LG boards use it, level with the key edge.
 const CALL_ICON_HUNGUP = '<svg class="key-icon" viewBox="0 0 24 24"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.7l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.68-1.36-2.66-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>';
 // KE800 "C" erase key: a U turned sideways, opening to the right
 const C_ICON = '<svg class="key-icon-line" viewBox="0 0 13 14"><path stroke-width="2.3" d="M11 2.2H6a4.6 4.6 0 0 0 0 9.2h5"/></svg>';
@@ -192,14 +200,55 @@ ke800: {
     DIGIT_ROW,
   ],
 },
+
+// LG KE970 Shine (keyboards/LG KE970.jpg, keyboards/LG KE970-2.jpg): the
+// front carries no pad at all — a scroll wheel lies between two dash soft
+// keys, and it is the whole navigation: roll it for up/down, press it for
+// OK. It stands in here as a pad, wider than it is tall like the roller
+// itself; left/right have no mark of their own on the phone but are keys of
+// its matrix, so the pad carries them. The slide-out keypad adds call / C /
+// end above the digits, and the only side keys are on the right flank
+// (keyboards/LG KE970-3.jpg — the left flank is bare).
+ke970: {
+  auxRight: [
+    { key: "vol_up", label: VOL_ARROW.up, short: VOL_ARROW.up, title: "Volume up (right side)" },
+    { key: "vol_down", label: VOL_ARROW.down, short: VOL_ARROW.down, title: "Volume down (right side)" },
+    { key: "music", label: "MP3", short: "MP3", title: "Music player (right side)" },
+    { key: "camera", label: CAMERA_ICON, short: CAMERA_ICON, title: "Camera (right side)" },
+  ],
+  rows: [
+    // the wheel: .kwheel dresses the pad as the roller it stands for (a
+    // ridged chrome bar), the hit areas are the pad's own
+    { cls: "krow krow-ke970-mid", keys: [
+      { key: "left_soft", label: "—", title: "Left soft key" },
+      { cls: "kpad kwheel", keys: [
+        { key: "up", label: NAV_CHEVRON.up, cls: "key-nav kpad-up", title: "Scroll wheel up" },
+        { key: "left", label: NAV_CHEVRON.left, cls: "key-nav kpad-left", title: "Left" },
+        { key: "center", label: "OK", cls: "key-center kpad-ok", title: "Scroll wheel press (OK)" },
+        { key: "right", label: NAV_CHEVRON.right, cls: "key-nav kpad-right", title: "Right" },
+        { key: "down", label: NAV_CHEVRON.down, cls: "key-nav kpad-down", title: "Scroll wheel down" },
+      ]},
+      { key: "right_soft", label: "—", title: "Right soft key" },
+    ]},
+    // call and end carry no colour here: the KE970 prints them in the same
+    // dark ink as every other legend, green and red are the Siemens boards'
+    { cls: "krow krow-call", cols: "1fr 1.2fr 1fr", keys: [
+      { key: "send", label: CALL_ICON_HUNGUP, title: "Call key" },
+      { key: "clear", label: "C", title: "C — erase / back" },
+      { key: "end", label: END_ICON, title: "End call / power" },
+    ]},
+    DIGIT_ROW,
+  ],
+},
 };
 
-// KE800 bottom-row sub-legend stacks, as engraved on the real keypad:
-// * → timer icon with ".," under it, 0 → "+" above the space mark,
-// # → flash upper right + solid arrow lower left
-const KE800_STAR_SUB = `<span class="sub-stack">${KBD_ICONS.timer}<span>.,</span></span>`;
-const KE800_ZERO_SUB = '<span class="sub-stack">+<span>␣</span></span>';
-const KE800_HASH_SUB = `<span class="sub-pair">${KBD_ICONS.flash_down}${KBD_ICONS.arrow_up}</span>`;
+// LG bottom-row sub-legend stacks. 0 is engraved the same on both phones —
+// "+" above the space mark — while * and # are the KE800's: the timer icon
+// with ".," under it, and the flash upper right + solid arrow lower left.
+// The KE970 prints those two plainer and overrides them (see its keyboard).
+const LG_STAR_SUB = `<span class="sub-stack">${KBD_ICONS.timer}<span>.,</span></span>`;
+const LG_ZERO_SUB = '<span class="sub-stack">+<span>␣</span></span>';
+const LG_HASH_SUB = `<span class="sub-pair">${KBD_ICONS.flash_down}${KBD_ICONS.arrow_up}</span>`;
 
 // Siemens legends, shared by every Siemens keyboard: the digit block is
 // engraved the same way across the family (keyboards/S75-ru.webp), the
@@ -225,6 +274,33 @@ const SIEMENS_VARIANTS = {
   },
 };
 
+// LG legends: the KE800's keypad (keyboards/LG KE800.png), which the KE970
+// shares letter for letter (keyboards/LG KE970-2.jpg) — voicemail on 1,
+// space on 0 — and differs from only in the two marks it prints plainer,
+// * and #, which its own keyboard overrides below. The Russian variant is
+// the KE800's alone: the KE970 keyboard is English-only, no photo of a
+// Russian one being at hand and its letter split being a guess otherwise.
+const LG_VARIANTS = {
+  en: {
+    name: "English",
+    subs: {
+      1: KBD_ICONS.voicemail,
+      2: "abc", 3: "def", 4: "ghi", 5: "jkl", 6: "mno",
+      7: "pqrs", 8: "tuv", 9: "wxyz",
+      0: LG_ZERO_SUB, star: LG_STAR_SUB, hash: LG_HASH_SUB,
+    },
+  },
+  ru: {
+    name: "Russian",
+    subs: {
+      1: KBD_ICONS.voicemail,
+      2: "abc абвг", 3: "def дежз", 4: "ghi ийкл", 5: "jkl мноп",
+      6: "mno рсту", 7: "pqrs фхцч", 8: "tuv шщъы", 9: "wxyz ьэюя",
+      0: LG_ZERO_SUB, star: LG_STAR_SUB, hash: LG_HASH_SUB,
+    },
+  },
+};
+
 // a "keyboard" = a board + one variant per letter set engraved on it; a
 // variant carries the sub-labels (keyed by data-key) printed under the
 // digits. Add a variant here — or a whole new keyboard, with its own board
@@ -244,29 +320,24 @@ export const KBD_KEYBOARDS = {
     variants: SIEMENS_VARIANTS,
   },
 
-  // LG KE800 (keyboards/LG KE800.png): space sits on 0, * carries the clock
-  // icon, # the up-arrow + flash icons, 1 the voicemail icon
+  // LG KE800 (keyboards/LG KE800.png): the D-pad phone of the two
   ke800: {
     name: "LG KE800",
     board: "ke800",
+    variants: LG_VARIANTS,
+  },
+
+  // LG KE970 Shine (keyboards/LG KE970.jpg): the KE800's letters, the scroll
+  // wheel in place of the D-pad, and a plainer bottom row — * carries ".,"
+  // with no clock beside it, # the up arrow with no flash. English only —
+  // see LG_VARIANTS.
+  ke970: {
+    name: "LG KE970",
+    board: "ke970",
     variants: {
       en: {
         name: "English",
-        subs: {
-          1: KBD_ICONS.voicemail,
-          2: "abc", 3: "def", 4: "ghi", 5: "jkl", 6: "mno",
-          7: "pqrs", 8: "tuv", 9: "wxyz",
-          0: KE800_ZERO_SUB, star: KE800_STAR_SUB, hash: KE800_HASH_SUB,
-        },
-      },
-      ru: {
-        name: "Russian",
-        subs: {
-          1: KBD_ICONS.voicemail,
-          2: "abc абвг", 3: "def дежз", 4: "ghi ийкл", 5: "jkl мноп",
-          6: "mno рсту", 7: "pqrs фхцч", 8: "tuv шщъы", 9: "wxyz ьэюя",
-          0: KE800_ZERO_SUB, star: KE800_STAR_SUB, hash: KE800_HASH_SUB,
-        },
+        subs: { ...LG_VARIANTS.en.subs, star: ".,", hash: KBD_ICONS.arrow_up },
       },
     },
   },
@@ -342,5 +413,15 @@ export function applyKbdLayout(keyboardId, variantId, onRender) {
     document.getElementById(elId)
       .replaceChildren(...(defs ?? []).map((def) => keyButton(def)));
   }
+  // A tab is one glyph wide by default, and on a phone that floor is what it
+  // gets. A board that writes a word on a side key instead (the KE970's MP3)
+  // needs more than a glyph's worth, so it says so and style.css raises the
+  // floor for it — at the cost of a little screen width, which is the trade
+  // the board asked for. An icon short is markup with no text in it, so the
+  // rendered text is what the test reads.
+  const wideTab = [...document.querySelectorAll(
+    ".aux-keys-left .key-short, .aux-keys-right .key-short")]
+    .some((el) => el.textContent.trim().length > 1);
+  document.querySelector(".phone-panel")?.classList.toggle("tabs-wide", wideTab);
   onRender?.();
 }
