@@ -2517,6 +2517,65 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 ## Round log (newest first)
 
+## Update (2026-09-22, round forty-three: the chain widened to every fetched page — taken; round-39's ghost baseline caught)
+
+**The round-42 lever is in.** The soundness question that blocked it is
+settled by reading, not by weakening anything:
+
+- The chain-target guard in `cpu-exec.c` ("we don't take care of direct
+  jumps when address mapping changes… not safe to make a direct jump to
+  a TB spanning two pages") sets `last_tb = NULL` when the **target** has
+  a second physical page, with a wasm64 exception for `w64_inl` TBs —
+  and those chains are dropped by `tb_unlink_inlined()` at both TLB-flush
+  sites, falling back to the dispatcher, whose `tb_lookup_cmp`
+  re-validates `w64_inl_vpage` (the callee page, recorded as an offset
+  from the entry page because the TB may be entered at any alias).  The
+  guard inspects only the target; it is orthogonal to which page the
+  *branch* sits on, so widening the source side cannot void it.
+- A store to the target page invalidates the target and unlinks through
+  its jmp list, exactly as before.  A store to the source's callee page
+  invalidates the source, which is registered on every page it fetched
+  (`tb_page_slots`/`tb_record`; "fetched" ⟺ `db->host_addr[n] != NULL`).
+  What survives is first-page remap staleness — which system emulation
+  already accepts for ordinary same-page chains — and CF_PCREL is off on
+  this port (round 40), so chain targets are keyed by full virtual pc.
+
+**Measurement.** 16-leg ABBA (`tools/perf/vgabba.sh`, scored by
+`tools/perf/vgan.py` — pooled, virtual-rate, and a hostBusy fit now that
+the host has no numpy): **+2.6 % pooled ms/Mi (±3.0), +2.4 % rt,
++2.1 % at matched hostBusy**, all three views agreeing in direction,
+magnitude consistent with round 42's single-session +1.34/+2.2.  The
+mechanism census closes exactly: `xwOther` **5 376 → 1 672 /Mi**,
+`xGototb`+`xGototb1` 23 169 → 26 870 (+3 701 ≈ the converted exits),
+`lookup` 59 → 58, `xwBx` 35 620 → 35 624, `tbIcount` ~10–11.
+
+**Stability.** Gate keep GREEN five of six runs this session (the RED
+was a key-s75 boot stall at a host-load spike — `insns=223M->223M`,
+6/6 PASS standalone, the same class as the pre-existing key-el71 flake
+from rounds 41/42, which predates this lever).  Lockstep was in every
+GREEN keep.
+
+**The trap that nearly voided the whole A/B.** `site/dist-jit-base`
+turned out to be the *Sep 20 round-39 directory* — the morning's
+rolled-back build — not the cherry-picked round-42 baseline it was
+believed to be.  The tell was the census: `xwOther` 66 374, `xwBx`
+60 616, `lookup` 2 688, `tbIcount` 7.3 — round-39's exact profile, on
+a "baseline" that should have read 5 376 / 35 620 / 59 / 11.  A red
+herring made it worse: `qemu-system-arm.js` is identical in both dists
+(same md5 — it is unchanged loader glue; the code is the wasm), so the
+file to trust is `qemu-system-arm.js.symbols` (`svc_inline` present =
+round-40+) *plus* a census profile, and the mtimes of the deployed
+files.  Baselines are rebuilt in-place now, never assumed.
+
+The lever is `qemu` `e149f370ff` ("Chain direct branches to any page
+the TB fetched from", on top of `4d1a392927` = the cherry-picked
+round-40/41/42 series re-based onto the master merge).
+
+**Open next:** KE970 boot/general speed (the new LG board) — uibench
+and workbench rows are in; bootcheck gating after a characterized boot.
+Cheap screens still owed on the video meter: `W64_FTMAX=4` (re-rank
+after inlining), `W64_NOPCC=1` alone (the C-side next-TB re-probe).
+
 ## Update (2026-09-21, round forty-two: the third page priced and rejected, and a +2 % chain that is not yet safe to take)
 
 Round forty-one left the TB boundary at 8–9 ns and 22 % of wall, with the
