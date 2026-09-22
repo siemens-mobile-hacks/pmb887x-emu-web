@@ -31,6 +31,7 @@ const BOARDS = {
   s75: { flash: "S75v40lg1.bin", sidecars: [] },
   el71: { flash: "rr_ff_el71_stock.bin", sidecars: [] },
   ke800: { flash: "KE800-v11b.bin", sidecars: ["KE800-v11b.bin.cfi-efa"] },
+  ke970: { flash: "KE970v10d.bin", sidecars: ["KE970v10d.bin.cfi-efa"] },
   cx70: { flash: "CX70_FW56_clean.bin", sidecars: [] },
 };
 const boardId = opt("board", "cx70");

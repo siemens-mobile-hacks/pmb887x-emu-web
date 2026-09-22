@@ -2517,6 +2517,72 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 ## Round log (newest first)
 
+## Update (2026-09-22, round forty-six: what actually paces a KE970 boot — busy phases are instruction-bound, the compile tier is worth ≤3 %, and virtual-time turbo drowns in a 154 kHz wake storm)
+
+The round-44/45 "boot is firmware-paced" reading was an artifact: **`tools/bootcheck.mjs` never forwarded `EXTRA_Q`** (uibench and workbench do), so the `W64_INTERP`/`W64_COMPACT_LIVE` boot legs all ran the default config and "measured" nothing.  Two tools now share the wiring (`bootcheck.mjs` joins `QUERY` with `EXTRA_Q`) — an env knob that silently does not reach the page is worse than no knob.
+
+**The corrected boot model** (haltprobe sampling mid-boot, 15–40 s):
+
+- the vCPU is executing with **no pending interrupt in 95.5 % of
+  samples** (not IRQ-starved, not halt-bound), at **50.7 MIPS** during
+  busy phases; the whole boot is **1.75 G insns**, averaging ~22 MIPS
+  over ~75 s wall — busy phases are instruction-bound, the gaps between
+  milestones are the firmware's waits.
+- menu/idle ARE firmware-paced: an all-interp menu holds fps (18.2 MIPS
+  / fps 3.3 vs 17.5 / 2.6–2.7 compiled), and idle is 1.2 MIPS.
+
+**The compile tier is worth ≤3 % on the boot** (the probe that finally
+ran correctly): `W64_INTERP=1e9` (nothing ever earns a module — the
+whole boot interpreted) against default, progress matched by TICK:
+
+| t | compiled | all-interp | ratio |
+|---|---|---|---|
+| 5.5 s | 113 M | 79 M | 0.70 |
+| 15.5 s | 276 M | 223 M | 0.81 |
+| 25.5 s | 818 M | 717 M | 0.88 |
+| 35.5 s | 1494 M | 1441 M | 0.96 |
+| 45.5 s | 1615 M | 1569 M | 0.97 |
+
+The interpreter tier (threshold 64, on by default) is surprisingly
+competitive on this firmware — the compiled modules buy ≤30 % in the
+earliest phases and ≤3 % end-to-end.  Corollary: batch/compaction
+tuning for boot is bounded by that 3 % (and the earlier
+"compaction-flat" legs were env-broken — disregard them; the module
+table sits at ~450 live of 6144 during a boot per the wasm64.c comment,
+so capacity was never the question).
+
+**Virtual-time turbo (the honest boot-speed lever) works mechanically
+and fails operationally.**  A `W64_VTSPEED=k` scale on
+`cpus_get_virtual_clock()`'s !icount path (anchored, monotone, reverted
+after the probe) makes every virtual deadline arrive k× sooner.  At
+k=4 the boot reached only **82 M insns by 75 s wall against 1664 M
+base** — not faster, 20× slower: the boot carries a **154 kHz
+main-loop wake storm** (`mlWake` 154 k/s during boot vs 5.8 k/s at
+idle), virtual-proportional, so k× turbo is also k× events per wall
+second and the wasm main loop drowns before the vCPU gets anything
+done.  **The wake storm is the lead**: something in the boot device
+traffic arms µs-granularity virtual timers (TPU's eager GSM simulation
+is the suspect — its counter updates arrive ~27 per µs in the trace);
+lazy/deferred evaluation of whatever that is would both cut the
+~15–30 % main-loop overhead during boot *and* make a k× turbo actually
+pay.  That is device-model work (alula's layer), and it pairs with the
+round-44 L1 assert investigation — same subsystem.
+
+**Engine-side, KE970 has no board-specific lever left**: boot busy
+phases ride the generic interpreter MIPS (rounds 35–45 collected what
+there was), menu/idle are firmware-paced, and the diagnostics confirm
+the interp tier already absorbs the cold-path cost.  The board's
+remaining items are the L1 hang class and the wake storm.
+
+Also this round: `haltprobe.mjs` learned ke970 (idle: 0 pending IRQ in
+98.9 % of samples — the idle loop polls with nothing asserted; the
+5.8 k/s idle wake storm is unchanged), and the vCPU-worker *inclusive*
+profile attribution was confirmed as unreliable as the self-time one
+(wprof showed tb_gen_code at 35.6 % inclusive; the time counters and
+the behavioral probes put the whole translate+module pipeline at
+~1–2 % — trust counters and probes, not sample attribution on this
+build).
+
 ## Update (2026-09-22, round forty-five: three prices and a verdict — asserts cost 2.75 %, the C-side next-TB cache is worth 5.3 % on churn, the tbstats RMW is free)
 
 Four short measurement series on a quiet host (load 3–7 all afternoon),
