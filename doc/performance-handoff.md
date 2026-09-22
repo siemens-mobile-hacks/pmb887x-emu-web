@@ -544,7 +544,11 @@ Three conclusions the table is for:
 
 ## Open items (ranked)
 
-### A chained exit for a branch inside an inlined callee — +1.3 %, blocked on one invariant
+### ~~A chained exit for a branch inside an inlined callee — +1.3 %, blocked on one invariant~~ — TAKEN in round forty-three
+
+> **Taken.** Round forty-three widened the chain to every fetched page and
+> shipped it (see its entry in the round log); the text below is the
+> round-forty-two statement of the item, kept for its reasoning.
 
 The best-measured unclaimed lever in the tree. `translator_use_goto_tb`
 allows a direct chain only to `pc_first`'s page, so every branch inside an
