@@ -379,8 +379,19 @@ re-running the game.
 
 ## What was tried and REJECTED (do not retry without new ideas)
 
+Rows below name the probe each verdict came from. Where a row's question
+is settled, round forty-one deleted the probe with it — the pads
+(`W64_LDSTPAD`, `W64_CALLPAD`, `W64_LOCALPAD`, `W64_BYTEPAD`), the inline-
+TLB-probe ceiling family (`W64_TLBDUP`, `W64_TLBCHEAP`, `W64_TLBHIT`,
+`W64_TLBSIMD`, `W64_TLBHOIST`), `W64_LC2`, `W64_NOGENBUMP` and `W64_GDUP`
+are gone from the tree. Retrying one of these means rebuilding its
+instrument, which is the point: the numbers here are the reason not to.
+
 | Experiment | Result | Why |
 |---|---|---|
+| **Guessing an indirect branch's target from `env` at translation time** (2026-09-21, round 41) | **Built, measured at a 9.4 % hit rate, reverted.**  `xwBx` is 39 % of the TB boundaries left and looks monomorphic — the per-TB lookup slot is refilled 24 times per Mi against 36 345 exits — and translation runs with `env` holding the state the TB is about to be entered with, so `env->regs[rN]` *is* the target whenever the register was set before the TB.  Guarded with one compare, it collected **750 hits against 7 241 misses per Mi**; the accepting sites run 7 991 times per Mi, 22 % of all `xwBx`, so even a perfect predictor there is ~2 % of wall and this one was 0.2 % | **A translation-time register snapshot is not a branch predictor: hot code is translated during the boot and outlives the phase that translated it.**  The slot's 99 % hit rate belongs to a *self-updating* cache and says nothing about a guess frozen at first translation.  A deopt-and-retranslate tier (one extra translation per site, blacklisted after) would fix the staleness and is still capped at ~2 % by the coverage — price the coverage before building the predictor |
+| **A 64 KB guest page (`W64_PAGEBITS=16`)** (2026-09-21, round 41) | **Boot regression, abandoned.**  It is sound — `tlb_set_page_full` marks any guest page smaller than the target with `TLB_INVALID_MASK` and repeats the fill on every access — and it would lift `translator_use_goto_tb`, `w64_absorb`, the one-callee-page limit and the A32 `max_insns` bound in one move.  On a quiet host, in the same sweep where the baseline reached the idle screen in ~2 minutes, the 64 KB leg had not got there in five | **The SMC granule scales with the page and the TB list scales against it.**  `code_mask` is one bit per 1/256th of a page — 16 bytes at 4 KB, 256 at 64 KB — and round 37 already measured that a coarser granule collapses the rejection rate; a 64 KB page makes each granule 16× coarser *and* each page's TB list 16× longer.  A fixed 16-byte granule is buildable (`TB_GMASK_WORDS` sized for the largest page, 16× fewer PageDescs, memory a wash); the list walk behind it is not.  8 KB and 16 KB legs are **inconclusive** — the host saturated while they ran |
+| **`W64_GDUP` as a price for the guest-register env-traffic row** (2026-09-21, round 41) | **The probe is inert, and the null it produces is not about the row.**  `W64_GDUP=2` reads **3.473 against 3.490 ms/Mi** on the video meter.  Each duplicate targets the same address with the same value *adjacently*, which is the one redundancy TurboFan's store-to-store and load-to-load elimination removes with no alias analysis, and ~96 % of TB entries run TurboFan code | The knob's own comment anticipated the hazard and prescribed `tbBytes` as the self-check — **but an emitted-byte count cannot separate "emitted" from "emitted and then folded".**  A duplication probe must target a *different* address that is equally hot (a pad inside `env`, or a small wrapping pool), never the same one.  The row can be bounded without it: 1.34 accesses per guest instruction at ~a cycle each is **≤ 13 % of wall**, and the half a wider TB signature reaches is **≤ 7 %** |
 | **Memoising `arm_rebuild_hflags`** (2026-09-20, round 39) | **Built, validated, and it does not move the meter — reverted.**  A 16-entry memo indexed by CPSR mode (one entry misses on every syscall: the rebuilds alternate between SVC and the caller's mode), keyed on SCTLR_EL1 plus CPSR's M/PAN/IL/E, which is the complete input set of the pre-v6 short path.  It hit **100.00 %** of 5 937 calls/Mi on the video workload and a `-DHFLAGS_FAST_VERIFY` build counted **`hflagsBad` = 0 over 8 907 736 rebuilds**, so it is correct and it fires — and the A/B reads **−1.2 %** over eight windows, **+0.8 %** over the four that ran quiet.  Nothing | **The call rate was the trap.**  5 936 calls/Mi × round 30's 31.6 ns reads as 4.4 % of wall, and that multiplication is what justified building it.  The verify build then priced the idea for free in the other direction: it adds a whole *generic* rebuild to every one of those calls and costs only ~6 %, so the **short path** it replaces is worth well under 1 % and a memo recovers part of that.  When a fast path already exists, price *it*, not the function it replaced |
 | **Every cheaper TB-boundary *mechanism*: the merged module's boundary half, `W64_CHAINLOOP`, `stail`, and `W64_BATCH`-as-a-locality-knob** (2026-09-17, round 32) | **All of them tie, and the merge is a regression.**  `tests/wasm/dispatchbench.mjs` was swept properly for the first time — over body size (`DB_PAD`), table size (`DB_NFUNC`), module count (`DB_NMOD`) and, the knob that turned out to matter, **target order**.  In the *strided* order every mechanism costs the same **16–17 ns at every module count**; only in the *unpredictable* (LCG) order does a 42 ns spread open up, and there `merged` — the no-crossing variant the whole merge case rested on — reads **51.13 ns against `xtail`'s 35.73** at pad 144.  The emulator's own knob had already settled which order it is in: `W64_CHAINLOOP` swaps the call mechanism and keeps everything else, and it measures **−0.1 %**, falsifying the unpredictable regime's prediction at ~7 sd | The benchmark's header described its LCG target sequence as "what a guest interpreter's dispatch looks like", and a TB chain is not that — a chained successor is **per-site predictable**, which is why round twenty-three's `dispatch-probe.mjs` read 7.7 ns and the LCG read 27.  **A dispatch benchmark has two independent knobs, the mechanism and the target sequence, and the second dominates.**  The 27 ns then propagated: three sections of the handoff sized proposals against it, and the four-point `w64_ft_max()` fit agreeing at 27.9 ns looked like confirmation when it was coincidence — see the lessons file, *A slope fitted across configurations is a bundle price*.  **When a knob in the real system already performs the synthetic's A/B, believe the knob** |
 | **Replacing emscripten SjLj with native wasm exception handling on the `cpu_loop_exit` path** (2026-09-17, round 30) | **Right that it is 2.2× cheaper, wrong that it matters: ≈ 0.13 % — rejected on the rate, not the price.**  A standalone microbenchmark (`tests/wasm/sjljbench.c`, `tools/sjljbench.mjs`) put one emscripten-SjLj `longjmp` round trip at **595.7 ns** and the same unwind under `-fwasm-exceptions` at **269.2 ns**, a real 326 ns saving per event.  But 0116 had already counted the events: `execLjmp` is **23 per Mi** in the J2ME window, so the whole lever is 23 × 326 ns = **7.5 µs/Mi against 13 471 µs/Mi** | The ARM exception path — the only thing on this workload that unwinds often — **does not longjmp at all**: it leaves through a normal TB exit and `cpu_handle_exception` picks `exception_index` up on the next pass (0116's third finding).  Price × rate, always in that order; this one was priced first and the rate then closed it |
@@ -515,6 +526,20 @@ re-running the game.
    no longer forces a module — batches fill toward `W64_BATCH_N` and
    close on promotion, so `close == specMiss` no longer holds and the
    fixed-close-cost dominance above inverted (see 0f).
+
+0d1. **What a TB boundary costs, on the video workload (round 41).**
+   Two same-binary legs, `W64_INLINE` 4 against 0, counters on in both:
+   100 080 boundaries/Mi at 3.505 ms/Mi against 168 145 at 4.124, i.e.
+   68 065 boundaries for 0.619 ms — **9.09 ns each**, and the census's own
+   counter bump is inside that, so the shipped figure is ~8 ns.  At
+   88 316 /Mi after round 41 the row is **22 % of wall** and it is the
+   only large one left.  Round 23's 33 ns below is EL71 at 9.35 ms/Mi and
+   does not transfer; its other half — *changing an exit's kind is worth
+   nothing, only removing it pays* — does.  A TB-lengthening change then
+   beats its own census, because the entry costs it divides (locals
+   zeroed by Liftoff, globals synced and reloaded across the hand-off) are
+   not counted as boundaries: round 41's two mechanisms remove 11.8 % of
+   the boundaries and measure **+6.3 %**.
 
 0d. **Where the other ~80 % goes, and what a TB transition costs
    (counters, round 23).**  Same method, applied to execution instead of
@@ -828,6 +853,36 @@ re-running the game.
    no item in the C third can reach.  Beyond it lies the emitted code
    (70 % of the vCPU here, by module URL, the one attribution a wasm
    profile can be trusted for).
+
+0k. **The same clip after round 40 (SVC in the TB, callee inlining, 4 KB
+   pages).**  The C third of 0j was mostly the syscall's dispatcher round
+   trip — `cpu_exec_loop`, `tcg_qemu_tb_exec`, two `bql_lock` pairs
+   guarding empty hook lists, `replay_exception`, `tb_lookup` — and it is
+   gone: `execIter` 2 387 → 28 /Mi, C-side `lookup` 2 687 → 328, the main
+   module under 10 % of the vCPU.  The boundary census moved from 166 834
+   exits/Mi at 6.0 guest instructions per TB entry to **100 080 at 10.0**:
+   returns 60 607 → 36 343, direct branches refusing a chain 66 363 →
+   7 391 (+ 9 665 `bl` refused for a page or depth rule), `tlbFill` 1.12
+   → 0.27.  Three lessons that generalise:
+
+   - **A refund after an observation moves a clock the device already
+     saw.**  A mid-TB device access reads virtual time with the whole TB
+     prepaid ("one TB ahead", by design); any icount refund emitted after
+     it (deferred taken path, join, loop exit, inlined-return miss)
+     steps that clock backwards, and a device that keeps `now - last`
+     then spins.  `w64_refund` refunds only while `can_do_io` is clear.
+     The hazard existed before inlining and never fired because a device
+     access and a refund rarely shared a 6-instruction TB.
+   - **A capture that drops lines looks like a compiler that drops ops.**
+     The console forwarder loses lines under a burst; the op dump of a
+     TB read that way was missing eight `goto_ptr`s that a walk of
+     `tcg_ctx->ops` in C found present.  Count in C before believing a
+     listing.
+   - **The instruction-per-TB cap is a page rule in disguise.**  A32
+     bounds a TB to the instructions left on its *entry* page; anything
+     that moves the stream (absorb, inlining) has to re-bound from where
+     the stream is, or the cap ends TBs for no reason the exit counters
+     name (`inlEndMany` = 153 of 276 before the re-bound).
 
 Closed (do not reopen without new ideas): exception longjmps (0013/0014
 — SVC inline exit + io barriers; the generic wasm-EH longjmp stays

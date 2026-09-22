@@ -96,24 +96,28 @@ measurement in the ladder: no rebuild, no build-dir skew.
 | `W64_INTERP_ALL=1` | off | never compile — every TB stays interpreted. The tier's correctness gate, not a benchmark |
 | `W64_INTERP_RANGE=<lo>:<hi>` | all | restrict the tier to one span of `tidx` — how a tier divergence is bisected to one TB |
 | `W64_RAM1P=0` | on | turn off `do_ram_1p()`, the inline TLB probe the C-side memop callers got in 0114, so the interpreter tier's accesses go back through `mmu_lookup` (`ram1p` counts what it serves; `slowClean` is what it replaced) |
-| `W64_TPUSCAN=0` | narrow | restore 0068's wide `[ceap, eapt)` event-RAM scan window in place of 0115's three-word one (`tpuRamSkip`/`tpuRamW`/`tpuRearm` are the meter) |
 
 **TB-shape knobs** are the same class (one wasm, a leg per query) but they
 change what the translator emits, so they move `tbGen`, `tbIcount` and the
 exit mix as well as the clock. Each one is a landed mechanism with its off
-switch kept; the playbook's row for that number is the evidence.
+switch kept; the playbook's row for that number is the evidence. Round
+forty-one's two — continuing past `msr cpsr`, and absorbing a branch onto
+the TB's second page — have no switch: they are unconditional, so the way
+to A/B them now is a build.
 
 | Knob | Default | Effect |
 |---|---|---|
 | `W64_MERGE=0\|1` | 1 | defer a conditional branch's taken arm to the end of the TB so translation carries on into the fall-through (0110) |
-| `W64_FTMAX=<n>` | 2 | how many deferred taken arms one TB may hold at once (capped at `W64_FT_MAX`). 1 → 2 is 0112, +4.7 % |
+| `W64_FTMAX=<n>` | 3 | how many deferred taken arms one TB may hold at once (capped at `W64_FT_MAX`). 1 → 2 is 0112, +4.7 % |
 | `W64_JOIN=0\|1` | 1 | place a deferred arm's label where the fall-through reaches its target, so an `if (cond) { … }` costs no exit at all (0111, +6.0 %) |
 | `W64_LOOP=0\|1` | 1 | a back-edge to the TB's own first instruction becomes a wasm branch to the loop header instead of a TB exit |
 | `W64_ABSORB=<n>` | 256 | how many bytes an unconditional forward branch may skip and keep translating inside the same TB. The skipped bytes join the TB's guest range, so a write to them invalidates it |
 | `W64_ABSCHG=0\|1` | 1 | charge the skipped instructions to `max_insns`. Off looks like free absorbs and is not: with the distance also at 1024 it lifts absorbs 8 632 → 9 464 and `tbIcount` by 0.3 %, because `translator_is_same_page` binds first |
 | `W64_LINSPEC=<mask>` | 0 | which linear successors are offered to the speculation seed list. Off by default — see the flash-write hazard note above `note_linear_succ` before turning any bit on |
 | `W64_NORETSPEC=1` | off | stop seeding speculation with a call's return address (0109's A/B leg) |
-| `W64_INLINE=<n>` | 2 | call inlining depth: a direct `bl` translates its callee in place and the callee's `bx lr` becomes a compare against the return address (round 40). 0 turns it off. The callee may live on the entry page or on one other page, which takes the TB's second-page slot |
+| `W64_INLINE=<n>` | 4 | call inlining depth: a direct `bl` translates its callee in place and the callee's `bx lr` (conditional or not) becomes a compare against the return address (round 40). 0 turns it off. The callee may live on the entry page or on one other page, which takes the TB's second-page slot |
+| `W64_PAGEBITS=<n>` | 12 | guest page size the TLB, the translator's page rules and TB invalidation work in. ARMv5 defaults to 1 KB for tiny pages, which this firmware never maps (`fillLarge` == `tlbFill`); a smaller guest page than the target's is still translated exactly, through the slow path. 12 is what round 40 measured; 16 is the ceiling, because `w64_inl_lo/hi` hold a page offset in a `uint16_t` |
+| `W64_NOSVCINL=1` | off | take the guest's SVC through the dispatcher (`cpu_handle_exception`) instead of inside the TB (round 40, `helper_svc_inline`); the A/B leg for that patch, and the bisect knob that cleared it of the lockstep divergence |
 | `W64_PCREL=1` | off | put `CF_PCREL` back on wasm64 (upstream's default for ARM system mode). Off since round 40 because the PC-relative unwind data cannot name an instruction on an inlined callee's page; with it on, inlining refuses every call. The earlier A/B of the flag alone read −0.7 % (2/3, inside noise) and +2 % lookup misses |
 
 **Measurement knobs — these change the generated code**, so per-Mi rates
@@ -123,30 +127,28 @@ comparable to anything. Never use one as an A/B leg.
 | Knob | Effect |
 |---|---|
 | `W64_LDSTCOUNT=1\|2` | emit counter bumps into generated memops. `1` = miss arms only (nearly free, sits beside a helper call); `2` = every execution too (`ldstExec`), the memops-per-guest-instruction denominator, hot by construction |
-| `W64_LDSTPAD=<n>` | emit `n` fold-resistant ALU units per memop — the ns-per-instruction calibration pad. Clean at n=4; at n=12 it grows emitted code enough to add thousands of modules and confound itself |
 | `W64_MODBENCH=1` | compile one real module's own bytes 200× back-to-back inside the vCPU worker (`modbenchNs`/`modbenchN`) — the warm-compile floor against the 83 µs a module really costs |
 | `W64_TBSTATS=1` | per-TB-entry counters under icount, so `wasm_tbs` reads non-zero |
 | `W64_XCOUNT=1` | count TB exits in the generated code — which chain an entry left by (`xGototb`, `xGototb1`, `xSelf`, `xGotoptr`), and whether a `goto_tb` went back to its own TB. The exit-mix meter every TB-shape knob is judged on |
 | `W64_TBHIST=1` | `++w64_tbhist[tidx]` in the prologue: the per-TB entry histogram, and the cheapest per-entry counter the backend can emit |
-| `W64_CALLPAD=<n>` | `n` extra calls to `w64_callpad_sink()` per TB entry — what a wasm→wasm import call costs *placed in a real TB*. Divides straight into ns per call against `padSink`. **14.5 ns**, against `import-probe.mjs`'s 2.1–2.4 ns in isolation: any helper on a hot path must move ≥ 15 ns of work |
-| `W64_LOCALPAD=<n>` | `n` extra never-referenced i64 locals per TB function — prices the backend's ~70 declared locals against the baseline tier, which zeroes every one on every call |
-| `W64_BYTEPAD=<n>` | `n` never-executed add/store pairs (~7 bytes each) per TB body — prices *emitted bytes* against module compile time (`modNs`) |
 | `W64_LSMCOUNT=1` | count `ldm`/`stm` blocks and the registers they transfer (`lsmN`, `lsmExec`) — the denominator for anything that batches a block's memops |
-| `W64_XWHY=1` | attribute each `goto_ptr` exit to the guest instruction that asked for it: `xwOther` (a direct branch refused a `goto_tb`, i.e. mostly calls), `xwBx` (their returns), `xwDefer`, `xwPsr` (`msr cpsr`), `xwPcst` (a store to r15), `xwRfe`. Indirect exits are two thirds of all TB boundaries, so this is the split that says which one is worth a mechanism — see § 0h of the playbook |
-| `W64_TLBDUP=<n>` | emit the inline TLB probe `n` times per memop, results folded so none is dead. The N=1→2 slope is what one probe costs (**1.16 ns**) |
-| `W64_TLBCHEAP=<n>` | the probe replaced by an `n`-word per-site check against a fake slot — the floor of a cheaper probe design |
-| `W64_TLBHIT=1` | run the per-site page cache for real (check, then fill on miss) and count hits/misses: the page-stability hit rate a real design would see between flushes |
-| `W64_TLBSIMD=<n>` | the same cache with both words read as one `v128.load` and the generation kept in a local — one load against the current probe's three |
-| `W64_TLBHOIST=<n>` | duplicate exactly the mask/table pair of `i64.load`s `n` times per memop, so the N=1→2 step prices what hoisting the pair into TB locals could remove. **+2.61 % of wall, and the second step is −0.004 ms/Mi** — the first pair is the whole cost, so a hoist that keeps only the first memop of a run collects `ldstRun/ldstGen` = 66 % of it. Closed in round thirty-eight |
-| `W64_GDUP=<n>` | emit `n`−1 extra copies of every guest-register load and store in `temp_sync`/`temp_load`, so the slope prices the whole env-traffic row. Built and unrun |
+| `W64_XWHY=1` | attribute each `goto_ptr` exit to the guest instruction that asked for it: `xwOther` (a direct branch refused a `goto_tb`, i.e. mostly calls), `xwBx` (their returns), `xwDefer`, `xwPsr` (`msr cpsr`), `xwPcst` (a store to r15), `xwRfe`, `xwSvc`, and `xwBl` — a direct `bl` that `w64_inline_call` refused, split since round 41 into `xwBlPage` / `xwBlDepth` / `xwBlCond` / `xwBlRet` by *why* it refused. Round 42 splits the page case again, for a call and an absorbed branch alike, by which rule in `w64_inl_pick_page` refused the stream its page: `xwPgThird` (every tracked page is taken by another page — the only one a further slot would collect), `xwPgLin` (page 1 belongs to a linear crossing), `xwPgProbe` (the target page is not mapped for fetch), `xwPgRet` (a `bl` returning off the stream's page), `xwPgMore` (the TB had already asked for more pages than it tracks). With two tracked pages all 9 808/Mi of them were `xwPgThird` and the rest were zero; with three, half of what a third page granted comes back as a TB wanting a fourth — a demand that does not exist until the TB is long enough to reach it, which is why the translation-time page-set census could not see it. The `inl*` counters answer the same question at translation time; these answer it at runtime weight, which is the one that decides whether a refusal is worth a mechanism. Indirect exits are two thirds of all TB boundaries — see § 0h of the playbook |
+
+**Retired in round forty-one**, once their question was closed: the four
+calibration pads (`W64_LDSTPAD`, `W64_CALLPAD`, `W64_LOCALPAD`,
+`W64_BYTEPAD`), the inline-TLB-probe ceiling family (`W64_TLBDUP`,
+`W64_TLBCHEAP`, `W64_TLBHIT`, `W64_TLBSIMD`, `W64_TLBHOIST`), `W64_LC2`,
+the unsound `W64_NOGENBUMP`, and `W64_GDUP`. Old handoff rounds still name
+them because that is how those numbers were taken; the numbers themselves
+are in the playbook's REJECTED table and its cost model. `lc2Hit`,
+`padSink`, `tlbcHit` and `tlbcMiss` now read zero always — the counter ABI
+is positional, so the slots stay.
 
 **Verification and debug** — correctness cross-checks and console noise.
 
 | Knob | Effect |
 |---|---|
 | `W64_LC_VERIFY=1` | every `goto_ptr` goes through the helper, which cross-checks each would-be inline hit (`lcVhit`/`lcVbad`) |
-| `W64_LC2=1` | software ceiling probe: simulates a second inline-cache way and reports the hit rate it *would* have had. Built for real afterwards and rejected — a hit-rate probe is silent on the cost added to the path that still misses |
-| `W64_NOGENBUMP=1` | **unsound** (stale targets survive): skip the global key-generation bump, which prices a perfect inline cache in one run |
 | `W64_DEBUG=1`, `W64_TBLOG=1`, `?w64debug=1` | speculation stats / per-TB translation log / batch histogram + module events |
 | `QEMU_LOG_PABT=1` | one stderr line per guest prefetch abort or BKPT (IFSR, IFAR, pc, lr, sp, cpsr) — combine with `tracebuf=1`, never with `-d int` |
 | `QEMU_COSTACK=1` | coroutine-stack audit (see the Asyncify work in lessons.md) |
@@ -154,6 +156,8 @@ comparable to anything. Never use one as an A/B leg.
 | `W64_COLOC=1` | with `W64_LC_VERIFY=1` (so every `goto_ptr` reaches the helper): how often an indirect exit lands in the batch module it is leaving — the ceiling on replacing the tail call with a branch inside one function |
 | `W64_MISSDUMP=1` | print every lookup-miss address, so the miss stream can be intersected offline with the flash image. The printf makes the run much slower; the counters stay valid because they count guest events |
 | `W64_DUMPTB=<n>` | hex of the `n`th TB's complete temp module, for `wasm-dis` |
+| `W64_OPDUMP=<pc>` | the TCG ops of every TB translated at guest `pc`, before and after optimisation, plus the guest disassembly (the `-d op,op_opt,in_asm` the page has no other way to ask for). Capture the console with `tools/conlog.mjs`; the benchmark's `--log` tail drops lines under a burst |
+| `W64_INLLOG=1` | one stderr line per inlining decision: `INL call` (site, callee, return address, depth, which tracked page), `INL ret` (a return check emitted), `INL end` (the TB ended inside a callee, with `is_jmp`, condjmp and the exit reason). `node tools/videobench.mjs --log "INL "` prints them inline with the phase markers |
 
 ## Exports on `window.__qemu` (the emscripten module)
 
@@ -268,7 +272,7 @@ Profiling and counters:
 |---|---|
 | `diagall.mjs` | **every** `wasm_memstat` counter by name plus a per-second DELTA block — the tool for deciding *where* time goes. Names come from `diagnames.mjs`, so it never goes stale |
 | `counters.mjs` | every unconditional counter for one board as a rate (`--board`, `--from`, `--window`) |
-| `exitrate.sh` | **the tight meter for a TB-shape change**: any counter per Mi, read at *matched instruction counts* rather than matched seconds. `run <secs> <rounds> <out> "<leg>:<query>"…` then `read <out> <Mi> [counter…]`. ~0.8 % spread against the clock's ±8 %, so it resolves a 2–3 % mechanism the clock cannot — 0113 landed on it. Give the legs as a palindrome; see the window trap in the playbook for why the milestone, not the second, is what must match. **A mechanism meter, not a verdict meter**: it prices the exits a change removes and is silent on what the change adds, which is how `W64_FTMAX=8` reads −1.7 % here and −1.1 % on the clock |
+| `xcensus.sh`, `census.sh` | **the tight meter for a TB-shape change**: counters per Mi, read at *matched instruction counts* rather than matched seconds. `xcensus.sh` is the boundary census (`W64_XCOUNT=1&W64_XWHY=1`), `census.sh` the memory-op one (`W64_LDSTCOUNT=2&W64_LSMCOUNT=1`); both run the J2ME meter. `videobench.mjs` takes the same knobs through `EXTRA_Q` and prints the same per-Mi block, which is the video-side census. The counters resolve to ~0.04 % against the clock's ±2 %, so they settle a mechanism the clock cannot — but the counter code goes into every TB, so **the wall time of a census leg is not comparable to anything**. **A mechanism meter, not a verdict meter**: it prices the exits a change removes and is silent on what the change adds, which is how `W64_FTMAX=8` read −1.7 % here and −1.1 % on the clock, and how the third tracked page (round 42) removed all 9 805 page refusals per Mi and moved the *total* boundary count by only 0.9 %, because an absorbed call relocates its caller's boundary instead of removing it |
 | `memstat.mjs`, `diagprobe.mjs` | the memory-path subset over a boot / any counter by index (`name=idx`) |
 | `modcost.mjs` | what fraction of wall time goes into translation + module construction — the ceiling probe for any tiering scheme. Reads the C-side phase timers through `_wasm_memstat`, *not* from the worker: the vCPU worker runs the guest without yielding, so a worker-side `evaluate()` never gets scheduled and hangs the tool |
 | `modfloor.mjs` | synthesizes wasm modules of chosen shapes and times `new WebAssembly.Module` — the page-side floor to compare the emulator's own 83 µs against |

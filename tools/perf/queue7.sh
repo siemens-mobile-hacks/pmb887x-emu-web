@@ -70,8 +70,8 @@ log "build ok"
 # ---- 3. does the merged emitter run at all, and did it fire? ----------
 # The counters come first: a leg that merged nothing would still produce
 # a perfectly ordinary rate, and A/Bing that is how a mechanism gets
-# credited with someone else's noise.  mergeSkip must be 0 -- with
-# W64_LOCALPAD off there is no legitimate reason to decline a batch.
+# credited with someone else's noise.  mergeSkip must be 0 -- there is no
+# legitimate reason to decline a batch.
 smoke() {
   local m=$1
   EXTRA_Q="env=W64_MERGE=$m" timeout 900 node tools/j2mebench.mjs --dist dist-jit \

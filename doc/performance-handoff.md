@@ -26,7 +26,12 @@ thirty-eight): both native builds, `build/qemu-wasm64`, `site/dist-jit`,
 matches `QEMU_PMB887X_REV` in `versions.env`. **`site/dist-jit` is the
 `-sMEMORY64=2` build** — round thirty-six's +19 % is the default now, and
 every measurement in rounds thirty-six onward sits on top of it.
-**Rounds thirty-three to thirty-eight are uncommitted** in both trees:
+**Rounds thirty-three to forty-two are uncommitted** in both trees. Round
+forty-two adds no behaviour change: `TB_PAGES` is 2, as it has always
+been, and the page-tracking sites are merely written for N of them now
+(`exec/tb-pages.h`) — the third page was built, measured and rejected, and
+the `translator_use_goto_tb` lever it found was reverted with its
+stability unsettled. Also uncommitted, from earlier rounds:
 the SMC range check (round thirty-seven, `tb-maint.c`/`cputlb.c`), the
 mem32 build change, and nine diagnostic counters. Run `gate.sh close`
 before committing — `configure`, `tcg.c`, `tcg.h`, `translate.c`,
@@ -130,10 +135,23 @@ Berlin.3gp). Use it for anything aimed at the *guest's exception path*,
 because it takes one every 424 instructions — 2 360 `excSwi`/Mi against
 J2ME's 444–1 109 — while doing 6× fewer TB lookups per Mi, so the two
 workloads rank levers in opposite orders. Its number is `rt` (virtual s
-per wall s, 1.0 = real time on a real SL65) and it stands at **2.04** on
-this desktop, i.e. roughly 0.4 on a phone: the user's "video is below
-real time on Android" is this number, and it needs ~2.5× more, not 5 %.
-`duty` = 1.000 and `halts/s` = 0 there too.
+per wall s, 1.0 = real time on a real SL65). It stands at **2.66–2.68**
+on this desktop at `hostBusy` ≈ 0.1 (round forty-one; round forty's build
+was 2.46–2.49 and round thirty-nine's 1.8 on the same host state), i.e.
+roughly half real time on a phone: the user's "video is below real time
+on Android" is this number. `duty` = 1.000 and `halts/s` = 0 there too.
+Since round forty the guest page is 4 KB (`W64_PAGEBITS`), `CF_PCREL` is
+off, the SVC is taken inside the TB and direct calls are inlined
+(`W64_INLINE`); round forty-one added the `msr cpsr` continuation and the
+cross-page absorb.
+
+**Read round forty-one's opening before planning a round against this
+meter.** A TB boundary is 8–9 ns and the 88 316 of them per Mi are 22 %
+of wall — the only large row left. Everything else is the emitted code
+doing the guest's work, at ~1.5× what native-TCG-quality output would
+cost, so **there is no single remaining change worth 30 %**; the ranked
+list at the end of that round is three items worth 5 %, 2 % and "nobody
+has an idea yet".
 
 **The J2ME measurement workload is `fullflashes/CX70_FW56_clean.bin`**,
 not `CX70_games.bin`. All four of its titles play at **`duty = 1`,
@@ -172,9 +190,11 @@ five-title catalogue, **+15.5 %** on the CPU-bound title). Both are in
 `site/dist-jit` and in the working tree, uncommitted. Round thirty-eight
 then measured and closed three more candidates — the TLB mask/table
 hoist, the `v128.load` probe fusion, and branchless A32 predication — so
-the open list below is shorter than it looks: **the guest-register row is
-the only item on it that has never been measured**, and `W64_GDUP` is
-built and waiting to measure it.
+the open list below is shorter than it looks. The guest-register row was
+the last item on it that had never been measured; round forty-one closed
+it by bounding it from the census (**≤ 13 % of wall, ≤ 7 % reachable**)
+after finding that `W64_GDUP`, the probe built for it, was inert — see
+that round's § 5. The knob has since been removed.
 
 **The "module pipeline is 12.5 % of a boot" figure is retired** — it was
 measured before the interpreter tier and nothing below it survives.
@@ -297,7 +317,7 @@ Rows are independent measurements taken in different rounds and are
 |---|---|---|---|
 | wasm memory bound checks | **25.3 %** | `--no-wasm-bounds-checks`, 4-round Latin-square fit | **open — the only large one left; wasm32 collects the dependent-load part, see below** |
 | TB entry | 14.6 % (10.1–18.7) | 14-leg fit over `W64_FTMAX`, position held out | bounded and **robust to the position confound**; **`ft4` collects nothing resolvable** (−2.09 ± 1.81) |
-| guest-register env traffic | **unpriced** — 1.99 memory ops per guest instruction | `tcgGst`+`tcgGld` ÷ `tbIcount` | **open, and now the only unmeasured item**: EXIT 37.6 % / BBEND 31.6 % / **BBCOND 15.8 %** / SE 14.3 % / CBR 0.7 % / CALL 0.0 %. EXIT is structural (TBs hand off through memory) and SE is required before a fault, so BBEND+BBCOND at 47.4 % is the lever. **Round thirty-eight closed the predication third of it** — see below. `W64_GDUP` is built and unrun; it prices the whole row (shares are of sync *demands*; against `tcgGst` they do not partition — see the denominator note) |
+| guest-register env traffic | **≤ 13 % of wall, ≤ 7 % reachable** — 1.99 memory ops per guest instruction | `tcgGst`+`tcgGld` ÷ `tbIcount`, bounded from the census | **closed by bound, round forty-one** (the `W64_GDUP` probe was inert — adjacent duplicate accesses to one address are exactly what TurboFan folds — and has been removed): EXIT 37.6 % / BBEND 31.6 % / **BBCOND 15.8 %** / SE 14.3 % / CBR 0.7 % / CALL 0.0 %. EXIT is structural (TBs hand off through memory) and SE is required before a fault, so BBEND+BBCOND at 47.4 % is the lever. **Round thirty-eight closed the predication third of it** — see below. (Shares are of sync *demands*; against `tcgGst` they do not partition — see the denominator note.) |
 | — of which A32 predication | **reachable part ≈ 2.0 % of the row** | `gsyncBbcond` ÷ BBEND, × `predSel`/`predA32` | **closed, round thirty-eight**: predication is 33.3 % of label/br blame but 61.4 % of predicated instructions are branches and 17.4 % are loads/stores, neither convertible; only 16.7 % is selectable data processing |
 | inline TLB probe: mask/table pair | **+2.6 % ceiling, ~1.7 % realizable** | `W64_TLBHOIST`, 16 legs, host-quiet fit | **closed, round thirty-eight — do not build**; `ldstRun`/`ldstGen` = 66.2 %, and a cached `fast->table` is a wild pointer after any flush |
 | inline TLB probe (whole) | ~5 % | `W64_TLBDUP` slope, EL71 | mostly *inside* the check row |
@@ -523,6 +543,27 @@ Three conclusions the table is for:
    for one.
 
 ## Open items (ranked)
+
+### A chained exit for a branch inside an inlined callee — +1.3 %, blocked on one invariant
+
+The best-measured unclaimed lever in the tree. `translator_use_goto_tb`
+allows a direct chain only to `pc_first`'s page, so every branch inside an
+inlined callee leaves as an indirect exit instead. Widening it to any page
+the TB has fetched from converts 3 695 indirect exits per Mi into chained
+ones on video at an unchanged boundary count, gates GREEN, and measures
+**+1.34 % pooled / +2.2 % at matched host load**; the diff is six lines
+(round forty-two's entry in the round log has it, and the reasoning sits
+in a comment at the call site).
+
+Two things block it, in order. **First**, decide whether SMC registration
+is the right invariant: it covers *writes* to a page, while a direct chain
+is patched once and thereafter bypasses `tb_lookup_cmp`, including the
+`w64_inl_vpage` check that validates a TB's non-entry pages. If same-page
+is buying something stronger, this is unsound and the answer is no
+regardless of the clock. **Second**, if it is sound, settle stability on a
+quiet host: `key-el71` went flaky during round forty-two's attempt, on
+*every* build including the reverted one, so nothing was learned either
+way. Take it only with a control that is passing at the same time.
 
 ### ~~The whole emulator compiles at `-O2`, not the `-O3` the build script asks for~~ — closed, `-O3` rejected
 
@@ -1811,8 +1852,8 @@ all.**  Four facts, each verified in the source this round:
    3400–3406` emits the same 9-byte run in every body (`0x04`, then
    17 × i32, 16 × i64, 1 × i32, 3 × i64 = **37 locals**), preceded by a
    5-byte padded size LEB.  Merging strips a constant 14-byte prefix
-   from each body and declares the run once.  (`W64_LOCALPAD` adds a
-   fifth run; the merge must read the count rather than assume four.)
+   from each body and declares the run once.  (The run count is a
+   constant four now that `W64_LOCALPAD`'s fifth run is gone.)
 4. *The tail needs a two-byte rewrite and nothing else.*  A body ends
    `i32.const 0` / `end` (3579–3580), i.e. with a live i32 the function
    `end` consumes.  Copy the body minus its final `end` and append
@@ -2475,6 +2516,599 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 
 ## Round log (newest first)
+
+## Update (2026-09-21, round forty-two: the third page priced and rejected, and a +2 % chain that is not yet safe to take)
+
+Round forty-one left the TB boundary at 8–9 ns and 22 % of wall, with the
+largest single refusal being `xwBlPage`: 9 805 per Mi of direct calls that
+`w64_inline_call` turned away because the callee sat on a page the TB does
+not track. This round built the third tracked page that collects them.
+
+**Nothing from this round is in the tree as a behaviour change.** The
+third page was built, gated GREEN, measured, and rejected on its numbers.
+The lever it uncovered — worth +1.3 % pooled and +2.2 % at matched host
+load on video — was reverted with its stability unresolved, because the
+host went to load 26–32 before the question could be settled. What *is*
+in the tree is the plumbing (every page-tracking site generalised from two
+slots to `TB_PAGES`, which is 2), five new refusal counters, and a
+`w64_pgset` census. All of it gates GREEN.
+
+### The page refusals, split by rule and weighted at runtime
+
+`W64_XWHY` gained `xwPgThird`, `xwPgLin`, `xwPgProbe`, `xwPgRet` and
+`xwPgMore`, splitting the page refusal by which rule in
+`w64_inl_pick_page` turned the stream away, for a call and an absorbed
+branch alike. The answer was maximally favourable: **9 807.6/Mi all
+`xwPgThird`**, every other split exactly zero. Nothing was refused for a
+reason a further slot would not fix.
+
+### The third page: green, and worth nothing
+
+`TB_PAGES` moved into `exec/tb-pages.h` (because `translation-block.h`
+cannot be pulled into `translator.h` — poisoned target identifiers), and
+`page_next[]`/`page_addr[]`, the inline hulls, the page lock/unlock
+protocol, `tb_lookup_cmp` and `translator_ld`'s fetch plumbing were all
+generalised to N slots. `gate.sh keep` GREEN.
+
+Census at three pages: every one of the 9 805 page refusals gone, and
+total boundaries **88 301 → 87 538, −0.87 %**. That is the whole prize,
+and it is nothing like the census's 11 %, because **an absorbed call
+relocates its caller's boundary rather than deleting it**: the exits come
+back as `xwBx` (+3 579) and `xwDefer` (+1 300), and the mix shifts from
+chained to indirect (`xGototb1` −3 494, `xGotoptr` +2 272).
+
+Clock, 8-leg ABBA, two builds of one tree differing only in that constant,
+neither of them the live dist: **unresolved, consistent with zero.** The
+pooled reading says −5 %, and it is an artifact — the three-page arm drew
+three of the four busiest legs. Fitting each arm against `hostBusy` puts
+the difference between +1.0 % and −2.3 % across the range where both arms
+have data. The p2 arm produced 3.100 and 3.173 ms/Mi at *identical*
+`hostBusy` 0.082, so four legs an arm cannot resolve anything under 2.4 %.
+
+Retested on top of the `goto_tb` lever below, in case that was what ate
+it: it was not. Still −0.87 % boundaries, still `xwBx` +3 579 and
+`xwDefer` +1 300, and now translation work doubles (`modNs` 1 333 →
+2 668, `modCompileNs` +88 %, `lcCall` 6×). `TB_PAGES` stays 2.
+
+### The chain an inlined callee is losing — +1.3 %, and not yet takeable
+
+`translator_use_goto_tb` tests the destination against **`pc_first`'s page
+only**. So every direct branch *inside* an inlined callee is refused the
+chain it would have had as its own TB, and leaves as an indirect exit.
+Widening the test to any page the TB has already fetched from:
+
+| per Mi | video | video +fix | J2ME | J2ME +fix |
+|---|---|---|---|---|
+| `xwOther` (branch refused a chain) | 5 376.5 | **1 672.3** | 7 076.8 | **3 816.3** |
+| `xGotoptr` (indirect exits) | 65 132 | 61 437 | 50 781 | 48 298 |
+| `xGototb` + `xGototb1` (chained) | 23 169 | 26 874 | 31 194 | 34 401 |
+| total boundaries | 88 301 | 88 310 | 81 975 | 82 699 |
+
+On video the boundary count is flat: a pure change of *kind*, which is the
+thing the boundary census was never able to see. `lcCall`/`pccHit` halve
+on both meters and J2ME's `smcWalk` drops 19 %. Absorption is not what
+moved — `abCond` rose on both (+7 %, +12 %) and `tbIcount` with it
+(+6.7 %, +8.4 %).
+
+Clock: video 8-leg ABBA, **+1.34 % pooled on ms/Mi and +1.37 % on rt**,
+with the fix arm having run the busier half (mean `hostBusy` 0.106 against
+0.101), so that is a floor; at matched load it runs +2.2 % at 0.08 to
++1.2 % at 0.14. Both arms fit `hostBusy` with consistent slopes (2.48 and
+2.97, against the three-page run's 0.44 and 3.87). On this run legs 1 and
+5 of the base arm came in 0.03 % apart, so the meter was tight enough to
+believe it. J2ME: **unresolved** — p2 3.816/3.804/3.964 against
+3.854/3.825/3.845, the base arm's own spread five times the gap.
+
+**Why it is reverted.** `gate.sh keep` GREEN on it. Then `key-el71`
+started failing (the guest stops retiring instructions), and an
+interleaved run read 5/5 for the base build against 5/9 for the fix —
+which looks damning until the *reverted* build failed 3/3 twenty minutes
+later and the full gate went GREEN again at load 32. The gate is flaky on
+every build once this host is loaded, so the evidence is worthless in both
+directions, and a +1.3 % lever is not worth taking on an unsettled hang.
+
+Before trying it again, settle the invariant, not just the gate: SMC
+registration covers *writes* to a page, while a direct chain is patched
+once and thereafter bypasses `tb_lookup_cmp` — including the
+`w64_inl_vpage` check that is precisely what validates a TB's non-entry
+pages. Same-page may be buying something stronger than "the page is
+registered".
+
+### Lessons
+
+- **A marginal-slot census prices one slot and no more.** `w64_pgset`
+  records the pages a TB asks for, granted or refused. At two tracked
+  pages it said nothing ever wants a fourth; at three, 4 740 per Mi do. A
+  refused stream ends the TB there, so demand that only exists further
+  along a longer TB is invisible to it.
+- **An absorbed call relocates a boundary, it does not remove one.** The
+  prize for a refusal counter is not the exits it counts.
+- **A boundary census counts boundaries, not what they cost.** The best
+  thing found this round is invisible to it: same count, different kind.
+- **A census leg's wall clock is not a result**, even against another
+  census leg. The counter code costs a bump per exit and the arms differ
+  in exit count by construction, so the arm being helped pays less for
+  being measured. The first J2ME census pair read −2.6 % this way and it
+  was not a number.
+- **Fit both arms against `hostBusy` before believing an ABBA.** Both A/Bs
+  this round had one arm draw the busier legs; the three-page pooled
+  reading said −5 % and the truth was zero. Two arms whose fitted slopes
+  differ by 9× are not measuring the same host.
+- **A gate that fails under host load proves nothing until the control
+  fails too.** An interleaved 5/5-against-5/9 was host drift.
+- The exit counters *are* load-immune: `xwSvc` held to +0.018 % between a
+  leg at `hostBusy` 0.09 and one at 0.63. A census is still worth running
+  on a host too loaded for any clock.
+
+## Update (2026-09-21, round forty-one: the TB boundary priced on its own workload, and two more of it removed)
+
+Round forty left video at `rt` 2.46 with a boundary census as the whole
+cost picture and three ranked guesses about what to do next. This round
+priced the census against the clock — which turned two of those guesses
+into numbers — landed two mechanisms from it, and closed three
+candidates, one of which had been this file's "only unmeasured item" for
+four rounds.
+
+**The short version: a TB boundary is 8–9 ns and 22 % of wall; the
+boundary row is the only large one left; and no single remaining slice of
+it is worth more than about 5 %.** The engine is now within ~1.5× of
+what native-TCG-quality emitted code would cost per guest instruction,
+so the rounds from here are 2–5 % each, not 36 %.
+
+The two mechanisms together are **+6.3 %**, measured as a same-binary
+knob flip — `W64_PSRCONT=0&W64_ABSCROSS=0` *is* round forty's behaviour —
+in a four-leg ABBA on a quiet host (`hostBusy` 0.078–0.160, `Mi`
+1499.8–1501.0 on every window). Both windows of both arms, off against
+on: 3.108/3.209 → 2.981/3.004 and 3.364/3.573 → 3.213/3.271, i.e.
++4.3 %, +4.7 %, +6.8 %, +9.2 % on the four adjacent pairs. `rt` goes
+**2.57 → 2.68** at `hostBusy` 0.08.
+
+Note that this is **more than the boundary census predicts**: 11 764
+fewer boundaries per Mi at 8 ns is +2.9 %. A longer TB does not only
+delete its own boundary — it divides the per-entry costs (the locals
+Liftoff zeroes, the globals TCG syncs and reloads across the hand-off)
+over more guest instructions. Read the census as a lower bound on a
+TB-lengthening change, not as its price.
+
+### The boundary, priced
+
+Two same-binary legs of the video meter, `W64_INLINE=4` against
+`W64_INLINE=0`, counters on in both, `Mi` 1499.9 / 1500.4:
+
+| | inlining on | off |
+|---|---|---|
+| TB boundaries /Mi | 100 080 | 168 145 |
+| `ms/Mi` | 3.505 | 4.124 |
+
+68 065 boundaries for 0.619 ms/Mi is **9.09 ns each**, and the census's
+own counter bump is inside that, so the shipped figure is ~8 ns. At
+100 080 /Mi that is **0.80 of 3.33 ms/Mi — 22 % of wall**. Round
+twenty-eight's "a boundary is ~33 ns whatever kind it is" was an EL71
+number at 9.35 ms/Mi and does not transfer; what does transfer is its
+other half — **removing a boundary is worth 8 ns, changing its kind is
+worth nothing.**
+
+### 1. `msr cpsr` no longer ends the TB (+1.8 %)
+
+`xwPsr` was 8 904 /Mi, 8.9 % of every boundary. Round twenty-eight
+bounded it at 1.2 % of wall *as an exit*, before call inlining made it
+also forfeit the inlined callee it was standing in.
+
+`gen_msr_mask` clears `CPSR_EXEC`, so a CPSR write cannot move T, IT or
+J: of the three key words a lookup uses, condexec and thumb are
+untouchable and only **hflags** can move. `w64_psr_continue`
+(`target/arm/tcg/translate.c`) tests exactly that in emitted code, plus
+`cs->interrupt_request` — which reproduces the old exit rather than
+approximating it. `helper_cpsr_write` has already run
+`cpsr_write_check_irq`, so a pending interrupt has set `icount_decr`'s
+high half and the miss exit reaches the same next TB, which stops at its
+own prologue exactly as before; continuing instead would push the
+interrupt to the end of this TB — architecturally legal, and a lockstep
+divergence, which is the trap round forty fell into with the eret BQL
+pair. A write whose mask reaches no hflags input (`msr cpsr_f`,
+restoring the condition flags) skips the hflags compare entirely, and
+`msr spsr` never needed to end a TB at all.
+
+A mode change *within* EL1 (svc → irq) leaves hflags equal and is still
+correct to continue through: the banked registers it swaps are values in
+`env`, which the rest of the TB reloads anyway because
+`helper_cpsr_write` clobbers every global. The op suite only covered
+`msr cpsr_f`, so `tests/tcg-isa` gained `psr/bank_irq`, `psr/bank_svc`
+and `psr/bank_mode` for exactly that case (1156 → 1159 tests, and the
+wasm64 serial stream stays byte-identical to native).
+
+Mechanism meter: **`xwPsr` 8 904 → 1 184 /Mi, boundaries 100 080 →
+92 369 (−7.7 %)** at identical `Mi` and `excSwi`. Clock, ABBA on
+`W64_PSRCONT` (same binary, four legs, two windows each): the two off
+legs reproduce to 0.03 % (3.472/3.471 and 3.618/3.662 ms/Mi); the on legs
+read 3.486/3.697 at `hostBusy` 0.33 and 3.335/3.492 at 0.17 — **+1.8 % on
+the unweighted mean**, which is what 7 711 boundaries at 8 ns predicts,
+and +4 % on the one leg that ran on a quiet host.
+
+### 2. An unconditional branch may cross onto the TB's second page (+1 %)
+
+A TB tracks two guest pages. Round forty gave the second one to an
+inlined callee; unless a call claims it, it sits unused, and meanwhile
+`xwOther` — an unconditional direct branch that `translator_use_goto_tb`
+refused because its target is off the page — was 8 997 /Mi, 9.7 % of
+every boundary left.
+
+`w64_abs_cross_page` is the callee-inlining machinery with the call taken
+out: the target is static, so there is no guard, no miss path and no
+icount refund, only the bookkeeping that makes a second stream safe — the
+page claimed through the same nonfault probe (`w64_inl_pick_page`, now
+shared by both), a `W64InlRec` so the SMC cross-stream check knows which
+stream owns the patched bytes, and the hull tracking that replaces the
+linear span on both pages. One per TB, and not from inside an inlined
+callee, whose depth stack restores `page_start` on return.
+
+Census: boundaries 92 369 → **88 316 (−4.4 %)**, `xwOther` 8 997 →
+**5 375**, `xGototb1` 10 053 → 8 606. It costs a little of its own
+prize — `xwBlPage` rises 9 517 → 9 809 because absorb sometimes claims
+the page a later call wanted — for a net −4 053 /Mi, about **1 %** of
+wall at 8 ns.
+
+### What the gates do and do not cover here
+
+`scripts/gate.sh keep` is **GREEN 11/11** on the shipped build (four
+boards boot at 1711/1611/2877/13 427 Mi, four keypad gates, native, the
+op suite, lockstep identical over 249.6 M instructions).
+
+One gap is worth stating rather than leaving implied. **The lockstep gate
+cannot exercise either mechanism**: it runs one guest instruction per TB,
+so `CF_COUNT_MASK` is set on every TB and both `w64_psr_continue` and
+`w64_abs_cross_page` refuse — as call inlining already did in round
+forty. What covers them is the op suite (which is why the new
+`psr/bank_*` tests were added, and its wasm64 serial stream is
+byte-identical to native over 1159 tests) and the four boot gates, whose
+instruction counts land inside their usual bands. A TB-shape change on
+this port needs the op suite and the boots; reading a green lockstep as
+coverage for one is a mistake.
+
+### 3. Rejected: a 64 KB guest page
+
+`W64_PAGEBITS=16` is sound (a guest mapping smaller than the target page
+gets `TLB_INVALID_MASK` and repeats the fill on every access) and it
+would lift every page rule at once — `translator_use_goto_tb`,
+`w64_absorb`, the one-callee-page limit and the A32 `max_insns` bound.
+It is a **boot regression**: on a quiet host, in the same sweep where the
+baseline reached the idle screen in ~2 minutes, the 64 KB leg had not got
+there in five and was abandoned.
+
+The mechanism is the SMC granule. `code_mask` is one bit per 1/256th of
+a page — 16 bytes at 4 KB, 256 at 64 KB — and round thirty-seven already
+measured that a coarser granule collapses the rejection rate ("a 64-bit
+version rejected only 57 % of the stores"). A 64 KB page makes each
+granule 16× coarser *and* each page's TB list 16× longer, and the two
+multiply. A fixed 16-byte granule at any page size is buildable
+(`TB_GMASK_WORDS` sized for the largest page; there are 16× fewer
+PageDescs, so the memory is a wash) but the list walk behind it is not.
+8 KB and 16 KB legs were attempted and are **inconclusive** — the host
+saturated (1-minute load 8 → 37) while they ran, and neither booted.
+
+### 4. Rejected: guessing an indirect branch from env at translation time
+
+`xwBx` — `bx`/`blx` register — is 39 % of the boundaries left, and it
+looked monomorphic: the per-TB lookup slot is refilled 24 times per Mi
+against 36 345 exits. Translation runs with `env` holding the state the
+TB is about to be entered with, so `env->regs[rN]` *is* the target
+whenever the register was set before the TB — a callee's `lr`, a vtable
+slot the caller loaded. Read it, guard it with one compare, carry
+translation on into it; the guess is a hint and the compare is the
+semantics.
+
+Built, and it collects **2.5 % of its target**. With hit and miss counted
+in emitted code: **750 hits against 7 241 misses per Mi — a 9.4 % hit
+rate.** The sites that accept speculation are executed 7 991 times per
+Mi, 22 % of all `xwBx`, so even a *perfect* predictor there is worth ~2 %
+of wall, and this one is worth 0.2 %.
+
+The reason is worth carrying: **a translation-time register snapshot is
+not a branch predictor, because hot code is translated during the boot
+and outlives the phase that translated it.** The slot's 99 % hit rate is
+a *self-updating* cache's; a guess frozen at first translation has
+nothing in common with it. A deopt-and-retranslate tier (one extra
+translation per site, blacklisted after that) would fix the staleness and
+is still only worth ~2 % at this coverage. Reverted; the instrumentation
+it was built on stayed, and that is what found § 5.
+
+### 5. Closed: the guest-register env-traffic row, and why `W64_GDUP` cannot price it
+
+`W64_GDUP=2` — built in round thirty-eight, never run — emits a second
+copy of every global load and write-back. On the video meter it reads
+**3.473 against 3.490 ms/Mi, i.e. nothing**, and that null is about the
+probe, not the row: each copy targets the same address with the same
+value *adjacently*, which is the one redundancy TurboFan's store-to-store
+and load-to-load elimination removes with no alias analysis at all, and
+~96 % of TB entries run TurboFan code. The section that shipped the knob
+anticipated the hazard and prescribed `tbBytes` as the self-check — but
+that check cannot separate "the copies were emitted" from "the copies
+were emitted and then folded".
+
+The row can still be bounded from the census: `tcgGst` + `tcgGld` ÷
+`tbIcount` is 1.34 linear-memory accesses per guest instruction, and an
+L1-resident wasm32 access is about a cycle, so the row is **≤ 13 % of
+wall** and the half a wider TB signature could reach (`gsyncExit` +
+`gsyncBbend` = 52 % of sync demands) is **≤ 7 %** — against a change that
+rewrites TCG's global handling and every TB entry point. A probe that
+duplicated to a *different* hot address (a pad inside `env`, or a small
+wrapping pool) would price it honestly; that is not worth building for a
+≤ 7 % ceiling either.
+
+### What is left, ranked
+
+The census on the shipped build, per Mi, against round forty:
+
+| | round 40 | now |
+|---|---|---|
+| TB boundaries | 100 080 | **88 316** (−11.8 %) |
+| …`xwBx` (`bx`/`blx` reg) | 36 343 | 35 627 |
+| …`xwBlPage` (a call whose callee needs a third page) | — | 9 809 |
+| …`xwOther` (a direct branch that could not chain) | 7 391 | 5 375 |
+| …`xwDefer` | 6 800 | 7 391 |
+| …`xwPsr` | 8 904 | 1 184 |
+| …`goto_tb` chains | 25 368 | 23 172 |
+
+1. **A third tracked page, worth ~5 %.** `xwBl` is now split by reason
+   and it is **98.5 % page** (`xwBlPage` 9 517 of 9 665 before the absorb
+   change, 9 809 after; `xwBlDepth` is *zero* — nesting levels, miss
+   slots and record slots never bind). Each refused call also costs its
+   return, and round forty measured that inlining captures 63 % of the
+   returns of the calls it takes, so the pair is ~16 000 /Mi; the
+   remaining `xwOther` is the same page rule seen from a branch. Two
+   routes: `page_addr[]`/`page_next[]` widened to four with a two-bit
+   tag (`CODE_GEN_ALIGN` is 16, so the bits are there) and `page_lock_pair`
+   generalised; or a side table of (page → TBs with that page as an
+   *extra*), consulted by `tb_invalidate_phys_page_range__locked` and
+   fed by `tlb_protect_code`, which leaves QEMU's own two-page structures
+   alone. The second is smaller and does not touch the page locks.
+2. **`xwDefer` (7 391 /Mi) has never been re-measured since inlining.**
+   `W64_FTMAX` defaults to 3; round thirty-five's "ft4 collects nothing"
+   predates callee inlining, and a conditional branch *inside a callee*
+   now forfeits the return as well as the TB. It is a knob — screen it
+   first, on a quiet host.
+3. `xwBx` at 35 627 /Mi is still the largest single line and § 4 is the
+   only idea anyone has had for it that does not need a profile.
+
+### 6. The closed experiments' instruments, deleted
+
+Fifteen knobs went with the questions they answered. The two mechanisms
+above are **unconditional** — `W64_PSRCONT` and `W64_ABSCROSS` are gone,
+so A/Bing them now means a build, which is the standing rule for a landed
+mechanism whose price is known. The four calibration pads (`W64_LDSTPAD`,
+`W64_CALLPAD`, `W64_LOCALPAD`, `W64_BYTEPAD`), the five-knob inline-TLB
+ceiling family (`W64_TLBDUP`, `W64_TLBCHEAP`, `W64_TLBHIT`, `W64_TLBSIMD`,
+`W64_TLBHOIST`, closed in round thirty-eight), `W64_LC2`, the unsound
+`W64_NOGENBUMP` and this round's inert `W64_GDUP` went with their
+verdicts, which stay in the playbook's REJECTED table and cost model.
+`tools/perf/gdupsweep.sh` went too.
+
+Every bisect switch and every live meter was kept — `W64_XCOUNT`,
+`W64_XWHY`, `W64_LDSTCOUNT`, `W64_LSMCOUNT`, `W64_TBHIST`, `W64_MODBENCH`,
+the `W64_NO*` legs and `W64_LOCKSTEP*`. The line is whether the knob still
+answers a question, not whether it is default-off: `W64_NOSVCINL` is the
+switch that cleared inlining of round forty's lockstep divergence, and
+`W64_INLINE=0` is what priced the boundary in § 1.
+
+`lc2Hit`, `padSink`, `tlbcHit` and `tlbcMiss` now read zero always. The
+counter ABI is positional, so **the slots stay** and the enum is still
+append-only; the header says so at each one. Gate GREEN 11/11 after the
+removal, op suite 1159/1159, lockstep identical at 249 561 088 insns, and
+the video meter reads 3.128/3.162 ms/Mi at `hostBusy` 0.08–0.10 — inside
+the shipped band, as a deletion of default-off paths should be.
+
+## Update (2026-09-21, round forty: the syscall taken inside the TB, callee inlining, 4 KB pages — video `rt` 1.8 → 2.5, +36 %)
+
+Round thirty-nine left video at `rt` 2.04 with a 2.5× gap to real time on
+a phone. This round took the video meter as its only judge and landed
+three things: the guest's SVC no longer leaves the TB, a direct call's
+callee is translated into the caller's TB, and the guest page is 4 KB.
+Every number below is `tools/videobench.mjs` on the same clip and window
+(`mi` 1 499.6–1 501.1 on every leg — identical guest work). The host ran
+at a 1-minute load of 5–25 all night, so legs are compared at matched
+`hostBusy` and the decisive A/Bs are same-binary knob flips. The final
+ABBA of the shipped build against round thirty-nine's, run after the
+gate: **2.488 / 2.463 against 1.683 / 1.817**; the matched-load pair
+(`hostBusy` 0.124 vs 0.128) is 2.463 vs 1.817, **+36 %**, `ms/Mi`
+4.40 → 3.25. `scripts/gate.sh keep` is green 11/11 on the shipped build
+(boots, keys, native, the op-suite at 1156/1156 and lockstep identical).
+
+### 1. The exception round trip was a fifth of the vCPU, and it is gone (+16.2 %)
+
+A `wprof2` profile of the *playing* clip (the `--hold` mode, then
+`PROF_ATTACH`) put **25.4 %** of the vCPU worker in the main module by
+URL, and almost all of that on the SVC path: `cpu_exec_loop` 3.3 %,
+`tcg_qemu_tb_exec` 1.7 %, `cpsr_write` 1.6 %, `arm_rebuild_hflags` 1.6 %,
+`arm_cpu_do_interrupt` 1.5 %, `switch_mode` 1.0 %, the mutex family
+(`bql_lock_impl`, `bql_unlock`, `qemu_mutex_*`, `__pthread_mutex_*`)
+2.4 %, `take_aarch32_exception` 0.7 %, `helper_cpsr_write_eret` 0.6 %,
+`replay_exception` 0.3 %, `arm_get_tb_cpu_state` 0.3 %, `tb_lookup` 0.2 %.
+Round thirty-nine's `W64_EXCNS` timer had bracketed one 52 ns piece of a
+path that costs several hundred; the profile, unusable as a *price*,
+named every piece.
+
+Two patches were built and ABBA'd together (`rt` 2.175 / 2.171 against
+1.898 / 1.843 for the round-39 build — **+16.2 %**, arms disjoint); one
+of them did not survive the gate:
+
+1. ~~**`helper_cpsr_write_eret` took the BQL twice per exception return
+   to walk two hook lists that are empty on any core without a PMU or a
+   GICv3 cpuif**, so walk them only when they are not empty.~~
+   **Reverted.** The lockstep gate (S75, one instruction per TB) diverged
+   at 246 M instructions and the guest exited on an unimplemented
+   CAPCOM register; a knob bisect (`W64_NOSVCINL`, and a temporary
+   `W64_ERETBQL`) pinned it on this patch alone, with the SVC change
+   passing. Those two lock round trips are where the main loop reliably
+   gets the BQL back between exceptions, and the lean deferred release
+   (`bql_unlock_mmio`) makes the vCPU hold it otherwise; the *determinism*
+   of interrupt timing depends on the handoff, not just its cost. The
+   profile priced the pair at ~2.4 % of the vCPU; it stays. The lesson
+   is round 39's in reverse: a lock whose critical section is empty can
+   still be load-bearing as a scheduling point.
+2. **The SVC is taken inside the TB that executed it.** `DISAS_SWI` on
+   wasm64 now calls `helper_svc_inline` → `arm_take_svc_aarch32()`
+   (`target/arm/helper.c`): the `EXCP_SWI` case of
+   `arm_cpu_do_interrupt_aarch32` for a core without EL2/EL3 — vector,
+   mode switch, `take_aarch32_exception`, hooks under the lean BQL pair
+   only if any exist — and the TB continues into the vector through
+   `gen_goto_ptr` with a fully dynamic key (`W64_WHY_SVC`). No
+   `CPU_INTERRUPT_EXITTB` (there is no dispatcher iteration whose
+   jump-patching it would have to stop); a pending interrupt the entry
+   may have unmasked is honoured by kicking `icount_decr.u16.high`, which
+   ends the next TB at its start exactly as `cpu_interrupt()` does. The
+   counters prove the path: `execIter` 2 387 → 28 /Mi, `lookup` (C-side)
+   2 687 → 328, `armIrq` 2 363 → 4 (the IRQs), `excSwi` unchanged at
+   2 360.
+
+### 2. Callee inlining: a `bl` and its `bx lr` are no longer two TB boundaries
+
+The census said calls (66 363 `xwOther`/Mi) and returns (60 607
+`xwBx`/Mi) were 72 % of the 166 834 boundaries, and the absorb notes said
+why a call could not be helped: absorbing a `bl` *skips* the return
+address, so the return can never come back. The new mechanism
+(`target/arm/tcg/translate.c` `w64_inline_call` / `w64_inline_return`,
+default `W64_INLINE=4` levels):
+
+- **A direct, unconditional `bl` sets `lr` and translation carries on at
+  the callee.** Its `bx lr` becomes `brcond(lr != return address) →
+  miss`, and translation resumes at the instruction after the call. The
+  miss path, emitted at the TB's end like a deferred taken path, refunds
+  the prepaid icount and leaves through an ordinary `bx`. A
+  **conditional** `bx lr` is a deferred taken path to the return address
+  (after the same compare), which `w64_try_join` binds when the
+  unconditional return brings translation there.
+- **The callee's page takes the TB's second-page slot.** A TB already
+  tracks two pages for a linear crossing; an inlined TB (`w64_inl` in
+  `translation-block.h`) uses page 1 for the callee's page instead, keeps
+  its own linear range on page 0, and records the *hull* of the callee
+  bytes it translated on each page (`w64_inl_lo/hi`). `tb_page_span`
+  invalidates by those hulls; `tb_lookup_cmp` verifies the callee page's
+  mapping on every hash lookup, with a nonfault probe so an unmapped
+  callee page is a mismatch rather than a premature prefetch abort; the
+  translator fetches page 1 from `w64_page1_base` instead of the page
+  after the entry. Chains *into* such a TB are allowed (refusing them
+  would have sent every `goto_tb` entry through the dispatcher) and are
+  dropped by `tb_unlink_inlined()` from the two TLB-flush sites, which is
+  where a mapping can change — `keyGenPage`/`keyGenFlush` are 0 /Mi at
+  steady state. Callees on a third page, in the other instruction set,
+  in an IT block, under single-step or an exact-count TB, or whose return
+  address is off the current page, are refused (`inlRefuse`, `inlNo*`).
+- **The A32 instruction bound follows the stream.**
+  `arm_tr_init_disas_context` caps a TB at the instructions left on its
+  *entry* page; with callee instructions charged to that cap, 153 of 276
+  inlined callees in one window ended on `max_insns`. `w64_inl_rebound`
+  re-bounds from the callee's page on a call and from the return address
+  on a return, never past the TB's original cap.
+- **Absorb rules inside a callee.** Skipped bytes cost nothing there (the
+  hull only covers translated instructions), so a forward `b` may go
+  anywhere on the callee's page and a backward one anywhere below
+  everything translated on it; backward *into* translated code is a loop
+  and stays refused.
+- **Self-modifying code keeps its semantics, per stream.** ARM is not a
+  precise-SMC target: the TB a store just patched runs to completion on
+  its old code, and `tests/tcg-isa` pins that ("smc/self"). Inlining
+  widened "the TB" to cover `str; bl callee`, and the op-suite's
+  `smc/cross_*` tests caught the callee's old bytes running after the
+  store. Each inlined callee now leaves a record in the code buffer
+  behind the unwind data (`W64InlRec`: its instruction-index range and
+  byte hull); when a store hits the TB it is executing, the invalidation
+  (`tb-maint.c w64_inl_cross_stream`) asks which stream the store is in
+  and which stream owns the patched bytes, and if they differ does what a
+  precise-SMC target does: restores to the store and forces it to run
+  alone in a one-instruction TB, after which the code is translated from
+  the patched bytes. (Resuming *after* the store was the first attempt
+  and skipped it: `notdirty_write` unwinds before the store has landed.)
+  A stream patching itself keeps the same-TB rule, so `smc/self` still
+  passes with its function inlined. `inlSmcResume` counts it.
+- **Chains into inlined TBs are dropped from a list, not a walk.** The
+  first version walked every TB on each TLB page flush; the lockstep
+  boot, which runs one instruction per TB and so has millions of them,
+  crawled to a standstill at 246 M instructions. `w64_inl_list_add`
+  records the inlined TBs with a second page at link time,
+  `tb_unlink_inlined` walks only those, and `tb_flush` clears the list.
+
+The census after inlining alone: boundaries 166 834 → 104 456 /Mi,
+`xwBx` 60 607 → 38 075, `xwOther` 66 363 → 17 080 + 12 135 `xwBl`
+(calls refused). `W64_INLLOG=1` prints every decision, and the `INL end`
+line says why a TB ended inside a callee; that trace is what found the
+`max_insns` cap and the conditional returns.
+
+### 3. Two bugs the inlining exposed, and what they say about the port
+
+**`CF_PCREL` is off on wasm64 now.** Under it the unwind data holds a
+page *offset* that `restore_state_to_opc` completes from the page
+`cpu_R[15]` holds — which cannot name an instruction on a callee's page,
+and no delta scheme survives a PC store earlier in the same instruction.
+Round 0096 had measured the flag itself as noise (−0.7 %, +2 % lookup
+misses) on a firmware that maps its code once; same-binary legs here read
+2.055 / 2.065 for off / on. `W64_PCREL=1` restores it, without inlining.
+
+**The clock a device saw must not be un-done.** The first inlining build
+hung the boot: the vCPU spun in `rtc_io_read` with virtual time 32 ns
+*behind* the RTC's last sync. A ring of RTC syncs with the icount state
+gave the mechanism: on wasm a mid-TB device access does not rewind the TB
+(`cputlb.c io_clock_window`), it sets `can_do_io` and lets the callback
+read a clock that counts the whole TB — accepted as "at most one TB
+ahead". A deferred exit then *refunded* the unexecuted instructions,
+moving the clock backwards past what the RTC had recorded, and
+`rtc_advance` walked 2⁶⁴ ticks. The hazard predates inlining (a device
+access followed by a taken deferred branch in one TB), inlining just made
+it routine. `w64_refund` now refunds only when `can_do_io` is clear —
+the translator clears it before the first instruction and sets it before
+the last, so at any deferred exit it means exactly "the clock was
+observed in this TB" — and `rtc_sync` clamps a negative interval. Time
+runs one TB ahead in that case, which is the deviation the design
+already allows; the instruction count stays exact.
+
+**A capture that drops lines looks like a compiler that drops ops.** The
+op dump of the hanging TB, read through the page console, was missing
+its `goto_ptr` ops; a count in C (`nb_ops`, then a walk of `tcg_ctx->ops`)
+found all 14 present. The console forwarder loses lines under a burst.
+Count in C before believing a captured listing.
+
+### 4. 4 KB guest pages (`W64_PAGEBITS=12` is now the default)
+
+The firmware maps only 1 MB sections — `fillLarge == tlbFill` in every
+window ever measured — so ARMv5's 1 KB tiny-page default buys nothing
+and costs every page rule: with inlining on, the dominant reason a callee
+ended its TB was a `b` to, or a fall into, its *next* page. The existing
+knob (board.c `minimum_page_bits` + cpu.c `pagebits`, sound either way
+because a smaller guest page than the target's takes the slow path) now
+defaults to 12. Same-binary legs at matched `hostBusy`: 4 KB + inlining
+is **18–19 % faster than inlining off**, and 4 KB beats 1 KB by ~8 % with
+inlining on. On J2ME (game 1, four legs under a 9–13 host load) it is a
+wash within the noise; round 27's "+7 % slower" was never a verdict and
+that workload's SMC concern did not materialise.
+
+Census on the shipped configuration, per Mi, against round thirty-nine:
+
+| | round 39 | now |
+|---|---|---|
+| TB boundaries | 166 834 | **100 080** (−40 %) |
+| …`bx`/`blx reg` (returns) | 60 607 | 36 343 |
+| …direct branches refusing a chain | 66 363 | 7 391 (+ 9 665 refused `bl`) |
+| …`goto_tb` chains | 22 490 | 25 368 |
+| `lookup` (helper) | 2 683 | 61 |
+| `execIter` | 2 387 | 28 |
+| `tlbFill` | 1.12 | 0.27 |
+| `slowMiss` | 29.6 | 19.8 |
+| guest insns per TB entry | 6.0 | 10.0 |
+
+### What is left, ranked
+
+1. **36 343 returns per Mi still exit.** `W64_INLLOG` + the boot/playback
+   trace (`--log "INL "`) names the callees that never return in-TB. The
+   remaining reasons are the nested `bl` past `W64_INLINE` levels, tail
+   calls (`b` to another page), syscall stubs (`svc` ends the TB by
+   nature), and `bx rN` indirect calls. A **third tracked page** would
+   lift the "one callee page" rule; it touches `page_addr[]`,
+   `tb_link_page`, the page locks and `PAGE_FOR_EACH_TB`.
+2. **`msr cpsr_c` (8 900 /Mi) now ends inlined callees**, not just TBs.
+   Continuing past it under a runtime hflags/thumb compare is the deferred
+   machinery again (round 28 priced it at 1.2 % as an exit; inside a
+   callee it also forfeits the return).
+3. The C third is now under 10 % of the vCPU; everything else is the
+   emitted code and its boundaries.
 
 ## Update (2026-09-20, round thirty-nine: a meter for video playback, and the exception plumbing it found — +4.9 %)
 

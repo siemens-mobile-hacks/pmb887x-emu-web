@@ -98,6 +98,10 @@ class WasmSide {
     ].join("&");
     this.browser = await chromium.launch({ headless: true });
     this.page = await this.browser.newPage({ viewport: { width: 1280, height: 900 } });
+    if (process.env.LS_CONSOLE) {
+      const cf = fs.openSync(path.join(this.dir, "console.log"), "w");
+      this.page.on("console", (m) => fs.writeSync(cf, m.text().slice(0, 300) + "\n"));
+    }
     this.page.on("pageerror", (e) => {
       this.errTail = (this.errTail || "") + String(e).slice(0, 400) + "\n";
     });

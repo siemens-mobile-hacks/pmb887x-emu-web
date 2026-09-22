@@ -95,7 +95,7 @@ if (outFile) {
 const result = (serial.match(/^# result: pass=(\d+) fail=(\d+)/m) || [])[0] || null;
 const notOk = (serial.match(/^not ok /gm) || []).length;
 if (qemuLog.length) {
-  console.error(`[tcgisa] qemu stderr tail:\n  ` + qemuLog.slice(-6).join("\n  "));
+  console.error(`[tcgisa] qemu stderr tail:\n  ` + qemuLog.slice(-(Number(process.env.TCGISA_TAIL) || 6)).join("\n  "));
 }
 await browser.close();
 
