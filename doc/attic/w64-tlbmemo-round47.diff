@@ -1,0 +1,443 @@
+diff --git a/include/qemu/wasm-diag.h b/include/qemu/wasm-diag.h
+index 27832533ef..2f3d445125 100644
+--- a/include/qemu/wasm-diag.h
++++ b/include/qemu/wasm-diag.h
+@@ -798,6 +798,16 @@ enum {
+     WASM_DIAG_XW_PG_MORE,    /* ...and would still be refused by a third:
+                               * the TB had already asked for four pages */
+ 
++    /*
++     * The inline TLB page memo (tcg/wasm64 w64_memo_*): the page and addend
++     * of the last probe hit, held in TB locals until a call or a slow path
++     * could have changed the TLB.  The first two count translations, the
++     * third executions (W64_LDSTCOUNT=2 only, so it divides by ldstExec).
++     */
++    WASM_DIAG_MEMO_CHK,      /* memops emitted with a memo check in front */
++    WASM_DIAG_MEMO_SET,      /* memops whose probe hit refreshes a memo */
++    WASM_DIAG_MEMO_HIT,      /* executions the memo served without a probe */
++
+     WASM_DIAG_N
+ };
+ 
+diff --git a/tcg/wasm64/tcg-target.c.inc b/tcg/wasm64/tcg-target.c.inc
+index 60dd5f8735..1dce01b49e 100644
+--- a/tcg/wasm64/tcg-target.c.inc
++++ b/tcg/wasm64/tcg-target.c.inc
+@@ -71,6 +71,12 @@ static __thread struct {
+     bool nested;
+     bool selfloop;
+ 
++    /* TLB page memo (w64_memo_scan): the fast_ofs each memo is claimed
++     * for (W64_MEMO_NONE = unclaimed), and whether one may hold a page
++     * here -- i.e. a site that sets it was emitted since the last call */
++    int32_t memo_ofs[2];
++    bool memo_live[2];
++
+     /* register representation: bit r set = value in the i64 local */
+     uint32_t rep;
+ } W;
+@@ -183,7 +189,9 @@ static void w64_callidx(TCGContext *s, uint8_t imp, uint8_t uimp)
+  *   3 .. 3+NB-1                 i32 reg locals (+ $bp at 3+NB)
+  *   3+NB+1 .. 3+NB+NB           i64 reg locals
+  *   3+2*NB+1                    i32 scratch ($scr32)
+- *   3+2*NB+2..+4                three i64 scratch locals              */
++ *   3+2*NB+2..+4                three i64 scratch locals
++ *   3+2*NB+5..+8                TLB page memo: tag, addend for loads,
++ *                               then for stores                       */
+ #define W64_P_ENV     0
+ #define W64_P_SP      1
+ #define W64_P_TP      2
+@@ -194,6 +202,9 @@ static void w64_callidx(TCGContext *s, uint8_t imp, uint8_t uimp)
+ #define W64_L_SCR0    (W64_L_SCR32 + 1)
+ #define W64_L_SCR1    (W64_L_SCR0 + 1)
+ #define W64_L_SCR2    (W64_L_SCR1 + 1)   /* ld/st addr snapshot */
++#define W64_L_MTAG(k) (W64_L_SCR2 + 1 + 2 * (k))   /* k: 0 = ld, 1 = st */
++#define W64_L_MADD(k) (W64_L_SCR2 + 2 + 2 * (k))
++#define W64_N_SCR64   7
+ 
+ /* type-matched scratch local */
+ static int w64_scr(TCGType t)
+@@ -1475,6 +1486,7 @@ static void tcg_out_exit_tb(TCGContext *s, uintptr_t arg)
+ 
+ static bool w64_xcount(void);
+ static void w64_diag_bump(TCGContext *s, int idx);
++static void w64_memo_kill(TCGContext *s, bool static_clear);
+ 
+ /* the chain transition itself: $scr0 holds the successor's table index */
+ static void w64_chain_go(TCGContext *s)
+@@ -1808,6 +1820,9 @@ static void tcg_out_call(TCGContext *s, const tcg_insn_unit *target,
+         w64_local_set(s, W64_L32(TCG_REG_R0));
+         W.rep &= ~(1u << TCG_REG_R0);
+     }
++
++    /* any helper may have flushed or refilled the TLB */
++    w64_memo_kill(s, true);
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -2012,14 +2027,181 @@ static void w64_tlb_probe(TCGContext *s, int al, const struct w64_tlb_ctx *tc)
+     w64_u8(s, 0x51);                        /* i64.eq */
+ }
+ 
+-/* push [addr + entry->addend] (i64) for the fast access; @al as above */
+-static void w64_tlb_haddr(TCGContext *s, int al)
++/*
++ * The TLB page memo.  A guest memop's probe costs four dependent-ish loads
++ * (mask, table, comparator, addend), and a run of memops mostly probes the
++ * page the last one probed: every register after the first of an ldm/stm
++ * (38.5 % of the video workload's memops), a stack frame, a struct.  So a
++ * probe hit leaves its page and addend in two TB locals per access kind,
++ * and a later site of the same kind and mmu index tests its address
++ * against that page first -- one sub/and and a compare -- and on a match
++ * adds the remembered addend without touching the TLB.
++ *
++ * Soundness rests on who can change a TLB entry while a TB runs: only the
++ * vCPU thread (cross-thread flushes are queued with async_run_on_cpu and
++ * run between TBs), and only inside a helper -- a call op, or a memop's
++ * own slow path.  Both kill every memo on the way back, so a memo is
++ * valid wherever control reaches it, whatever path it took; labels and
++ * the guest-loop back-edge need no work.  The kinds stay separate because
++ * addr_read and addr_write are separate permissions (a clean-for-reads
++ * page can still be write-protected for SMC).  A fresh wasm local reads 0,
++ * which is page 0's tag, so the prologue starts every memo at
++ * W64_MEMO_BAD: its high bit makes `addr - tag` huge and `addr & mask`
++ * unequal for every zero-extended 32-bit address.
++ *
++ * W64_TLBMEMO=0 turns it off (A/B only).
++ */
++#define W64_MEMO_NONE   INT32_MIN           /* memo_ofs: unclaimed */
++#define W64_MEMO_BAD    INT64_MIN           /* tag: matches no address */
++
++static bool w64_tlbmemo(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("W64_TLBMEMO");
++        on = e ? atoi(e) != 0 : 1;
++    }
++    return on != 0;
++}
++
++/* A site the memo can test with one compare: any alignment with no page
++ * straddle term, or a straddle term with no alignment bits. */
++static bool w64_memo_shape(const struct w64_tlb_ctx *tc)
++{
++    unsigned a_mask = tc->tlb_mask & ((1u << TARGET_PAGE_BITS) - 1);
++
++    return !(a_mask && tc->adj);
++}
++
++/*
++ * Claim each kind's memo for the first mmu index its eligible sites use,
++ * and only when at least two sites share it -- a lone site has nobody to
++ * serve.  A TB whose control can come back to an earlier site (the guest
++ * loop, or the loop scheme's backward branches) starts live, since the
++ * previous trip may have set the memo.
++ */
++static void w64_memo_scan(TCGContext *s)
++{
++    unsigned n[2] = { 0, 0 };
++    TCGOp *op;
++    int k;
++
++    W.memo_ofs[0] = W.memo_ofs[1] = W64_MEMO_NONE;
++    W.memo_live[0] = W.memo_live[1] = false;
++    if (!w64_tlbmemo()) {
++        return;
++    }
++    QTAILQ_FOREACH(op, &s->ops, link) {
++        struct w64_tlb_ctx tc;
++        bool is_ld = op->opc == INDEX_op_qemu_ld;
++
++        if (!is_ld && op->opc != INDEX_op_qemu_st) {
++            continue;
++        }
++        if (!w64_tlb_setup(&tc, s, op->args[2], is_ld) ||
++            !w64_memo_shape(&tc)) {
++            continue;
++        }
++        k = !is_ld;
++        if (W.memo_ofs[k] == W64_MEMO_NONE) {
++            W.memo_ofs[k] = tc.fast_ofs;
++        }
++        n[k] += W.memo_ofs[k] == tc.fast_ofs;
++    }
++    for (k = 0; k < 2; k++) {
++        if (n[k] < 2) {
++            W.memo_ofs[k] = W64_MEMO_NONE;
++        }
++        W.memo_live[k] = W.memo_ofs[k] != W64_MEMO_NONE &&
++                         (W.selfloop || !W.nested);
++    }
++}
++
++/* the memo a site uses, or -1 */
++static int w64_memo_kind(const struct w64_tlb_ctx *tc, bool is_ld)
++{
++    int k = !is_ld;
++
++    if (W.memo_ofs[k] != tc->fast_ofs || !w64_memo_shape(tc)) {
++        return -1;
++    }
++    return k;
++}
++
++/* Invalidate every claimed memo.  @static_clear: this code runs on every
++ * path through it (a call), so later sites need not test until a probe
++ * sets the memo again; a slow-path arm leaves the static state alone,
++ * because the hit arm beside it did not kill anything. */
++static void w64_memo_kill(TCGContext *s, bool static_clear)
++{
++    int k;
++
++    for (k = 0; k < 2; k++) {
++        if (W.memo_ofs[k] == W64_MEMO_NONE) {
++            continue;
++        }
++        w64_const_i64(s, W64_MEMO_BAD);
++        w64_local_set(s, W64_L_MTAG(k));
++        if (static_clear) {
++            W.memo_live[k] = false;
++        }
++    }
++}
++
++/* push (i32) "the address in $scr2 is on memo @k's page and needs no
++ * straddle or alignment slow path", with the same answer the probe's
++ * compare would give against that page's entry */
++static void w64_memo_test(TCGContext *s, const struct w64_tlb_ctx *tc, int k)
++{
++    unsigned a_mask = tc->tlb_mask & ((1u << TARGET_PAGE_BITS) - 1);
++
++    w64_local_get(s, W64_L_SCR2);
++    if (a_mask) {
++        /* adj == 0: an aligned access cannot leave its page */
++        w64_const_i64(s, (int64_t)tc->tlb_mask);
++        w64_u8(s, 0x83);                    /* i64.and */
++        w64_local_get(s, W64_L_MTAG(k));
++        w64_u8(s, 0x51);                    /* i64.eq */
++    } else {
++        /* first byte on the page and last byte (addr + adj) too */
++        w64_local_get(s, W64_L_MTAG(k));
++        w64_u8(s, 0x7d);                    /* i64.sub */
++        w64_const_i64(s, (int64_t)((1u << TARGET_PAGE_BITS) - 1 - tc->adj));
++        w64_u8(s, 0x58);                    /* i64.le_u */
++    }
++}
++
++/* on a probe hit: remember the page (the addend is tee'd by the access) */
++static void w64_memo_set_tag(TCGContext *s, int k)
++{
++    w64_local_get(s, W64_L_SCR2);
++    w64_const_i64(s, (int64_t)(int)TARGET_PAGE_MASK);
++    w64_u8(s, 0x83);                        /* i64.and */
++    w64_local_set(s, W64_L_MTAG(k));
++}
++
++/* How the fast arm finds its addend. */
++enum {
++    W64_ADD_ENTRY,          /* load it from the probed entry ($scr0) */
++    W64_ADD_ENTRY_SET,      /* ...and tee it into the memo */
++    W64_ADD_MEMO,           /* read the memo */
++};
++
++/* push [addr + addend] (i64) for the fast access; @al as above */
++static void w64_tlb_haddr(TCGContext *s, int al, int how, int k)
+ {
+     w64_local_get(s, al);
+-    w64_local_get(s, W64_L_SCR0);
+-    w64_wrap_addr(s);
+-    w64_u8(s, 0x29);                        /* i64.load */
+-    w64_memarg(s, 3, 24);                   /* addend */
++    if (how == W64_ADD_MEMO) {
++        w64_local_get(s, W64_L_MADD(k));
++    } else {
++        w64_local_get(s, W64_L_SCR0);
++        w64_wrap_addr(s);
++        w64_u8(s, 0x29);                    /* i64.load */
++        w64_memarg(s, 3, 24);               /* addend */
++        if (how == W64_ADD_ENTRY_SET) {
++            w64_local_tee(s, W64_L_MADD(k));
++        }
++    }
+     w64_u8(s, 0x7c);                        /* i64.add */
+     w64_wrap_addr(s);
+ }
+@@ -2043,9 +2225,9 @@ static const uint8_t w64_fast_st[2][16] = {
+ /* the fast arm of a guest load/store, factored out so a second check in
+  * front of the inline probe can emit it too */
+ static void w64_ld_fast(TCGContext *s, TCGType type, TCGReg data,
+-                        MemOp mop, unsigned s_bits)
++                        MemOp mop, unsigned s_bits, int how, int k)
+ {
+-    w64_tlb_haddr(s, W64_L_SCR2);
++    w64_tlb_haddr(s, W64_L_SCR2, how, k);
+     w64_u8(s, w64_fast_ld[type == TCG_TYPE_I64][mop & MO_SSIZE]);
+     w64_memarg(s, s_bits, 0);
+     if (type == TCG_TYPE_I32) {
+@@ -2055,9 +2237,10 @@ static void w64_ld_fast(TCGContext *s, TCGType type, TCGReg data,
+     }
+ }
+ 
+-static void w64_st_fast(TCGContext *s, TCGReg data, bool q, unsigned s_bits)
++static void w64_st_fast(TCGContext *s, TCGReg data, bool q, unsigned s_bits,
++                        int how, int k)
+ {
+-    w64_tlb_haddr(s, W64_L_SCR2);
++    w64_tlb_haddr(s, W64_L_SCR2, how, k);
+     if (q) {
+         w64_get_i64(s, data);
+     } else {
+@@ -2075,7 +2258,8 @@ static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
+     uint8_t p[4] = { 1, 1, 0, 1 };
+     uint8_t imp, uimp, lt, ut;
+     struct w64_tlb_ctx tc;
+-    bool fast;
++    bool fast, chk;
++    int mk;
+     unsigned s_bits = mop & MO_SIZE;
+ 
+     tcg_debug_assert(type == TCG_TYPE_I32 || type == TCG_TYPE_I64);
+@@ -2096,6 +2280,8 @@ static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
+         (uint32_t)(uintptr_t)qemu_ld_helpers[mop & MO_SSIZE], ut);
+ 
+     fast = w64_tlb_setup(&tc, s, oi, true);
++    mk = fast ? w64_memo_kind(&tc, true) : -1;
++    chk = mk >= 0 && W.memo_live[mk];
+     wasm_diag_stat[WASM_DIAG_LDST_GEN]++;
+     if (!fast) {
+         wasm_diag_stat[WASM_DIAG_LDST_GEN_NOPROBE]++;
+@@ -2111,9 +2297,24 @@ static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
+          * make the arm emitted second read a stale local. */
+         w64_get_i64(s, addr);
+         w64_local_set(s, W64_L_SCR2);
++        if (chk) {
++            wasm_diag_stat[WASM_DIAG_MEMO_CHK]++;
++            w64_memo_test(s, &tc, mk);
++            w64_blk_push(s, W64_BLK_IF, -1);
++            if (w64_ldst_count() >= 2) {
++                w64_diag_bump(s, WASM_DIAG_MEMO_HIT);
++            }
++            w64_ld_fast(s, type, data, mop, s_bits, W64_ADD_MEMO, mk);
++            w64_u8(s, 0x05);                /* else */
++        }
+         w64_tlb_probe(s, W64_L_SCR2, &tc);
+         w64_blk_push(s, W64_BLK_IF, -1);
+-        w64_ld_fast(s, type, data, mop, s_bits);
++        if (mk >= 0) {
++            wasm_diag_stat[WASM_DIAG_MEMO_SET]++;
++            w64_memo_set_tag(s, mk);
++        }
++        w64_ld_fast(s, type, data, mop, s_bits,
++                    mk >= 0 ? W64_ADD_ENTRY_SET : W64_ADD_ENTRY, mk);
+         w64_u8(s, 0x05);                    /* else */
+     }
+ 
+@@ -2137,10 +2338,17 @@ static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
+     } else {
+         w64_set_i64(s, data);
+     }
++    w64_memo_kill(s, !fast);
+ 
+     if (fast) {
+         w64_blk_pop(s);                     /* end (if/else) */
+     }
++    if (chk) {
++        w64_blk_pop(s);                     /* end (memo if/else) */
++    }
++    if (mk >= 0) {
++        W.memo_live[mk] = true;
++    }
+ }
+ 
+ static const TCGOutOpQemuLdSt outop_qemu_ld = {
+@@ -2157,7 +2365,8 @@ static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
+     uint8_t p[5] = { 1, 1, q, 0, 1 };
+     uint8_t imp, uimp, lt, ut;
+     struct w64_tlb_ctx tc;
+-    bool fast;
++    bool fast, chk;
++    int mk;
+     unsigned s_bits = mop & MO_SIZE;
+ 
+     /* helper signature: (env*, uint64_t addr, val, uint32_t oi,
+@@ -2172,6 +2381,8 @@ static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
+         (uint32_t)(uintptr_t)qemu_st_helpers[s_bits], ut);
+ 
+     fast = w64_tlb_setup(&tc, s, oi, false);
++    mk = fast ? w64_memo_kind(&tc, false) : -1;
++    chk = mk >= 0 && W.memo_live[mk];
+     wasm_diag_stat[WASM_DIAG_LDST_GEN]++;
+     if (!fast) {
+         wasm_diag_stat[WASM_DIAG_LDST_GEN_NOPROBE]++;
+@@ -2182,9 +2393,24 @@ static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
+     if (fast) {
+         w64_get_i64(s, addr);               /* snapshot (see ld above) */
+         w64_local_set(s, W64_L_SCR2);
++        if (chk) {
++            wasm_diag_stat[WASM_DIAG_MEMO_CHK]++;
++            w64_memo_test(s, &tc, mk);
++            w64_blk_push(s, W64_BLK_IF, -1);
++            if (w64_ldst_count() >= 2) {
++                w64_diag_bump(s, WASM_DIAG_MEMO_HIT);
++            }
++            w64_st_fast(s, data, q, s_bits, W64_ADD_MEMO, mk);
++            w64_u8(s, 0x05);                /* else */
++        }
+         w64_tlb_probe(s, W64_L_SCR2, &tc);
+         w64_blk_push(s, W64_BLK_IF, -1);
+-        w64_st_fast(s, data, q, s_bits);
++        if (mk >= 0) {
++            wasm_diag_stat[WASM_DIAG_MEMO_SET]++;
++            w64_memo_set_tag(s, mk);
++        }
++        w64_st_fast(s, data, q, s_bits,
++                    mk >= 0 ? W64_ADD_ENTRY_SET : W64_ADD_ENTRY, mk);
+         w64_u8(s, 0x05);                    /* else */
+     }
+ 
+@@ -2207,10 +2433,17 @@ static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
+     w64_const_i64(s, ra);
+     w64_u8(s, 0x10);
+     w64_callidx(s, imp, uimp);
++    w64_memo_kill(s, !fast);
+ 
+     if (fast) {
+         w64_blk_pop(s);                     /* end (if/else) */
+     }
++    if (chk) {
++        w64_blk_pop(s);                     /* end (memo if/else) */
++    }
++    if (mk >= 0) {
++        W.memo_live[mk] = true;
++    }
+ }
+ 
+ static const TCGOutOpQemuLdSt outop_qemu_st = {
+@@ -3141,6 +3374,7 @@ static void tcg_out_tb_start(TCGContext *s)
+     w64_ir_reset(nlabels);
+     w64_scan_labels(s);
+     w64_scan_ldst_runs(s);
++    w64_memo_scan(s);
+     w64_batch_begin_tb();
+ 
+     /* lazy one-time init of the inline-accounting address table
+@@ -3203,7 +3437,7 @@ static void tcg_out_tb_start(TCGContext *s)
+     w64_uleb(s, TCG_TARGET_NB_REGS);        /* i64: regs */
+     w64_u8(s, 0x7e);
+     w64_u8(s, 0x01); w64_u8(s, 0x7f);       /* i32: $scr32 */
+-    w64_u8(s, 0x03); w64_u8(s, 0x7e);       /* i64: $scr0..$scr2 */
++    w64_u8(s, W64_N_SCR64); w64_u8(s, 0x7e); /* i64: $scr0..$scr2, memo */
+ 
+     /* prologue: per-TB-entry accounting, inline */
+     if (w64_tbhist_on()) {
+@@ -3283,6 +3517,9 @@ static void tcg_out_tb_start(TCGContext *s)
+         w64_blk_pop(s);
+     }
+ 
++    /* a fresh local reads 0, which is page 0's tag: start invalid */
++    w64_memo_kill(s, false);
++
+     w64_emit_loop_head(s);
+ }
+ 
