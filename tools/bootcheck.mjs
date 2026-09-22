@@ -50,6 +50,10 @@ const BOARDS = [
   { id: "s75", file: "s75_working20060710172101.bin" },
   { id: "el71", file: "rr_ff_el71_stock.bin" },
   { id: "ke800", file: "KE800-v11b.bin", efa: "KE800-v11b.bin.cfi-efa", minInsns: 1.5e9 },
+  // KE970 boots to its idle screen at ~1.62 G insns (~50 s wall on a
+  // quiet host - uibench's quiet detector), same LG L1-sync waits as
+  // KE800; 1.2 G leaves margin for gate legs that share the host.
+  { id: "ke970", file: "KE970v10d.bin", efa: "KE970v10d.bin.cfi-efa", minInsns: 1.2e9 },
   // the only SGOLD (PMB8875) board here, and the only one that exercises
   // hw/arm/pmb887x/dif_v1.c at all - every other board is PMB8876/dif_v2
   { id: "cx70", file: "CX70_FW56_clean.bin" },

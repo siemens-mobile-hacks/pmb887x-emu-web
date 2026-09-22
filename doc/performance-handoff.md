@@ -2517,6 +2517,79 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 ## Round log (newest first)
 
+## Update (2026-09-22, round forty-four: KE970 — the capcom model was a stub; boot hangs are device-model gaps, not engine ones)
+
+The new LG board's boot hangs (~30–50 % of wasm boots freeze forever)
+are **not** a wasm-engine problem: native qemu on the same source dies
+in a firmware panic at the same wait.  What was found and fixed:
+
+**Characterization (wasm, dist-jit, this session).**  KE970 boots to
+its idle screen at ~1.62–1.65 G insns (~50 s wall on a quiet host —
+LG icount=none, so `rt=off` is a no-op there and the firmware's own
+timer waits pace the boot).  Idle: 1.3 MIPS, `mlWake` 5 819/s.  Menu
+(open/close every 2 s): 19.6 MIPS, fps 3.2.  uibench/workbench/bootcheck
+rows are in (`ke970` boots PASS the bootcheck gate at `minInsns=1.2e9`,
+verified at host load 20).
+
+**Hang class 1: capcom CC compare (fixed).**  The failing boots' last
+console line was `[pmb887x-capcom]: unknown reg access: 5C` — CC3.
+The capcom model was a stub: `capcom_update_state()` was literally
+`// TODO`, no counters, no compares, CC0..CC7 unimplemented.  The
+firmware sets up T1+CC3 (CC3=0x7FFF, T1 preset 0xFEC0, `CC3_SRC` SRE,
+T1R run) and waits for the compare interrupt.  Implemented now
+(`02ada89fe6`): T0/T1 up-counters at fsys/RMC (26 MHz here) with TnREL
+reload, OVF flags, live Tn reads, CC0..CC7 storage, compare interrupts
+per CCMx ACC/MOD, edge captures latch the counter (the scroll wheel's
+CC6 capture now works), GPTU-style round-up deadlines, a `cgu` link.
+Verified live: T0 free-runs at 397 wraps/s, engine logs `[ON]` at
+26 MHz.  **Native proof**: pre-fix 4/5 boots died in the firmware
+panic `sorry died at A2649Dxx` right after the CC3 read; post-fix
+0/5 die there.
+
+**Hang class 2: L1-phase waits (open).**  Wasm boots also hang
+silently at 16 M / 98 M / 104 M / 141 M / 155 M / 192 M insns —
+different points, same shape: vCPU halted forever, `wasm_diag`
+deltas show *nothing* ticking (not even `mlWake`), TPU IRQ1 keeps
+firing every GSM frame but the vCPU never services it, and the
+lost-wake canary added to `rr_wait_io_event` never fires (the
+interrupt is never raised into the CPU, not lost on the way to
+sleep).  With capcom fixed, **native** boots die deterministically
+(5/5) in `sorry died at 00004B44 LR A27D0A88` — a deliberate L1
+assert, with the TPU frame scheduler alive to the last frame (TPU_RAM
+uploads, SRC1 acks, VIC threshold dance all healthy in the trace).
+So the remaining layer is the GSM L1 protocol — the DSP/LLE side and
+the PMB6272 RF stub (a pure SSI stub that answers every telegram with
+0) — and it behaves differently at native speed than at wasm speed.
+That is alula's device-model territory; the traces to resume from are
+`/tmp/nat-trace.log` (native, 7 863 lines, TPU+GPTU+VIC IO+LOG) and
+the `/tmp/ke970-hunt-*.log` series.
+
+**Traps caught on the way.**
+- `build/qemu-native` was stale since round 40: `arm_take_svc_aarch32`
+  lived under `CONFIG_TCG_WASM64` while `helper_svc_inline` needs it on
+  every target — **every native link since the svc-in-TB series
+  failed**, and the gate's `native` tier had been PASSing on the stale
+  Sep-20 binary.  Fixed (`02ada89fe6`); native builds again.
+- `build-native.sh` reads `versions.env` and force-checks-out both the
+  submodule and the worktree to `QEMU_PMB887X_REV` — with uncommitted
+  device-model work in `qemu/` this can eat it (it refused this time
+  only because the working tree was dirty).  Commit before building
+  native.
+- The trace channel names for `PMB887X_TRACE_IO/LOG` live in
+  `trace_common.c`'s table (`capcom`, `vic`, `tpu`, `gptu`, …);
+  `qemu_log` output reaches the page console on wasm and `-D file`
+  natively.
+
+**Perf meters while here.**  The uibench ke970 baseline (idle 1.3 MIPS
+/ menu 19.6 MIPS / fps 3.2) and the `W64_TBSTATS=0` ceiling probe legs
+ran but the `notb` legs cannot use the insn-rate quiet detector (the
+counter is off by design) — re-run them with `--settle 75`.  The two
+early baseline legs are the honest ones (`uib-base-1/2.log`).
+
+**Not measured (blocked on a quiet host all afternoon — co-tenant at
+load 15–50):** the KE970 boot/steady-state A/B after the capcom fix,
+and the queued video-meter screens (`W64_FTMAX=4`, `W64_NOPCC=1`).
+
 ## Update (2026-09-22, round forty-three: the chain widened to every fetched page — taken; round-39's ghost baseline caught)
 
 **The round-42 lever is in.** The soundness question that blocked it is
