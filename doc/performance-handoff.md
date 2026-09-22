@@ -328,7 +328,7 @@ Rows are independent measurements taken in different rounds and are
 | whole lookup path | ~1–2 % | counter census | ~solved; see the pcc item |
 | notdirty stores | **5.5 % ± 2.0 % catalogue-wide; 6.5 % ± 1.0 % on game 5, 15.5 % on its longest chains** | 10 counterbalanced pairs over 5 titles + 6 on game 5, `W64_NOSMCMASK` | **collected — `code_mask`, round thirty-seven**; the old "~0.5 %, structural" reading was a census that never counted the 6–67-TB list walk inside each call |
 | global next-TB cache, **emitted** probe | **worth ~3 % (removing it costs that)** | `pcc_on`/`pcc_off` A/B, 2026-09-17 | **closed — keep it**; `lookup` ×8.9 without it |
-| global next-TB cache, **C-side** re-probe | 0.1–0.35 % | counter census | open, deletion — needs the `W64_NOPCC`-alone leg |
+| global next-TB cache, **C-side** re-probe | **~5 % on module-churn legs** (0.1–0.35 % on video legs) | `W64_NOPCC`-alone env ABBA, round 45 | **closed — keep it**; the census number was video-workload-specific |
 | module pipeline | **0.07 %** | `modNs` 2844 ns/Mi | irrelevant here |
 
 **Read the overlaps before adding these up.** The TLB-probe row is
@@ -2516,6 +2516,77 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 
 ## Round log (newest first)
+
+## Update (2026-09-22, round forty-five: three prices and a verdict — asserts cost 2.75 %, the C-side next-TB cache is worth 5.3 % on churn, the tbstats RMW is free)
+
+Four short measurement series on a quiet host (load 3–7 all afternoon),
+each single-variable, scored pooled + rt + hostBusy-matched:
+
+**1. The LG tbstats RMW ceiling probe — closed, redesign NOT justified.**
+`W64_TBSTATS=0` (which verifiably omits the two per-TB-entry RMWs from
+every generated prologue, `tcg-target.c.inc` `w64_tbstats_inline`) was
+A/B'd on ke970 uibench, ABAB, `--settle 75` on both arms (the notb arm
+has no insn counter, so the rate-based quiet detector cannot run — same
+protocol on both sides keeps the pair comparable):
+
+| arm | menu fps | fills/s | tbGen/s |
+|---|---|---|---|
+| base ×2 | 2.6 / 2.7 | 206 / 202 | 475 / 472 |
+| notb ×2 | 2.5 / 2.7 | 201 / 202 | 473 / 472 |
+
+No separation: the RMW tax is below the ~4 % resolution of the fps
+meter at ~1.7 M TB-entries/s.  Any per-exit/derived-MIPS redesign can
+promise at most ~1–2 % and is not worth the complexity risk.  The
+`notb` legs of earlier plans are dead; `W64_TBSTATS=0` remains a
+diagnostic, not a lever.  (ke970 menu is firmware-paced, not
+engine-bound — see 4.)
+
+**2. The C-side next-TB cache re-probe — deletion REJECTED, keep it.**
+The owed `W64_NOPCC=1`-alone leg ran as an 8-leg env ABBA
+(`tools/perf/knob-abba.sh`, same dist both arms): **knob is +5.34 %
+slower** (21.005 vs 19.941 ms/Mi, every knob leg ≥ every base leg but
+one; rt 0.381 vs 0.402 agrees).  The counter census's 0.1–0.35 % was a
+video-workload number; on this module-churning workload the cache
+absorbs ~12.7 µs/Mi of `lookup` (15.1 → 27.8 µs/Mi with it off, modNs
+30 ms/Mi, tbGen 11.9/Mi).  `w64_pcc` stays; the ledger row's ceiling
+was workload-specific and the table's 0.1–0.35 % should be read as
+"video legs only".
+
+**3. `b_ndebug` priced — asserts cost 2.75 % ± 1.83, a trade, not taken.**
+Upstream forbids NDEBUG (`osdep.h` `#error`), so the pricing build
+temporarily neutered the guard (reverted; the build flag is the only
+residue, and `build/qemu-wasm64` is back on `b_ndebug=false`).  Full
+ABBA, dist rotation (`dist-jit-ndebug`, since deleted — rebuild in ~41 s
+by `meson configure -Db_ndebug=true` + the osdep guard edit + `WEB_DIST=
+site/dist-jit-ndebug scripts/ninja-fast.sh`):
+
+- pooled ms/Mi **−2.75 % ± 1.83** (ndebug faster), rt **+2.81 %**,
+  hostBusy-matched **+2.00 %**; wasm 27 MB vs 28 MB.
+- It is the user's call, not a silent keep: in the browser fork asserts
+  are the crash-diagnosis surface for user-supplied firmware.  Default
+  left ON.  Do not re-run this as a lever; it is priced.
+
+**4. KE970 after the capcom engine: boots are reliable, and the menu is
+firmware-paced.**  4/4 bootcheck PASS on `dist-jit` (~1.75 G insns,
+milestone ~35 s) against the 30–50 % hang rate before `02ada89fe6`.
+ke800 comparison leg (uibench, same protocol): idle 1.3 MIPS like
+ke970, but menu **49.8 MIPS / fps 9.6** vs ke970's 17.5 MIPS / fps 2.6
+— per-frame work is comparable (5.2 vs 6.7 M insns/frame), so ke970's
+menu is timer-paced by its firmware; a faster engine will not raise its
+fps proportionally.  Boot to idle ~1.75 G insns is now the honest
+engine-side boot metric for the board.
+
+Not priced, by directive (no long runs until confident in a change):
+`-ftrivial-auto-var-init=uninitialized` — the pricing dist built and
+booted (single leg within base spread) but the ABBA was cut after one
+leg.  The recipe is the meson.build hardening-flag flip under
+`qemu/meson.build:686`, same WEB_DIST pattern, ~41 s rebuild.  `b_lto`
+stays parked per the round-37 warning (ASYNCIFY_ONLY × LTO name
+deletion) until someone can afford the full gate.
+
+Tools this round: `tools/perf/knob-abba.sh` (env-knob ABBA, same dist
+both arms) + `tools/perf/knob-score.py`, `tools/perf/ke970-tbprobe.sh`
+(the ABAB probe above).
 
 ## Update (2026-09-22, round forty-four: KE970 — the capcom model was a stub; boot hangs are device-model gaps, not engine ones)
 
