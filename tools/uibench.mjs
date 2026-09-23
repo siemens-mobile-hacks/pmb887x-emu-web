@@ -89,16 +89,27 @@ const b = await chromium.launch({
 const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
 let pageErr = null, serialExit = false;
 p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });
-p.on("console", (m) => { if (m.text().includes(">>EXIT<<")) serialExit = true; });
+const consoleGrep = process.env.CONSOLE_GREP ? new RegExp(process.env.CONSOLE_GREP) : null;
+p.on("console", (m) => {
+  if (m.text().includes(">>EXIT<<")) serialExit = true;
+  if (consoleGrep?.test(m.text())) console.log("[console] " + m.text());
+});
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// counter indices follow qemu/include/qemu/wasm-diag.h (see tools/diagall.mjs)
+// counter indices follow the pre-review wasm-diag.h (see tools/diagall.mjs);
+// since the 2026-09-22 review most exports are gone and read as 0, and
+// bench0..7 are tools/perf/bench-hooks.patch's census slots
 async function snap() {
   return p.evaluate(() => {
-    const m = window.__qemu; const g = (i) => Number(m._wasm_memstat(i));
+    const m = window.__qemu;
+    const f = (n, ...a) => (typeof m[n] === "function" ? Number(m[n](...a)) : 0);
+    const g = (i) => f("_wasm_memstat", i);
+    const bench = {};
+    for (let i = 0; i < 8; i++) bench["bench" + i] = f("_wasm_bench_ctr_get", i);
     return {
-      t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
-      tbs: Number(m._wasm_tbs()), fb: Number(m._wasm_fb_updates()),
+      ...bench,
+      t: performance.now(), v: f("_wasm_vclock"), insns: f("_wasm_insns"),
+      tbs: f("_wasm_tbs"), fb: f("_wasm_fb_updates"),
       ioLd: g(2), ioSt: g(3), fill: g(4), lookup: g(13), halts: g(29),
       difMuxRebuild: g(59), difTxWord: g(60), dmacBurst: g(61),
       dmacSchedTimer: g(62), dmacXlatFill: g(63), gptuTimer: g(64),
@@ -134,6 +145,7 @@ await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });
 // boot done = the guest goes quiet (no reference image, so this works for
 // any firmware); the floor keeps a mid-boot dip from ending it early
 let tIdle = null, quiet = 0, last = await snap();
+const bootTrace = [[0, 0]];    // [wall s since start, insns]
 if (settleS) {
   while ((Date.now() - t0) / 1000 < settleS) {
     await sleep(1000);
@@ -148,11 +160,24 @@ while (tIdle === null && (Date.now() - t0) / 1000 < idleMax) {
   const s = await snap();
   const rate = (s.insns - last.insns) / ((s.t - last.t) / 1000);
   last = s;
+  bootTrace.push([(Date.now() - t0) / 1000, s.insns]);
   quiet = rate < idleRate * 1e6 ? quiet + 1 : 0;
   if ((Date.now() - t0) / 1000 >= idleFloor && quiet >= 4) { tIdle = (Date.now() - t0) / 1000 - 4; break; }
 }
 if (tIdle === null) await fail(`guest never went quiet within ${idleMax}s (insns=${(last.insns / 1e6).toFixed(0)}M fb=${last.fb})`);
 console.log(`[uibench] ${boardId}: quiet at ~${tIdle.toFixed(0)}s (${(last.insns / 1e6).toFixed(0)}M insns, fb=${last.fb})`);
+// wall seconds to each insn milestone, interpolated between 1 s samples
+// (the KE970 boot meter: a fixed-window insn count lands on different phases)
+const milestones = {};
+for (const m of [250e6, 500e6, 1000e6, 1500e6]) {
+  for (let i = 1; i < bootTrace.length; i++) {
+    const [ta, ia] = bootTrace[i - 1], [tb, ib] = bootTrace[i];
+    if (ib >= m) { milestones[m / 1e6 + "M"] = +(ta + (tb - ta) * (m - ia) / (ib - ia)).toFixed(2); break; }
+  }
+}
+console.log(`BOOT ${boardId} ${dist} ` + Object.entries(milestones).map(([k, v]) => `${k}=${v}s`).join(" ") +
+            ` quiet=${tIdle.toFixed(0)}s insns=${(last.insns / 1e6).toFixed(0)}M` +
+            Object.keys(last).filter((k) => k.startsWith("bench") && last[k]).map((k) => ` ${k}=${last[k]}`).join(""));
 await sleep(3000);   // let the idle screen settle
 await shoot("idle");
 
@@ -207,6 +232,9 @@ async function measure(name, drive) {
     `mlWake/s=${rec.mlWakePerS} mlWakeDup/s=${rec.mlWakeDupPerS} tpuRamW/s=${rec.tpuRamWPerS} tpuRamSkip/s=${rec.tpuRamSkipPerS} ` +
     `hflags/s=${rec.hflagsPerS} hflagsFast/s=${rec.hflagsFastPerS} hflagsBad=${rec.hflagsBad} ` +
     `tbGen/s=${rec.tbGenPerS} mod/s=${rec.modCountPerS} jcFlush/s=${rec.jcFlushPerS} wall=${rec.wall}`);
+  const bench = Object.keys(d).filter((k) => k.startsWith("bench") && d[k])
+    .map((k) => `${k}=${Math.round(d[k] / wall)}`);
+  if (bench.length) { console.log(`perS: ${bench.join(" ")}`); rec.benchPerS = bench.join(" "); }
   return rec;
 }
 
@@ -218,7 +246,8 @@ const driveKeys = () => (async () => {
   }
 })();
 
-const out = { board: boardId, dist, rt, extraQ, stamp, tIdle: +tIdle.toFixed(1), keys, periodMs, states: [],
+const out = { board: boardId, dist, rt, extraQ, stamp, tIdle: +tIdle.toFixed(1), milestones, bootTrace,
+  keys, periodMs, states: [],
   loadavg: readFileSync("/proc/loadavg", "ascii").split(" ").slice(0, 3).join(" ") };
 if (state === "idle" || state === "both") out.states.push(await measure("idle", null));
 if (state === "menu" || state === "both") {

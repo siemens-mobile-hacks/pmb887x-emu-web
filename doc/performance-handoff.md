@@ -561,6 +561,18 @@ Three conclusions the table is for:
 
 ## Open items (ranked)
 
+### ~~KE970: the flash write-behind flushed a block request per ~30 programmed words~~ — TAKEN in round fifty-one (boot busy phase −17 to −22 %)
+
+Still open on KE970:
+- **EFA/OTP saves** (`flash_save_file`) are synchronous `lseek` +
+  `write` calls from the vCPU: 8.6 k per boot, ~0.7 %.
+- **The default `parallel0` vc console:** the pmb887x machine doesn't
+  set `no_parallel`.
+- **The main loop still iterates ~118 k times per boot.** Re-profile it
+  first.
+
+### `-ftrivial-auto-var-init=zero` costs video 4.2 %, J2ME 1.5 % — owner's decision (round fifty-one §3)
+
 ### ~~The final link ran at `-O0`~~ — TAKEN in round fifty (video −3.2 %, J2ME −5.3 %, wasm 28 → 11 MB; `-O3` another −1.8 % on video)
 
 > `-O2` was a compile flag only; `emcc`'s link had none, so it linked at
@@ -2575,6 +2587,87 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 
 ## Round log (newest first)
+
+## Update (2026-09-23, round fifty-one: KE970 is the target; the flash write-behind was a block request per 30 words)
+
+### 1. Where a KE970 boot goes
+
+A V8 `--prof` run over a KE970 boot (the vCPU isolate and qemu's main
+thread, grouped with a stack walker) showed three things:
+- **The vCPU waits on the BQL** for 25–30 % of wall in the busy phase,
+  while the main loop runs for 20–25 %.
+- **The main loop's largest item is the flash write-behind:** a
+  block-layer coroutine and a thread-pool request per flush. Around
+  50 pool workers were spawned, each one a new Web Worker.
+- **The menu is not a target:** the vCPU is 98 % halted there, so it is
+  firmware-paced.
+
+**Census** (temporary `wasm_bench_ctr` slots, one boot):
+
+| | per boot |
+|---|---|
+| `pmb887x_flash_blk_pwrite` calls | 2 782 335 |
+| flush generations | 90 267 |
+| AIO requests (ranges) | 131 100, 12.1 MB, ~92 B each |
+| EFA/OTP synchronous saves (`flash_save_file`) | 8 576, ~240 ms (1 ms clock) |
+| `main_loop_wait` iterations | 250–320 k |
+| thread-pool spawns | 45 |
+
+### 2. Batch the write-behind (`920348722a`)
+
+The first write of a batch now arms a 50 ms `QEMU_CLOCK_REALTIME`
+timer. The flush then:
+- sorts the batch;
+- merges ranges across gaps of up to 64 KB (the storage holds the gap
+  bytes, so writing them is exact);
+- writes the ranges **one request at a time**.
+
+**Census after:** 138 batches, 617 requests, 118 k main-loop iterations,
+2 pool spawns.
+
+| KE970 boot, 4 interleaved rounds (median) | before | after |
+|---|---|---|
+| 1000 M insns | 15.8 s | **12.4 s (−22 %)** |
+| 1500 M insns | 26.5 s | **22.0 s (−17 %)** |
+
+- **Delay:** 20, 50 and 200 ms tie.
+- **The tail doesn't move.** The busy phase now ends at ~15 s instead of
+  ~19 s. After it comes ~12 s at 4–30 M insns/s, the same length in both
+  arms. The LG boards run icount=none, so that tail is the firmware
+  waiting on real time.
+- **Correctness:** a temporary read-back verifier compared each range
+  with the MEMFS file after every drained batch: KE970 230/230 and KE800
+  56/56 equal. `gate keep` GREEN.
+
+**Two traps on the way:**
+- **Coroutine from a timer callback:** `unreachable`. A coroutine started
+  from a timer callback has `timerlist_run_timers()` on its stack, and
+  that isn't on the Asyncify onlylist. The timer now only schedules the
+  existing BH.
+- **All ranges at once:** `Aborted(OOM)`. Every concurrent
+  `blk_aio_pwritev` holds a coroutine stack.
+
+Also: **`g_array_sort()` traps on wasm** ("function signature
+mismatch"). glib calls the 2-argument comparator through a 3-argument
+`GCompareDataFunc`. Use `qsort`.
+
+**Tool change:** `tools/uibench.mjs` prints a `BOOT … 250M= 500M= 1000M=
+1500M=` milestone line, plus the `bench0..7` totals when the hooks are
+applied. `CONSOLE_GREP=<re>` echoes matching page-console lines.
+
+### 3. Priced, and left for a decision: `-ftrivial-auto-var-init=zero`
+
+`qemu/meson.build:686` adds upstream's hardening flag
+`-ftrivial-auto-var-init=zero` to every file. It zeroes every
+uninitialized local on every call. A full rebuild with
+`=uninitialized` (bench hooks on both arms):
+- **Video:** −4.19 % ± 2.88.
+- **J2ME:** −1.45 % ± 1.18.
+
+This is a security/robustness trade: an uninitialized read becomes a
+deterministic zero instead of stack garbage. So it is **not taken**
+without the owner's call. If it is wanted, the narrow form is to drop it
+on the hot TCG/target files only.
 
 ## Update (2026-09-23, round fifty: a precise sampler, the window's real C profile, and the link that was never optimized)
 

@@ -13,6 +13,7 @@
 # modules are only ever created there).  last-secs keeps the final window,
 # i.e. the --hold playback, and drops the boot.
 import bisect
+import os
 import sys
 from collections import Counter
 
@@ -93,7 +94,42 @@ for line in open(log, errors="replace"):
 
 main_mod = mod_fns.most_common(1)[0][0]
 tmax = ticks[-1][0]
-win = [x for x in ticks if x[0] >= tmax - last * 1e6]
+t0 = ticks[0][0]
+
+
+def cat_of(pc, nm):
+    if nm is None:
+        lib = libof(pc) or "?"
+        return "chrome C++" if lib.startswith("chrome") else "lib " + lib
+    if nm[0] == "W":
+        if nm[1] == main_mod:
+            return "main-module wasm"
+        return "TB-module wasm, " + ("TurboFan" if nm[3] else "Liftoff")
+    return nm[0]
+
+
+# V8T_TIMELINE=<secs>: per-bin tick count and bucket shares over the whole
+# log, to find a run's phases (boot / idle / menu) before windowing
+if os.environ.get("V8T_TIMELINE"):
+    step = float(os.environ["V8T_TIMELINE"]) * 1e6
+    bins = {}
+    for us, pc, vms, nm in ticks:
+        bins.setdefault(int((us - t0) // step), Counter())[cat_of(pc, nm)] += 1
+    for b in sorted(bins):
+        c = bins[b]
+        n = sum(c.values())
+        tb = sum(v for k, v in c.items() if k.startswith("TB-"))
+        lw = sum(v for k, v in c.items() if k.startswith("lib "))
+        print(f"t={b * step / 1e6:6.0f}s ticks={n:6d} TB {100 * tb / n:5.1f} "
+              f"C {100 * c['main-module wasm'] / n:5.1f} libs {100 * lw / n:5.1f} "
+              f"chrome {100 * c['chrome C++'] / n:5.1f}")
+# V8T_WIN=<from>,<to>: seconds since the first tick; replaces last-secs
+if os.environ.get("V8T_WIN"):
+    a, b = (float(x) * 1e6 + t0 for x in os.environ["V8T_WIN"].split(","))
+    win = [x for x in ticks if a <= x[0] < b]
+    last = (b - a) / 1e6
+else:
+    win = [x for x in ticks if x[0] >= tmax - last * 1e6]
 if drop_fn:
     bins, hot = Counter(), Counter()
     for us, pc, vms, nm in win:
@@ -107,19 +143,13 @@ n = len(win)
 bucket, fn, vm = Counter(), Counter(), Counter()
 for us, pc, vms, nm in win:
     vm[vms] += 1
+    cat = cat_of(pc, nm)
+    bucket[cat] += 1
     if nm is None:
-        lib = libof(pc) or "?"
-        cat = "chrome C++" if lib.startswith("chrome") else "lib " + lib
-        bucket[cat] += 1
         fn[cat] += 1
-    elif nm[0] == "W":
-        if nm[1] == main_mod:
-            bucket["main-module wasm"] += 1
-            fn["C " + sym.get(nm[2], "wasm-function[" + nm[2] + "]")] += 1
-        else:
-            bucket["TB-module wasm, " + ("TurboFan" if nm[3] else "Liftoff")] += 1
-    else:
-        bucket[nm[0]] += 1
+    elif cat == "main-module wasm":
+        fn["C " + sym.get(nm[2], "wasm-function[" + nm[2] + "]")] += 1
+    elif nm[0] != "W":
         fn[nm[0] + " " + nm[1]] += 1
 
 print(f"window {last:.0f}s: {n} ticks of {len(ticks)}; vmstate {dict(vm)}")
