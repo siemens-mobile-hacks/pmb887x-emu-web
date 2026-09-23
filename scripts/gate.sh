@@ -86,17 +86,17 @@ JOBS=(
 # blown when modules created exceed batch closes + compactions (temp>0),
 # and any page error is a failure.
 gate_firefox() {
-  local tmp temp errors
+  local tmp progress errors
   tmp="$(mktemp)"
   # tee rather than capture: a two-minute job whose log stays empty until
   # it exits is indistinguishable from a hung one.
   BROWSER=firefox PORT="$PORT" MAX=120 node "$ROOT/tools/ffboot.mjs" "$DIST" 2>&1 | tee "$tmp"
-  temp="$(grep -o 'temp=-\?[0-9]*' "$tmp" | tail -1 | cut -d= -f2)"
+  progress="$(grep -o 'progress=.*' "$tmp" | tail -1 | cut -d= -f2-)"
   errors="$(grep -o 'errors=[0-9]*' "$tmp" | tail -1 | cut -d= -f2)"
   rm -f "$tmp"
-  [ -n "$temp" ] && [ -n "$errors" ] || { echo "gate: ffboot produced no verdict"; return 1; }
+  [ -n "$progress" ] && [ -n "$errors" ] || { echo "gate: ffboot produced no verdict"; return 1; }
   [ "$errors" = "0" ] || { echo "gate: ffboot errors=$errors"; return 1; }
-  [ "$temp" -le 0 ] || { echo "gate: ffboot temp=$temp throwaway modules"; return 1; }
+  [ "$progress" = "ok" ] || { echo "gate: ffboot progress=$progress"; return 1; }
   return 0
 }
 

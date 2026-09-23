@@ -263,7 +263,7 @@ commands are worth knowing only for reproducing one failure:
 | `earlykey.mjs` | a key event delivered at the earliest instant the export exists must not take the module down (0081). One board per invocation |
 | `tcgisa.mjs` | drives the guest op-suite on one page leg: `node tcgisa.mjs <port> <dist> [out] [ENV=VAL…]`. `scripts/run-tcg-isa.sh` is the gate and runs it once per built dist, comparing each against the native JIT serial log |
 | `lockstep.mjs`, `lockstep-wasm.mjs` | cross-backend value-equality drivers — native JIT vs native TCI (plugin) / native JIT vs the wasm page (built-in fold); `scripts/run-lockstep.sh` is the native gate |
-| `ffboot.mjs` | boot a dist in Playwright's Firefox (cross-browser smoke; `BROWSER=chromium` too) — `temp=` (per-TB throwaway modules) must stay ~0 and `errors=0` |
+| `ffboot.mjs` | boot a dist in Playwright's Firefox (cross-browser smoke; `BROWSER=chromium` too) — `errors=0` and `progress=ok` (guest clock ≥ 20 s, the screen drew, insns still rising over the last 20 s); the `temp=` module count went with the 2026-09-22 review's counters |
 | `tests/run.mjs` | the native suite: four fullflashes booted with `run-native.sh`'s recipe, plus an insncount MIPS benchmark. Blind to every wasm-only path, which is why the browser gates exist |
 
 Profiling and counters:

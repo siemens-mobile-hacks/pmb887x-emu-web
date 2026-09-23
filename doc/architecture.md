@@ -363,7 +363,7 @@ host.
 | early key | a key delivered before the machine exists does not kill the module | `node tools/earlykey.mjs --board <b>` |
 | guest op-suite | 1156 (value, NZCV) cases byte-identical across every backend built (the wasm64 page leg is one of them since 0090 fixed its Asyncify hole) | `scripts/run-tcg-isa.sh` |
 | lockstep | whole-boot cross-backend value equality (regs + SRAM/SDRAM digests); full 2.5e9-insn gate | `scripts/run-lockstep.sh`, `tools/lockstep-wasm.mjs` |
-| Firefox smoke | the module budget: throwaway modules (`temp=`) stay at 0 | `BROWSER=firefox node tools/ffboot.mjs` |
+| Firefox smoke | the module budget, by its effect: no page errors, and the guest is still executing after 120 s (`progress=ok`) | `BROWSER=firefox node tools/ffboot.mjs` |
 
 | benchmark | what it measures | driver |
 |---|---|---|

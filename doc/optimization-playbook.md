@@ -931,8 +931,10 @@ round 31's display bundle, 0118's `write_run`/`transfer_run` bursts
 - **wasm64 batching invariant**: every translated TB must be staged in
   an open batch (`w64_batch_begin_tb` at TB start, 0053).  A TB that
   runs from a per-TB temp module works in Chrome and silently eats
-  Firefox's ~16 k-module budget; `ffboot.mjs` prints the surplus as
-  `temp=` and `diagall.mjs` has it as MOD_COUNT − CLOSE_N − COMPACT_N.
+  Firefox's ~16 k-module budget.  The counters that showed the surplus
+  (`ffboot.mjs` `temp=`, `diagall.mjs` MOD_COUNT − CLOSE_N − COMPACT_N)
+  went with the 2026-09-22 review.  A regression now shows only as its
+  effect: the `firefox` gate's errors or stalled guest.
 - **The TCI TB layout (`/dist`)**: `tb->tc.ptr` points at the TCI stream;
   every TB starts with `tci_tbhdr` (icount) — chain jumps and
   `lookup_tb_ptr` targets all pass through it.  Anything that jumps

@@ -554,22 +554,14 @@ Three conclusions the table is for:
 
 ## Open items (ranked)
 
-### Native s75/el71 no longer boot at the pin — the review's "CPSR writes exit to the loop" (owner decision, not a perf item)
+### ~~Native s75/el71 no longer boot at the pin~~ — FIXED in `da835da585`
 
-Found in round forty-eight, when the native reference was rebuilt at the
-pin for the first time since the review. `gate.sh keep`'s `native` job is
-RED at `b9971ade2e` and later: s75 and el71 abort in `l1bbcsg` ~9 s in,
-the L1↔DSP starvation signature `versions.env` records for plain master.
-The merge commit `7c5f87096a` passes. Flipping only the three
-`#ifdef __EMSCRIPTEN__` guards the review added back to `#if 1`
-(`op_helper.c` `cpsr_write_check_irq`, `translate.c` `gen_set_psr` and
-`gen_rfe`), so native continues through `goto_ptr` with the icount kick
-again, passes. Every wasm gate is green, including `lockstep-wasm` against
-the rebuilt reference, because wasm never took the upstream path. It is
-the review's R-item "native builds get upstream's behaviour back", so it
-needs the owner's call: restore the continuation natively, or find why
-exiting to the loop starves the L1 handshake (the more honest fix, since
-upstream semantics ought to be timing-neutral under icount).
+> The review restored upstream's exit-to-loop in `gen_set_psr` and
+> `gen_rfe` but missed the third exception return, `do_ldm`
+> (`ldm {…, pc}^`). That site kept the wasm continuation, whose IRQ kick
+> is compiled for emscripten only, so on native an IRQ that the return
+> unmasked waited for the next unrelated exit. Both sites now go through
+> `gen_eret_end_tb()`. See round forty-eight, § 4.
 
 ### ~~`msr cpsr_c` without a mode change: an emitted fast path~~ — TAKEN in round forty-eight (−2.16 % ± 0.85 on video)
 
@@ -2567,7 +2559,7 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 ## Round log (newest first)
 
-## Update (2026-09-23, round forty-eight: the meter after the review, `msr cpsr` goes inline, and the native reference is red)
+## Update (2026-09-23, round forty-eight: the meter after the review, `msr cpsr` goes inline, and the native red it exposed, fixed)
 
 ### 1. What the 2026-09-22 review took from the measurement workflow
 
@@ -2616,13 +2608,49 @@ into the value before it compares modes.
   `lockstep-wasm` against a native reference rebuilt at the pin. The red
   `native` job is § 3.
 
-### 3. The native reference was stale, and at the pin it is red
+### 3. The native reference was stale, and at the pin it was red
 
 `build/qemu-native-build` was still `4e60f930b2`, from before the
 upstream merge; the review had said so. Rebuilt at `b9971ade2e`, the
 `native` job fails deterministically: s75 and el71 abort in `l1bbcsg` at
 ~9 s. Bisect: the merge `7c5f87096a` passes; flipping the review's three
-native CPSR-exit guards back passes too. See § Open items, top entry.
+native CPSR-exit guards back passes too. § 4 has the cause.
+
+### 4. The cause: one exception return the review did not convert
+
+Pristine origin/master (`c551b96e6e`), built natively, passes with
+upstream's exit-to-loop semantics. So the bug was ours, not upstream's.
+Under `-icount shift=3,sleep=off` the `-d int` stream is deterministic for
+the first ~295 k lines, run to run. Pin and flipped builds split at line
+14 073, and upstream follows the flipped one. A one-line log of
+`interrupt_request` in `cpsr_write_eret` showed `CPU_INTERRUPT_HARD`
+pending with I clear at an `ldm {…, pc}^` into sys mode. The pin then ran
+the target's `msr` and an SVC before its loop ever saw the IRQ. `do_ldm`
+had kept `DISAS_JUMP`, while upstream has `DISAS_EXIT`.
+`gen_eret_end_tb()` now holds the per-build choice for both exception
+returns. Native suite: all four PASS. wasm64 code is unchanged.
+
+The method is worth keeping: **when a native boot diverges between two
+builds, diff their `-d int` streams under icount before reading code.**
+The first split names the instruction.
+
+### 5. The `firefox` gate had no verdict since the review
+
+The review's claim that "the gates use only `wasm_insns`" missed
+`ffboot.mjs`. Its verdict was `temp=`, which it computed from
+`_wasm_memstat`, so every `close` since the review ended "ffboot produced
+no verdict". The review only ran `keep`, so it never saw this. The module
+budget is now judged by its effect:
+- `errors=0`;
+- `progress=ok`: the guest clock reached ≥ 20 s, the screen drew, and
+  insns still rose over the last 20 s. An idle S75 runs ~1 M/s.
+
+A 10 s run reports `progress=FAIL`, so the check is not vacuous.
+
+**`gate.sh close` at `da835da585` is GREEN.** All 15 jobs passed:
+`native`, `lockstep-native` and `lockstep-full` against native and TCI
+references rebuilt at the pin, `boot-ordered` in 754 s, and `firefox` on
+the rerun with the new verdict.
 
 ### Traps this round paid for
 

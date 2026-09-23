@@ -50,6 +50,7 @@ const t0 = Date.now();
 await p.click("#btn-start");
 await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });
 console.log(`${which}/${dist}: module ready ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+const samples = [];
 let last = null;
 while ((Date.now() - t0) / 1000 < maxSecs) {
   await new Promise(r => setTimeout(r, 2000));
@@ -57,20 +58,27 @@ while ((Date.now() - t0) / 1000 < maxSecs) {
   try {
     s = await p.evaluate(() => {
       const m = window.__qemu; if (!m || !m._wasm_vclock) return null;
-      // tbgen, modules created, batch closes, compactions: on a healthy
-      // build mods == close + compact; a surplus is per-TB temp modules,
-      // which Firefox's module budget cannot absorb (see lessons.md)
-      const st = m._wasm_memstat ? [7, 34, 48, 49].map(i => Number(m._wasm_memstat(i))) : null;
-      const pcs = []; if (m._wasm_pc) { for (let i = 0; i < 8; i++) pcs.push(Number(m._wasm_pc()).toString(16)); }
-      return { v: Number(m._wasm_vclock()) / 1e9, insns: m._wasm_insns ? Number(m._wasm_insns()) : 0, u: m._wasm_fb_updates ? Number(m._wasm_fb_updates()) : 0, st, pcs };
+      return { v: Number(m._wasm_vclock()) / 1e9, insns: m._wasm_insns ? Number(m._wasm_insns()) : 0, u: m._wasm_fb_updates ? Number(m._wasm_fb_updates()) : 0 };
     });
   } catch (e) { console.log("  [evaluate failed]", String(e).slice(0, 120)); break; }
   const r = rssMB();
-  const t = ((Date.now() - t0) / 1000).toFixed(1);
-  if (s) { last = s; console.log(`t=${t}s v=${s.v.toFixed(2)} insns=${(s.insns / 1e6).toFixed(0)}M u=${s.u} rss=${r ? r.sum + "MB (max proc " + r.max + ")" : "?"}` + (s.st ? ` tbgen=${s.st[0]} mods=${s.st[1]} close=${s.st[2]} compact=${s.st[3]} temp=${s.st[1] - s.st[2] - s.st[3]}` : "") + (s.pcs ? " pc=" + s.pcs.join(",") : "")); }
-  else console.log(`t=${t}s (no module) rss=${r ? r.sum : "?"}`);
+  const t = (Date.now() - t0) / 1000;
+  if (s) { last = s; samples.push({ t, ...s }); console.log(`t=${t.toFixed(1)}s v=${s.v.toFixed(2)} insns=${(s.insns / 1e6).toFixed(0)}M u=${s.u} rss=${r ? r.sum + "MB (max proc " + r.max + ")" : "?"}`); }
+  else console.log(`t=${t.toFixed(1)}s (no module) rss=${r ? r.sum : "?"}`);
   if (errs.some(e => /CRASH|out of memory/i.test(e))) break;
 }
-console.log(`END ${which}/${dist} last=${JSON.stringify(last)} errors=${errs.length}`);
+// The page exposes no module counters (2026-09-22 review), so the module
+// budget shows up only as what exhausting it does: an error, or a guest
+// that stops executing.  An idle phone still runs ~1 M insns/s.
+const why = [];
+if (!last) why.push("no sample");
+else {
+  if (last.v < 20) why.push(`vclock ${last.v.toFixed(1)}s < 20s`);
+  if (last.u < 1) why.push("no framebuffer update");
+  const ref = samples.filter(x => x.t <= samples[samples.length - 1].t - 20).pop();
+  if (!ref) why.push("run shorter than 20s");
+  else if (last.insns <= ref.insns) why.push("insns stalled over the last 20s");
+}
+console.log(`END ${which}/${dist} last=${JSON.stringify(last)} errors=${errs.length} progress=${why.length ? "FAIL (" + why.join("; ") + ")" : "ok"}`);
 for (const e of errs.slice(0, 30)) console.log("  ERR " + e);
 await b.close();
