@@ -23,6 +23,36 @@ const page = await browser.newPage({ viewport: { width: 1770, height: 1000 } });
 page.on("pageerror", (e) => { fails++; console.log("PAGEERROR", String(e).slice(0, 300)); });
 await page.goto(URL_, { waitUntil: "networkidle" });
 
+// A host too slow to keep up, as the page sees one: the guest's workers held
+// in the debugger until the returned function lets them go. Throttling the
+// page does not do it — the guest runs in pthread workers, which
+// Emulation.setCPUThrottlingRate refuses — and nor does a pause/run duty
+// cycle: past the banked window the cap repays up to 500 ms of every stall,
+// which an idle guest warps through at once, so each run slot is a sample at
+// v/wall >= 1 that resets the 3 s hysteresis. Held, the guest reads 0x; the
+// §6b stall overlay is 15 s away. One session for the whole run: a second
+// auto-attach after a detach gets the workers listed but never answered.
+let workerCdp = null;
+const workers = new Map();
+async function slowHost() {
+  if (!workerCdp) {
+    workerCdp = await page.context().newCDPSession(page);
+    workerCdp.on("Target.attachedToTarget", (e) => {
+      if (e.targetInfo.type === "worker") workers.set(e.targetInfo.targetId, e.sessionId);
+    });
+    workerCdp.on("Target.detachedFromTarget", (e) => workers.delete(e.targetId));
+    await workerCdp.send("Target.setAutoAttach",
+      { autoAttach: true, waitForDebuggerOnStart: false, flatten: false });
+    await page.waitForTimeout(200);
+  }
+  let id = 1;
+  const all = (...methods) => Promise.all([...workers.values()].flatMap((sessionId) =>
+    methods.map((method) => workerCdp.send("Target.sendMessageToTarget",
+      { sessionId, message: JSON.stringify({ id: id++, method }) }).catch(() => {}))));
+  await all("Debugger.enable", "Debugger.pause");
+  return () => all("Debugger.resume", "Debugger.disable");
+}
+
 const has = (sel) => page.$eval("body", (b, s) => !!b.querySelector(s), sel);
 const text = (sel) => page.$eval(sel, (e) => e.textContent.trim()).catch(() => null);
 const ui = () => page.evaluate(() => window.__ui);
@@ -730,8 +760,7 @@ if (!process.env.SKIP_BOOT) {
       console.log(`skip v4.6 banked-phase checks — cap is "${(await ui()).rtcap}"`
         + " (rt=off, or a board that runs without icount)");
     } else {
-      const cdp = await page.context().newCDPSession(page);
-      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 20 });
+      const recover = await slowHost();
       const under = await page.waitForFunction(
         () => window.__hud.diagnostics().avg10s.vratio < 0.8, null, { timeout: 30000 })
         .then(() => true).catch(() => false);
@@ -743,8 +772,7 @@ if (!process.env.SKIP_BOOT) {
           && !/slow/.test(document.getElementById("status-text").textContent)),
         `v/wall ${await page.evaluate(() => window.__hud.diagnostics().avg10s.vratio)}, `
         + `pill "${await text("#status-text")}"`);
-      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
-      await cdp.detach();
+      await recover();
     }
   }
 
@@ -880,7 +908,6 @@ if (!process.env.SKIP_BOOT) {
 
   /* ---------------- v4 §6: the slow warning ---------------- */
   {
-    const cdp = await page.context().newCDPSession(page);
     const speed = () => page.evaluate(() => window.__hud.diagnostics().avg10s.vratio);
 
     // §6b the warning itself, which only applies once the cap has switched to
@@ -889,14 +916,14 @@ if (!process.env.SKIP_BOOT) {
     // explicit ?rt=strict or ?rt=off it resolves at once.
     await page.waitForFunction(() => window.__ui.rtcap !== "banked", null,
       { timeout: 180000 });
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 20 });
+    const recover = await slowHost();
     const slow = await page.waitForFunction(() => window.__ui.slow, null, { timeout: 30000 })
       .then(() => true).catch(() => false);
     ok("v4.6 under 0.80x for 3 s turns the pill amber", slow && await page.evaluate(() =>
       document.getElementById("status").classList.contains("warn")
       && / · slow$/.test(document.getElementById("status-text").textContent)),
       `v/wall ${await speed()}, pill "${await text("#status-text")}"`);
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    await recover();
     const back = await page.waitForFunction(() => !window.__ui.slow, null, { timeout: 40000 })
       .then(() => true).catch(() => false);
     ok("v4.6 and back to green once it recovers", back && await page.evaluate(() =>
