@@ -561,6 +561,16 @@ Three conclusions the table is for:
 
 ## Open items (ranked)
 
+### ~~The final link ran at `-O0`~~ — TAKEN in round fifty (video −3.2 %, J2ME −5.3 %, wasm 28 → 11 MB)
+
+> `-O2` was a compile flag only; `emcc`'s link had none, so it linked at
+> `-O0`: `ASSERTIONS=1` (an Asyncify state check after every call,
+> 173 k of them) and no Binaryen pass over the linked module. The link
+> args in `scripts/build-qemu-wasm64.sh` now start with `-O2`. See round
+> fifty in the log. Still unpriced on the same axis:
+> `-ftrivial-auto-var-init=zero` (upstream hardening, `qemu/meson.build`)
+> and `b_lto`.
+
 ### ~~Native s75/el71 no longer boot at the pin~~ — FIXED in `da835da585`
 
 > The review restored upstream's exit-to-loop in `gen_set_psr` and
@@ -2565,6 +2575,122 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 
 ## Round log (newest first)
+
+## Update (2026-09-23, round fifty: a precise sampler, the window's real C profile, and the link that was never optimized)
+
+### 1. V8's own `--prof` is the precise sampler here
+
+`perf` is out: seccomp blocks `perf_event_open`, even for software events.
+V8's tick log is not:
+
+```
+CHROME_ARGS="--no-sandbox --js-flags=--prof,--prof-sampling-interval=250,--logfile=$D/v8.log" \
+  node tools/videobench.mjs --dist dist-x --hold 150
+cp site/dist-x/qemu-system-arm.js.symbols $D/     # the map of *that* build
+tools/perf/v8tick.py $D/isolate-<vcpu>-v8.log $D/qemu-system-arm.js.symbols 140 sccu_io_read 0.002
+```
+
+- **Picking the log:** the vCPU isolate is the log with the most
+  `code-creation` records.
+- **Decoding wasm records:** they read
+  `code-creation,JS,5,t,addr,size,wasm-function[N],<module base + N>,<tier>`,
+  so the module is that pointer minus N. The tier field is `*` for
+  TurboFan and empty for Liftoff.
+- **What v8tick.py reports:** buckets for TB modules by tier,
+  main-module C (named from the symbol map), builtins, Chrome C++ and
+  libraries.
+- **The last two arguments** drop every 1 s bin where the named C
+  function holds more than the given share. That removes the phases
+  after the clip ends, see § 2.
+
+**The DevTools profiler misattributes:** it charged `tcg_qemu_tb_exec`
+2.44 % where the pc sampler reads 0.20 %.
+
+### 2. `do_ld4_mmu`'s profile share was the player idling between clips
+
+Each `--hold` profile ran past the end of the clip. After playback, the
+SL65 firmware:
+- calibrates the SCCU reference continuously (`SLPCTRL` REFEN, 73.8 ms
+  virtual each, restarted at once);
+- busy-polls `SLPCTRL` at ~11 000 `do_ld4_mmu` calls/Mi.
+
+The meter's 12 s window never sees this phase. A timed census in the window
+(`doc/attic/loop-census-round50.diff`) reads, per Mi:
+
+| | video | J2ME game 1 |
+|---|---|---|
+| `do_ld4_mmu` calls | 48 | 89 |
+| `do_ld4_mmu` time | 15.3 µs (0.57 %) | 19 µs (0.7 %) |
+| C loop entries | 33.6 | 114 |
+
+Of video's 33.6 loop entries:
+- 27.4 are icount `TB_EXIT_REQUESTED`;
+- 5.9 are chained;
+- 5.2 take the interrupt's full path;
+- 0.7 are `tb_gen`.
+
+That closes round 47's "do_ld4_mmu artifact". SL65 standby, capped, is
+1.1 MIPS at 3.1 % of one thread (`videobench --idle N`), so there is no
+idle problem either.
+
+**Playback-only profile** (119 of 141 bins kept, 380 k ticks):
+
+| bucket | share |
+|---|---|
+| TB code, TurboFan | 80.7 % |
+| TB code, Liftoff | 1.9 % |
+| `WasmLiftoffFrameSetup` | 0.56 % |
+| main-module C | 14.1 % |
+
+The C is the SVC/eret cluster, already sized in round 49:
+- `arm_rebuild_hflags` 2.90
+- `switch_mode` 1.44
+- `cpsr_write` 1.31
+- `take_aarch32_exception` 0.85
+- `arm_take_svc_aarch32` 0.75
+- `helper_cpsr_write_eret` 0.67
+
+Then the TB lookup (`qht_lookup_custom` 0.43, `tb_lookup_cmp` 0.20) and
+the store slow path (`do_st4_mmu` 0.36).
+
+### 3. The link ran at `-O0` (build-script change, no qemu commit)
+
+Reading `arm_rebuild_hflags` in wasm showed `global.get 55 … i32.ne …
+unreachable` after every call: Binaryen's `asyncify-asserts`. meson's
+`-O2` reaches the compiles only, and the link line
+(`-Dc_link_args` in `build-qemu-wasm64.sh`) had no `-O`. So `emcc`
+linked at `-O0`. That means `ASSERTIONS=1`, 173 326 state checks, no
+`--post-emscripten`, no Binaryen `-O2` and no memory packing.
+
+**Two arms**, each only a relink of the same objects:
+
+| arm | wasm | video (shared-slope fit) | J2ME |
+|---|---|---|---|
+| `-sASSERTIONS=0` | 26.9 MB | −0.22 % ± 1.73 (8 legs): the checks are free | — |
+| `-O2` | **11.3 MB** | **−5.00 % ± 2.59 and −2.11 % ± 1.19; pooled −3.24 % ± 1.85** (16 legs) | **−5.28 % ± 1.44** (8 legs, every B leg below every A leg) |
+
+- **Code:** 9.8 → 7.8 MB, 26 738 → 20 500 functions (Binaryen
+  inlining and DCE).
+- **Data:** 18.5 → 3.4 MB. The `-O0` link shipped its zero runs.
+- **Gzipped download:** wasm 4.13 → 3.49 MB, JS 87 → 40 KB.
+- **Export names are minified at `-O2`.** Nothing reads them raw:
+  EM_JS uses `wasmTable`, the page imports the factory, and the tools go
+  through `Module._x`. `MINIFY_WASM_EXPORT_NAMES` is internal and can't
+  be turned off from the command line.
+- **Pass order:** Binaryen runs `-O2` *before* `--asyncify` in the same
+  invocation. Inlining is consistent with an onlylist that is closed
+  over callers. The boot gates exercise the coroutine switches.
+- **Gates:** `keep` GREEN 11/11; `close` GREEN 15/15 (`firefox` PASS),
+  on the clean tree at the pin.
+
+### Traps this round paid for
+
+- **`meson` is not on `PATH`** in a fresh shell: use
+  `build/qemu-wasm64/pyvenv/bin`. A `meson configure` with a bad link arg
+  breaks every compile probe, and the failure names the wrong thing
+  ("library 'rt' not found").
+- **`ps` %CPU on a zombie `chrome-headless` is a lifetime average.**
+  Those processes had already exited.
 
 ## Update (2026-09-23, round forty-nine: reading TurboFan's x64 — the TLB miss call was spilling on every guest access, and branch hints move it out of the way)
 
