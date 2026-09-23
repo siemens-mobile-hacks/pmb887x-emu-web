@@ -397,6 +397,33 @@ await sleep(1500);
 const idle = await grab();
 await shoot("idle");
 
+// --idle N: stay on the standby screen for N wall seconds with the cap on
+// (the state a user leaves the page in) and report what idling costs the
+// host: the busiest thread's CPU share, guest MIPS and the census slots.
+const idleS = Number(opt("idle", 0));
+if (idleS) {
+  cpuPids = chromeTree(process.pid);
+  const sn = () => p.evaluate(() => {
+    const m = window.__qemu;
+    const c = [];
+    if (m._wasm_bench_ctr_get) for (let i = 0; i < 8; i++) c.push(Number(m._wasm_bench_ctr_get(i)));
+    return { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()), c };
+  });
+  await sleep(5000);
+  const ca = cpuSample(), a = await sn();
+  await sleep(idleS * 1000);
+  const cc = cpuSample(), c = await sn();
+  const wall = (c.t - a.t) / 1000, mi = (c.insns - a.insns) / 1e6;
+  const cpu = cpuDelta(ca, cc);
+  const perMi = c.c.map((x, i) => `bench${i}=${((x - a.c[i]) / mi).toFixed(2)}`).join(" ");
+  console.log(`IDLE ${dist} wall=${wall.toFixed(1)} v/wall=${((c.v - a.v) / 1e9 / wall).toFixed(3)} ` +
+    `MIPS=${(mi / wall).toFixed(1)} topThread=${(cpu.top / wall).toFixed(3)} allThreads=${(cpu.all / wall).toFixed(3)} ` +
+    `hostBusy=${cpu.hostBusy}`);
+  console.log("perMi: " + perMi);
+  await b.close();
+  process.exit(0);
+}
+
 const rtcap = (on) => p.evaluate((v) => {
   const m = window.__qemu;
   if (!m._wasm_rtcap_set) return false;
@@ -623,14 +650,21 @@ if (results.length > 1) {
 // again.
 if (holdS) {
   console.log(`[video] PLAYHOLD ${holdS}s (devtools ${devtools || "off"}) — attach now`);
-  await p.evaluate(async ([playKey, secs]) => {
+  // [wall ms, virtual ms, insns, fb, bench census slots...] every 300 ms,
+  // so a profile taken over the hold can be split into the phases it mixed
+  const holdTrace = await p.evaluate(async ([playKey, secs]) => {
     const m = window.__qemu;
     const btn = document.querySelector(`[data-key="${playKey}"]`);
     const t0 = performance.now();
+    const tr = [];
     let lastFb = Number(m._wasm_fb_updates()), lastMove = t0;
     while (performance.now() - t0 < secs * 1000) {
       await new Promise((r) => setTimeout(r, 300));
       const fb = Number(m._wasm_fb_updates());
+      const ctr = [];
+      if (m._wasm_bench_ctr_get) for (let i = 0; i < 8; i++) ctr.push(Number(m._wasm_bench_ctr_get(i)));
+      tr.push([Math.round(performance.now() - t0), Math.round(Number(m._wasm_vclock()) / 1e6),
+        Number(m._wasm_insns()), fb, ...ctr]);
       if (fb !== lastFb) { lastFb = fb; lastMove = performance.now(); continue; }
       if (performance.now() - lastMove < 1500) continue;
       btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
@@ -638,6 +672,9 @@ if (holdS) {
       btn.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
       lastMove = performance.now();
     }
+    return tr;
   }, [playKey, holdS]);
+  writeFileSync(`${runBase}-hold.json`, JSON.stringify(holdTrace));
+  console.log(`[video] hold trace: ${runBase}-hold.json`);
 }
 await b.close();

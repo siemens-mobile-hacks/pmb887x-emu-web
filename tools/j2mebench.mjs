@@ -375,6 +375,8 @@ async function snap() {
   return p.evaluate((n) => {
     const m = window.__qemu;
     const c = []; if (m._wasm_memstat) for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
+    // tools/perf/bench-hooks.patch census slots, after the memstat ones
+    if (m._wasm_bench_ctr_get) for (let i = 0; i < 8; i++) c.push(Number(m._wasm_bench_ctr_get(i)));
     return { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
       tbs: m._wasm_tbs ? Number(m._wasm_tbs()) : 0, fb: Number(m._wasm_fb_updates()), c };
   }, NAMES.length);
@@ -565,6 +567,8 @@ const playWindow = (startPlan, plan, warmV, windowV, nCounters, traceC) =>
   const vns = () => Number(m._wasm_vclock());
   const shot = () => {
     const c = []; if (m._wasm_memstat) for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
+    // tools/perf/bench-hooks.patch census slots, after the memstat ones
+    if (m._wasm_bench_ctr_get) for (let i = 0; i < 8; i++) c.push(Number(m._wasm_bench_ctr_get(i)));
     return { t: performance.now(), v: vns(), insns: Number(m._wasm_insns()),
       tbs: m._wasm_tbs ? Number(m._wasm_tbs()) : 0, fb: Number(m._wasm_fb_updates()), c };
   };
@@ -770,11 +774,12 @@ const hostCpu = a.cpuIx != null && c.cpuIx != null
 // clock's is several %), and the only way to tell a J2ME window apart
 // from a boot window without guessing
 const counters = {}, perMi = {};
-for (let i = 0; i < NAMES.length; i++) {
-  const dv = c.c[i] - a.c[i];
+const CNAMES = [...NAMES, ...Array.from({ length: 8 }, (_, i) => "bench" + i)];
+for (let i = 0; i < c.c.length; i++) {
+  const dv = (c.c[i] ?? 0) - (a.c[i] ?? 0);
   if (!dv) continue;
-  counters[NAMES[i]] = dv;
-  perMi[NAMES[i]] = +(dv / (d.insns / 1e6)).toFixed(3);
+  counters[CNAMES[i]] = dv;
+  perMi[CNAMES[i]] = +(dv / (d.insns / 1e6)).toFixed(3);
 }
 const g = (n) => counters[n] || 0;
 const rec = {

@@ -1,0 +1,109 @@
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index d2b576d196..28d3f29b92 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -702,6 +702,8 @@ void HELPER(tb_key_gen_bump)(CPUArchState *env)
+ }
+ #endif /* CONFIG_TCG_WASM64 */
+ 
++extern uint64_t wasm_bench_ctr[8];   /* census (temporary) */
++
+ /* Return the current PC from CPU, which may be cached in TB. */
+ static vaddr log_pc(CPUState *cpu, const TranslationBlock *tb)
+ {
+@@ -1077,6 +1079,7 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
+          */
+         bool took_bql;
+ 
++        wasm_bench_ctr[7]++;
+         took_bql = bql_lock_mmio();
+         tcg_ops->do_interrupt(cpu);
+         if (took_bql) {
+@@ -1218,6 +1221,7 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
+             cpu_reset_interrupt(cpu, CPU_INTERRUPT_EXITTB);
+             /* as below: the program flow changed, so do not patch a jump */
+             *last_tb = NULL;
++            wasm_bench_ctr[4]++;
+             goto after_interrupts;
+         }
+ #endif
+@@ -1312,11 +1316,16 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
+                                     int *tb_exit)
+ {
+     trace_exec_tb(tb, pc);
++    wasm_bench_ctr[0]++;
+     tb = cpu_tb_exec(cpu, tb, tb_exit);
+     if (*tb_exit != TB_EXIT_REQUESTED) {
++        if (tb) {
++            wasm_bench_ctr[2]++;
++        }
+         *last_tb = tb;
+         return;
+     }
++    wasm_bench_ctr[1]++;
+ 
+     *last_tb = NULL;
+     if (cpu_loop_exit_requested(cpu)) {
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index 77fae62c35..8800439ffc 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -2991,8 +2991,25 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+     return ret;
+ }
+ 
++static uint32_t do_ld4_mmu_x(CPUState *cpu, vaddr addr, MemOpIdx oi,
++                           uintptr_t ra, MMUAccessType access_type);
+ static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+                            uintptr_t ra, MMUAccessType access_type)
++{
++    extern uint64_t wasm_bench_ctr[8];
++    int64_t t0 = get_clock_realtime(), dt;
++    uint32_t r = do_ld4_mmu_x(cpu, addr, oi, ra, access_type);
++    dt = get_clock_realtime() - t0;
++    wasm_bench_ctr[4]++;
++    wasm_bench_ctr[5] += dt;
++    if (dt > 1000) {
++        wasm_bench_ctr[7]++;
++    }
++    return r;
++}
++
++static uint32_t __attribute__((noinline)) do_ld4_mmu_x(CPUState *cpu, vaddr addr, MemOpIdx oi,
++                           uintptr_t ra, MMUAccessType access_type)
+ {
+     MMULookupLocals l;
+     bool crosspage;
+diff --git a/hw/arm/pmb887x/sccu.c b/hw/arm/pmb887x/sccu.c
+index 418e0b3ccd..993878c5d7 100644
+--- a/hw/arm/pmb887x/sccu.c
++++ b/hw/arm/pmb887x/sccu.c
+@@ -195,9 +195,12 @@ static uint64_t sccu_io_read(void *opaque, hwaddr haddr, unsigned size) {
+ 			value = sccu_get_counter(p, false);
+ 			break;
+ 
+-		case SCCU_SLPCTRL:
++		case SCCU_SLPCTRL: {
++			extern uint64_t wasm_bench_ctr[8];
++			wasm_bench_ctr[6]++;
+ 			value = p->slpctrl;
+ 			break;
++		}
+ 
+ 		case SCCU_REFIN:
+ 			value = p->refin;
+diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
+index b184bcbd34..d0eac68447 100644
+--- a/tcg/wasm64/wasm64.c
++++ b/tcg/wasm64/wasm64.c
+@@ -1790,6 +1790,10 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+             if (next == 0 || next == (uintptr_t)tcg_code_gen_epilogue) {
+                 return 0;
+             }
++            {
++                extern uint64_t wasm_bench_ctr[8];
++                wasm_bench_ctr[3]++;
++            }
+             tb = next;
+             continue;
+         }
