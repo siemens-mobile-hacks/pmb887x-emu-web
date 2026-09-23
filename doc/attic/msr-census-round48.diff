@@ -1,0 +1,31 @@
+# Round 48 msr census.  Apply on top of tools/perf/bench-hooks.patch and the
+# msr fast path; videobench prints bench0..bench3 per Mi.
+#   bench0 HELPER(cpsr_write) calls   bench1 of them, mode changed
+#   bench2 inline fast path taken     bench3 helper with an IRQ pending
+# SL65 video, 2026-09-23: bench2 5331.7, bench0 1205.0, bench1 1204.2, bench3 0.54
+--- a/target/arm/tcg/op_helper.c
++++ b/target/arm/tcg/op_helper.c
+@@ void HELPER(cpsr_write)(CPUARMState *env, uint32_t val, uint32_t mask)
+     uint32_t before = env->uncached_cpsr;
++    extern uint64_t wasm_bench_ctr[8];
+
++    wasm_bench_ctr[0]++;
+     cpsr_write(env, val, mask, CPSRWriteByInstr);
++    if ((before ^ env->uncached_cpsr) & CPSR_M) {
++        wasm_bench_ctr[1]++;
++    }
++    if (qatomic_read(&env_cpu(env)->interrupt_request)) {
++        wasm_bench_ctr[3]++;
++    }
+--- a/target/arm/tcg/translate.c
++++ b/target/arm/tcg/translate.c
+@@ static bool w64_cpsr_write_inline(DisasContext *s, TCGv_i32 val, uint32_t mask)
+     w64_gen_irq_pending_br(t, miss);
++    {
++        extern uint64_t wasm_bench_ctr[8];
++        TCGv_i64 c = tcg_temp_new_i64();
++        TCGv_ptr p = tcg_constant_ptr(&wasm_bench_ctr[2]);
++        tcg_gen_ld_i64(c, p, 0);
++        tcg_gen_addi_i64(c, c, 1);
++        tcg_gen_st_i64(c, p, 0);
++    }

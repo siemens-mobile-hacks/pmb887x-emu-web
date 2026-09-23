@@ -1,0 +1,63 @@
+# Local measurement hooks the 2026-09-22 review removed from the port: the
+# runtime real-time-cap switch videobench needs and eight census slots.
+# Apply to BOTH arms of an A/B, never commit to qemu/:
+#   git -C qemu apply ../tools/perf/bench-hooks.patch
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index feeaa34d4f..0206fa17aa 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -125,6 +125,16 @@ void icount_rtcap_set_waiting(bool waiting)
+     qatomic_set(&rtcap_vcpu_waiting, waiting);
+ }
+ 
++/* Bench hook (tools/perf/bench-hooks.patch): not part of the port. */
++void icount_rtcap_set_enabled(bool on)
++{
++    if (on) {
++        rtcap_v0 = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++        rtcap_r0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    }
++    qatomic_set(&icount_rtcap, on);
++}
++
+ /* Polled from the browser main thread while the vCPU thread writes it. */
+ int icount_rtcap_mode(void)
+ {
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+index 61b0a9dea1..c11b85ca72 100644
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -93,5 +93,6 @@ int64_t icount_rtcap_excess_ns(int64_t vtarget);
+ void icount_rtcap_set_waiting(bool waiting);
+ /* 0 = off, 1 = banked (the boot window), 3 = budget.  Safe from any thread. */
+ int icount_rtcap_mode(void);
++void icount_rtcap_set_enabled(bool on);
+ 
+ #endif /* EXEC_ICOUNT_H */
+diff --git a/ui/wasm.c b/ui/wasm.c
+index 565cf13434..1c28fa5747 100644
+--- a/ui/wasm.c
++++ b/ui/wasm.c
+@@ -202,6 +202,22 @@ int32_t wasm_rtcap(void)
+     return icount_rtcap_mode();
+ }
+ 
++/* Bench hook (tools/perf/bench-hooks.patch): not part of the port. */
++EMSCRIPTEN_KEEPALIVE
++void wasm_rtcap_set(int32_t on)
++{
++    icount_rtcap_set_enabled(!!on);
++}
++
++/* Bench census slots: temporary increment sites add to these. */
++uint64_t wasm_bench_ctr[8];
++
++EMSCRIPTEN_KEEPALIVE
++uint64_t wasm_bench_ctr_get(int32_t i)
++{
++    return wasm_bench_ctr[i & 7];
++}
++
+ /* ------------------------------------------------------------------ */
+ /* Key input: SPSC ring filled from the JS main thread, drained by BH  */
+ /* ------------------------------------------------------------------ */

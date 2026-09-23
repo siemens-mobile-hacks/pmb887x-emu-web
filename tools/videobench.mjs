@@ -59,8 +59,11 @@ import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 // index -> name, parsed from wasm-diag.h: the numeric indices are the
-// wasm_memstat() ABI and a transcribed list drifts silently
-import { NAMES } from "./diagnames.mjs";
+// wasm_memstat() ABI and a transcribed list drifts silently.  The 2026-09-22
+// review removed both the header and the export; without them the meter
+// still reads rt and ms/Mi, it just has no census.
+let NAMES = [];
+try { ({ NAMES } = await import("./diagnames.mjs")); } catch {}
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -299,9 +302,9 @@ async function keyUntilChange(k, waitMs, minPct = minPctFor(k), tries = 3) {
 async function snap() {
   return p.evaluate((n) => {
     const m = window.__qemu;
-    const c = []; for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
+    const c = []; if (m._wasm_memstat) for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
     return { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
-      tbs: Number(m._wasm_tbs()), fb: Number(m._wasm_fb_updates()), c };
+      tbs: m._wasm_tbs ? Number(m._wasm_tbs()) : 0, fb: Number(m._wasm_fb_updates()), c };
   }, NAMES.length);
 }
 async function shoot(what) {
@@ -411,9 +414,11 @@ const playWindow = (playKey, warmV, windowV, nCounters, traceC) =>
   const m = window.__qemu;
   const vns = () => Number(m._wasm_vclock());
   const shot = () => {
-    const c = []; for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
+    const c = []; if (m._wasm_memstat) for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
+    // tools/perf/bench-hooks.patch census slots, after the memstat ones
+    if (m._wasm_bench_ctr_get) for (let i = 0; i < 8; i++) c.push(Number(m._wasm_bench_ctr_get(i)));
     return { t: performance.now(), v: vns(), insns: Number(m._wasm_insns()),
-      tbs: Number(m._wasm_tbs()), fb: Number(m._wasm_fb_updates()), c };
+      tbs: m._wasm_tbs ? Number(m._wasm_tbs()) : 0, fb: Number(m._wasm_fb_updates()), c };
   };
   const t0 = performance.now();
   const trace = [], shots = [], traceCs = [];
@@ -516,11 +521,12 @@ const vWin = d.v / 1e9;
 const hostCpu = a.cpuIx != null && c.cpuIx != null
   ? cpuDelta(cpuSamples[a.cpuIx], cpuSamples[c.cpuIx]) : { top: 0, all: 0 };
 const counters = {}, perMi = {};
-for (let i = 0; i < NAMES.length; i++) {
-  const dv = c.c[i] - a.c[i];
+const CNAMES = [...NAMES, ...Array.from({ length: 8 }, (_, i) => "bench" + i)];
+for (let i = 0; i < c.c.length; i++) {
+  const dv = (c.c[i] ?? 0) - (a.c[i] ?? 0);
   if (!dv) continue;
-  counters[NAMES[i]] = dv;
-  perMi[NAMES[i]] = +(dv / (d.insns / 1e6)).toFixed(3);
+  counters[CNAMES[i]] = dv;
+  perMi[CNAMES[i]] = +(dv / (d.insns / 1e6)).toFixed(3);
 }
 const g = (n) => counters[n] || 0;
 const rec = {

@@ -53,6 +53,12 @@ cp -a site/dist-jit site/dist-jit-base   # the A leg of every A/B this session
 bash scripts/gate.sh quick               # 152 s, all jobs concurrent — start green
 ```
 
+**Since the 2026-09-22 review the port carries no counters, knobs or
+tool-only exports.** `videobench` needs `tools/perf/bench-hooks.patch`
+applied to *both* arms, and a census is a temporary patch. Read round
+forty-eight § 1 before measuring anything; much of what follows still
+names counters and `?env=` knobs that no longer exist.
+
 **Three rules decide whether a session produces anything.**
 
 1. **Measurements and gates are different activities.** A gate never
@@ -137,7 +143,8 @@ J2ME's 444–1 109 — while doing 6× fewer TB lookups per Mi, so the two
 workloads rank levers in opposite orders. Its number is `rt` (virtual s
 per wall s, 1.0 = real time on a real SL65). It stands at **2.76–2.89**
 (ms/Mi 2.77–2.90) on this desktop at `hostBusy` ≈ 0.1 after round
-forty-seven — **rounds 45–46 ran a capcom build that had dropped it to
+forty-seven, and round forty-eight's inline `msr` takes another 2.2 % off
+ms/Mi — **rounds 45–46 ran a capcom build that had dropped it to
 0.38; see round forty-seven's first item before trusting any video
 number from those two rounds**. Round forty-one read 2.66–2.68; round forty's build
 was 2.46–2.49 and round thirty-nine's 1.8 on the same host state), i.e.
@@ -547,17 +554,34 @@ Three conclusions the table is for:
 
 ## Open items (ranked)
 
-### `msr cpsr_c` without a mode change: an emitted fast path — ≈ 1.7 % of video, sized not built
+### Native s75/el71 no longer boot at the pin — the review's "CPSR writes exit to the loop" (owner decision, not a perf item)
 
-Round forty-seven inlined `mrs cpsr` (−2.47 % ± 0.92 on video, ≈ 9 ns per
-avoided in-TB helper call). The msr twin is larger and harder: 6 535 msr
-per Mi on video, 5 331 of them leave the mode alone and still call the
-flag-less `helper_cpsr_write`, which kills every global. Compare the new
-mode bits with `uncached_cpsr` in emitted code; when equal, write `daif`
-and the flag globals inline and kick `icount_decr` if an interrupt is
-pending, otherwise call the helper. Prove `cpsr_write`'s NMFI/SCR
-branches dead on this core first, and keep `w64_psr_continue`'s exit
-exact. See round forty-seven § 8–9 and the Open list there.
+Found in round forty-eight, when the native reference was rebuilt at the
+pin for the first time since the review. `gate.sh keep`'s `native` job is
+RED at `b9971ade2e` and later: s75 and el71 abort in `l1bbcsg` ~9 s in,
+the L1↔DSP starvation signature `versions.env` records for plain master.
+The merge commit `7c5f87096a` passes. Flipping only the three
+`#ifdef __EMSCRIPTEN__` guards the review added back to `#if 1`
+(`op_helper.c` `cpsr_write_check_irq`, `translate.c` `gen_set_psr` and
+`gen_rfe`), so native continues through `goto_ptr` with the icount kick
+again, passes. Every wasm gate is green, including `lockstep-wasm` against
+the rebuilt reference, because wasm never took the upstream path. It is
+the review's R-item "native builds get upstream's behaviour back", so it
+needs the owner's call: restore the continuation natively, or find why
+exiting to the loop starves the L1 handshake (the more honest fix, since
+upstream semantics ought to be timing-neutral under icount).
+
+### ~~`msr cpsr_c` without a mode change: an emitted fast path~~ — TAKEN in round forty-eight (−2.16 % ± 0.85 on video)
+
+> The census found 5 331.7 inline writes per Mi and 1 205.0 helper calls
+> left, 1 204.2 of which change mode. See round forty-eight in the log.
+> What it leaves on the table: a mode-changing `msr` now always exits
+> through the stub, where the in-line guard used to continue when hflags
+> stayed equal. That is ≤ 1 204 × ~9 ns ≈ 0.36 % of video. Collecting it
+> needs a forward diamond with a join label on every fast-path write,
+> because a backward branch drops the TB out of the backend's nested
+> mode. It is also below what this meter resolves (±0.85 % at 16 legs),
+> so it is not worth building blind.
 
 ### ~~A chained exit for a branch inside an inlined callee — +1.3 %, blocked on one invariant~~ — TAKEN in round forty-three
 
@@ -2542,6 +2566,80 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 
 ## Round log (newest first)
+
+## Update (2026-09-23, round forty-eight: the meter after the review, `msr cpsr` goes inline, and the native reference is red)
+
+### 1. What the 2026-09-22 review took from the measurement workflow
+
+The review (`qemu/20260922-review.md`, owner decisions) removed
+`wasm-diag.h`, every counter, every `W64_*` knob and the tool-only
+exports, `wasm_rtcap_set` among them. `videobench` needs that export: the
+walk runs capped and the window runs uncapped. Without it every leg reads
+`rt` 1.000.
+
+- **`tools/perf/bench-hooks.patch`** puts back `wasm_rtcap_set` and eight
+  census slots (`wasm_bench_ctr[]`, read as `bench0..7` in `perMi:`). It
+  is a *local* patch: apply it to both arms of an A/B and never commit it
+  to `qemu/`. It is in the qemu working tree right now, uncommitted.
+- **A census is now a temporary patch plus a separate dist.** This
+  round's is in `doc/attic/msr-census-round48.diff`. Under icount a count
+  does not depend on host load, so a census leg can overlap a gate.
+- **There are no `?env=` knobs.** An A/B is two binaries: build arm B,
+  `git apply -R` the change, build arm A, re-apply, and check with md5
+  that `dist-jit` matches the measured B before gating it.
+- **`tools/perf/vgfit.py`** fits one hostBusy slope shared by both arms
+  over any number of tags. `vgan.py`'s slope per arm cannot be pinned
+  down by four legs. On series 1 it read −2.12 % where the shared slope
+  read −1.91 % ± 1.63.
+
+### 2. `msr cpsr` that leaves the mode alone is written inline (`e2976ebbfe`)
+
+Round forty-seven's open item. `w64_cpsr_write_inline()` in
+`gen_set_psr` applies when the mask is within NZCV|Q|AIF|M, there is no
+EL3, and `w64_psr_can_continue()` holds. It checks in emitted code that
+the masked mode bits of `uncached_cpsr ^ (val | M4)` are zero and that
+`interrupt_request` is 0. Then it writes the four flag globals, `QF` and
+the low word of `daif`, and translation carries on. Otherwise it branches,
+before writing anything, to an exit stub at `tb_stop` that calls
+`helper_cpsr_write` with the same value and leaves like the guard's miss
+(refund, pc, `goto_ptr`). The `M4` term matters: `cpsr_write` ORs 0x10
+into the value before it compares modes.
+
+- **Census** (SL65 video, per Mi): fast path **5 331.7**, helper calls
+  left **1 205.0**, of which **1 204.2** change mode and **0.54** have an
+  IRQ pending. That is round forty-seven's 5 331 non-mode msr exactly.
+- **Price:** ABBA ×2 twice, 16 legs, shared-slope fit on hostBusy:
+  **−1.91 % ± 1.63 and −2.44 % ± 0.47; pooled −2.16 % ± 0.85 ms/Mi**.
+  Mi was 1499.7–1501.2 in every leg. This session's base read 2.93–3.44
+  ms/Mi (`rt` 2.33–2.74) at hostBusy 0.10–0.36.
+- **Gates:** `quick` green; `keep` green on every wasm job, including
+  `lockstep-wasm` against a native reference rebuilt at the pin. The red
+  `native` job is § 3.
+
+### 3. The native reference was stale, and at the pin it is red
+
+`build/qemu-native-build` was still `4e60f930b2`, from before the
+upstream merge; the review had said so. Rebuilt at `b9971ade2e`, the
+`native` job fails deterministically: s75 and el71 abort in `l1bbcsg` at
+~9 s. Bisect: the merge `7c5f87096a` passes; flipping the review's three
+native CPSR-exit guards back passes too. See § Open items, top entry.
+
+### Traps this round paid for
+
+- **`scripts/build-native.sh` runs `git submodule update --init` on
+  `qemu/` and then `checkout -f` to the pin.** Whenever the superproject's
+  recorded commit differs from the submodule HEAD, that can wipe
+  uncommitted qemu work. This time an untracked file blocked the checkout
+  and saved it. With a dirty submodule, move the worktree by hand:
+  `git -C build/qemu-native checkout --detach <rev>`, then
+  `ninja -C build/qemu-native-build qemu-system-arm`, with
+  `~/.local/bin` on PATH for ninja.
+- **A relative `WEB_DIST` deploys into the build directory:**
+  `ninja-fast.sh` `cd`s to `build/qemu-wasm64` first. Pass an absolute
+  path.
+- **`pgrep -f`/`pkill -f` match their own shell** — paid twice more this
+  round (a wait loop that never ended, a `pkill` that exited 144). Wait
+  on a log marker, and stop background tasks by task id.
 
 ## Update (2026-09-22, round forty-seven: a device model had eaten the video meter, a flash write storm was round 46's "wake storm", the deferred BQL hold was never bounded, and `mrs cpsr` goes inline)
 
