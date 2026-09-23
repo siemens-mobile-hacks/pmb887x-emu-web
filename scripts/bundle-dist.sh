@@ -40,10 +40,8 @@ page="index.html app.js style.css keyboards.js fullflashes.js siemensfw.js recal
 # page images (style.css references them by relative path)
 images="img/ke970-wheel.webp"
 
-# The two engines: dist-jit = wasm64 TCG backend, the page default
-# (required); dist = TCI interpreter, the ?dist=dist fallback (only built
-# with TCI=1 — optional).
-engines="dist dist-jit"
+# The engine: dist-jit = the wasm64 TCG backend build.
+engines="dist-jit"
 
 for f in $page $images; do
   [ -f "$SITE/$f" ] || fail "site/$f missing"
@@ -78,9 +76,6 @@ for d in $engines; do
     if [ -f "$SITE/$d/$f" ]; then cp "$SITE/$d/$f" "$OUT/$d/$f"; fi
   done
 done
-if [ ! -f "$OUT/dist/qemu-system-arm.wasm" ]; then
-  note "no TCI build in site/dist (built with TCI=1) — ?dist=dist will 404 on the deployed page"
-fi
 
 if [ "${BUNDLE_TESTS:-0}" = 1 ]; then
   for f in "$SITE"/dist/tcgisa.bin "$SITE"/dist/tcgbench*.bin "$SITE"/dist-jit/tcgisa.bin; do
@@ -98,7 +93,7 @@ fi
 
 # -n: no filename/timestamp in the header → byte-deterministic bundles.
 # Level 9 is build-time-only cost, worth it for the wasm (the wire
-# bottleneck per README: dist-jit 28 MB → ~4 MB, TCI 45 MB → ~11 MB).
+# bottleneck per README: dist-jit 28 MB → ~4 MB).
 gz_re='\.(html?|css|m?js|json|wasm|tar|bin|svg|txt|symbols)$'
 while IFS= read -r -d '' f; do
   [[ $f =~ $gz_re ]] || continue

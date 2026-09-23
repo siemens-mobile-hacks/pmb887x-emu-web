@@ -15,8 +15,8 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
                                             (Advanced ▸ Siemens keys + device detection)
   site/                                     served web root (index.html / app.js / keyboards.js /
                                             fullflashes.js / siemensfw.js); dist-jit/ = wasm64
-                                            backend build (page default), dist/ = TCI build
-                                            (?dist=dist) + boards.tar, dist-*/ = A/B snapshots
+                                            backend build, dist/ = boards.tar + key module +
+                                            suite images, dist-*/ = A/B snapshots
                                             (all gitignored)
   tests/                                    native boot suite (run.mjs), tcg-isa op-suite,
                                             lockstep plugin, tcgbench perf bench
@@ -35,14 +35,13 @@ engines are served side by side, built from the same tree:
   batched with their successors (compile-once, later compacted into
   ~1024-member modules), chain via tail calls through a shared funcref
   table, with an inline TLB probe and inline TB accounting. The page
-  default for every board (LG included since 0034–0038). ~7.4× TCI on
-  compute (tcgbench), ~1.6× faster to the idle screen, ~28 MB wasm
-  (Asyncify onlylist, 0031).
-- `site/dist/` — the **TCI interpreter** build (`TCI=1` at build time,
-  `?dist=dist` on the page). The reference/fallback tier and the oracle
-  for bisecting JIT-only failures (diff the same device trace between
-  the two engines). ~45 MB wasm. Also where `boards.tar` and the suite
-  images (`tcgisa.bin`, `tcgbench.bin`) are served from, whatever
+  engine for every board (LG included since 0034–0038). ~28 MB wasm
+  (Asyncify onlylist, 0031).  A TCI interpreter build used to ship next
+  to it (`?dist=dist`, ~7.4× slower on compute); it was removed in the
+  2026-09-22 review, and the oracle for JIT-only failures is the native
+  build (lockstep).
+- `site/dist/` — where `boards.tar`, the Siemens key module and the
+  suite images (`tcgisa.bin`, `tcgbench.bin`) are served from, whatever
   `?dist=` selects.
 
 ### Build pipeline
@@ -64,18 +63,14 @@ engines are served side by side, built from the same tree:
    `build/qemu-wasm64`, link with the Asyncify onlylist
    (`configs/meson/asyncify-only.txt`) and `qom_cast_debug=false`, and
    deploy atomically (tmp+rename) to `site/dist-jit/`, symbol map
-   included. With `TCI=1` it additionally configures
-   `build/qemu-wasm` with `--enable-tcg-interpreter` and deploys to
-   `site/dist/` (the TCI dist keeps `ASYNCIFY_REMOVE=tcg_qemu_tb_exec`;
-   the onlylist regresses it +26 %).
+   included. `--enable-tcg-interpreter` is refused for a wasm host.
 3. `serve.mjs` serves `site/` — static page files edited in place, build
    artifacts in `site/dist*/` — with the COOP/COEP headers pthreads need
    (SharedArrayBuffer), a gzip sidecar + ETag revalidation for the wasm,
    and an https port for phone/LAN access.
 
-Incremental iteration: `scripts/ninja-fast.sh` (wasm64 → `site/dist-jit`
-by default, `TCI=1` for the interpreter → `site/dist`; rebuild + atomic
-deploy + boards.tar refresh, no tree reset). One-shot: `./build.sh`.
+Incremental iteration: `scripts/ninja-fast.sh` (wasm64 → `site/dist-jit`;
+rebuild + atomic deploy + boards.tar refresh, no tree reset). One-shot: `./build.sh`.
 
 ### The series
 
@@ -325,8 +320,8 @@ linear Unix seconds, LG packed calendar).
   black over 30 s (a CSS filter, so screenshots and captures still hand
   back what the phone last drew), and draws the parsed dump over the top
   of the dying screen. `tools/exitcheck.mjs` drives the whole path.
-- URL params (see [diagnostics.md](diagnostics.md)): `?dist=dist`
-  switches engine, `?suite=` boots a bare-metal image headlessly,
+- URL params (see [diagnostics.md](diagnostics.md)): `?dist=<dir>`
+  runs another build output (A/B snapshots), `?suite=` boots a bare-metal image headlessly,
   `?env=NAME=VAL` passes build knobs, `?icount=`/`?rt=`/`?trace=`/
   `?qargs=`/`?iorewind=1` override the boot recipe, `?lockstep=1` turns
   on the built-in guest-state fold.

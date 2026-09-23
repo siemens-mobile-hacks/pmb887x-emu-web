@@ -5,11 +5,10 @@ qemu-system-arm compiled to WebAssembly (`./build.sh` + `./serve.mjs`) —
 deterministic boot, splash draws, keypad/serial work, S75 reaches its
 idle screen in ~40 s (the stock icount timing model below keeps
 correctness independent of host speed — a slow host merely boots
-slower). Two engines ship: the wasm64 TCG JIT backend (`site/dist-jit/`,
-the page default for every board — guest TBs compiled to wasm at
-runtime, ~7.4× TCI on compute, ~28 MB download) and the TCI interpreter
-(`site/dist/`, `?dist=dist`, the reference/fallback tier, ~45 MB; built
-only with `TCI=1`). See [doc/lessons.md](doc/lessons.md) +
+slower). The engine is the wasm64 TCG JIT backend (`site/dist-jit/`,
+every board — guest TBs compiled to wasm at runtime, ~28 MB download;
+the former TCI interpreter build was ~7.4× slower on compute and has
+been removed). See [doc/lessons.md](doc/lessons.md) +
 [doc/performance-handoff.md](doc/performance-handoff.md).
 
 The page's **Firmware** panel is a two-way switch: **Preset** picks from a
@@ -46,8 +45,7 @@ git submodule update --init qemu   # build.sh does this too; the qemu
                                    # tree is ~1 GB with history
 ./build.sh          # ~30-60 min first run: emsdk 4.0.10 + glib/pixman/zlib/libffi
                     # built for wasm64, then qemu → site/dist-jit/
-                    # qemu-system-arm.wasm (the page default; TCI=1 also
-                    # builds the interpreter dist, site/dist/)
+                    # qemu-system-arm.wasm
 ./serve.mjs         # http://127.0.0.1:8080 (COOP/COEP headers for pthreads)
                     # phone/LAN: auto-redirected to https://<lan-ip>:6808
                     # (self-signed — accept the browser warning once; browsers
@@ -70,10 +68,8 @@ a failed prefetch falls back to the loader fetching at boot as before
 Everything runs client-side: the picked fullflash is written into the
 emscripten MEMFS, board configs are unpacked from `site/dist/boards.tar`
 (always fetched from `dist/`, whatever `?dist=` selects), and qemu boots
-with a small `-display wasm` backend (see below). Both engines are built
-from the same source tree, the `qemu/` submodule. The wasm64 backend is
-~7.4× TCI on compute and ~1.6× faster to the idle screen; both stay well
-behind native — the remaining time is translation/module-compile of cold
+with a small `-display wasm` backend (see below). It is built from the
+`qemu/` submodule. The wasm64 backend stays well behind native — the remaining time is translation/module-compile of cold
 code in the first ~0.75 G instructions, and after that the guest's own
 timeline (see [doc/performance-handoff.md](doc/performance-handoff.md)).
 
@@ -178,7 +174,7 @@ lands in `/tmp/pmb887x-serial.log`.
 
 The native build is made from the same pinned revision as the wasm
 builds, i.e. it carries the whole patch series. Almost all of it is
-`__EMSCRIPTEN__`-gated or TCI-only and inert natively; the generic parts
+`__EMSCRIPTEN__`-gated or wasm64-only and inert natively; the generic parts
 (romd FlatView variants, fill-time MMIO dispatch, fill-time TLB growth,
 the range-flush summary, the CPSR hflags skip, the per-board RTC seed)
 are semantics-preserving and are what the native suite (`tests/run.mjs`)
@@ -190,7 +186,7 @@ and the lockstep gate cover.
 .
   qemu/                 git submodule: Azq2/qemu-pmb887x, branch
                         wasm-browser-port (= origin/wasm-patches) — the
-                        whole wasm/TCI/perf series committed on top of
+                        whole wasm/perf series committed on top of
                         qemu-pmb887x master; the ONLY qemu source tree
                         (wasm and native builds alike).
   pmb887x-emu/          git submodule: the siemens-mobile-hacks meta-repo
@@ -200,21 +196,19 @@ and the lockstep gate cover.
                         for key recalculation, ESN recovery and Siemens
                         device detection (scripts/build-recalc-wasm.sh)
   build.sh              one-shot WASM build (toolchain → deps → qemu →
-                        site/dist-jit, the page default; TCI=1 also builds
-                        site/dist)
+                        site/dist-jit)
   serve.mjs             static server for the WASM page (COOP/COEP); serves
                         site/ — static files are edited in place, build
                         artifacts (qemu wasm/js, boards.tar) live in
-                        site/dist/ (TCI + boards.tar) and site/dist-jit/
-                        (wasm64 backend)
+                        site/dist/ (boards.tar, key module) and
+                        site/dist-jit/ (the wasm64 backend)
   versions.env          pinned qemu-pmb887x / bsp / toolchain revisions
   scripts/
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
     build-qemu.sh       initialise the qemu (+ pmb887x-emu) submodules, check
                         qemu out at the pinned rev, sync bsp/boards/siemensfw
-                        and build the wasm dists (wasm64 backend →
-                        site/dist-jit/, the default; TCI=1 also builds the
-                        interpreter dist → site/dist/)
+                        and build the wasm dist (wasm64 backend →
+                        site/dist-jit/)
     sync-bsp.sh         bsp checkout @ pin → build/bsp
     pack-boards.sh      build/bsp board configs → site/dist/boards.tar (run by
                         every deploy path)
@@ -231,8 +225,8 @@ and the lockstep gate cover.
     bundle-dist.sh      assemble the deployable static bundle in dist/ (what
                         deploy/nginx/ serves; pre-gzip'd + manifest)
     run-native.sh       native launcher (same boot recipe as the web page)
-    ninja-fast.sh       incremental rebuild + deploy (default: wasm64 →
-                        site/dist-jit; TCI=1: dist) — the iteration loop
+    ninja-fast.sh       incremental rebuild + deploy (wasm64 →
+                        site/dist-jit) — the iteration loop
     ninja-wasm64.sh     bare incremental ninja in the wasm64 build dir
     iterate.sh          one-command edit→rebuild→browser-verdict loop
     gate.sh             every correctness gate, run concurrently, one
@@ -385,10 +379,10 @@ SGOLD boards, the flat-view variant cache and the module pipeline, to
 **the ranked open items are `doc/performance-handoff.md` § Open items**.
 
 - `site/dist-jit/` — the wasm64 TCG backend build, what the page runs
-  by default for every board (`scripts/build-qemu-wasm64.sh`). Boots
-  in Firefox too; `tools/ffboot.mjs` is the cross-browser smoke.
-- `site/dist/` — the TCI build (`TCI=1`), the reference/fallback tier
-  and the oracle for bisecting JIT-only failures; `?dist=dist`.
+  for every board (`scripts/build-qemu-wasm64.sh`). Boots in Firefox
+  too; `tools/ffboot.mjs` is the cross-browser smoke.  The oracle for
+  JIT-only failures is the native build (lockstep), not a second wasm
+  engine.
 - Fast iteration: `scripts/ninja-fast.sh` (incremental, correct env,
   atomic deploy, ~8 s) + `node tools/workbench.mjs --board <b>` (wall
   time over a fixed stretch of guest work — the keep/revert meter) +

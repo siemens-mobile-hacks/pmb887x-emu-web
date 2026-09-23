@@ -7,7 +7,7 @@ WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "== [1/3] toolchain + deps =="
 bash "$WEB_DIR/scripts/build-deps.sh"
 
-echo "== [2/3] qemu (wasm64, arm-softmmu, TCG backend -> site/dist-jit; TCI=1 also builds site/dist) =="
+echo "== [2/3] qemu (wasm64, arm-softmmu, TCG backend -> site/dist-jit) =="
 bash "$WEB_DIR/scripts/build-qemu.sh"
 
 echo "== [3/3] done =="

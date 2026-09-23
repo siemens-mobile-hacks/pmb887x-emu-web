@@ -3,12 +3,8 @@
 #
 # Uses the qemu submodule at the pinned rev (the series branch — all
 # patches committed there), then builds:
-#   default: the wasm64 TCG backend -> site/dist-jit/ (the page default)
-#   TCI=1 : additionally the TCG-interpreter dist -> site/dist/ (the
-#           comparison baseline, reachable as ?dist=dist; every board
-#           including the LG ones now boots on the wasm64 backend)
-# Either way it produces site/dist/boards.tar (board configs from bsp;
-# the page always fetches it from dist/).
+# the wasm64 TCG backend -> site/dist-jit/, plus site/dist/boards.tar
+# (board configs from bsp; the page always fetches it from dist/).
 # site/ is served directly by serve.mjs — nothing is copied for it.
 set -euo pipefail
 
@@ -48,48 +44,4 @@ bash "$WEB_DIR/scripts/build-recalc-wasm.sh"
 # --- build: wasm64 TCG backend (site/dist-jit/, the page default) ---
 bash "$WEB_DIR/scripts/build-qemu-wasm64.sh"
 
-# --- optional: TCG-interpreter dist (site/dist/) ---
-if [ -z "${TCI:-}" ]; then
-  echo "== skipping the TCI dist (site/dist/) — set TCI=1 to build it"
-  echo "=== web dist ready: $WEB_DIR/site/dist-jit ==="
-  exit 0
-fi
-
-# Flags follow qemu's CI wasm64 job (tests/docker/dockerfiles/emsdk-wasm64-cross.docker
-# + .gitlab-ci.d/buildtest.yml build-wasm64-64bit), plus the flags needed to
-# drive it from a browser: pthreads with main() proxied to a worker, ES6
-# module output, MEMFS for the fullflash, exported wasm_* helpers.
-# Emscripten link settings (threads, ASYNCIFY, ES6, ENV export, memory
-# growth) come from qemu's own configs/meson/emscripten.txt, extended by
-# the series' first commit (ui: wasm backend — ENV + EXIT_RUNTIME +
-# growable memory).
-EXTRA_CFLAGS="-O3 -pthread -DWASM_BIGINT -sMEMORY64=1"
-
-BUILD_DIR="$BUILD/qemu-wasm"
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
-
-emconfigure "$QEMU_SRC/configure" \
-  --static --cpu=wasm64 \
-  --target-list=arm-softmmu \
-  --without-default-features \
-  --enable-system --enable-tcg --enable-tcg-interpreter \
-  --enable-pixman \
-  --with-coroutine=wasm \
-  --disable-tools --disable-docs --disable-install-blobs --disable-werror \
-  -Dcpp_std=gnu++20 \
-  --extra-cflags="$EXTRA_CFLAGS" \
-  --extra-cxxflags="$EXTRA_CFLAGS"
-
-emmake ninja -j"$(nproc)" qemu-system-arm.js
-
-# Deploy atomically (temp name + rename): a plain cp over the live-served
-# wasm can serve a torn file if the server is running.
-for f in qemu-system-arm.js qemu-system-arm.wasm; do
-  cp "$f" "$DIST/.$f.tmp"
-  mv -f "$DIST/.$f.tmp" "$DIST/$f"
-done
-[ -f qemu-system-arm.worker.js ] && cp qemu-system-arm.worker.js "$DIST/" || true
-[ -f qemu-system-arm.wasm.map ] && cp qemu-system-arm.wasm.map "$DIST/" || true
-
-echo "=== web dists ready: $WEB_DIR/site/dist-jit (default) + $DIST (TCI) ==="
+echo "=== web dist ready: $WEB_DIR/site/dist-jit ==="

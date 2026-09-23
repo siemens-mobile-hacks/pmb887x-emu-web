@@ -3,8 +3,7 @@
 #
 # Builds the emscripten wasm64 qemu (memory64, pthreads, ASYNCIFY) into
 # build/qemu-wasm64/ and deploys qemu-system-arm.{js,wasm} into
-# site/dist-jit/ (the emulator page's default dist; ?dist=dist opts into
-# the TCI build instead).
+# site/dist-jit/ (the emulator page's dist).
 #
 # The default is the 32-bit-address-limit memory model (-sMEMORY64=2): i64
 # pointers, i32 memory index.  It is worth +19.2 % on J2ME (round thirty-six)
@@ -80,14 +79,10 @@ if [ ! -f "$BUILD/build.ninja" ] || [ ! -f "$BUILD/meson-private/coredata.dat" ]
       --extra-cflags="-O3 -pthread -DWASM_BIGINT -sMEMORY64=2" )
 fi
 
-# wasm64 backend: the hot path is JIT'd per-TB modules, not the TCI
-# interpreter, so instrument ONLY the functions that can be on the stack at
-# a coroutine switch (configs/meson/asyncify-only.txt) instead of "everything
-# but tcg_qemu_tb_exec".  ~45 MB -> ~27 MB wasm, boot-to-idle -18 %.  The TCI
-# dist keeps ASYNCIFY_REMOVE (its hot path IS the interpreter; the onlylist
-# regresses it +26 %), so this override is wasm64-only and is applied here
-# rather than in the shared configs/meson/emscripten.txt.  Absolute path so
-# meson's compile probes (run from temp dirs on a reconfigure) find the list.
+# Instrument ONLY the functions that can be on the stack at a coroutine
+# switch (configs/meson/asyncify-only.txt): ~45 MB -> ~27 MB wasm,
+# boot-to-idle -18 %.  Absolute path so meson's compile probes (run from
+# temp dirs on a reconfigure) find the list.
 ONLY="$ROOT/qemu/configs/meson/asyncify-only.txt"
 LA="['-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']"
 # qom_cast_debug: OBJECT_CHECK() casts assert the QOM type on every call —

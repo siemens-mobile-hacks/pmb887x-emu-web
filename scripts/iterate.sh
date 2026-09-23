@@ -1,6 +1,6 @@
 #!/bin/bash
 # One-command C-iteration loop for the default wasm build (wasm64 TCG
-# backend, site/dist-jit; TCI=1 for the interpreter dist):
+# backend, site/dist-jit):
 #   edit qemu/**.c  ->  scripts/iterate.sh  ->  verdict
 #
 # Steps: incremental ninja rebuild + deploy to site/dist-jit/ (scripts/ninja-fast.sh),

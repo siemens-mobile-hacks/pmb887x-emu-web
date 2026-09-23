@@ -35,7 +35,7 @@ rejects it. Costs are wall-clock on this host (32 cores, quiet).
 
 | rung | command | cost | detects | cannot see |
 |---|---|---|---|---|
-| 0 build | `scripts/ninja-fast.sh` (**wasm64 → site/dist-jit by default**; `TCI=1` for the interpreter → site/dist) | ~8 s wasm64, ~70 s TCI | compile errors | — |
+| 0 build | `scripts/ninja-fast.sh` (wasm64 → site/dist-jit) | ~8 s | compile errors | — |
 | 1 knob A/B | `idlebench "dist-jit@env=K=V,dist-jit"` — same wasm both legs | ~2 min | whether the mechanism is worth building at all | anything without a knob |
 | 2 fixed work | `node tools/workbench.mjs --board <b> --to <Mi>` | ~30 s/leg | **the default keep/revert meter**: wall time over identical guest work | steady state, boot phases |
 | 3 op-suite | `scripts/run-tcg-isa.sh` | ~3 s | any TCG/memory/exec value divergence; every built backend byte-identical against the native JIT | perf |

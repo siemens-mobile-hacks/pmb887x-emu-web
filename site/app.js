@@ -1,7 +1,7 @@
 // qemu-pmb887x web frontend.
 //
-// Boots the wasm-compiled qemu-system-arm (arm-softmmu + TCI + the
-// `-display wasm` backend) entirely in the browser:
+// Boots the wasm-compiled qemu-system-arm (arm-softmmu + the wasm64 TCG
+// backend + the `-display wasm` backend) entirely in the browser:
 //   - the fullflash picked by the user is written into the emscripten MEMFS,
 //   - board configs are unpacked from boards.tar,
 //   - PMB887X_* env vars mirror the pmb887x-emu-mcp `load` tool options,
@@ -171,10 +171,10 @@ let esnAbort = null;
 // §6 of the HUD criteria: the guest has been slower than 0.80x for three
 // seconds. Drawn on the pill whether or not the HUD itself is shown.
 let slow = false;
-// icount_rtcap_mode(): 0 off, 1 banked, 2 strict, 3 budget. The cap ships
-// banked for the guest's first 30 s of its own clock — the boot — and then
-// budgets: a stall is repaid, but never by more than 500 ms of sprinted
-// clock. §6 stays quiet while banked (see trackSpeed).
+// icount_rtcap_mode(): 0 off, 1 banked, 3 budget. The cap is banked for the
+// guest's first 30 s of its own clock — the boot — and then budgets: a stall
+// is repaid, but never by more than 500 ms of sprinted clock. §6 stays quiet
+// while banked (see trackSpeed).
 let rtcapMode = 0;
 // §6b: the guest has stopped executing while the page still believes it is
 // running. The vCPU is a worker thread and the state machine above never
@@ -1158,12 +1158,9 @@ async function applyFullflashFile(file) {
  * tests/tcg-isa, installed to dist/tcgisa.bin) instead of a phone: the
  * suite prints TAP + value dumps on the PL011 and exits via semihosting
  * SYS_EXIT, so the run ends in the normal onExit hook. */
-/* ?dist=<dir>: which build output to run.  The default is the wasm64 TCG
- * backend build (dist-jit/): it is ~1.6x faster to the idle screen and
- * about half the download of the TCG-interpreter build, which stays
- * available as ?dist=dist (and is still what boards.tar is served from). */
-const DIST = new URLSearchParams(location.search).get("dist") ||
-             (new URLSearchParams(location.search).has("dist") ? "dist" : null);
+/* ?dist=<dir>: which build output to run (default dist-jit/; tools point
+ * this at side-by-side builds).  boards.tar is always served from dist/. */
+const DIST = new URLSearchParams(location.search).get("dist") || null;
 const DIST_DEFAULT = "dist-jit";
 
 /* ---- engine prefetch ------------------------------------------------ */
@@ -1350,9 +1347,6 @@ async function bootSuite(url) {
         for (const kv of new URLSearchParams(location.search).getAll("env")) {
           const i = kv.indexOf("=");
           if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
-        }
-        if (new URLSearchParams(location.search).get("w64debug") === "1") {
-          mod.ENV.W64_DEBUG = "1";
         }
         mod.FS.mkdirTree("/data");
         mod.FS.writeFile("/data/tcgisa.bin", bytes);
@@ -1611,9 +1605,16 @@ async function boot() {
     // doc/livelock-postmortem.md §4). LG firmware has no such budgets — it
     // boots fine on the plain realtime clock, so icount is off for it.
     // ?icount= overrides (e.g. precise-clocks=on, shift=4, none).
-    const icount =
+    // ?rt=off: no real-time cap on the icount clock (the benchmarks use it
+    // to measure engine speed). The cap is on by default: banked for the
+    // guest's first 30 s of its own clock, so the boot is never slowed
+    // further, then capped at 500 ms of repayable stall.
+    const icountBase =
       qsp.get("icount") ??
       (device.startsWith("lg-") ? "none" : "shift=3,sleep=off");
+    const icount = icountBase !== "none" && qsp.get("rt") === "off"
+      ? icountBase + ",rtcap=off"
+      : icountBase;
     const trace = qsp.get("trace");
     const extraArgs = (qsp.get("qargs") ?? "").split(/\s+/).filter(Boolean);
     // The guest's mixer resamples straight to the output device's own rate,
@@ -1686,17 +1687,6 @@ async function boot() {
         if (qsp.get("icount2debug") === "1") {
           mod.ENV.QEMU_ICOUNT2_DEBUG = "1";
         }
-        // ?rt=off|banked|banked:<n>|strict|budget[:<win>[:<ms>]]:
-        // real-time cap on the icount clock (the vCPU sleeps instead of
-        // running its clocks ahead of wall time). Default budget:30:500 —
-        // banked for the guest's first 30 s of its own clock, so the boot is
-        // never slowed further, then the bank is capped at 500 ms: a later
-        // stall is repaid, but never by more than 500 ms of sprinted clock,
-        // so the phone stays close behind wall time. Plain banked and
-        // strict are pinned; the benchmarks pass rt=off to measure engine
-        // speed
-        const rt = qsp.get("rt");
-        if (rt) mod.ENV.QEMU_ICOUNT_RTCAP = rt;
         // ?lockstep=1: built-in guest-state fold (wasm64 backend,
         // doc/wasm-tcg-backend-plan.md §5) — env-driven twin of the
         // tests/lockstep.c plugin. Extra ls-* params map to
@@ -1709,16 +1699,10 @@ async function boot() {
           }
         }
         // ?env=NAME=VAL (repeatable): extra environment — e.g.
-        // env=W64_BATCH_N=8 shrinks the TB batch modules for testing
-        // (wasm64 backend, phase 2)
+        // env=QEMU_COSTACK=1 logs the stacks a coroutine switch unwinds
         for (const kv of qsp.getAll("env")) {
           const i = kv.indexOf("=");
           if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
-        }
-        // ?iorewind=1: force the stock io-recompile everywhere
-        // (A/B against the wasm io accounting; see patches/0004)
-        if (qsp.get("iorewind") === "1") {
-          mod.ENV.QEMU_IO_REWIND = "1";
         }
       },
     });
@@ -2511,7 +2495,6 @@ document.fonts?.ready.then(refitHud);
 // lines: tokens are dropped off the line, never wrapped or shrunk.
 let paintMs = 0;
 let hudTimer = 0;
-const HUD_HALT_INDEX = 29;   // WASM_DIAG_HALT in include/qemu/wasm-diag.h
 const HUD_MS = 500;          // 2 Hz — a readable number, not a per-frame one
 const HUD_KEEP = 120;        // 60 s of samples for "Copy diagnostics"
 const HUD_AVG = 20;          // the 10 s averages it still carries
@@ -2689,7 +2672,7 @@ function hudTick() {
   const m = liveModule();
   if (!m?._wasm_insns) return;
   const s = { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
-    fb: Number(m._wasm_fb_updates()), halts: Number(m._wasm_memstat(HUD_HALT_INDEX)), paint: paintMs };
+    fb: Number(m._wasm_fb_updates()), halts: m._wasm_halts ? Number(m._wasm_halts()) : 0, paint: paintMs };
   // virtual time already on the clock when this window opened: lag is wall
   // minus virtual *since then*, the only thing this window can measure
   hudV0 ??= s.v;
