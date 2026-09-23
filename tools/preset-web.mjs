@@ -8,12 +8,14 @@
 // sidecar into MEMFS), the Preset/Own file modes, and Clear cache.
 import { chromium } from "playwright-core";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 const REPO = "https://git.siepatch.dev/api/v1/repos/siepatch/fullflashes/raw/";
 
 // sparse fingerprint of the reference fullflash, computed the same way in
 // the browser over the cached bytes
-const ref = new Uint8Array(await readFile("../fullflashes/KE800-v11b.bin"));
+const ff = fileURLToPath(new URL("../fullflashes/", import.meta.url));
+const ref = new Uint8Array(await readFile(ff + "KE800-v11b.bin"));
 function fingerprint(a) {
   let h = 0x9e3779b9;
   for (let i = 0; i < a.length; i += 1048576) h = (h * 31 + a[i]) >>> 0;
@@ -101,7 +103,7 @@ assert("Clear cache shown when cached", !(await hidden("#ff-preset-delete")));
 
 await page.click("#ff-mode-own");
 assert("no preset dropdown in own-file mode", !(await page.$("#ff-preset")));
-await page.setInputFiles("#fullflash", ["../fullflashes/s75_working20060710172101.bin"]);
+await page.setInputFiles("#fullflash", [ff + "s75_working20060710172101.bin"]);
 assert("own-file inference works",
   (await page.$eval("#device", (s) => s.value)) === "siemens-s75");
 

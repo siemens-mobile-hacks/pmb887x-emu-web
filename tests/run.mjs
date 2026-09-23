@@ -53,7 +53,7 @@ const KEEP = has("keep");
 const OUT = opt("out", "");
 
 // --- flash inventory --------------------------------------------------------
-// The fullflashes that currently work (README: s75, el71, c81, ke800).
+// The fullflashes that currently work (README: s75, el71, c81, ke800, ke970).
 // `efa` = .cfi-efa sidecar (LG EFA/EEPROM block); qemu derives its path from
 // the fullflash, so it just has to sit next to it in fullflashes/.
 const FLASHES = [
@@ -61,6 +61,7 @@ const FLASHES = [
   { id: "el71", board: "siemens-el71", file: "rr_ff_el71_stock.bin" },
   { id: "c81", board: "siemens-c81", file: "rrC81 .bin" },
   { id: "ke800", board: "lg-ke800", file: "KE800-v11b.bin", efa: "KE800-v11b.bin.cfi-efa" },
+  { id: "ke970", board: "lg-ke970", file: "KE970v10d.bin", efa: "KE970v10d.bin.cfi-efa" },
 ].filter((f) => (ONLY.length ? ONLY.includes(f.id) : true));
 
 for (const f of FLASHES) {

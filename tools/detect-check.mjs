@@ -23,7 +23,7 @@ const { detectDevice } = await import(resolve(root, "site/fullflashes.js"));
 // model -> the board the page must land on (null: "has no board yet")
 const EXPECT = {
   S75: "siemens-s75", EL71: "siemens-el71", C81: "siemens-c81",
-  CX70: "siemens-cx70",
+  CX70: "siemens-cx70", SL65: "siemens-sl65",
   // S66 is an S65 under another name — the stand-in table's job
   S66: "siemens-s65",
   KE800: "lg-ke800", KE970: "lg-ke970",

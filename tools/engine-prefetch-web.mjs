@@ -12,8 +12,9 @@
 // fetches nothing at all.
 import { chromium } from "playwright-core";
 import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const FF = "../fullflashes/s75_working20060710172101.bin";
+const FF = fileURLToPath(new URL("../fullflashes/s75_working20060710172101.bin", import.meta.url));
 if (!existsSync(FF)) { console.error(`missing ${FF}`); process.exit(1); }
 
 const browser = await chromium.launch({ headless: true });

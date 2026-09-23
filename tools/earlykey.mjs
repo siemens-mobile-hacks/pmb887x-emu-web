@@ -28,7 +28,7 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 
 const BOARDS = {
   s75: "S75v40lg1.bin", el71: "rr_ff_el71_stock.bin",
-  ke800: "KE800-v11b.bin", cx70: "CX70_FW56_clean.bin",
+  ke800: "KE800-v11b.bin", ke970: "KE970v10d.bin", cx70: "CX70_FW56_clean.bin",
 };
 const boardId = opt("board", "cx70");
 const flash = BOARDS[boardId];
