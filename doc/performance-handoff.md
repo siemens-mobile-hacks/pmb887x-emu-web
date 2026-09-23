@@ -135,8 +135,11 @@ Berlin.3gp). Use it for anything aimed at the *guest's exception path*,
 because it takes one every 424 instructions — 2 360 `excSwi`/Mi against
 J2ME's 444–1 109 — while doing 6× fewer TB lookups per Mi, so the two
 workloads rank levers in opposite orders. Its number is `rt` (virtual s
-per wall s, 1.0 = real time on a real SL65). It stands at **2.66–2.68**
-on this desktop at `hostBusy` ≈ 0.1 (round forty-one; round forty's build
+per wall s, 1.0 = real time on a real SL65). It stands at **2.76–2.89**
+(ms/Mi 2.77–2.90) on this desktop at `hostBusy` ≈ 0.1 after round
+forty-seven — **rounds 45–46 ran a capcom build that had dropped it to
+0.38; see round forty-seven's first item before trusting any video
+number from those two rounds**. Round forty-one read 2.66–2.68; round forty's build
 was 2.46–2.49 and round thirty-nine's 1.8 on the same host state), i.e.
 roughly half real time on a phone: the user's "video is below real time
 on Android" is this number. `duty` = 1.000 and `halts/s` = 0 there too.
@@ -543,6 +546,18 @@ Three conclusions the table is for:
    for one.
 
 ## Open items (ranked)
+
+### `msr cpsr_c` without a mode change: an emitted fast path — ≈ 1.7 % of video, sized not built
+
+Round forty-seven inlined `mrs cpsr` (−2.47 % ± 0.92 on video, ≈ 9 ns per
+avoided in-TB helper call). The msr twin is larger and harder: 6 535 msr
+per Mi on video, 5 331 of them leave the mode alone and still call the
+flag-less `helper_cpsr_write`, which kills every global. Compare the new
+mode bits with `uncached_cpsr` in emitted code; when equal, write `daif`
+and the flag globals inline and kick `icount_decr` if an interrupt is
+pending, otherwise call the helper. Prove `cpsr_write`'s NMFI/SCR
+branches dead on this core first, and keep `w64_psr_continue`'s exit
+exact. See round forty-seven § 8–9 and the Open list there.
 
 ### ~~A chained exit for a branch inside an inlined callee — +1.3 %, blocked on one invariant~~ — TAKEN in round forty-three
 
@@ -1555,6 +1570,13 @@ has the real thing's module topology).
 
 ### Price `arm_rebuild_hflags` — CLOSED at 31.6 ns/call, 0.8–2.3 % of wall depending on the game
 
+> **Corrected 2026-09-22 (round forty-seven): 12.3 ± 1.6 ns a call, not
+> 31.6.** A same-binary duplication probe (n extra rebuilds per inline
+> SVC, +18 876 calls/Mi verified by `hflagsCalls`, fitted on `hostBusy`)
+> read 2.6 % of video and 0.3 % of J2ME game 1. The 31.6 ns below is a
+> difference of two 1 ms-quantized clock sums and was 2.6× high. A memo
+> is not worth it (playbook § REJECTED).
+
 > **Closed 2026-09-17 on data that was already on disk.** This section
 > spent its length arguing that the number needed "one build with
 > `-DWASM_DIAG_TIME_PHASES`" and was "still owed". It was not: the
@@ -2520,6 +2542,230 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 
 ## Round log (newest first)
+
+## Update (2026-09-22, round forty-seven: a device model had eaten the video meter, a flash write storm was round 46's "wake storm", the deferred BQL hold was never bounded, and `mrs cpsr` goes inline)
+
+**Read the first item before trusting any number from rounds 45–46.**
+
+### 1. The capcom regression — rounds 45 and 46 measured a broken build
+
+Round 44's capcom engine (`02ada89fe6`) armed a `QEMU_CLOCK_VIRTUAL`
+timer for every T0 wrap and compare. The SL65 runs T0 as an
+interrupt-less PWM (T0REL 0xFF6F, 145 ticks at 26 MHz), so every
+virtual second carried ~360 k timer deadlines, each an icount budget
+exit: **video fell from `rt` 2.5 to 0.38** (`execIter` 34 → 15 100 /Mi,
+`tbGen` 0.7 → 11.9 /Mi) and stayed there through rounds 45 and 46.
+Every video price those rounds quote was taken on that build; treat
+them as unmeasured. `6e361b6c8e` times only events that can raise a line
+and applies the rest at the next register access (video back to `rt`
+2.40 on its own leg). The tell was in every leg's census: **diff a new
+leg's `execIter`/`tbGen` against the last good result JSON before
+believing its clock.**
+
+### 2. Round 46's "154 kHz wake storm" was flash-blk, not the TPU (`1a043d7c57`)
+
+`qemu_bh_schedule()` on a BH that is already pending still
+`aio_notify()`s — a futex wake of the main loop. The wasm flash
+write-behind scheduled its flush per programmed word. Scheduling only on
+the empty → non-empty transition: **KE970 boot `mlWake` 148 k → 31 k/s,
+EL71 8.9 k → 1.5 k/s**, guest insns per window unchanged.
+
+### 3. 16 MB phys-summary buckets (`95055ff451`)
+
+The LG boards flip a 16 MB romd window on every flash command, and the
+other half of its 32 MB summary bucket holds the running code: every
+flip walked ~36 groups and dropped nothing. At 16 MB: **2 293 → 68
+entries walked per flip**, C-side timer 46–51 → 6–7 ms per wall second
+of the vCPU, **~4 % of the vCPU through a KE970 boot**.
+
+### 4. The flash write-behind goes asynchronous (`4457396bbf`)
+
+The flush BH's synchronous `blk_pwrite()` polls the thread pool **with
+the BQL held**, so every flash MMIO the vCPU made meanwhile waited out
+the file write (main loop in the BH ~240 ms/s; vCPU blocked on the BQL
+228–234 ms/s). `blk_aio_pwritev()`, one generation in flight: vCPU BQL
+wait 120–162 ms/s, **KE970 boot 3–5 s faster** (1.4 G insns at 24–25 s
+against 29–30 s). Integrity checked range by range against the storage
+array on EL71 and KE970, 0 bytes differ.
+
+### 5. The exception return drops its BQL pairs — and the deferred hold turns out to be unbounded
+
+HELPER(cpsr_write_eret) took and dropped the BQL twice per exception
+return around hook lists that are empty on the ARM926 — **1.29 M
+`bql_lock()` calls a second on video**, ending the vCPU's deferred hold
+(round 13) twice per SVC. The first version replaced them with the lean
+deferred pair; it measured **−3.3 % ± 0.8 % ms/Mi** at matched
+`hostBusy` and then **hung two things**:
+
+- **KE970 at 408 MIPS with the main loop stopped** (`mlIter` 0 for 25 s).
+  An ISR acks its device by MMIO and returns into the firmware's idle
+  spin; that spin is one chained loop, and without icount nothing ends
+  a chain, so `cpu_exec_loop()` — the only place a wanted lazy hold was
+  given back — never ran again. The main loop blocked on the BQL, and
+  with it the timer interrupt that ends the spin. **The eret's real
+  `bql_unlock()` was the release point that made the deferral safe**, and
+  `main-loop.h`'s claim that one pass of `cpu_exec_loop()` bounds it was
+  false. What shipped keeps the release (`bql_release_lazy()`) and drops
+  only the locking.
+- **lockstep-wasm stuck at "246 M"**: the budget stop is an `exit(0)`
+  from the vCPU thread, and with the lock held lazily the page froze on
+  it; the harness's last progress read was a few epochs short of the
+  250 M budget. `bql_release_lazy()` before that `exit(0)` (wasm64.c).
+  **Round 40's "divergence at 246 M"**, which is why these pairs were
+  kept, was very likely the same freeze.
+
+What shipped (`46d7aa3e64`, with the exit fix `c0a93d01a2` before it):
+the hooks' locking only when a list is non-empty, `bql_release_lazy()`
+where the second real unlock was. **SL65 video, ABBA ×2 fitted on
+`hostBusy`: −5.7 % ± 1.5 % ms/Mi** (means 3.152 → 2.965) — better than
+the lean pair's −3.3 %, since it drops the re-lock as well. Gate keep
+GREEN, KE970 bootcheck PASS.
+
+### 6. Timer re-arms from the main loop itself stop waking it
+
+A wake census (temporary counters in `timer_mod_ns`, split by thread
+and by whether the head deadline moved later) found round 46's question
+answered the other way round: through a KE970 boot **~90 % of the
+re-arm notifies came from the main-loop thread itself** — a device timer
+callback re-arming its own timer — and only ~15 % moved the head later.
+From the main-loop thread the notify wakes nobody (the next
+`main_loop_wait()` computes its deadline before sleeping), but its
+`qemu_notify_bh` made that next iteration skip the sleep: one more BQL
+round trip, which also ends the vCPU's deferred hold. `18f8cd44e9` skips
+it there (`qemu_in_main_loop_thread()`; `qemu_in_main_thread()` is true
+on a vCPU holding the BQL, so it cannot be used). **KE970, 4+4
+interleaved boots: `mlWake` −45 %, 500 M / 1 000 M / 1 500 M reached
+3.9 / 4.9 / 3.5 % sooner (medians), every pair faster at every
+milestone.** Siemens boards are unaffected: S75's 150 k re-arms/s are
+all vCPU-side under icount (1/s from the main loop).
+
+### 7. Closed with numbers: the hflags memo and `W64_FTMAX=4`
+
+- **`arm_rebuild_hflags` is 12.3 ± 1.6 ns a call** (temporary
+  `W64_HFDUP=n` probe: n extra rebuilds per inline SVC, video 4+4 legs,
+  +18 876 calls/Mi verified by `hflagsCalls`, fitted on `hostBusy`). The
+  5 937 calls/Mi are 2.6 % of video, 0.3 % of J2ME game 1. Round 17's
+  31.6 ns was 2.6× high. The pre-v6 short path is already two loads and a
+  few bit tests, so a memo could save only the call chain around them —
+  not worth a stale-entry risk. `hflags.c`'s comment corrected
+  (`520d682b91`).
+- **`W64_FTMAX=4` re-ranked after inlining on video: +0.97 % ± 0.87
+  ms/Mi** at matched `hostBusy` (same-binary env ABBA ×2). 3 stays.
+  `tools/perf/knob-score.py` was broken (arms looked up through
+  `globals()`, KeyError) and now also prints the `hostBusy`-fitted delta.
+
+### 8. Where video's vCPU goes now — profile by module, then counted
+
+A `wprof2` profile of the playing clip (`videobench --hold`, then
+`PROF_ATTACH`), re-aggregated **by script URL** from `PROF_SAVE` (wprof2's
+own per-module summary classes everything as TB code on a staged dist,
+and TB-module frames get main-module names that mean nothing):
+**79.7 % emitted TB code, 19.9 % main-module C**. Of the C, the
+exception/PSR cluster is ≈ 9.8 % (`arm_rebuild_hflags` 2.13, `cpsr_write`
+2.09, `switch_mode` 1.45, `cpsr_read` 0.92, `helper_cpsr_write` 0.91,
+`take_aarch32_exception` 0.74, `helper_cpsr_read` 0.57,
+`arm_take_svc_aarch32` 0.56, `helper_cpsr_write_eret` 0.46).
+
+A temporary counter build (hot counters + six census counters, patch
+kept as `doc/attic/psr-census-round47.diff`) counted per Mi: **mrs 7 710,
+msr 6 535 (1 204 of them change mode), eret 2 370, SVC 2 360, effective
+`switch_mode` 5 938 (= `hflagsCalls` exactly: entry + eret + mode msr)**,
+MMIO loads 37, MMIO stores 331, `do_ld4_mmu` 48.
+
+- **`do_ld4_mmu`'s 2.84 % self time is a profile artifact.** At 48
+  calls/Mi it would be ~1.7 µs a call; the TIME_PHASES MMIO timer with
+  every dispatch sampled (`W64_IO_SAMPLE` 1) reads **~230 ns per MMIO
+  load** after the 62 ns straddle floor — ≈ 0.3 % of wall. MMIO stores
+  read ≤ 184 ns, most of it the instrument's own nested clock calls
+  (device ≈ 8 ns, BQL at the floor). **MMIO is not a video lever.**
+- The hflags share cross-checks: 2.13 % ÷ 5 937 calls = 10 ns/call
+  against the probe's 12.3, so on this path the profile's shares are
+  usable as sizes.
+- What the counts point at: **14 245 mrs/msr helper calls per Mi**, each
+  an import call inside a TB (~14.5 ns in situ by round 27's
+  `W64_CALLPAD`, spill of live locals + every global reloaded after —
+  `cpsr_read` and `cpsr_write` carry no TCG call flags).
+
+### 9. Inline `mrs rd, cpsr`
+
+`HELPER(cpsr_read)` returns `cpsr_read() & ~CPSR_EXEC`, which needs only
+`uncached_cpsr`, `QF`, `GE`, the low word of `daif` and the four flag
+globals — about 20 TCG ops. On wasm64, `trans_MRS_reg` now emits them
+in place of the helper call (`4e60f930b2`; native keeps the helper).
+**SL65 video, two same-binary env ABBAs ×2 (16 legs), fitted on
+`hostBusy`: −2.87 % ± 1.46 and −1.87 % ± 1.22; pooled −2.47 % ± 0.92
+ms/Mi.** The raw means of the second screen were flat because its knob
+arm drew more host load (busy 0.176 vs 0.144) — read the fitted line,
+not the means. Implied saving ≈ 9 ns per mrs, which is round 27's
+14.5 ns in-situ call price minus the inline ops. `gate.sh close`: 13/15
+in the run; the two reds were infrastructure and both pass once fixed
+(next section).
+
+**This is the general lever the census names:** a flag-less helper
+called at a high rate *inside* a TB is paying ~14.5 ns for the call
+itself. Before inlining the next one, count its calls/Mi on the
+workload (this round's census patch is in `doc/attic`) and multiply by
+~9 ns.
+
+### Traps this round paid for
+
+- **`cp -r site/dist-jit site/X` copies the `.wasm.gz` with the same
+  mtime, and serve.mjs serves the sidecar when it is not older than the
+  wasm** — the staged dist runs the *previous* binary (diag counters
+  reading 0 was the tell). `rm -f site/X/*.gz site/dist-jit/*.gz` after
+  every copy. `build-qemu-wasm64.sh` ignores `WEB_DIST`.
+- **A sync block write from a main-loop BH holds the BQL for the whole
+  write.** Look for it wherever a device writes a backing file.
+- **Never remove a real `bql_unlock()` on a vCPU path without putting
+  `bql_release_lazy()` in its place**, and do not test such a change on
+  icount boards only: the deadlock needs `icount=none` (LG).
+- **KE970 boot meter**: insns sampled every 250 ms, wall time to
+  500 M / 1 000 M / 1 500 M interpolated; discard a run that freezes
+  (hang class 2). A fixed-window instruction count cannot resolve boot
+  changes — the window lands on different phases.
+- **A pkill pattern matches the shell running it** — `pkill -f
+  vgabba.sh` from a command line that contains "vgabba.sh" kills that
+  shell (exit 144) and can leave the child running. A hung gate's
+  browser renderer spun at 100 % for 35 minutes under two measurements
+  before it was found; `ps --sort=-pcpu` before every ABBA. The same
+  goes for `until ! pgrep -f "<pattern>"` wait loops: the loop's own
+  shell matches and it never exits — wait on the log's done marker
+  (`SCREEN-DONE`) instead.
+
+- **`lockstep-native` compares the native JIT against
+  `build/qemu-native-tci-build`, which `build-native.sh` never rebuilds.**
+  At session end it was from 2026-09-15 — older than the capcom engine —
+  so the gate reported a JIT/TCI divergence (an IRQ taken at insn
+  163 803 398 on one side only) that was a stale binary. Rebuild it with
+  `scripts/build-native-tci.sh` whenever the pin moves past a device
+  change (it needed `sudo apt-get install python3-venv`: configure's venv
+  wants `ensurepip`); then 3/3 clean. The `firefox` job needed
+  `npx playwright-core install firefox` (run in `tools/`) plus its GTK/cairo
+  libraries (apt list printed by the installer); then errors=0, temp=0.
+
+### Open
+
+- **The deferred hold still has no structural bound** off the exception
+  path: firmware that does MMIO and then spins in RAM without an
+  exception return, on an `icount=none` board, would starve the main loop
+  exactly as the KE970 did. Not observed after the fix. The robust fix is
+  for `bql_lock_impl()` to `cpu_exit()` the lazy holder (published
+  once per lazy epoch with a full barrier — Dekker against
+  `bql_wanted`), at the price of one chain unwind per contended
+  main-loop acquisition; price that before building it.
+- ~~`arm_rebuild_hflags` re-price~~ — closed at 12.3 ns (item 7).
+- **`msr cpsr_c` without a mode change (≈ 5 330/Mi on video)** still
+  calls `helper_cpsr_write`, which kills every global. An emitted fast
+  path (compare the mode bits against `uncached_cpsr`; if equal, update
+  `daif` and the flag globals inline and kick `icount_decr` on a pending
+  interrupt; otherwise call the helper) is the msr twin of item 9. It is
+  harder to get exactly right: `cpsr_write`'s NMFI/SCR checks are dead on
+  this core but must be proven dead, and the continuation
+  (`w64_psr_continue`) already reads the interrupt state. At item 9's
+  ~9 ns per avoided call it is worth ≈ 1.7 % of video, more if the
+  helper body (`cpsr_write` ~6.5 ns) goes with it — likely the best
+  next lever on this meter. The mode-changing 1 204/Mi and the eret must
+  keep the helper.
 
 ## Update (2026-09-22, round forty-six: what actually paces a KE970 boot — busy phases are instruction-bound, the compile tier is worth ≤3 %, and virtual-time turbo drowns in a 154 kHz wake storm)
 

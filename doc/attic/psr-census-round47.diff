@@ -1,0 +1,98 @@
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index dd971e08ff..e94081b114 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -2722,7 +2722,7 @@ uint64_t io_bswap_const(uint64_t val, unsigned size)
+  * ioNsN is the ns per dispatch, and that times (ioLd + ioSt) is the share
+  * of wall the devices take.
+  */
+-#define W64_IO_SAMPLE 8
++#define W64_IO_SAMPLE 1
+ static uint32_t w64_io_tick;
+ 
+ static inline bool w64_io_time_p(void)
+@@ -3299,6 +3299,7 @@ static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+     uint64_t io;
+ 
+     cpu_req_mo(cpu, TCG_MO_LD_LD | TCG_MO_ST_LD);
++    wasm_diag_stat[WASM_DIAG_TMP_LD4]++;
+ #ifdef CONFIG_TCG_WASM64
+     {
+         void *h = do_ram_1p(cpu, addr, oi, access_type, 4);
+diff --git a/include/qemu/wasm-diag.h b/include/qemu/wasm-diag.h
+index 27832533ef..cdbe629623 100644
+--- a/include/qemu/wasm-diag.h
++++ b/include/qemu/wasm-diag.h
+@@ -797,6 +797,12 @@ enum {
+     WASM_DIAG_XW_PG_RET,     /* a bl returning off the stream's page */
+     WASM_DIAG_XW_PG_MORE,    /* ...and would still be refused by a third:
+                               * the TB had already asked for four pages */
++    WASM_DIAG_TMP_MSR,
++    WASM_DIAG_TMP_MSR_MODE,
++    WASM_DIAG_TMP_MRS,
++    WASM_DIAG_TMP_ERET,
++    WASM_DIAG_TMP_SWMODE,
++    WASM_DIAG_TMP_LD4,
+ 
+     WASM_DIAG_N
+ };
+@@ -837,6 +843,8 @@ extern uint64_t wasm_diag_stat[WASM_DIAG_N];
+  * that one is affordable always and ships on.
+  */
+ 
++#define WASM_DIAG_HOT_COUNTERS 1
++#define WASM_DIAG_TIME_PHASES 1
+ #ifdef WASM_DIAG_HOT_COUNTERS
+ #define WASM_DIAG_HOT(idx) (wasm_diag_stat[idx]++)
+ #else
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index aaf4cb44b5..1c737c52fa 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -8483,6 +8483,7 @@ static void switch_mode(CPUARMState *env, int mode)
+     if (mode == old_mode) {
+         return;
+     }
++    wasm_diag_stat[WASM_DIAG_TMP_SWMODE]++;
+ 
+     if (old_mode == ARM_CPU_MODE_FIQ) {
+         memcpy(env->fiq_regs, env->regs + 8, 5 * sizeof(uint32_t));
+diff --git a/target/arm/tcg/op_helper.c b/target/arm/tcg/op_helper.c
+index 4afa2f8e28..ad904cbae0 100644
+--- a/target/arm/tcg/op_helper.c
++++ b/target/arm/tcg/op_helper.c
+@@ -17,6 +17,7 @@
+  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
+  */
+ #include "qemu/osdep.h"
++#include "qemu/wasm-diag.h"
+ #include "qemu/main-loop.h"
+ #include "cpu.h"
+ #include "exec/target_page.h"
+@@ -799,6 +800,7 @@ void HELPER(exception_with_syndrome)(CPUARMState *env, uint32_t excp,
+ 
+ uint32_t HELPER(cpsr_read)(CPUARMState *env)
+ {
++    wasm_diag_stat[WASM_DIAG_TMP_MRS]++;
+     return cpsr_read(env) & ~CPSR_EXEC;
+ }
+ 
+@@ -828,6 +830,10 @@ void HELPER(cpsr_write)(CPUARMState *env, uint32_t val, uint32_t mask)
+ {
+     uint32_t before = env->uncached_cpsr;
+ 
++    wasm_diag_stat[WASM_DIAG_TMP_MSR]++;
++    if ((before ^ val) & mask & CPSR_M) {
++        wasm_diag_stat[WASM_DIAG_TMP_MSR_MODE]++;
++    }
+     cpsr_write(env, val, mask, CPSRWriteByInstr);
+     /*
+      * Upstream rebuilds hflags unconditionally here, with a TODO saying
+@@ -887,6 +893,7 @@ void HELPER(cpsr_write_eret)(CPUARMState *env, uint32_t val)
+         bql_unlock();
+     }
+ 
++    wasm_diag_stat[WASM_DIAG_TMP_ERET]++;
+     mask = aarch32_cpsr_valid_mask(env->features, &env_archcpu(env)->isar);
+     cpsr_write(env, val, mask, CPSRWriteExceptionReturn);
+ 
