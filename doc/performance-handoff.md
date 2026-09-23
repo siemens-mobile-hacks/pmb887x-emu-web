@@ -2683,14 +2683,30 @@ gone.
 Thresholds 16, 64 and 256 tie. `gate keep` GREEN, and KE970 and KE800
 boot to idle and cycle the menu.
 
+### 2c. The buffered-program duplicate scan (`e546579764`)
+
+With the transactions gone, `flash_io_write` still had **3.7 % self**.
+- **Not the cause:** the linear block search. A binary search changed
+  nothing (3.81 → 3.68 %) and was reverted.
+- **The cause:** `flash_buffer_add()`. For every word it scanned all
+  `buffer_size` slots for an earlier entry at the same address, so a
+  buffered program of n words cost n² compares.
+- **The change:** the scan now stops at `buffer_index`, and it is skipped
+  for a word above every earlier one, which is the order firmware writes
+  them in.
+
+**Result:** self 3.7 → 0.57 %. The 1000 M milestone is 10.46 → 10.35 s
+(−1.1 %, 3 of 4 rounds lower); 1500 M is a tie.
+
+**Checked and ruled out: V8's lazy wasm compilation.** With
+`--no-wasm-lazy-compilation`, Chrome's C++ share of the busy phase
+falls from 17.4 % to 8.0 %. But the vCPU then waits on the compile
+threads instead (vmstate EXTERNAL, libc), and the milestones don't move.
+It is compile cost moving around, not a lever. Translation itself
+(`tb_gen_code`) is 30 % inclusive, and `tcg_gen_code` 10.8 % self.
+
 **Rounds 51 §2 + §2b together:** the KE970 busy phase is ~19 s → ~13 s,
 and the 1000 M milestone is 15.8 → 10.7 s.
-
-**Next on the KE970 profile:** ~10 % of busy-phase vCPU ticks are in
-Chrome's C++, with `cpu_tb_exec` as the nearest wasm frame. My guess is
-V8's lazy compile of a TB function on its first call; that is untested.
-The binary is stripped, so try `--js-flags=--no-wasm-lazy-compilation`
-and see where the ticks move.
 
 ### 3. Priced, and left for a decision: `-ftrivial-auto-var-init=zero`
 
