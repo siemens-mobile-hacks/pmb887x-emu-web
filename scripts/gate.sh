@@ -10,7 +10,9 @@
 # are 846 s and 2274 s, which is the whole point.  quick and keep are
 # bounded by the single 150 s board boot they all overlap with; close
 # by boot-ordered (602 s -- four boards in one browser, in order, and
-# that sequence is the test condition, so it cannot be split).
+# that sequence is the test condition, so it cannot be split).  With
+# KE970 and the UI/detection checks added (2026-09-23) close is 20 jobs
+# / 904 s, boot-ordered 753 s.
 #
 #   --dist D     dist under site/ to gate (default dist-jit)
 #   --port P     server port for the browser gates (default 8080)
@@ -64,22 +66,32 @@ done
 # second page loads the wasm from cache and starts at full speed, which
 # has exposed races the single-board runs miss (see the bootcheck notes in
 # optimization-playbook.md).
+#
+# ui always drives the page's default dist (dist-jit): --dist does not reach
+# it.  It is here because nothing else runs it, and a UI check nobody runs
+# rots -- its slow-warning check failed unnoticed because a page-level CPU
+# throttle does not reach the guest's workers.
 JOBS=(
   "opsuite|quick keep close|no|TCGISA_DIST=$DIST bash '$ROOT/scripts/run-tcg-isa.sh'"
   "boot-s75|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash s75"
   "boot-el71|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash el71"
   "boot-ke800|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke800"
   "boot-cx70|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash cx70"
+  "boot-ke970|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke970"
   "key-s75|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board s75"
   "key-el71|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board el71"
   "key-ke800|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board ke800"
   "key-cx70|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board cx70"
+  "key-ke970|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board ke970"
   "native|keep close|no|node '$ROOT/tests/run.mjs' --label gate --timeout 240"
-  "lockstep-wasm|keep close|yes|node '$ROOT/tools/lockstep-wasm.mjs' --port $PORT --dist $DIST --insns 250e6 --runs 1 --label gate"
+  "lockstep-wasm|keep close|yes|node '$ROOT/tools/lockstep-wasm.mjs' --port $PORT --dist $DIST --insns 250e6 --runs 1 --label gate-wasm"
   "boot-ordered|close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150"
   "lockstep-native|close|no|bash '$ROOT/scripts/run-lockstep.sh'"
   "lockstep-full|close|yes|node '$ROOT/tools/lockstep-wasm.mjs' --port $PORT --dist $DIST --insns 2.5e9 --runs 3 --par 3 --label gate-close"
   "firefox|close|yes|gate_firefox"
+  "detect|close|no|node '$ROOT/tools/detect-check.mjs'"
+  "efa-web|close|yes|PORT=$PORT node '$ROOT/tools/efa-web.mjs' && PORT=$PORT node '$ROOT/tools/efa-web.mjs' noefa"
+  "ui|close|yes|PORT=$PORT node '$ROOT/tools/ui-acceptance.mjs'"
 )
 
 # ffboot reports in text, not an exit code: the Firefox module budget is

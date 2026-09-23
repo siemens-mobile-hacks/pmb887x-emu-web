@@ -22,7 +22,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Side, compareDigestLogs, FLASHES } from "./lockstep.mjs";
+import { Side, compareDigestLogs, FLASHES, claimRunStamp } from "./lockstep.mjs";
 import { fullflash } from "./testflash.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
 
@@ -320,7 +320,7 @@ if (!fs.existsSync(args.aBin)) {
   process.exit(2);
 }
 
-const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+const stamp = claimRunStamp(args.label);
 const baseDir = `/tmp/lockstep-${args.label}-${stamp}`;
 const results = [];
 let fail = false;

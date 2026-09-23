@@ -386,6 +386,23 @@ function fmt(n) {
   return String(n);
 }
 
+// A stamp whose /tmp run dir this process has created. gate.sh starts its
+// lockstep jobs together, and two runs sharing a second (and a label) used
+// to share run0/b/ls.log -- the second writer's truncate left NULs in the
+// first one's log and a "divergence" at epoch 1.
+export function claimRunStamp(label) {
+  const base = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  for (let n = 1; ; n++) {
+    const stamp = n === 1 ? base : `${base}-${n}`;
+    try {
+      fs.mkdirSync(`/tmp/lockstep-${label}-${stamp}`);
+      return stamp;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+  }
+}
+
 // --- main ----------------------------------------------------------------------
 export async function main() {
   const args = parseArgs();
@@ -407,7 +424,7 @@ export async function main() {
     process.exit(2);
   }
 
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const stamp = claimRunStamp(args.label);
   const baseDir = `/tmp/lockstep-${args.label}-${stamp}`;
   const results = [];
   let fail = false;
