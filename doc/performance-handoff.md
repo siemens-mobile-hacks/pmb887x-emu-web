@@ -2705,6 +2705,40 @@ threads instead (vmstate EXTERNAL, libc), and the milestones don't move.
 It is compile cost moving around, not a lever. Translation itself
 (`tb_gen_code`) is 30 % inclusive, and `tcg_gen_code` 10.8 % self.
 
+### 2d. What is left on KE970, and what was closed
+
+**Re-translation: none.** Census in `tb_gen_code`: 89.4 k TBs per boot,
+88.2 k distinct (phys_pc, flags, cflags), no `tb_flush`, and 6 one-shot
+TBs executed from I/O.
+- **Cost per TB:** `tb_gen_code` is ~34 µs inclusive, plus ~11 µs of V8
+  compile.
+- **The profile is flat.** An `-O1` link with no-inline `tcg.c` (the
+  `-O3` Binaryen inliner folds every single-caller function into
+  `tcg_gen_code`) splits it into `tcg_reg_alloc_op` 2.7 %,
+  `tcg_optimize` 2.1 %, liveness 2.5 %, wasm emission (`w64_uleb`/`u8`/
+  `ir_w`/`sleb`) ~3.5 %, `w64_batch_*` 2.3 %, interpreter 1.3 %. No
+  single hot spot.
+
+**`W64_INTERP_THRESH` sweep on KE970:** 16/64/256/1024 give 1000 M at
+10.36/10.07/10.05/10.19 s (3 rounds, medians). Flat, so 64 stays.
+
+**The early-boot interpreter share** (~27 % of the vCPU's first second)
+is many cold TBs, not one stuck loop. A faster interpreter would save
+~0.3 s once per boot.
+
+**The UI after boot is firmware-paced:**
+- `tools/keylag.mjs` now has `ke970`.
+- Across a 30 s `left_soft`/`end` cycle the vCPU runs TB code 8–20 % of
+  the time. Of its wait ticks, 97.7 % are halted in `qemu_process_cpu_events`
+  and 1.7 % are waiting on the BQL.
+- Only the *first* open of a screen is emulator-bound (translation).
+- Typical press bursts are 100–300 ms. keylag's v/wall reads 1.0 by
+  construction under icount=none.
+
+**What remains for KE970 is first-time code:** the translate + compile
+pipeline, at ~45 µs per TB. The large lever there is a persistent
+translation cache, which is a project of its own.
+
 **Rounds 51 §2 + §2b together:** the KE970 busy phase is ~19 s → ~13 s,
 and the 1000 M milestone is 15.8 → 10.7 s.
 

@@ -34,6 +34,7 @@ const BOARDS = {
   s75: { flash: "S75v40lg1.bin", sidecars: [], key: "center" },
   el71: { flash: "rr_ff_el71_stock.bin", sidecars: [], key: "center" },
   ke800: { flash: "KE800-v11b.bin", sidecars: ["KE800-v11b.bin.cfi-efa"], key: "left_soft" },
+  ke970: { flash: "KE970v10d.bin", sidecars: ["KE970v10d.bin.cfi-efa"], key: "left_soft" },
   cx70: { flash: "CX70_FW56_clean.bin", sidecars: [], key: "center" },
 };
 const boardId = opt("board", "el71");
@@ -89,23 +90,25 @@ for (let i = 0; i < presses; i++) {
     const insns = () => Number(m._wasm_insns());
     const vclock = () => Number(m._wasm_vclock());
     const fb = () => Number(m._wasm_fb_updates());
+    // the 2026-09-22 review removed _wasm_memstat: those counters read 0
+    const ms = (i) => (typeof m._wasm_memstat === "function" ? Number(m._wasm_memstat(i)) : 0);
     // wasm-diag indices: 7 = tb_gen_code, 34 = WebAssembly.Module created.
     // A press that reaches code never translated before pays a synchronous
     // wasm compile per module, which is not the same problem as being slow.
-    const tbGen = () => Number(m._wasm_memstat(7));
-    const mods = () => Number(m._wasm_memstat(34));
+    const tbGen = () => ms(7);
+    const mods = () => ms(34);
     // 8 = tb_flush (code buffer full: every translation thrown away), 50 =
     // modules re-created after the live-module cap evicted them.  Either one
     // recurring per press would mean the press is paying for translation the
     // emulator already did, which is a different fix from being slow.
-    const tbFlush = () => Number(m._wasm_memstat(8));
-    const ensureN = () => Number(m._wasm_memstat(50));
+    const tbFlush = () => ms(8);
+    const ensureN = () => ms(50);
     // 80..85 = w64_speculate outcomes: misses, misses whose TB recorded no
     // goto_tb successor, edges already translated, edges the probe rejected,
     // edges translated into the open batch, and fall-through (call return
     // point) edges tried.  made/miss is the batch size the press actually
     // got: at ~1 the press is paying one module compile per TB reached.
-    const spec = () => [80, 81, 82, 83, 84, 85].map((i) => Number(m._wasm_memstat(i)));
+    const spec = () => [80, 81, 82, 83, 84, 85].map((i) => ms(i));
     const tick = () => new Promise((r) => setTimeout(r, 2));
 
     const btn = document.querySelector(`[data-key="${key}"]`);
