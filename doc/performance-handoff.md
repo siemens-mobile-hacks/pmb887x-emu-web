@@ -561,7 +561,7 @@ Three conclusions the table is for:
 
 ## Open items (ranked)
 
-### ~~KE970: the flash write-behind flushed a block request per ~30 programmed words~~ — TAKEN in round fifty-one (boot busy phase −17 to −22 %)
+### ~~KE970: the flash write-behind flushed a block request per ~30 programmed words, and every programmed word flipped ROMD twice~~ — TAKEN in round fifty-one (1000 M milestone 15.8 → 10.7 s)
 
 Still open on KE970:
 - **EFA/OTP saves** (`flash_save_file`) are synchronous `lseek` +
@@ -2654,6 +2654,43 @@ mismatch"). glib calls the 2-argument comparator through a 3-argument
 **Tool change:** `tools/uibench.mjs` prints a `BOOT … 250M= 500M= 1000M=
 1500M=` milestone line, plus the `bench0..7` totals when the hooks are
 applied. `CONSOLE_GREP=<re>` echoes matching page-console lines.
+
+### 2b. Flash partitions return to ROM lazily (`bacb430bb6`)
+
+**The profile, re-taken after §2** (KE970 busy phase 2–16 s, vCPU):
+- **`flash_io_write`: 18 % inclusive.** 12.8 % of that is
+  `memory_region_transaction_commit` → `address_space_update_topology_pass`,
+  and `tcg_commit_cpu` / `tlb_flush_phys_ranges` add ~3 %.
+- **The cause:** every command write took the partition off the ROM
+  mapping, and every `0xFF` reset put it back. A program loop does both
+  per word, so a boot made **327 k ROMD flips** at ~6 µs each.
+- **A second cost:** the EFA scan set a sticky `io_mode` on its
+  partition, so that partition served **1.3 M array reads per boot**
+  through MMIO for the rest of the session.
+
+**The change:** back in read-array mode, a partition stays on the I/O
+path until 16 array reads arrive with no command in between.
+`flash_io_read` already serves array reads correctly. `io_mode` is
+gone.
+
+**Result:** flips 327 k → 7.4 k.
+
+| KE970 boot, 3 interleaved rounds (median) | before | after |
+|---|---|---|
+| 1000 M insns | 12.94 s | **10.73 s (−17 %)** |
+| 1500 M insns | 22.37 s | **19.89 s (−11 %)** |
+
+Thresholds 16, 64 and 256 tie. `gate keep` GREEN, and KE970 and KE800
+boot to idle and cycle the menu.
+
+**Rounds 51 §2 + §2b together:** the KE970 busy phase is ~19 s → ~13 s,
+and the 1000 M milestone is 15.8 → 10.7 s.
+
+**Next on the KE970 profile:** ~10 % of busy-phase vCPU ticks are in
+Chrome's C++, with `cpu_tb_exec` as the nearest wasm frame. My guess is
+V8's lazy compile of a TB function on its first call; that is untested.
+The binary is stripped, so try `--js-flags=--no-wasm-lazy-compilation`
+and see where the ticks move.
 
 ### 3. Priced, and left for a decision: `-ftrivial-auto-var-init=zero`
 
