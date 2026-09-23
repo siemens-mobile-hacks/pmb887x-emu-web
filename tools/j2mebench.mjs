@@ -373,9 +373,9 @@ async function keyUntilChange(k, waitMs, minPct = 4, tries = 3) {
 async function snap() {
   return p.evaluate((n) => {
     const m = window.__qemu;
-    const c = []; for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
+    const c = []; if (m._wasm_memstat) for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
     return { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
-      tbs: Number(m._wasm_tbs()), fb: Number(m._wasm_fb_updates()), c };
+      tbs: m._wasm_tbs ? Number(m._wasm_tbs()) : 0, fb: Number(m._wasm_fb_updates()), c };
   }, NAMES.length);
 }
 async function shoot(what) {
@@ -563,9 +563,9 @@ const playWindow = (startPlan, plan, warmV, windowV, nCounters, traceC) =>
   const m = window.__qemu;
   const vns = () => Number(m._wasm_vclock());
   const shot = () => {
-    const c = []; for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
+    const c = []; if (m._wasm_memstat) for (let i = 0; i < n; i++) c.push(Number(m._wasm_memstat(i)));
     return { t: performance.now(), v: vns(), insns: Number(m._wasm_insns()),
-      tbs: Number(m._wasm_tbs()), fb: Number(m._wasm_fb_updates()), c };
+      tbs: m._wasm_tbs ? Number(m._wasm_tbs()) : 0, fb: Number(m._wasm_fb_updates()), c };
   };
   const t0 = performance.now();
   const v0 = vns();

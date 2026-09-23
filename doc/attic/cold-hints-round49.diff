@@ -1,0 +1,86 @@
+# Round 49, rejected: branch hints on cold labels (-1.35 % +- 1.89, not resolvable).
+# Applies to qemu/ on top of 23914e9052 with git apply.
+diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
+index 4f8344acee..db500ccb06 100644
+--- a/accel/tcg/translator.c
++++ b/accel/tcg/translator.c
+@@ -73,6 +73,9 @@ static TCGOp *gen_tb_start(DisasContextBase *db, uint32_t cflags)
+         tcg_ctx->exitreq_label = NULL;
+     } else {
+         tcg_ctx->exitreq_label = gen_new_label();
++#ifdef CONFIG_TCG_WASM64
++        tcg_ctx->exitreq_label->w64_cold = true;
++#endif
+         tcg_gen_brcondi_i32(TCG_COND_LT, count, 0, tcg_ctx->exitreq_label);
+     }
+ 
+diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
+index 9f6d92def8..bd7831e243 100644
+--- a/include/tcg/tcg.h
++++ b/include/tcg/tcg.h
+@@ -103,6 +103,8 @@ struct TCGLabel {
+ #ifdef CONFIG_TCG_WASM64
+     /* set by arm_gen_condlabel, read by liveness to split GSYNC_BBEND */
+     bool w64_condskip;
++    /* branches here are rarely taken: the backend hints them to the engine */
++    bool w64_cold;
+ #endif
+     uint16_t id;
+     union {
+diff --git a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
+index 86cc171348..2fdf6cc742 100644
+--- a/target/arm/tcg/translate.c
++++ b/target/arm/tcg/translate.c
+@@ -2096,6 +2096,7 @@ static bool w64_inline_return(DisasContext *s, int rm)
+     want = tcg_temp_new_i32();
+     gen_pc_plus_diff(s, want, (int64_t)ret - (int64_t)s->pc_curr);
+     s->w64_inl_miss[m].label = gen_disas_label(s);
++    s->w64_inl_miss[m].label.label->w64_cold = true;
+     s->w64_inl_miss[m].insns = s->base.num_insns;
+     tcg_gen_brcond_i32(TCG_COND_NE, lr, want,
+                        s->w64_inl_miss[m].label.label);
+@@ -2367,6 +2368,7 @@ static TCGLabel *w64_psr_new_miss(DisasContext *s, TCGv_i32 val, uint32_t mask)
+     unsigned n = s->w64_psr_miss_n++;
+ 
+     s->w64_psr_miss[n].label = gen_disas_label(s);
++    s->w64_psr_miss[n].label.label->w64_cold = true;
+     s->w64_psr_miss[n].dest = s->base.pc_next;
+     s->w64_psr_miss[n].insns = s->base.num_insns;
+     s->w64_psr_miss[n].val = val;
+--- a/tcg/wasm64/tcg-target.c.inc
++++ b/tcg/wasm64/tcg-target.c.inc
+@@ -1315,12 +1315,18 @@
+             W.overflow = true;
+             return;
+         }
++        if (cond && l->w64_cold) {
++            w64_hint(s, false);
++        }
+         w64_u8(s, cond ? 0x0d : 0x0c);      /* br_if / br */
+         w64_uleb(s, W.n_blk - 1 - i);
+         return;
+     }
+ 
+     if (cond) {
++        if (l->w64_cold) {
++            w64_hint(s, false);
++        }
+         w64_blk_push(s, W64_BLK_IF, -1);
+     }
+     if (idx == 0) {
+@@ -1437,6 +1443,7 @@
+         w64_memarg(s, 2, 0);
+         w64_u8(s, 0x72);                    /* i32.or */
+     }
++    w64_hint(s, false);
+     w64_u8(s, 0x0d);                        /* br_if */
+     w64_uleb(s, 0);
+ 
+@@ -1486,6 +1493,7 @@
+         w64_memarg(s, 2, 0);
+         w64_u8(s, 0x72);                    /* i32.or */
+     }
++    w64_hint(s, false);
+     w64_u8(s, 0x0d);                        /* br_if */
+     w64_uleb(s, 0);
+ 

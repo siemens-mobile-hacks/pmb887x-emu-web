@@ -6,6 +6,28 @@ for it, and how it was established. The live working rules for perf
 work are in [optimization-playbook.md](optimization-playbook.md); this
 file is the "why" behind them and behind the timing model.
 
+## Read the engine's machine code, not the wasm you emitted
+
+**A call on a cold arm is paid on the hot path unless the engine is told
+the arm is cold. Look at TurboFan's x64 before deciding what code costs.**
+
+Forty-eight rounds had priced the inline TLB probe by its wasm: a
+compare, an `if`, and a helper call on the else arm that almost never
+runs. The x64 (round 49: capture a batch module's bytes, then compile it
+with `node --no-liftoff --no-wasm-lazy-compilation --experimental-wasm-branch-hinting --print-wasm-code`)
+showed something else. V8's wasm calling convention has no callee-saved
+registers, so the miss call clobbers every live value, and TurboFan
+spills each one where it is *defined*, which is on the hit path. Every
+guest load and store paid the miss arm's register traffic. One
+`metadata.code.branch_hint` entry per probe tells TurboFan to defer that
+arm, and video got 20 % faster.
+
+The method generalises. Static x64 statistics over a captured module
+(spill stores, reloads, self-`movl` wraps) are deterministic and cost no
+host time. A hypothesis can be checked offline by rewriting a captured
+module (`tools/perf/wasm-bhint.mjs`) before building anything. The
+clock is then needed only to price the result.
+
 ## A second `--cross-file` replaces the first one's built-in options
 
 **A build flag that appears in the cross file is not thereby on a compile

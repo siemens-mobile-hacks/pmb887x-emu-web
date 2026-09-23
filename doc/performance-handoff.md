@@ -2559,6 +2559,129 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 ## Round log (newest first)
 
+## Update (2026-09-23, round forty-nine: reading TurboFan's x64 — the TLB miss call was spilling on every guest access, and branch hints move it out of the way)
+
+### 1. The helper census says the call lever is spent
+
+A temporary patch (`doc/attic/helper-census-round49.diff`) counted every
+helper call a TB makes on SL65 video, per Mi: **eret 2 369, svc 2 360,
+mode-changing `cpsr_write` 1 205, `shl_cc` 719, store-miss `*_mmu` 334,
+`lookup_tb_ptr_lc` 172, load-miss `*_mmu` 48**. Rounds 40, 47 and 48
+already took the inline forms of all of these that do not change mode.
+What remains is the guest's own mode switching, around 6 000 calls per Mi,
+each doing real work. There is no fourth "take the call inline" round in
+this list.
+
+### 2. How to read what V8 actually runs
+
+The wasm we emit is not what executes; TurboFan's x64 is, and nobody had
+looked at it. `tools/perf/modcap.mjs` plus the capture patch in
+`doc/attic/modcap-round49.diff` copy every batch module's bytes into a
+C buffer in shared memory. The page's main thread reads the buffer out
+(a worker `evaluate()` on the vCPU thread hangs, because it never
+yields). Then:
+
+```
+node --no-liftoff --no-wasm-lazy-compilation --experimental-wasm-branch-hinting --print-wasm-code \
+     -e 'new WebAssembly.Module(require("fs").readFileSync(process.argv[1]))' 0150.wasm
+```
+
+prints the same TurboFan output Chrome runs; Node's V8 is close enough
+to Chrome 153's for codegen shape. **Without
+`--experimental-wasm-branch-hinting`, Node ignores the hint section
+without a word**, and a hinted module compiles to unhinted x64. `wasm2wat` (wabt, `apt install
+wabt`) pairs it with the source. What the x64 showed:
+
+- **V8's wasm calling convention has no callee-saved registers.** A
+  `*_mmu` call on the inline probe's miss arm therefore clobbers
+  everything live across the `if`. TurboFan puts the spill at the value's
+  *definition*, which is on the hit path, so every guest load and store
+  paid for its own miss handling. An `stmdb` with four store probes did
+  four rounds of spills and reloads.
+- **`movl r,r` (the `i32.wrap_i64` of an address) is 4.2 % of the static
+  x64**, three of them on each access's dependency chain (§ 5).
+
+### 3. Branch hints on the inline TLB probe (`23914e9052`)
+
+Wasm branch hinting is the custom section `metadata.code.branch_hint`.
+It is placed before the code section and holds
+`vec(funcidx, vec(offset, 1, hint))`, where the offset is from the start
+of the function body after its size LEB. Chrome 153 applies it by default
+and engines that don't know the section ignore it. Hinting the probe's
+`if` as likely makes TurboFan defer the else arm, and the spills and
+reloads move into it. `tools/perf/wasm-bhint.mjs` injects hints offline
+into a captured module. On module 150 (821 TBs, 3 868 probes) it took
+the probes' hot-path spill and reload traffic to zero before anything
+was built.
+
+In the backend, `w64_hint()` records a hint position as a member's
+call-fixup record under two sentinel import indices (`W64_CFIX_LIKELY` /
+`_UNLIKELY`), so landing, compaction and re-assembly carry hints with no
+new bookkeeping. `w64_assemble_instantiate` emits the section only when
+some member has a hint.
+
+- **Price:** SL65 video, two ABBA ×2 series (15 legs; one leg where the
+  clip wasn't playing was dropped), shared-slope fit on hostBusy:
+  **−21.2 % ± 5.3 and −19.0 % ± 5.3, pooled −20.0 % ± 3.4 ms/Mi**. The
+  host was 0.50–0.95 busy from another tenant, which is why the error
+  bars are wide.
+- **Gates:** `keep` GREEN, `firefox` PASS. The section is advisory, so an
+  engine that doesn't apply it runs the same code as before.
+
+### 4. Cold-label hints: no resolvable effect (rejected)
+
+The same mechanism was tried on every other "almost never taken" branch:
+- the icount exit request;
+- the misses of round 40's inline return and round 48's `msr` fast path;
+- the not-linked branch of `goto_tb`/`goto_ptr`.
+
+A `w64_cold` bit on `TCGLabel` made `w64_br_to_label` hint them as
+unlikely. Over 17 valid legs in two series it reads **−1.35 % ± 1.89**,
+so it isn't in the tree. The playbook row explains why so little was
+there to find.
+
+The first series' dist-cold legs mostly "failed". They were the phone
+sitting on the main menu, whose animation draws 2–3 fps of guest time
+and passed videobench's old 2 fps floor. A playing clip draws about 13,
+so the floor is now 6. `vgfit.py` also drops a leg whose Mi is more than
+5 % off the median, and it says so.
+
+### 5. The TLB probe in i32 (`6f5ead34a8`)
+
+Every address this backend pushes is an i64 host pointer, narrowed with
+`i32.wrap_i64` where it is used (`W64_MEM32`). V8 emits each narrowing
+of an i64 sum as `movl r,r`. The probe had three of them on the chain
+of every guest access:
+- the fast-table pointer: `env + fast_ofs`, a negative offset;
+- the entry: `table + index`;
+- the host address: `addr + addend`.
+
+For a 32-bit guest (`s->addr_type == TCG_TYPE_I32`) under `W64_MEM32`,
+`w64_tlb_probe32` does all of it in i32. It narrows `env` and the address
+once, loads only the low halves of mask, table, comparator and addend,
+and compares with `i32.eq`. The low halves are exact:
+- the mask, the table pointer and the addend are all correct mod 2^32;
+- a comparator with a nonzero high half is −1 (invalid), and its low
+  half has the bits between the alignment and the page set, which no
+  key has;
+- a key whose `addr + adj` wraps past 2^32 to page 0 is compared against
+  the last page's slot, never page 0's.
+
+QEMU's own x86-64 backend compares 32 bits for a 32-bit guest.
+`w64_addr` (negative env offsets: the icount decrementer on every TB
+entry, the `sp−8` handoff slot) narrows the base first and adds in i32.
+
+- **x64** (module 150 of an S75 boot, TurboFan with hints): self-`movl`
+  **4.16 % → 0.22 %** of instructions; hot prefix **169 → 152
+  instructions per TB** (a different capture of the same boot, so the mix
+  differs slightly).
+- **Price:** SL65 video, ABBA ×3 (12 legs, all valid), shared slope:
+  **−3.60 % ± 1.01 ms/Mi**. A second series, ABBA ×2 on a quieter host
+  (busy 0.63–0.96), read −0.30 % ± 1.74. **Pooled over 20 legs:
+  −2.64 % ± 0.97.** The x64 is the firmer evidence here; the clock only
+  bounds the size.
+- **Gates:** `keep` GREEN (11/11) on the tree without the bench hooks.
+
 ## Update (2026-09-23, round forty-eight: the meter after the review, `msr cpsr` goes inline, and the native red it exposed, fixed)
 
 ### 1. What the 2026-09-22 review took from the measurement workflow

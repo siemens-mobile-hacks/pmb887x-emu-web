@@ -443,8 +443,8 @@ const playWindow = (playKey, warmV, windowV, nCounters, traceC) =>
       if (shotEvery && (trace.length - 1) % shotEvery === 0)
         shots.push([trace[trace.length - 1][0], document.getElementById("lcd").toDataURL("image/png")]);
     }
-    if (!a && v >= startAt) { a = shot(); a.cpuIx = await window.__hostcpu(); }
-    if (v >= endAt) { c = shot(); c.cpuIx = await window.__hostcpu(); break; }
+    if (!a && v >= startAt) { a = shot(); if (m._wasm_hc_mark) m._wasm_hc_mark(0); a.cpuIx = await window.__hostcpu(); }
+    if (v >= endAt) { c = shot(); if (m._wasm_hc_mark) m._wasm_hc_mark(1); c.cpuIx = await window.__hostcpu(); break; }
     // a guest that has stopped advancing its clock never reaches any
     // milestone; without this the page would poll forever
     if (performance.now() - t0 > wallCapS * 1000) { stalled = true; break; }
@@ -497,10 +497,11 @@ for (let attempt = 1; attempt <= 3 && !c; attempt++) {
         Buffer.from(url.split(",")[1], "base64"));
     if (w.a && w.c) {
       const fps = (w.c.fb - w.a.fb) / ((w.c.v - w.a.v) / 1e9);
-      // A decoding clip blits every frame it produces.  Under 2 fps of
-      // the guest's own time is a still viewer, a menu, or a clip that
-      // ended before the window did — none of them a measurement.
-      if (fps >= 2) { a = w.a; c = w.c; trace = w.trace; traceCs = w.traceCs || null; }
+      // A decoding clip blits every frame it produces (~13 fps of the
+      // guest's own time).  Under 6 is a still viewer, a menu (the main
+      // menu's animation draws 2-3), or a clip that ended before the
+      // window did — none of them a measurement.
+      if (fps >= 6) { a = w.a; c = w.c; trace = w.trace; traceCs = w.traceCs || null; }
       else console.log(`[video] attempt ${attempt}: window drew ${fps.toFixed(1)} fps of guest time — not a playing clip`);
     }
   }

@@ -5,17 +5,28 @@ Host load slows both binaries alike, so one slope is the sounder model than
 vgan.py's slope per arm (which four legs an arm cannot pin down).
 
 Usage: vgfit.py <distA> <distB> <tag> [<tag> ...]
+VGFIT_KIND=j2me fits j2mebench legs (single game) instead.  A leg whose Mi
+is more than 5 % off the median of all legs is not the workload (a clip that
+was not playing reads Mi ~50 against ~1500) and is dropped, loudly.
 """
 import glob, json, os, sys
 
 da, db, tags = sys.argv[1], sys.argv[2], sys.argv[3:]
+kind = os.environ.get("VGFIT_KIND", "video")
 rows = []
 for tag in tags:
     for dist, isb in ((da, 0), (db, 1)):
-        for f in glob.glob(f"/workspace/tests/results/video-*-{dist}-{tag}.json"):
+        for f in glob.glob(f"/workspace/tests/results/{kind}-*-{dist}-{tag}.json"):
             j = json.load(open(f))
             if j.get("msPerMi") and j.get("hostBusy") is not None:
                 rows.append((isb, j["hostBusy"], j["msPerMi"], j.get("mi")))
+mis = sorted(r[3] for r in rows if r[3])
+if mis:
+    med = mis[len(mis) // 2]
+    bad = [r for r in rows if not r[3] or abs(r[3] / med - 1) > 0.05]
+    for r in bad:
+        print(f"dropped leg isB={r[0]} Mi={r[3]} (median {med})")
+    rows = [r for r in rows if r not in bad]
 n = len(rows)
 if n < 4:
     sys.exit("not enough legs")

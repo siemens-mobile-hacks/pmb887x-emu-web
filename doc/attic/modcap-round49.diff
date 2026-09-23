@@ -1,0 +1,34 @@
+# Round 49 module capture: copies every batch module's bytes into a 96 MB
+# C-side buffer in shared memory, which the page's main thread reads
+# (a worker evaluate() on the vCPU thread hangs: it never yields).
+# Apply to qemu/, build to a separate dist, then
+#   node tools/perf/modcap.mjs dist-cap 90 s75_working20060710172101.bin <outdir>
+# and read TurboFan's x64 for a module with
+#   node --no-liftoff --no-wasm-lazy-compilation --experimental-wasm-branch-hinting --print-wasm-code \
+#        -e 'new WebAssembly.Module(require("fs").readFileSync(process.argv[1]))' <outdir>/0150.wasm
+--- a/tcg/wasm64/wasm64.c
++++ b/tcg/wasm64/wasm64.c
+@@ before EM_JS(int, w64_batch_instantiate, ...
++/* round-49 module capture (temporary) */
++static uint8_t *w64_cap;
++static uint32_t w64_cap_len;
++#define W64_CAP_MAX (96u << 20)
++
++static void w64_cap_add(const uint8_t *b, uint32_t n)
++{
++    if (!w64_cap) {
++        w64_cap = g_malloc(W64_CAP_MAX);
++    }
++    if (w64_cap_len + 4 + n > W64_CAP_MAX) {
++        return;
++    }
++    memcpy(w64_cap + w64_cap_len, &n, 4);
++    memcpy(w64_cap + w64_cap_len + 4, b, n);
++    qatomic_set(&w64_cap_len, w64_cap_len + 4 + n);
++}
++
++EMSCRIPTEN_KEEPALIVE uintptr_t wasm_cap_ptr(void) { return (uintptr_t)w64_cap; }
++EMSCRIPTEN_KEEPALIVE uint32_t wasm_cap_len(void) { return qatomic_read(&w64_cap_len); }
+@@ in w64_assemble_instantiate, before the instantiate call
++    w64_cap_add(mod.b, mod.n);
+     thunk = w64_batch_instantiate((uintptr_t)mod.b, mod.n, (uintptr_t)ip,
