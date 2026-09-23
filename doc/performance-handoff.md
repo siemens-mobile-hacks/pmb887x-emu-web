@@ -155,6 +155,13 @@ off, the SVC is taken inside the TB and direct calls are inlined
 (`W64_INLINE`); round forty-one added the `msr cpsr` continuation and the
 cross-page absorb.
 
+**Round forty-nine took another 20 % (video) and 15 % (J2ME) off ms/Mi,
+not by changing what the code does but by telling TurboFan which arm is
+cold.** Its § 2 is how to read the x64 V8 actually runs; do that before
+pricing any emitted-code idea. With the TLB probe cheaper, the TB
+boundary below is a larger share of wall than when round forty-one
+measured it.
+
 **Read round forty-one's opening before planning a round against this
 meter.** A TB boundary is 8–9 ns and the 88 316 of them per Mi are 22 %
 of wall — the only large row left. Everything else is the emitted code
@@ -1464,7 +1471,7 @@ for reads and 16 for writes (`CPUTLBEntry` is 32 bytes, fields at
 0/8/16/24), so no 16-byte load spans the pair either path needs; only
 `addr_code` happens to sit adjacent to `addend`.
 
-### Give the LG boards back their TB lengthening (patched, unmeasured)
+### Give the LG boards back their TB lengthening (live since round 34, never measured on ke800)
 
 The fold target and the conditional loop back-edge merge are gated on
 `w64_tb_icount_exact()`, which included `w64_tbstats_inline()` — armed on
@@ -2681,6 +2688,76 @@ entry, the `sp−8` handoff slot) narrows the base first and adds in i32.
   −2.64 % ± 0.97.** The x64 is the firmer evidence here; the clock only
   bounds the size.
 - **Gates:** `keep` GREEN (11/11) on the tree without the bench hooks.
+
+### 6. J2ME gets most of it too
+
+`tools/perf/j2abba.sh` is the J2ME twin of `vgabba.sh` (CX70_FW56_clean
+game 1, a 45 s virtual window, Mi 5624–5625 in every leg). It is scored
+with `VGFIT_KIND=j2me tools/perf/vgfit.py`. The review had broken
+`j2mebench` too (an unconditional `_wasm_memstat` call and a hard import
+of the deleted `wasm-diag.h`); both are now tolerant, as videobench's
+are.
+
+- **Round 49 as a whole** (`dist-a` = `da835da585`+hooks against
+  `6f5ead34a8`+hooks), ABBA ×2, 8 legs, busy 0.71–0.95: **−15.4 % ±
+  1.74 ms/Mi**. The bytecode interpreter is load- and store-heavy, so the
+  TLB hint is most of that. The two changes weren't priced separately on
+  J2ME.
+
+### 7. The hot TBs after both changes: nothing left to take from the x64
+
+`tools/perf/wasmgrab.mjs <devtools port> [secs] [modules] [outdir]`
+attaches to a running page (`videobench --devtools 9333 --hold 600`),
+profiles every worker and keeps the vCPU. It finds the vCPU as the worker
+whose samples span the most wasm scripts, because two helper workers spin
+inside one function and outweigh it on raw samples. It saves the hottest
+TB modules' bytes with `Debugger.getScriptSource`, from that same worker,
+so a profile URL and a saved file are the same script by construction.
+It also writes `hot.json` (per-function self time). Grab last: enabling
+the debugger tiers the page's wasm down.
+
+On the playing clip, `6f5ead34a8`: **TB code 78 %, main-module C 21 %.**
+
+- **The hottest TB function** (3.6 % of the vCPU, 1 692 x64
+  instructions) has no spill traffic on its hit path and no self-`movl`
+  narrowing (4 left, all cold). Of its 109 `movl r,r`, 105 are
+  two-operand copies, which move elimination makes nearly free. Env
+  loads and stores are 4.0 % and 3.5 % of its instructions. The loads
+  are TCG reloading globals after a label, which is how TCG's allocator
+  works: keeping a global in a register across a label would mean
+  intersecting register state over every edge into it, a TCG-core
+  change. A bound of about half those loads is ~2 % of instructions,
+  and on L1 hits at that, so it is below this meter. The per-access
+  mask and table reloads are round 38's closed hoist. The
+  64-bit loads at odd offsets (`[r11+0x1f]`) are V8 instance and table
+  fields around the cold helper calls. The TB exit is the emitted
+  next-TB probe followed by `return_call_indirect`: a bounds check, a
+  signature check, a jump. That is the dispatch floor rounds 21–33
+  closed.
+- **Main-module C** is the guest's own SVC/eret round trip:
+  `arm_rebuild_hflags` 2.28, `cpsr_write` 1.31, `switch_mode` 1.25,
+  `take_aarch32_exception` 0.95, `helper_cpsr_write_eret` 0.63,
+  `arm_take_svc_aarch32` 0.62, `helper_svc_inline` 0.24,
+  `helper_cpsr_write` 0.16. That is ≈ 7.4 % over 4 729 crossings/Mi,
+  about 30 ns of C per crossing. `do_ld4_mmu` 2.67 % is round 47's
+  profile artifact (48 calls/Mi). The code is already lean: hflags
+  rebuild only when M/E/IL move, and the hook lists are skipped when
+  they are empty. What is left is the call and the bank switch
+  themselves. A specialised USR↔SVC path could not remove the rebuild
+  (12.3 ns, round 47) or the call (~14.5 ns in situ), so its reachable
+  share is ≈ 1–2 %, below what a 16-leg ABBA resolves (±0.9 %).
+- **Wasm compilation hints are closed without building them.**
+  `metadata.code.compilation_priority` would have let a module ask for
+  TurboFan up front: 3.6 % of TB entries run the baseline tier at 2×
+  (round 21), and `--wasm-tiering-budget=1000` bought 3.1 %. But the
+  Chrome the benches and users run (Chrome for Testing 153.0.8010.12)
+  reports `--no-wasm-compilation-hints` as the default, unlike branch
+  hints, so the section would be ignored. Re-check on a Chrome that
+  ships it (`chrome-headless-shell --js-flags=--help | grep -A1
+  compilation-hints`).
+- The LG TB-lengthening item in *Open items* is live code (since round
+  34, `w64_tb_icount_exact()` is `icount2_enabled()` alone). What was
+  never done is measuring it on ke800.
 
 ## Update (2026-09-23, round forty-eight: the meter after the review, `msr cpsr` goes inline, and the native red it exposed, fixed)
 

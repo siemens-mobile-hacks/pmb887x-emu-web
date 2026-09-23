@@ -78,7 +78,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 // index -> name, parsed from wasm-diag.h: the numeric indices are the
 // wasm_memstat() ABI and a transcribed list drifts silently
-import { NAMES } from "./diagnames.mjs";
+let NAMES = [];
+try { ({ NAMES } = await import("./diagnames.mjs")); } catch {}
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
