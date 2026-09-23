@@ -83,11 +83,12 @@ fi
 # switch (configs/meson/asyncify-only.txt): ~45 MB -> ~27 MB wasm,
 # boot-to-idle -18 %.  Absolute path so meson's compile probes (run from
 # temp dirs on a reconfigure) find the list.
-# -O2 on the link: without it emcc links at -O0 — ASSERTIONS on (an
+# -O3 on the link: without it emcc links at -O0 — ASSERTIONS on (an
 # Asyncify state check after every call) and no Binaryen pass over the
-# linked module.  With it: 28 -> 11 MB wasm, video -3 %, J2ME -5 %.
+# linked module.  -O2 took 28 -> 11 MB wasm, video -3 %, J2ME -5 %;
+# -O3 over -O2 is another -1.8 % on video (J2ME a tie).
 ONLY="$ROOT/qemu/configs/meson/asyncify-only.txt"
-LA="['-O2','-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']"
+LA="['-O3','-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']"
 # qom_cast_debug: OBJECT_CHECK() casts assert the QOM type on every call —
 # the display path (lcd_transfer, the LCD/SSI pin handlers) does that per
 # FIFO word (~1.6 % of the vCPU in a redrawing J2ME app); a release build

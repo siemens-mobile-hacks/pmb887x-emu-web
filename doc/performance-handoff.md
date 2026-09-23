@@ -561,15 +561,15 @@ Three conclusions the table is for:
 
 ## Open items (ranked)
 
-### ~~The final link ran at `-O0`~~ — TAKEN in round fifty (video −3.2 %, J2ME −5.3 %, wasm 28 → 11 MB)
+### ~~The final link ran at `-O0`~~ — TAKEN in round fifty (video −3.2 %, J2ME −5.3 %, wasm 28 → 11 MB; `-O3` another −1.8 % on video)
 
 > `-O2` was a compile flag only; `emcc`'s link had none, so it linked at
 > `-O0`: `ASSERTIONS=1` (an Asyncify state check after every call,
 > 173 k of them) and no Binaryen pass over the linked module. The link
-> args in `scripts/build-qemu-wasm64.sh` now start with `-O2`. See round
+> args in `scripts/build-qemu-wasm64.sh` now start with `-O3`. See round
 > fifty in the log. Still unpriced on the same axis:
 > `-ftrivial-auto-var-init=zero` (upstream hardening, `qemu/meson.build`)
-> and `b_lto`.
+> and `b_lto`. `b_ndebug` is impossible (QEMU `#error`s on `NDEBUG`).
 
 ### ~~Native s75/el71 no longer boot at the pin~~ — FIXED in `da835da585`
 
@@ -2682,6 +2682,18 @@ linked at `-O0`. That means `ASSERTIONS=1`, 173 326 state checks, no
   over callers. The boot gates exercise the coroutine switches.
 - **Gates:** `keep` GREEN 11/11; `close` GREEN 15/15 (`firefox` PASS),
   on the clean tree at the pin.
+
+**Then `-O3` on the link, against `-O2` (both with bench hooks):**
+- **Video:** −1.80 % ± 0.67 (8 legs, residual sd 0.019) and −4.02 % ±
+  3.89 (8 legs, a busier host); pooled −2.17 % ± 1.90.
+- **J2ME game 1:** −0.21 % ± 1.17, a tie.
+- **Wasm:** 11.31 → 11.19 MB. The link takes ~54 s instead of ~36 s.
+
+It is never slower, so `-O3` is what the script passes now. (Round 37's
+`-O3` tie was the *compile* level, and it is still `-O2`.)
+
+**`b_ndebug` is closed without a measurement:** `include/qemu/osdep.h:311`
+is `#error building with NDEBUG is not supported`.
 
 ### Traps this round paid for
 
