@@ -33,6 +33,22 @@ export EM_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
 
 cd "$BUILD_DIR"
 
+# The link flags (-O3, Asyncify, ...) are set by build-qemu-wasm64.sh's
+# `meson configure -Dc_link_args=...`, and a meson regeneration that ninja
+# triggers on its own (seen after a container restart, 2026-09-24) drops
+# them: the link falls back to -O0 with ASSERTIONS, a 45 MB wasm that
+# still passes every gate.  Checked before the build and again after it,
+# because the regeneration happens inside the ninja run.
+check_link_args() {
+  if ! awk '/^build qemu-system-arm.js: /{f=1} f&&/LINK_ARGS/{print; exit}' build.ninja |
+       grep -q -- "-O3"; then
+    echo "ninja-fast: build.ninja lost the -O3 link args (meson regenerated);" \
+         "run scripts/build-qemu-wasm64.sh to reapply them" >&2
+    exit 1
+  fi
+}
+check_link_args
+
 T0=$SECONDS
 LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
@@ -49,6 +65,7 @@ else
   tail -2 "$LOG"
 fi
 BT=$((SECONDS - T0))
+check_link_args
 
 if [ $# -gt 0 ]; then
   echo "ninja-fast: ok (${BT}s, explicit targets — no deploy)"
