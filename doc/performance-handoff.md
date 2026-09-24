@@ -2832,15 +2832,22 @@ Built as `741597d60a` and measured on S75 boot+idle (idlebench, three
 runs per arm, census hooks on both): milestones equal within noise (1 G guest
 insns at 17.2 s against 17.8 s; the arms differ only when a full flush
 happens), so it is a correctness-of-cost change for the CX70 class
-rather than an S75 win. The census itself is the finding: **S75 runs
-1 840 jump-cache clears per Mi** (`tb_unlink_inlined` calls, i.e. full
-plus per-page clears; the inlined list walked is short, 2.7 entries
-per call) against 13 translations/Mi. At that rate they cannot be full
-flushes (65536 stores each would exceed wall time), so they are the
-guest's per-page TLB invalidations — each of which clears 256 entries
-with atomic stores at 16 bits (128 at 14) *and* bumps the generation
-that retires every pcc and inline-cache slot. A split-and-timed census
-follows before anything is built on it.
+rather than an S75 win.
+
+**A census artefact, recorded so it is not repeated.** The variant hooks
+built for this A/B added counters to slots 5 and 6 — but the committed
+`bench-hooks.patch` already increments slot 5 with "live modules summed
+per translation" and slot 6 with code-buffer bytes. Slot 5 therefore read
+~1 000-1 800 /Mi (≈ 140 live modules × 7-13 translations/Mi), and three
+successive censuses read that as "1 840 / 740 / 990 per-page jump-cache
+clears per Mi" — a flush storm the S75 firmware does not have. A fourth
+census, on slots the base patch leaves alone, put the per-page TLB
+flushes reaching `tlb_flush_page_by_mmuidx_async_0` at **~0 /Mi** on
+S75 boot+idle, full flushes at 0.05 /Mi. The 838 qht lookups and 531 pcc
+misses per Mi at S75 idle are the working set, not retires. Rule: a
+repurposed census slot must be one the base patch never touches (or the
+base arm's value must be subtracted); read the slot map in the patch
+header before believing a number.
 
 **Boot translation cost (18 % of the first 12 s: `tcg_gen_code` 8.5 %,
 `liveness_pass_1` 4.4 %).** Read against the round-25 split (frontend
@@ -2935,6 +2942,181 @@ lockstep fold and `QEMU_COSTACK` are gate hooks kept by the review; the
 stale `_wasm_*` references are in tools, not in C). Kept-for-speed list
 verified against the doc's numbers; see the agent's report in the
 session log.
+
+### N6: TB functions take no parameters — measured, not taken
+
+Every TB function took `(env, sp, tp)` and every chain passed them on:
+V8's wasm convention has no callee-saved registers, so each execution
+spilled the three at entry and reloaded two for its own tail call, and
+`env` was rematerialised up to four times per TB as an index register.
+All three are constants of the translating thread — the frontend state
+(one vCPU; the DSP JIT has its own, see below), the C call frame
+`w64_frame + 16`, and `&w64_tb_ptr` — so the TB type is now `() -> i32`:
+the emitter declares the three as the first locals (every other local
+index is unchanged), the prologue sets them from `w64_tbc[]` with
+`i64.const`, the run thunk is `(tidx) -> i32`, `w64_chain_go` and the
+dispatcher pass only the table index. TurboFan folds the constants: an
+env access becomes base+disp instead of base+index+disp, and a register
+is freed in a convention that has none to spare. The interpreter tier is
+untouched (it takes env/sp/tp from C).
+
+The pmb887x DSP JIT is a second frontend on the same backend, running
+and translating on its own thread with its own state, so the constants
+are per thread (`__thread`), the DSP binds them at thread entry
+(`dsp_runtime_thread_enter` → `w64_tbc_bind(&runtime->core.state)`),
+the vCPU thread binds itself from `current_cpu` at its first
+translation, and `tcg_qemu_tb_exec` aborts if handed an env other than
+the one its thread's TBs were compiled for. That also gives the DSP
+thread a call frame of its own, which the shared `w64_frame` never was
+(the "latent DSP-thread JIT race" the memory notes carried). Found by
+the adversarial read before the A/B, not after it.
+
+First S75 boot on the build: 1 G guest instructions at 9.2 s against
+17.2-17.8 s for the two arms measured just before it (a quiet-host leg
+earlier managed 12.8 s, so the A/B decides the size).
+
+**J2ME game 1, 3-round ABBA at tb-size=768, quiet host (busy 0.05-0.13,
+residual sd 0.026 — the cleanest fit of the round): +0.97 % ± 0.80 %
+ms/Mi.** A loss, small and significant. Five fewer x64 instructions per
+TB execution and a freed register do not show up in the clock; what the
+boundary costs is V8's `return_call_indirect` machinery (bounds and
+signature check, frame setup, the stack check), not the arguments it
+carries. Video (2-round ABBA, 8 legs, busy 0.05-0.75, residual sd 0.023):
+**−1.14 % ± 0.69 %** — the opposite sign, the same size. Video has ~2×
+J2ME's helper-call density (mode switches, `*_mmu` misses), and the
+arguments those calls reload from the frame are what the change removes;
+J2ME's boundaries are chains, where nothing was saved and the three
+`i64.const` writes per entry cost their bytes. S75 boot + idle (three
+runs per arm): the 9.2 s leg was the host, not the change — under
+matched load the pairs read 16.7 vs 16.1 s and 8.8 vs 9.1 s to 1 G
+instructions, flat. Three workloads, one small loss, one small gain and
+a tie: **not taken**, and the tree reverted to the three-parameter TB.
+What the round keeps from it is the lesson (a TB boundary's cost is V8's
+`return_call_indirect` machinery — bounds and signature check, frame
+setup, stack check — not the arguments it carries; the x64 audit's
+remaining per-boundary item is the typed-table signature check), and the
+per-thread call frame the audit of it surfaced, taken on its own below.
+
+### V1: the mode switch rebuilds hflags only when the exception level moves (built, in test)
+
+From the mode-switch study above. `rebuild_hflags_a32_fast` — the path
+every ARM926 rebuild takes — reads the exception level, `sctlr_el[1]` and
+CPSR.{E, IL, PAN} and nothing else, so on a core without
+`HFLAGS_A32_FAST_FEATURES` a mode change between two privileged modes
+(SVC ↔ SYS/IRQ/ABT/UND/FIQ) leaves hflags exactly where they were; only
+USR ↔ privileged moves the level. Three changes, one commit:
+(A) `cpsr_write`'s change test and `take_aarch32_exception`'s
+unconditional rebuild both ask `arm_a32_hflags_moved(old, new)` on such a
+core (v6+ cores keep the old test verbatim, which also keeps the v8
+bad-mode-switch IL path on the conservative side); (C) the
+realize-constant `aarch32_cpsr_valid_mask()` is computed once into
+`ARMCPU.aarch32_cpsr_mask` instead of on every exception return and SPSR
+load; (D) `take_aarch32_exception` and `cpsr_write` are `QEMU_FLATTEN`,
+folding `switch_mode`, `cpsr_read`, `bad_mode_switch` into their callers
+(the round-49 profile had them as separate wasm functions, five calls per
+entry). The study's price: 12.3 ns per skipped rebuild (measured, round
+47) × 1 205-5 937 /Mi on video, 0.4-2.1 %, plus C's 0.2-0.3 %; a census
+on the mechanism arm counts how many of the mode-moving writes and
+exception entries skip. Verified by the lockstep gate (register state per
+instruction against native) and `tests/tcg-isa/t_psr.c` through the
+op-suite.
+
+### B1: `la_cross_call` is a no-op on wasm64 (built, in test)
+
+From the boot-translation study. `liveness_pass_1` sweeps every temp at
+each call *and* at each memory op (they carry `TCG_OPF_CALL_CLOBBER`) to
+strip call-clobbered registers from the temps' *preferences*; the
+allocator frees the clobbered registers at the call regardless, so the
+sweep is quality-only. The wasm64 backend clobbers R0 and R1 alone, the
+last two in its allocation order, and spills there are all but
+nonexistent, so the sweep — estimated at a quarter of the pass, and the
+pass at 4.4 % of a boot's first 12 s — changes no allocation. Compiled
+out on wasm64. Meter: idlebench boot milestones in ABBA order (≥ 4 pairs)
+with a census slot counting `tcg_reg_free` syncs on both arms, which is
+where a preference the sweep used to trim would show up as a spill.
+
+### S1: the flag-setting register shifts inline (built, in test)
+
+From the hot-TB read: `lsls r1, r5` was the one helper call left on the
+glyph blit's hot path — `helper_shl_cc` through an import, 42 x64 of
+argument stores, spills and reloads per pixel, ~1.3 % of the J2ME vCPU —
+because upstream keeps the four `*_cc` register shifts as helpers for
+their ≥ 32 semantics. Inline on wasm64: a 64-bit shift by the count
+clamped to 63 gives the result in the low half and the carry out at bit
+32 (LSL) or at bit 0 after shifting a copy left by one (LSR; ASR's sign
+fill yields CF = x[31] past 32, as the helper does), a count of 0 leaves
+CF alone through a movcond, and ROR takes its count mod 32 with CF from
+the result's top bit. Nine TCG ops and one movcond, one written global
+(CF) instead of a call that syncs every global. Native keeps the helpers.
+The formulas were model-checked against the four helpers' C over every
+count 0-255 (and a few wider ones), 207 operands and both CF states: no
+mismatch. Then the lockstep gate (CPSR per instruction against native).
+
+### M1: `movcond` as `select` (built, in test)
+
+`tgen_movcond` emitted `if (result t) vt else vf end`, which TurboFan
+compiles to a compare, a jump and a join — the refund blocks at every
+early TB exit paid 9 instructions and two jumps for it. Both arms are a
+register or a constant, so nothing is skipped: `select` (0x1b) is a
+cmov. Two x64 and a branch per movcond.
+
+### `0bb467886e` + `8273aafd5c`: cleanup of the wasm branch (owner's request, from the convergence review)
+
+What the review marked as removable without a performance argument
+against it, done while the A/Bs ran and gated on its own:
+
+- the devirtualised lookup shortcut in `accel/tcg/cpu-exec.c`
+  (`W64_GET_TB_CPU_STATE` → `arm_get_tb_cpu_state`, `curr_cflags_fast`):
+  measured flat when it was added (62bdab8192, "on its own it measures
+  flat"), and its callers run 101 /Mi in J2ME play after the 16-bit
+  table, so an indirect call there is below every meter in use; back to
+  the upstream `tcg_ops->get_tb_cpu_state` / `curr_cflags()` — the one
+  place a target-independent file named an ARM symbol;
+- one ifdef fold in `gen_set_psr` (two back-to-back `CONFIG_TCG_WASM64`
+  blocks);
+- lab-notebook comments in upstream files trimmed to intent — dates,
+  round numbers, per-Mi rates, `see doc/performance-handoff.md` pointers
+  and review tags in `cpu-exec.c`, `translate.c`, `icount-common.c`,
+  `cpu.h`, `cpu-timers-internal.h`, `memory.c`; the reasoning stays, the
+  numbers live here;
+- `W64_ACCT_TBSTATS` / `w64_tbstats_inline()` renamed to what they gate,
+  `W64_ACCT_GUEST_INSNS` / `w64_guest_insns_inline()`: the guest
+  instruction counter the page reads on boards without icount, not TB
+  statistics.
+
+Taken separately, from N6's audit: the dispatcher's call frame is now
+per thread (`__thread w64_frame`). The pmb887x DSP JIT runs its TBs
+through the same dispatcher on its own thread and shared the vCPU's frame
+— helper arguments and the goto_ptr handoff slot — which the memory notes
+had carried as a latent race since the DSP JIT was added; it never fired
+on the bench workloads (0 DSP JIT entries) and now cannot.
+
+J2ME game 1, 2-round ABBA of the whole set against `741597d60a`
+(busy 0.05-0.62, residual sd 0.07): **+1.5 % ± 2.5 %** — flat within the
+band, as the lookup shortcut's own commit had measured. Gate keep GREEN.
+
+Not done here, listed for the owner: the zero-behaviour extractions
+(~1 750 lines out of upstream files into port-owned `.c.inc`/`.h`) and
+the device-model upstreaming (~1 900 lines) from the review.
+
+### N4c: a per-page flush of a page no TB came from retires nothing — built, dropped
+
+Built on the artefact above: a bitmap of guest virtual pages a TB was
+translated from (entry page, spanned page, inlined callee's page; set in
+`tb_gen_code`, cleared at `tb_flush`), tested by
+`tlb_flush_page_by_mmuidx_async_0` so a flush of a page with a clear bit
+skips the jump-cache clear, the generation bump that empties the pc cache
+and every inline cache, and the inlined-list walk; a set bit retires the
+whole jump cache by generation (which would also have closed a
+pre-existing gap the adversarial read found: an inlined TB whose callee
+lies on the flushed page but whose own pc is on neither that page nor the
+previous one kept its jump-cache entry). The first draft asked the TLB
+for the page's ram page and its TB list; the read showed that unsound (a
+guest that touches a page between rewriting its PTE and the TLBIMVA
+refills the entry with the new mapping), hence the bitmap. Sound, cheap —
+and with no board issuing per-page flushes at a rate any meter sees
+(S75 ~0 /Mi, J2ME 0, LG boards 0), it has no number, so it is not
+committed. The design stays here for a guest that does.
 
 ### `3fb2c66465`: the pc cache and jump cache at 16 bits
 

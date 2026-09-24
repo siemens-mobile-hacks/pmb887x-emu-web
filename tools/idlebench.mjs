@@ -304,6 +304,8 @@ const SAMPLER = async (cfg) => {
     u: Number(m._wasm_fb_updates()),
     insns: m._wasm_insns ? Number(m._wasm_insns()) : 0,
     tbs: m._wasm_tbs ? Number(m._wasm_tbs()) : 0,
+    // bench census slots (tools/perf/bench-hooks.patch), totals since boot
+    ctr: m._wasm_bench_ctr_get ? Array.from({ length: 8 }, (_, i) => Number(m._wasm_bench_ctr_get(i))) : null,
     match: pct <= pctMax,
   };
 };
@@ -479,7 +481,7 @@ async function runOne(dist, hashes, r) {
     rec.rssPeakMB = rssPeak;
     rec.last = lastSample && {
       v: +lastSample.v.toFixed(1), pct: +lastSample.pct.toFixed(3),
-      u: lastSample.u, insns: lastSample.insns, tbs: lastSample.tbs,
+      u: lastSample.u, insns: lastSample.insns, tbs: lastSample.tbs, ctr: lastSample.ctr,
     };
     if (w64lines.length) rec.w64lines = w64lines;
 
@@ -520,8 +522,11 @@ async function runOne(dist, hashes, r) {
       rec.salvageDir = dir;
     }
     const ms = Object.entries(rec.tInsns).map(([k, t]) => `${k}:${t}`).join(" ");
+    const perMi = rec.last && rec.last.ctr && rec.last.insns
+      ? "  bench/Mi[" + rec.last.ctr.map((c, i) => `${i}:${(c / (rec.last.insns / 1e6)).toFixed(2)}`).join(" ") + "]"
+      : "";
     console.log(`  [${tag}] -> ${rec.cls}  tModule=${rec.tModule}s  tIdle=${rec.tIdle ?? "-"}s` +
-      `  window=${rec.window ?? "-"}s  tInsns[${ms}]  insns@end=${rec.last ? (rec.last.insns / 1e6).toFixed(0) + "M" : "-"}  rss=${rssPeak}MB`);
+      `  window=${rec.window ?? "-"}s  tInsns[${ms}]  insns@end=${rec.last ? (rec.last.insns / 1e6).toFixed(0) + "M" : "-"}  rss=${rssPeak}MB${perMi}`);
     await b.close();
     return rec;
 }
