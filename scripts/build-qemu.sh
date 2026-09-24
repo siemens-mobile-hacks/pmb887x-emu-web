@@ -29,9 +29,16 @@ QEMU_SRC="$WEB_DIR/qemu"
 # init only the top-level submodules (not pmb887x-emu's nested qemu) and
 # move qemu to the pin (a detached HEAD elsewhere is moved, not an error)
 git -C "$WEB_DIR" submodule update --init
-if [ "$(git -C "$QEMU_SRC" rev-parse HEAD)" != "$QEMU_PMB887X_REV" ]; then
-  git -C "$QEMU_SRC" checkout -q -B "$QEMU_PMB887X_BRANCH" "$QEMU_PMB887X_REV" 2>/dev/null \
-    || git -C "$QEMU_SRC" checkout -q -f "$QEMU_PMB887X_REV"
+# versions.env pins an abbreviated hash, so compare full hashes: a short
+# pin never equals `rev-parse HEAD`, and the checkout below then ran on every
+# build; two concurrent gate builds raced on index.lock and the loser's
+# `checkout -f` fallback wiped uncommitted qemu edits (2026-09-24).
+PIN="$(git -C "$QEMU_SRC" rev-parse --verify -q "$QEMU_PMB887X_REV^{commit}")"
+if [ "$(git -C "$QEMU_SRC" rev-parse HEAD)" != "$PIN" ]; then
+  git -C "$QEMU_SRC" checkout -q -B "$QEMU_PMB887X_BRANCH" "$PIN" 2>/dev/null \
+    || { git -C "$QEMU_SRC" diff --quiet HEAD \
+          || { echo "$(basename "$0"): qemu/ has uncommitted changes and is not at the pin $QEMU_PMB887X_REV; refusing to force a checkout" >&2; exit 1; }
+        git -C "$QEMU_SRC" checkout -q -f "$PIN"; }
 fi
 
 # --- board configs from bsp (pinned rev) ---
