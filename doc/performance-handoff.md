@@ -2997,7 +2997,19 @@ setup, stack check — not the arguments it carries; the x64 audit's
 remaining per-boundary item is the typed-table signature check), and the
 per-thread call frame the audit of it surfaced, taken on its own below.
 
-### V1: the mode switch rebuilds hflags only when the exception level moves (built, in test)
+### V1: the mode switch rebuilds hflags only when the exception level moves — measured, not taken
+
+Video (Berlin.3gp), 3-round ABBA vs `8273aafd5c`, both arms hooked:
+**+0.6 % ± 1.7 %**, flat. The census on the mechanism arm says why: of
+8 905 184 mode-moving writes plus exception entries per 45 s window
+(5 937 /Mi, the study's number to the digit) only 1 821 076 — 20 %, i.e.
+the 1 214 /Mi mode-changing `msr` — stay inside EL1 and skip the
+rebuild; the SVC/eret pair, 4 700 /Mi, crosses between USR and SVC,
+where hflags genuinely change (the firmware's applications run
+unprivileged). 1 214 × 12.3 ns is 0.5 % of 2.7 ms/Mi, under the band,
+and the valid-mask cache and the flattening did not lift it above. The
+study's estimate assumed the crossings were EL1→EL1; they are not. Not
+taken; the patch is kept with the round's scratch files.
 
 From the mode-switch study above. `rebuild_hflags_a32_fast` — the path
 every ARM926 rebuild takes — reads the exception level, `sctlr_el[1]` and
@@ -3035,7 +3047,100 @@ out on wasm64. Meter: idlebench boot milestones in ABBA order (≥ 4 pairs)
 with a census slot counting `tcg_reg_free` syncs on both arms, which is
 where a preference the sweep used to trim would show up as a spill.
 
-### S1: the flag-setting register shifts inline (built, in test)
+Its second part, prepared and compile-checked with it (B1b): the two
+constant-interning `GHashTable`s that `tcg_func_start` cleared on every
+translation — GLib shrinks a cleared table to 8 buckets and regrows it
+8→16→32 through the next TB's inserts, a realloc and a rehash each step,
+plus two indirect calls per `tcg_constant_*` lookup — become 256
+open-addressed slots inside `TCGContext`, valid while their stamp equals
+`const_gen`, cleared by bumping the stamp. Interning is a space saving,
+not a requirement, so the probe is eight slots and a TB with more distinct
+constants than that gets a fresh temp for the surplus. Same meter, its
+own commit.
+
+### F1: one TLB probe per same-page access cluster (built as a backend memo, in test)
+
+Built in a different shape than designed below, needing nothing from the
+frontend and no duplicated cluster body: a TLB memo in the backend. A hit
+that another access of the same kind (mmu_idx, load or store) follows
+leaves the entry's page (zero-extended, i64 `$mkey`) and addend (i32
+`$madd`) in two new locals; the next access tests
+`((addr ^ mkey) & (PAGE_MASK | a_mask)) == 0` (an access that cannot
+straddle) or `(addr ^ mkey) < PAGE_SIZE − adj` (an unaligned one, a_mask
+0) and on success adds `$madd` without probing. The probe's miss arm
+writes −1 to `$mkey`, which no zero-extended address matches, so the
+runtime never uses a memo the slow path may have invalidated; at
+translation time any call (`w64_call` bumps `W.epoch`) or label ends the
+memo, so it lives only across straight-line code where nothing can
+change the TLB. A scan at TB start (in `w64_scan_labels`, which already
+walks the ops) marks the accesses another same-kind access follows before
+any call or label, and only those store to the locals, so a lone access
+emits the same code as before. An entry that hit is clean for the whole
+page, so its flags (MMIO, NOTDIRTY, watchpoint, TLB-only alignment) hold
+for the second access too. Cost per memo'd access: one xor, an and/compare
+and a branch against ~12 x64 and three dependent loads. It also covers
+same-page pairs the design did not (`ldr r0,[r1]; ldr r2,[r1,#4]`, byte
+loops unrolled in a TB). The widened window between a cross-thread TLB
+dirty reset and the store it misses is the same race class upstream
+accepts between probe and store; the pmb887x boards use no dirty logging
+(the LCD is fed over SPI). A census arm counts memo tests and hits
+(slots 3 and 4, near zero in the base patch at tb-size=768).
+
+The original design:
+
+The largest item the hot-TB read left: every word of a `push/pop/ldm/
+stm` pays its own 12-instruction inline probe, and in the hottest blit
+TB 8 of 10 stack accesses share a page with their neighbour — ~36 % of
+that TB's hot path. The frontend knows the cluster (`op_stm`/`do_ldm`
+loop over the register list with `addr += 4` between words; PUSH/POP
+route through them); the backend emits one probe per `qemu_ld/st` from
+the address alone. Design: the frontend emits a page-straddle guard once
+per cluster, `((addr ^ (addr + 4n − 4)) & ~PAGE_MASK) == 0`, and under
+it marks words 2..n with a spare MemOp bit meaning "same page as the
+previous access"; the backend keeps the first word's TLB entry in a
+reserved local and, for a marked word, skips the probe and forms the host
+address from that entry's addend. Same page means the same entry, so the
+first word's fast-path verdict (permissions, NOTDIRTY, MMIO) holds for
+the rest; the guard's other arm emits today's per-word sequence. The
+interpreter tier ignores the bit (its records run the slow path). Cost
+of the guard: three ops per cluster; code size doubles for the cluster
+body. Estimated 3-6 % of J2ME and video (stack traffic is everywhere in
+ARM code), a day's work with the lockstep gate as the judge. Below the
+meter and not pursued: the pc-cache entry address in i32 and the
+single-CPU `cpu_index` compare (3 x64 per pcc probe, ~0.2 %).
+
+### Probe: a typed chain table drops the signature compare (T1, not built)
+
+Three 60-byte modules compiled by Node's V8 with `--print-wasm-code`:
+`return_call_indirect` through a `funcref` table (what the port does),
+the same through a table of type `(ref null $t)`, and `table.get` +
+`return_call_ref`. The funcref tail call is bounds check, two loads for
+the expected canonical signature, the compare, two loads for the callee,
+jump. The typed table replaces the signature load-and-compare with a null
+check on the entry (`cmpl [rbx+0x67],0xff; jz`): **two x64 and one
+dependent load fewer per TB boundary**, of the ~17-21 the tail call
+costs. `return_call_ref` is far worse (`table.get` is a builtin call).
+The JS API cannot create a typed function table, so the shared chain
+table would be exported by a tiny owner module and imported by the
+batches with typed element segments; V8's iso-recursive canonicalisation
+makes every batch's `(i64, i64, i64) -> i32` the same type, and Firefox
+has typed function references since 120. Worth ~0.5-0.8 % of wall on the
+round-41 boundary price. Prototype written (a 34-byte owner module in the
+instantiation glue, the batch import as `(ref null 0)`, element segments
+in the typed `ref.func` form) and validated offline in V8 — instantiate,
+call through, `grow`, `set(null)`, a null entry traps; queued for its A/B
+behind V1/S1/M1/B1, with the Firefox gate as the extra check.
+
+### S1: the flag-setting register shifts inline (video −1.1 %)
+
+Video (Berlin.3gp), 2-round ABBA on a quiet host (8 legs, busy
+0.042-0.052, residual sd 0.014): **−1.09 % ± 0.52 % ms/Mi**. J2ME game 1,
+3-round ABBA at tb-size=768: −0.72 % ± 1.20 % — the host carried load
+21-25 through the first six legs (busy 0.70-0.73) and was quiet for the
+last six, where the pairs alone read −1.1 %; the fit's slope across that
+spread leaves the ± wide. The size is the study's 1.3 % of the J2ME vCPU,
+and video pays it too (its codecs use the same register shifts). Taken;
+gate keep GREEN.
 
 From the hot-TB read: `lsls r1, r5` was the one helper call left on the
 glyph blit's hot path — `helper_shl_cc` through an import, 42 x64 of
