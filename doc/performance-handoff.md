@@ -2743,6 +2743,186 @@ branch. An adversarial read of the diff by a second agent found no
 corruption path and the two cold-path gaps fixed above (`cflags_next_tb`,
 the discard path's unstage) plus the chain-table bound.
 
+### V8 facts that reprice three levers (sources: V8 source at github.com/v8/v8, v8.dev)
+
+Fetched from the V8 sources by a research agent (the web tools 400 on
+this model; `curl` against the raw files works), all verified:
+
+- **Liftoff compilation is lazy by default** (`wasm_lazy_compilation`
+  true; `GetDefaultTiersPerModule` hands every function `kNone` for a
+  synchronous `new WebAssembly.Module`). Module creation compiles no
+  function bodies; each TB function is Liftoff-compiled on its *first
+  call* through the lazy-compile stub. So the ~83 µs "module cost" is
+  decode + validate + instantiate, and the boot's V8 compile share is
+  paid per TB at first execution — which is what the interpreter tier
+  competes with: a body interpreted N times against one per-function
+  Liftoff compile plus N cheap runs, not against a per-module compile.
+  That is also why the `W64_INTERP_THRESH` sweeps (16-1024, flat, rounds
+  above) found nothing: the threshold never moved a compile that was not
+  going to happen anyway, only the point at which a body that *is* run
+  gets compiled.
+- **The tier-up budget is billed in executed machine-code bytes**
+  (`LiftoffCompiler::TierupCheck`: at loop back-edges `pc_offset −
+  loop_start`, at `return`/tail-call `pc_offset + 40`, +20 per check,
+  capped at budget/4; `--wasm-tiering-budget` 13 000 000 per function).
+  A TB whose Liftoff code is ~6 KB tiers up after ~2 000 executions; a
+  *leaner* body bills fewer bytes per run and tiers up **later**. The
+  in-play Liftoff share (6.3 % + 1.6 % frame setup) is therefore the tail
+  of TBs under ~2 000 runs plus background-compile latency, and it
+  cannot be bought with smaller code. Tier-up lands at the next call
+  (jump-table patch), never mid-frame; compilation hints are not
+  reachable from content (Phase 2, V8 test-only); branch hints are
+  spec v3.0 and unconditional in V8.
+- **Linear memory costs RSS as it is written**, not as it is grown
+  (`BackingStore` reserves guard space `kNoAccess` and `memory.grow` only
+  changes protections). A code buffer therefore costs RSS up to its
+  high-water mark and a flush frees nothing; after `8bacd9370c` a 64 MB
+  buffer would still hold ~170k TBs (more than the 256 MB one held
+  before) while capping that RSS at a quarter — a memory lever for the
+  phone, priced below as a follow-up.
+
+### Priced by reading, queued behind the measurements (design studies)
+
+Four read-only studies ran while the A/Bs occupied the host. Their
+conclusions, with the numbers they rest on:
+
+**Video mode switches — ~8.7 % of the video vCPU (estimate from
+measured anchors).** Per crossing: SVC ≈ 50 ns (import call 14.5 ns
+measured, `take_aarch32_exception` → `switch_mode` → `cpsr_read` →
+`arm_current_el` → `arm_rebuild_hflags` 12.3 ns measured, plus the
+goto_ptr key), eret ≈ 60 ns (`cpsr_write` with the exception-return
+mask, `aarch32_cpsr_valid_mask` recomputed from realize-constant inputs,
+rebuild, the shared handler-exit TB's pcc probe), mode-changing `msr`
+≈ 38 ns; 2 360 + 2 369 + 1 205 per Mi against 3.5 ms/Mi. No longjmp, no
+jump-cache or generation traffic on either path (verified). The
+redundancy: **hflags depend on the mode only through EL** under the
+fast-path feature guard (`hflags.c:214-257` reads `el == 0`, SCTLR,
+CPSR.PAN/IL/E and nothing else), so every EL1→EL1 switch (SVC↔SYS/IRQ)
+recomputes an identical value and the change test in `cpsr_write` /
+the unconditional rebuild in `take_aarch32_exception` fire for nothing.
+Ranked: (A) EL-aware rebuild skip, 12.3 ns × 1 205-5 937 /Mi = **0.4-2.1 %
+of video**, census first (count identical results); (C) cache
+`aarch32_cpsr_valid_mask` at realize, 0.2-0.3 %; (D) flatten the five
+internal calls per entry (`always_inline`), 0.6-1.5 % unverified; (B)
+inline the EL1→EL1 mode-changing `msr` with the bank swap in emitted
+code, ~1.0 %, medium risk; (E) SVC entry template, 0.3 %. J2ME sees
+≤ 0.3 % of any of it. Already closed and not to be redone: the hflags
+memo (100 % hit, no movement), the BQL pair, the longjmp.
+
+**The 16-bit jump cache's flush cost.** `tcg_flush_jmp_cache` clears
+the table with one `qatomic_set` per entry — a locked `xchg` on x64 —
+so a full clear is ~130-460 µs at 16 bits (33-115 at 14), 3-100× the TLB
+memsets it accompanies; and `tlb_flush_by_mmuidx_async_work` runs it
+even when nothing was dirty. J2ME flushes 0.011-0.036 /Mi (round-35
+logs) → 0.03-0.4 % of wall, an order of magnitude under N4's gain; LG
+boards flush 0/s at idle and in menus. **CX70 at idle flushes 3.07 /Mi**
+(unconditional DACR writes, never idempotent) → 1-10 % of that board's
+idle vCPU at 16 bits against 0.3-2.6 % at 14 — the one place it can
+bite. Fix, C-only (emitted code never reads `CPUJumpCache`): stamp the
+per-CPU generation into the unused upper half of the 32-bit guest pc
+(entries stay 16 bytes), compare `pc | gen << 32` in `tb_lookup`, and
+make a full flush `gen++` (loop only on wrap); the per-page clear keeps
+its 256-slot loop, since a global bump on TLBIMVA would drop the live
+set. Not `tb_key_gen`: that one moves on every `tb_phys_invalidate`
+(~200 /Mi). Queued as N4b, before N4 ships to a Siemens idle meter.
+Also seen: `tlb_reset_dirty_range_all` at 0.33 % is the fill-grown TLB
+(up to ~38k entries) being walked per code-page protect.
+
+**Boot translation cost (18 % of the first 12 s: `tcg_gen_code` 8.5 %,
+`liveness_pass_1` 4.4 %).** Read against the round-25 split (frontend
+4.5 µs, optimize+liveness 5.3, regalloc+emission 8.0, batch close 3.7,
+bookkeeping 4.1 per TB). The backend has 13 allocatable registers, a
+call-clobber set of {R0, R1} and ~0 spills, yet `liveness_pass_1` runs
+its O(nb_temps) sweeps at every side-effect op — `la_cross_call` on each
+`qemu_ld/st` (they carry CALL_CLOBBER) as well as on calls, `la_bb_end`/
+`la_bb_sync` at every label and brcond — and TEMP_TB temps are never
+recycled inside a TB, so nb_temps grows with TB length and the sweep
+term is quadratic in it (the fork lengthens TBs). Estimated split of
+the pass: sweeps ≈ 70 %, of which `la_cross_call` ≈ 25 % — and that one
+only trims register *preferences*, which with R0/R1 last in the
+allocation order changes nothing here. Second item: `tcg_func_start`
+calls `g_hash_table_remove_all` on both constant-interning tables per
+TB, and GLib 2.84 shrinks the table to 8 buckets on every clear and
+regrows it 8→16→32 during the next TB (realloc + rehash each step), plus
+two indirect calls per `tcg_constant_*` lookup — the ~1 %
+`g_hash_table_*` self time and its malloc children. Ranked, all
+exactness-preserving: (1) skip `la_cross_call` on wasm64 (tcg.c
+`liveness_pass_1`, two sites) ≈ −1.1 % of boot vCPU, verify with a
+spill counter on both arms; (2) an open-addressed constant table inside
+TCGContext cleared by a generation stamp ≈ −1-1.5 %; (3) bound the
+sweeps by a high-water temp index recorded in `liveness_pass_0`
+(−0.9 %) or a live-set bitmap (−2.5 %, ~10 sites), checkable by
+comparing `op->life` per op against the old pass in a debug build; (5)
+an arena for staged bodies and IR records per batch (1-1.5 % of
+translation). Closed and not to be retried: dropping `tcg_optimize`
+(the allocator asserts its canonicalisation; `W64_NOOPT` measured
+nothing), deferring wasm emission for cold TBs, the recorder
+duplication (< 1 µs/TB). Meter: idlebench boot milestones in ABBA order
+(≥ 4 pairs) with census slots for Σ nb_ops, Σ nb_temps, sweep
+iterations and spills.
+
+**Upstream convergence (owner's request; report only).** Against the
+real merge base `c551b96e6e` the branch is 180 commits, +14 487 / −356
+in 104 files. Safe deletions today are small — the devirtualised
+`arm_get_tb_cpu_state` lookup call (`cpu-exec.c:400-444`, measured flat
+in 62bdab8192, callers now 101 /Mi: −45 lines), two ifdef folds and a
+logging-branch return (−7), lab-notebook comments in upstream files
+(−60-100). The real shrink is reshaping with zero behaviour change:
+translate.c's wasm64 frontend (~950 lines, `1333-1446`, `1582-2191`,
+`2299-2463`, `translate.h:120-217`) into `translate-w64.c.inc`; the
+accel/tcg blocks (`cpu-exec.c` pcc + lookup helper ~190, `tb-maint.c`
+code_mask/inl/covers ~265, `cputlb.c` `do_ram_*_1p` 79, the io-barrier
+set) into `*-w64.c.inc`; the W64 types and codec out of
+`translation-block.h` (~110) into a backend header; the Asyncify-safe
+`QemuCond` into `util/qemu-thread-wasm.c` (~100); and upstreaming the
+~1 900 lines of device-model work not yet in `pmb887x-upstream-v2`
+(dif_v1 burst, dmac windows, capcom, gptu, lcd blit, lazy ROMD — each
+with its measured win). Churn inside upstream files would fall from
+~7 700 to ~3 800 lines. Instrumentation remnants: none left (the
+lockstep fold and `QEMU_COSTACK` are gate hooks kept by the review; the
+stale `_wasm_*` references are in tools, not in C). Kept-for-speed list
+verified against the doc's numbers; see the agent's report in the
+session log.
+
+### `3fb2c66465`: the pc cache and jump cache at 16 bits
+
+`TB_JMP_CACHE_BITS` sizes both the jump cache and the pc cache the
+emitted goto_ptr probe reads first (`cpu-exec.c` `w64_pcc`, same hash,
+same size). 14 was the peak measured on a boot; round fifteen's census
+said two thirds of the in-play qht traffic was conflicts and closed the
+lever on the mis-priced 0.7 %. With the census hooks carrying two extra
+slots for this A/B (qht lookups, `helper_lookup_tb_ptr_lc` calls — the
+pcc misses), one 45 s game-1 window at matched host load reads:
+
+| | 14 bits | 16 bits |
+|---|---|---|
+| pcc misses (helper calls) | 7 431 044 (1 321 /Mi) | 569 852 (101 /Mi) |
+| qht lookups | 7 878 486 | 910 567 |
+| translations | 10 597 | 10 568 |
+
+**Ninety-two per cent of the helper calls and 88 % of the qht lookups
+were conflicts in a 16384-entry direct-mapped table**, not cold PCs: the
+J2ME working set simply does not fit. The 1 321 /Mi is the same number
+round fifteen measured, so that census was right and its price was
+wrong. Over all six legs per arm the averages are 7 420 396 → 573 201
+helper calls and 7 878 574 → 918 997 qht lookups per window, with equal
+translations (10.8k) and invalidations (85 vs 83).
+
+Timing, J2ME game 1, 3-round ABBA at tb-size=768 (both arms hooked):
+**−5.6 % ± 4.0 % ms/Mi** at mean busy 0.39 (slope 2.35, residual sd
+0.19); the two quiet pairs read 1.99/1.88 against 2.18/2.16 ms/Mi (busy
+0.08-0.11), the loaded pair 3.63 against 3.78. That is the size the
+profile predicted: the miss path was ~5 % of the vCPU after `5f450abf1b`
+and nine tenths of it is gone. The boot-side worry ("16 is worse again",
+the old header comment) does not reproduce: idlebench on the default
+board, two runs per arm, puts the instruction milestones within noise
+(median time to 1 G guest instructions 14.6 s at 16 bits against 14.7 at
+14; 0.5 G 11.8 vs 12.1; RSS 1885 vs 1888 MB — the 1.5 MB of extra table
+is invisible). Video (2-round ABBA, 8 legs): **+2.2 % ± 4.0 %**, flat —
+its goto_ptr miss path is 172 /Mi (round-49 census), so there was
+nothing for a bigger table to buy there, and the quiet pair ties
+(2.05 against 2.10/1.99 ms/Mi). Gate keep GREEN.
+
 ## Update (2026-09-24, cleanup: what neither wasm nor performance needs, and a flush that looked like a regression)
 
 The owner asked for everything that is unnecessary for either performance
