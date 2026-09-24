@@ -2828,6 +2828,20 @@ set. Not `tb_key_gen`: that one moves on every `tb_phys_invalidate`
 Also seen: `tlb_reset_dirty_range_all` at 0.33 % is the fill-grown TLB
 (up to ~38k entries) being walked per code-page protect.
 
+Built as `741597d60a` and measured on S75 boot+idle (idlebench, three
+runs per arm, census hooks on both): milestones equal within noise (1 G guest
+insns at 17.2 s against 17.8 s; the arms differ only when a full flush
+happens), so it is a correctness-of-cost change for the CX70 class
+rather than an S75 win. The census itself is the finding: **S75 runs
+1 840 jump-cache clears per Mi** (`tb_unlink_inlined` calls, i.e. full
+plus per-page clears; the inlined list walked is short, 2.7 entries
+per call) against 13 translations/Mi. At that rate they cannot be full
+flushes (65536 stores each would exceed wall time), so they are the
+guest's per-page TLB invalidations — each of which clears 256 entries
+with atomic stores at 16 bits (128 at 14) *and* bumps the generation
+that retires every pcc and inline-cache slot. A split-and-timed census
+follows before anything is built on it.
+
 **Boot translation cost (18 % of the first 12 s: `tcg_gen_code` 8.5 %,
 `liveness_pass_1` 4.4 %).** Read against the round-25 split (frontend
 4.5 µs, optimize+liveness 5.3, regalloc+emission 8.0, batch close 3.7,
@@ -2860,6 +2874,44 @@ nothing), deferring wasm emission for cold TBs, the recorder
 duplication (< 1 µs/TB). Meter: idlebench boot milestones in ABBA order
 (≥ 4 pairs) with census slots for Σ nb_ops, Σ nb_temps, sweep
 iterations and spills.
+
+**What the hot J2ME TBs' x64 says (capture: `tools/perf/wasmgrab.mjs`
+on the played game, TurboFan output via Node's `--print-wasm-code`).**
+The hot code is the phone's native graphics library, not the KVM's
+bytecode loop: a 1-bpp glyph blit (three TBs, 9.4 % of the vCPU: one
+inlined `put_pixel` per pixel, 45 guest insns, 3 TB boundaries and one
+helper call per pixel), a 16-bpp colour-keyed blit self-loop (6.7 %, 17
+insns/pass), a halfword fill self-loop (7.4 %, 6 insns/pass, 65 x64 per
+pass of which 30 are the two TLB probes and 11 per-pass bookkeeping),
+and the IRQ/SWI stubs (9 %). Round 49's fixes hold: cold-arm spills sit
+in the miss arms, `i32.wrap_i64` collapses, no bounds checks, no
+tiering-budget code. What remains is structural, per execution:
+- every TB spills its three parameters (env, sp, tp) at entry and
+  reloads two for its tail call — 5 x64 per TB execution, plus env
+  rematerialised up to 4× — although all three are per-process
+  constants (one vCPU; `w64_frame` and `&w64_tb_ptr` fixed); a
+  zero-parameter TB type with the three baked as constants also turns
+  every env access from base+index+disp into base+disp and frees a
+  register in a convention with none callee-saved (**N6**, next);
+- every `push/pop/ldm/stm` word pays its own 12-instruction TLB probe
+  (8 of 10 stack accesses in the hottest TB share a page with their
+  neighbour: ~36 % of its hot path) — a fused cluster probe with a
+  straddle guard is the largest lever seen, and the most work
+  (frontend cluster hint + backend + interpreter records);
+- `lsls r1, r5` is a `helper_shl_cc` call on the blit's hot path: 42
+  x64 of call overhead per pixel (~1.3 % of the vCPU) — inline the
+  flag-setting variable shifts;
+- helper arguments round-trip through the frame (`tcg_target_call_iarg_regs`
+  is empty): 8 x64 per 3-argument call;
+- the goto_ptr exit: inline-cache hit 34 x64, pcc probe 65, of which
+  the tail call is 17-21 (V8's bounds + signature check on
+  `return_call_indirect`; a typed table could drop the 4-instruction
+  signature check — unverified); small fixes: pcc entry address in i32
+  (2 instrs), key32 re-load at refill (1), a sign-bit tag test (1),
+  `tgen_movcond` as `select` instead of `if/else` (2 + a branch per
+  refund);
+- self-loop bookkeeping per pass: PC store and `can_do_io = 0` that only
+  the exit arm needs (3 of 65 instructions in the fill loop).
 
 **Upstream convergence (owner's request; report only).** Against the
 real merge base `c551b96e6e` the branch is 180 commits, +14 487 / −356
