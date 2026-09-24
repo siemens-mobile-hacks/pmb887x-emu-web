@@ -571,7 +571,7 @@ Still open on KE970:
 - **The main loop still iterates ~118 k times per boot.** Re-profile it
   first.
 
-### `-ftrivial-auto-var-init=zero` costs video 4.2 %, J2ME 1.5 % — owner's decision (round fifty-one §3)
+### ~~`-ftrivial-auto-var-init=zero` costs video 4.2 %, J2ME 1.5 %~~ — TAKEN for the wasm build only in `0a3e5f2ce3` (round fifty-one §3; native keeps it)
 
 ### ~~The final link ran at `-O0`~~ — TAKEN in round fifty (video −3.2 %, J2ME −5.3 %, wasm 28 → 11 MB; `-O3` another −1.8 % on video)
 
@@ -2742,9 +2742,9 @@ translation cache, which is a project of its own.
 **Rounds 51 §2 + §2b together:** the KE970 busy phase is ~19 s → ~13 s,
 and the 1000 M milestone is 15.8 → 10.7 s.
 
-### 3. Priced, and left for a decision: `-ftrivial-auto-var-init=zero`
+### 3. `-ftrivial-auto-var-init=zero`: dropped on wasm, kept on native (owner's call)
 
-`qemu/meson.build:686` adds upstream's hardening flag
+`qemu/meson.build` adds upstream's hardening flag
 `-ftrivial-auto-var-init=zero` to every file. It zeroes every
 uninitialized local on every call. A full rebuild with
 `=uninitialized` (bench hooks on both arms):
@@ -2752,9 +2752,15 @@ uninitialized local on every call. A full rebuild with
 - **J2ME:** −1.45 % ± 1.18.
 
 This is a security/robustness trade: an uninitialized read becomes a
-deterministic zero instead of stack garbage. So it is **not taken**
-without the owner's call. If it is wanted, the narrow form is to drop it
-on the hot TCG/target files only.
+deterministic zero instead of stack garbage. The owner chose to drop it
+for the emscripten host only (`0a3e5f2ce3`), the whole build rather than
+the narrower per-directory form:
+- The browser build already runs inside the tab's sandbox, which is
+  where the flag's exploit-hardening case is weakest.
+- Native keeps the flag, so if the wasm build ever starts depending on
+  an uninitialized value, lockstep-wasm (wasm vs native) sees the two
+  disagree.
+- `-fzero-init-padding-bits=all` stays on both.
 
 ## Update (2026-09-23, round fifty: a precise sampler, the window's real C profile, and the link that was never optimized)
 
