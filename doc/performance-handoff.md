@@ -2664,6 +2664,85 @@ no `emscripten_sleep` — so an async `WebAssembly.compile()` has no turn
 to land on, and an event-loop turn costs ≥ 1 ms against the 83 µs a module
 costs to create.
 
+### `8bacd9370c`: TB bodies leave the code buffer once staged
+
+A translated TB used to stay in the code buffer whole: the 16-byte
+descriptor plus ~1.7 KB of wasm function body, which nothing read again
+once the batch module had landed — except an eviction, which re-assembled
+the module from it. That is what made the 256 MB buffer flush every
+~120-140k TBs (the cleanup entry below found the flush inside a J2ME
+window), and it is why a retaddr could be a pointer into the body.
+
+Now `tcg_out_tb_finalize` hands the batch a heap copy of the body and
+rewinds `code_ptr` to the descriptor: `tcg_gen_code` returns 16, the
+unwind data lands right after the descriptor, and a TB costs the buffer
+the TranslationBlock, 16 bytes and its search data — a few hundred bytes,
+so the flush is ~5× rarer for the same buffer, or the buffer can shrink.
+The copy is freed when the batch lands (the module holds the code), when
+a member is withdrawn (`w64_batch_unstage`, now also on the
+`existing_tb != tb` discard path) and at `tb_flush`. Three consequences,
+each with its own line in the change:
+
+- **A retaddr is an encoding, not a pointer.** `w64_pc()` bakes
+  `descriptor << 20 | offset + GETPC_ADJ` (exec/translation-block.h
+  `W64_RA_*`; the body is ≤ 64 KB and a real pointer is < 2 GB, so the high
+  word tells them apart). `tcg_tb_lookup` decodes to the descriptor,
+  `cpu_unwind_data_from_tb` rebuilds `tc.ptr + offset`, and
+  `cpu_restore_state`/`cpu_unwind_state_data` test the decoded descriptor
+  against the buffer. Every other consumer — `cpu_io_recompile`,
+  `tb_check_watchpoint`, the precise-SMC path, `w64_tb_insn_index`, the
+  interpreter tier's records — funnels through those.
+- **An evicted member is retired, not re-instantiated.** Its module and
+  body are gone, so the dispatcher does what `cpu_io_recompile` does:
+  `tb_phys_invalidate` + `cpu_loop_exit_noexc`, keeping the loop's
+  `cflags_next_tb` request for the retranslation. Nothing can still reach
+  the old TB: eviction unlinked its incoming chains and bumped the
+  generation that retires the inline caches. Proven with a scratch build
+  at `W64_LIVE_MAX 48`, where eviction and retire run throughout a boot:
+  S75, EL71 and KE800 boot, and the wasm-vs-native lockstep comparison
+  (one-insn-per-TB, so thousands of modules) matches.
+- **The chain table is bounded by the same flush.** Every translation
+  takes an index (`w64_alloc_tidx`), recycled only by `tb_flush`, and past
+  `W64_TIDX_N` (2²¹) the interpreter tier silently dropped records. With
+  ~120k TBs per flush that was unreachable; at a few hundred bytes per TB
+  a 768 MB buffer holds ~2M. `tb_gen_code` now treats a nearly full table
+  like a full buffer (`w64_tidx_left`).
+
+Timing, J2ME game 1, 3-round ABBA at tb-size=768 (so neither arm
+flushes inside the window; both arms carry the census hooks): **−2.8 % ±
+2.4 % ms/Mi** at mean busy 0.51, slope 2.4 ms/Mi per unit busy, residual
+sd 0.12 — no steady-state cost, and a small gain that is consistent with
+the descriptors and TranslationBlocks now being packed 4.8× denser (the
+dispatcher reads one descriptor word per TB, and the loop the TB struct).
+The three quiet N1 legs (busy 0.05-0.08) read 1.93-1.98 ms/Mi against
+the one quiet HEAD leg's 2.52 at busy 0.12; suggestive, not claimed — the
+fit is the number. Video (SL65 Berlin.3gp, 2-round ABBA, 8 legs): **−2.6 %
+± 1.3 % ms/Mi** at mean busy 0.66, residual sd 0.06 — the same size, on
+the workload whose code buffer bytes never came near a flush, which is
+what the packing explanation predicts.
+
+What the census says about play (both arms carry the eight
+`tools/perf/bench-hooks.patch` slots, read per 45 s game-1 window): ~10.3k
+translations and **10 modules** per window — batches fill to their 1024
+members in play, so the module pipeline is not a steady-state cost at
+all; mean live modules ~350 against the 6144 cap, so **eviction never
+runs in play** and the retire path is a boot/long-session concern only;
+`tb_flush` 0 at tb-size=768; invalidations 108-131 per window; and the
+code buffer consumed **1812 bytes/TB before, 378 after** — the flush
+cadence stretches 4.8×, or the buffer can lose four fifths of its 256 MB
+for the same cadence. One leg per arm at the default 256 MB buffer
+(census only, the host was busy 0.76): 1729 → 361 bytes/TB and no flush
+inside either 45 s window, so the cleanup entry's "both arms flush once
+per run" happens before the window opens; the cadence claim rests on the
+bytes, not on a flush caught in the act.
+
+The first build of it died at once with `tb_tc_cmp: a->size == b->size`:
+rewriting `tcg_tb_lookup` had lost the `.size = 0` that marks a lookup key
+to the region tree's comparator, so every lookup went down the insert
+branch. An adversarial read of the diff by a second agent found no
+corruption path and the two cold-path gaps fixed above (`cflags_next_tb`,
+the discard path's unstage) plus the chain-table bound.
+
 ## Update (2026-09-24, cleanup: what neither wasm nor performance needs, and a flush that looked like a regression)
 
 The owner asked for everything that is unnecessary for either performance

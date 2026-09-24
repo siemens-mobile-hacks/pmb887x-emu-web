@@ -61,7 +61,7 @@ index 4fe79a8aef..21d4fb0b00 100644
  #include "w64-interp.h"
  
 +/* Bench census slots (tools/perf/bench-hooks.patch): not part of the port.
-+ * 0 translations, 1 modules instantiated, 2 evictions, 3 re-instantiations,
++ * 0 translations, 1 modules instantiated, 2 evictions, 3 retires,
 + * 4 tb_flush, 5 live modules summed per translation (/slot 0 = mean live),
 + * 6 code-buffer bytes consumed, 7 TBs invalidated (tb-maint.c). */
 +extern uint64_t wasm_bench_ctr[8];
@@ -103,17 +103,17 @@ index 4fe79a8aef..21d4fb0b00 100644
      w64_live_head = l->next;
      if (!w64_live_head) {
          w64_live_tail = NULL;
-@@ -946,6 +965,7 @@ static void w64_batch_ensure(uint32_t id)
-     if (l->thunk) {
-         return;
+@@ -946,6 +965,7 @@ static G_NORETURN void w64_batch_retire(CPUArchState *env, uintptr_t tcptr)
+                 (unsigned)tcptr);
+         abort();
      }
 +    wasm_bench_ctr[3]++;
-     l->thunk = w64_assemble_instantiate(&l->src);
-     w64_landed_flip(l);
-     w64_live_push(l);
+     tb_w64_retire(env_cpu(env), tb);
+ }
+ 
 @@ -1095,6 +1115,7 @@ void w64_batch_flush(void)
- {
      struct w64_landed *l;
+     unsigned m;
  
 +    wasm_bench_ctr[4]++;
      w64_irec_flush();
