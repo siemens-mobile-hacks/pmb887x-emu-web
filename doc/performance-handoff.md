@@ -2588,6 +2588,48 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 ## Round log (newest first)
 
+## Update (2026-09-24, round fifty-two: the store-to-code-page path, re-priced after the 4 KB page switch)
+
+### 1. `code_mask` was still sized for 1 KB pages (`cb4dbe103f`)
+
+**Where the time went.** On J2ME game 5 the V8 sampler put
+`notdirty_write` at 13.1 % self. The whole store-to-code-page path
+(`helper_st*_mmu` → `mmu_lookup` → `mmu_watch_or_dirty` →
+`notdirty_write`) was ~25 % of the vCPU inclusive; on game 1 it was
+~4 %. The page walk in `tb_page_covers` is inlined, so its time shows up
+as `notdirty_write` self time.
+
+**Census** (temporary counters in `tb_page_covers`; diff kept out of the
+tree):
+
+| per Mi | calls | mask rejects | walks | list steps | covers |
+|---|---|---|---|---|---|
+| game 5, 256-bit mask | 6703 | 6444 | 259 | 38 577 | 0.06 |
+| game 5, 1024-bit mask | 6703 | 6702 | 0.7 | 3.4 | 0.04 |
+| game 1, 256-bit mask | 479 | 266 | 213 | 8 317 | 1.2 |
+| game 1, 1024-bit mask | 485 | 462 | 22.7 | 378 | 1.4 |
+
+**Cause.** Round 37 sized the mask at 256 bits, which is four bytes per
+bit at 1 KB pages. Round 40 moved to 4 KB pages and the mask stayed at
+256 bits, so each bit covered 16 bytes. Data words started sharing
+granules with code again: game 1 was back to the 55 % rejection rate the
+round-37 comment warns about. On game 5 a page of 149 TBs was walked
+259 times per Mi and never found a covering TB.
+
+**Fix.** 1024 bits, four bytes per bit again. PageDesc grows by 96 bytes.
+
+**Two-binary ABBA** (both arms with the bench hooks, ms/Mi):
+
+| workload | before | after | change |
+|---|---|---|---|
+| J2ME game 5 | 2.822, 2.893 | 2.591, 2.557 | −9.9 % |
+| J2ME game 1 | 2.982, 3.147 | 2.859, 2.875 | −6.4 % |
+| SL65 video | 2.084, 2.090 | 2.058, 2.066 | −1.2 % |
+
+**Lesson.** Every size tied to the guest page size needs re-checking
+whenever that size changes. The mask comment still said "at this board's
+1 KB pages" two rounds after that stopped being true.
+
 ## Update (2026-09-23, round fifty-one: KE970 is the target; the flash write-behind was a block request per 30 words)
 
 ### 1. Where a KE970 boot goes
