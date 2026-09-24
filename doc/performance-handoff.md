@@ -2630,6 +2630,69 @@ round-37 comment warns about. On game 5 a page of 149 TBs was walked
 whenever that size changes. The mask comment still said "at this board's
 1 KB pages" two rounds after that stopped being true.
 
+### 2. Stores to a code page's data skip the NOTDIRTY path (`7538f05950`)
+
+With the mask fixed, game 5 still sends 6 700 stores per Mi through the
+generic slow path. A page keeps TLB_NOTDIRTY while it holds any TB, and
+only 0.04-0.06 of those stores per Mi touch a TB. Each one paid for
+`mmu_lookup` → `mmu_watch_or_dirty` → `notdirty_write`, a read of the
+CODE dirty bit and `tb_page_covers`, just to learn "no".
+
+**Fix.** `do_ram_notdirty_1p` in cputlb.c (wasm only) runs after
+`do_ram_1p` misses in each `do_stN_mmu`. It takes a store only when all
+of these hold:
+- the TLB comparator is exactly the page plus TLB_NOTDIRTY, so there is
+  no FORCE_SLOW and there are no slow flags;
+- the store is aligned, within one page and not byte-swapped;
+- `tb_store_misses_code()` says the page holds TBs and `code_mask` is
+  clear for the bytes stored.
+It still sets the DIRTY_CLIENTS_NOCODE bits, then stores through the
+addend. An empty page answers "no" and goes the generic way, which is
+where `notdirty_write` lifts the protection.
+
+**Two-binary A/B** (both arms with the bench hooks, ms/Mi):
+
+| workload | before | after | change |
+|---|---|---|---|
+| J2ME game 5 (ABBA) | 2.721, 2.666 | 2.479, 2.428 | −8.9 % |
+| J2ME game 1 (ABBAAB, fit vs hostBusy) | | | −1.8 % ± 0.9 |
+| SL65 video (ABBAAB, fit vs hostBusy) | | | 0.0 % ± 0.6 |
+
+Dirty-bitmap atomics were priced on their own at ~1 % and left alone:
+the fast path keeps `physical_memory_set_dirty_range`.
+
+### 3. Closed this round
+
+- **The V8 Liftoff tail.** J2ME spends 18-25 % of TB ticks in Liftoff
+  code: thousands of lukewarm TBs that never burn V8's 13 M per-function
+  tier-up budget. Video spends only ~2 %. A ceiling probe with
+  `--wasm-tiering-budget=200000` gave game 1 −7.5 % and game 5 −2 %, but
+  production cannot reach it. Each exit (return or tail call) charges
+  `pc_offset + 60`, each check is capped at budget/4, and compilation
+  hints are experimental and off by default. This stays closed unless the
+  backend pools TBs into shared functions.
+- **`do_ld4_mmu` / SCCU on video.** `--prof` shows 3.7 % self. A counter
+  plus a calibrated timer gives 68 calls/Mi × 143 ns ≈ 0.45 %. The
+  0.57 % for `sccu_io_read` at 0.24-2 calls/Mi is not real either. Same
+  trap as round 47: count calls before believing a leaf's share.
+- **Translation on game 1.** 4.2 translations/Mi and 1.37 SMC
+  invalidations/Mi, about 9 % of the busy vCPU at ~64 µs per TB. This is
+  inherent to the guest's own JIT.
+- **Timing inside the vCPU.** `get_clock()` costs 0.4-0.7 µs per read
+  and inflated nested ms/Mi timers by 10-500 %. Use one outer interval
+  minus an empty back-to-back interval.
+- **j2mebench's `tbGen/Mi` is dead.** The review removed the counter,
+  so it always reads 0; do not diff it.
+
+**Tooling fixed on the way.**
+- `ninja-fast.sh` now stops when a meson regeneration drops the `-O3`
+  link args. The symptom was a 45 MB wasm that passes every gate.
+- The build scripts compared the abbreviated qemu pin with the full
+  `rev-parse HEAD`, so `checkout -B` ran on every build. Under
+  `gate.sh`'s concurrency, the `checkout -f` fallback wiped uncommitted
+  qemu edits. They now compare full hashes and refuse to force a dirty
+  tree.
+
 ## Update (2026-09-23, round fifty-one: KE970 is the target; the flash write-behind was a block request per 30 words)
 
 ### 1. Where a KE970 boot goes
