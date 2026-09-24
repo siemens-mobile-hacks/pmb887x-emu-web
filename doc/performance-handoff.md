@@ -2588,6 +2588,82 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 ## Round log (newest first)
 
+## Update (2026-09-24, round fifty-three: the qht path was mis-priced, a code page's ram_addr from its TLB entry, TB bodies out of the code buffer)
+
+The owner asked for new areas, "not what is already there". The round
+started from two V8 `--prof` profiles at `967f88004e` (J2ME game 1 in
+play, 55 s window; S75 cold boot, first 12 s), split by tier and by
+subsystem with `tools/perf/v8tick.py` and a grouping pass over its top
+400 rows.
+
+### What the J2ME profile says (vCPU isolate, in play)
+
+| group | share of the vCPU |
+|---|---|
+| TB code, TurboFan | 69.2 % |
+| main-module C | 18.2 % |
+| TB code, Liftoff (+ `WasmLiftoffFrameSetup` 1.6 %) | 6.3 % |
+| V8 builtins, chrome C++, libc | 6.3 % |
+
+Of the 18.2 % C: exec loop and lookup 6.8 % (`helper_lookup_tb_ptr_lc`
+2.58, `qht_lookup_custom` 1.23, `tb_htable_lookup` 0.79), mmu/tlb 4.45 %
+(`qemu_ram_block_from_host` 2.69, `probe_access_internal` 1.02),
+translation 3.33 % (`tb_lookup_cmp` 1.39, `get_page_addr_code_hostp` 0.78,
+`tcg_gen_code` 0.64), devices 1.24 %, exception/cpsr 0.78 %. The module
+pipeline (`w64_assemble_instantiate`) and the interpreter tier do not
+register in play at all; they are boot costs (boot: ~26 % V8 compile,
+~18 % translation, 33 % TB code in the first 12 s).
+
+**The qht path is 7.9 % of the J2ME vCPU, not the 0.7 % round fifteen
+closed it at.** That closure priced `qht_lookup_custom` alone on the
+assumption that "the rest of the probe inlines into it". It cannot:
+`qht_lookup_custom` takes the comparator as a function pointer, so
+`tb_lookup_cmp` (1.39 %) is its own frame, and each two-page candidate it
+compares — plus every `tb_htable_lookup` — pays `get_page_addr_code_hostp`
+→ `probe_access_internal` → `qemu_ram_addr_from_host_nofail` →
+`qemu_ram_block_from_host` (0.78 + 1.02 + 2.69 %). With the helper's own
+2.58 % the goto_ptr miss path is ~8 % of the vCPU, and round fifteen's
+own census said two thirds of that traffic is conflict misses in a
+16384-entry direct-mapped cache. The jump-cache/pcc lever reopens on
+that price (below).
+
+### `5f450abf1b`: a code page's ram_addr from its TLB entry
+
+`get_page_addr_code_hostp()` had the number in hand —
+`CPUTLBEntryFull.xlat_offset` is ram_addr − vaddr for RAM and the offset
+within the region for a ROMD device, whose RAM block starts at the
+region's ram_addr — and recomputed it with an RCU read lock and a walk
+of the RAM block list, on every jump-cache miss that reached the qht.
+Now `addr + xlat_offset` (+ `memory_region_get_ram_addr(mr)` for ROMD).
+
+J2ME game 1, 3-round ABBA against `967f88004e` at tb-size=768
+(`tools/perf/j2abba.sh`, scored by `vgfit.py` against host load):
+**−8.9 % ± 4.2 % ms/Mi** at mean busy 0.53. The host was busy 0.08–0.82
+across the twelve legs (other jobs on the machine; slope 3.0 ms/Mi per
+unit busy, residual sd 0.25 ms/Mi), and the two quiet legs (busy
+0.08/0.11) tie within that residual — so the fitted number is the honest
+one, and the mechanism is read off the profile rather than the timing: in
+a `--prof` leg of the new build `qemu_ram_block_from_host` is gone from
+the vCPU's top 400 rows (it was the largest C row, 2.69 %),
+`probe_access_internal` reads 0.24 % and `get_page_addr_code_hostp`
+0.06 % (that leg ran under gate load, duty 0.34, so its shares are not
+otherwise comparable with the HEAD profile). Gate keep GREEN.
+
+### N9 closed: compiling the batch module off the vCPU thread
+
+Two facts close it, both measured. (1) V8 has no cross-isolate module
+cache for a synchronous `new WebAssembly.Module`: in node v22.22.1 the
+same bytes compiled first in a worker then on the main thread cost
+93.7 µs against 128.7 µs fresh (5 functions) and 135.9 against 141.7 µs
+(40 functions) — a warm allocator, not a cache; only the *same isolate*
+recompiling the same bytes is cheap (9.8 / 64.5 µs; instantiate 8.7 /
+48.2 µs). So a helper thread cannot hand the vCPU a compiled module. (2)
+The vCPU worker never pumps its event loop — the port uses only
+`emscripten_futex_wait/wake` and Asyncify fibers (`util/coroutine-wasm.c`),
+no `emscripten_sleep` — so an async `WebAssembly.compile()` has no turn
+to land on, and an event-loop turn costs ≥ 1 ms against the 83 µs a module
+costs to create.
+
 ## Update (2026-09-24, cleanup: what neither wasm nor performance needs, and a flush that looked like a regression)
 
 The owner asked for everything that is unnecessary for either performance
