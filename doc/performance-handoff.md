@@ -2588,6 +2588,72 @@ translation is now the biggest single item at ~2.1 s (17 %).
 
 ## Round log (newest first)
 
+## Update (2026-09-24, cleanup: what neither wasm nor performance needs, and a flush that looked like a regression)
+
+The owner asked for everything that is unnecessary for either performance
+or getting wasm to work to come out of the qemu branch. Six commits
+(`7538f05950..967f88004e`, 38 files, +538 / −2117):
+
+| commit | what went |
+|---|---|
+| `dc6e227014` | N-page TB tracking (`TB_PAGES`, `tb-pages.h`). It was built to price a third page, which was rejected in round 42. Back to upstream's two-page form, which also fixes the arm-linux-user build it had broken. |
+| `9b7f9c3398` | accel/system leftovers: `io_prepare` and `notdirty_write` back to upstream shape, `icount2_ticks_now`, dead stubs and exports, three stale onlylist names, the `HEAPU32` export. |
+| `ecffdcb4b3` | target/arm: the helper-side hflags rebuilds are folded into `cpsr_write`. Its change test now covers PAN, the one input it missed. Also write-only DisasContext/TCGLabel fields. |
+| `f36417f69f` | tcg/wasm64: the temp-module path (every TB already joined a batch), per-TB type/import tables and the 256-byte prelude, the MEMORY64=1 paths (configure now requires `--wasm64-32bit-address-limit`), `TCG_REG_TMP` (15 regs, 6 fewer declared locals per TB), interpreter ops the backend never records. |
+| `231eb98b8e` | pmb887x: TPU `armed_valid`, CAPCOM's cached T0/T1 copies (and a divide by zero at `T0REL = 0x10000`), a DIF v2 array that held one value, the flash-blk vmstate field, whitespace-only hunks. |
+| `967f88004e` | comments: the backend header describes batches and the interpreter tier as they are. |
+
+Kept on purpose: the DMAC same-width branch and its `QEMU_UNINITIALIZED`,
+`lcd_flush_partial_command` (upstream), both DIF v1 fallbacks, and the
+20 onlylist names that the -O3 link inlines (a lower-opt link needs them).
+
+### The +21 % that was a flush
+
+The first J2ME ABBA against `7538f05950` read **+21 % ms/Mi**. Bisecting
+the timings pointed at `f36417f69f`. A census, with counters patched onto
+both arms, then showed:
+
+- `tb_gen_code` ran 7.3/Mi instead of 2.7/Mi, with no `tb_phys_invalidate`
+  and no `do_tb_flush`;
+- the icount-expiry and partial-TB request rates were identical (78/Mi,
+  66.7/Mi);
+- 4.9/Mi of the translations were keys translated before, whose old TB
+  was intact (pc, flags, cflags, cs_base, page) but no longer in the qht.
+
+The TB-alloc overflow path in `tb_gen_code` calls
+`tb_flush__exclusive_or_serial()` directly, not `do_tb_flush`, so a counter
+on the latter reads 0. Counting at the real flush showed the whole story.
+The wasm code buffer is 256 MB (`phys_mem / 8`), and game 1 translates
+about 120-140k TBs over boot + play, so **both arms flush exactly once**:
+
+| arm | bytes/TB | flush at | window |
+|---|---|---|---|
+| `7538f05950` | 2256 | TB 118 950 | after the flush's re-translation peak |
+| cleanup | 1954 (−13 %) | TB 137 333 | inside it |
+
+Smaller TBs (no prelude, no per-TB import table) moved the flush into the
+measurement window. The +21 % is the re-translation and re-interpretation
+of the working set. With `EXTRA_Q='qargs=-accel%20tcg,tb-size=768'`
+neither arm flushes, and both read 1.87-1.91 TBs/Mi.
+
+### Numbers (two binaries, bench hooks on both, `tb-size=768` on both)
+
+- J2ME game 1, quiet batch of 8 legs: **−0.80 % ± 0.78** (sd 0.023).
+  All 16 legs pooled: −0.07 % ± 1.83. The first batch ran at hostBusy up
+  to 0.18.
+- SL65 video, 8 legs: **−0.11 % ± 0.70**.
+- gate keep green after each commit; close green before the pin bump.
+
+**Lesson.** Any change to emitted bytes per TB moves the J2ME flush point.
+A/B J2ME with the `tb-size=768` qarg, or check `tb_flush__exclusive_or_serial`
+first when a leg's translation count jumps. At the default size, the
+cleanup fits 16 % more TBs before the (single) flush a user meets.
+
+Latent and not fixed: the DSP worker thread can run wasm64 TBs, and the
+backend's frame, tidx allocator, landed/live lists and IR store are
+process-wide. A probe counted 0 DSP JIT entries across S75 boot, SL65 boot
+and SL65 video.
+
 ## Update (2026-09-24, round fifty-two: the store-to-code-page path, re-priced after the 4 KB page switch)
 
 ### 1. `code_mask` was still sized for 1 KB pages (`cb4dbe103f`)

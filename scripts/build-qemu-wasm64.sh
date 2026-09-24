@@ -5,13 +5,11 @@
 # build/qemu-wasm64/ and deploys qemu-system-arm.{js,wasm} into
 # site/dist-jit/ (the emulator page's dist).
 #
-# The default is the 32-bit-address-limit memory model (-sMEMORY64=2): i64
+# The memory model is the 32-bit address limit (-sMEMORY64=2): i64
 # pointers, i32 memory index.  It is worth +19.2 % on J2ME (round thirty-six)
 # because a wasm32 memory is guard-page bounded and needs no explicit bound
-# check; it gates green and the op-suite is byte-identical to native.
-# (The W64_MEM64 / W64_O3 comparison variants this script used to build
-# were removed once their rounds closed — the record is in
-# doc/performance-handoff.md, rounds thirty-six and thirty-seven.)
+# check, and it is the only model the JIT backend emits code for (configure
+# refuses --cpu=wasm64 without --wasm64-32bit-address-limit).
 #
 # Prereqs (already present in this tree):
 #   - build/deps/emsdk (emsdk env + wasm64 sysroot under build/deps/target)
@@ -28,29 +26,18 @@ export CPATH="$ROOT/build/deps/target/include"
 export PKG_CONFIG_PATH="$ROOT/build/deps/target/lib/pkgconfig"
 # emconfigure overwrites PKG_CONFIG_PATH with EM_PKG_CONFIG_PATH, empty if
 # unset (emscripten tools/building.py, get_building_env), so the line above is
-# invisible to configure on its own.  It went unnoticed until W64_MEM32 made
-# this script configure a build dir from scratch for the first time: the
-# default one was configured by build-qemu.sh, which sets both.
+# invisible to configure on its own.
 export EM_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
 
 SRC="$ROOT/qemu"
 
-# The default memory model: clang/lld still emit wasm64 with i64 pointers,
-# Binaryen lowers the memory to wasm32 at link (-sMEMORY64=2), and
-# -DW64_MEM32 makes the JIT backend wrap the addresses in the code it emits
-# itself, which Binaryen never sees.
+# clang/lld still emit wasm64 with i64 pointers, Binaryen lowers the memory
+# to wasm32 at link (-sMEMORY64=2), and the JIT backend wraps the addresses
+# in the code it emits itself, which Binaryen never sees.
 #
-# -DW64_MEM32 is NOT passed in --extra-cflags on purpose: that lands in the
-# meson cross file's [built-in options], which meson does not apply to
-# compile lines (-O3 and -DWASM_BIGINT are dropped the same way).  configure
-# adds the define to CPU_CFLAGS instead, keyed off the same
-# --wasm64-32bit-address-limit that selects -sMEMORY64=2, so the define and
-# the memory mode cannot drift apart -- out of step, every JIT module fails
-# to instantiate with "cannot import i32 memory as i64".
-#
-# The deps under build/deps/target need no rebuild when switching -- emscripten
-# compiles -sMEMORY64=1 and =2 identically (same wasm64 triple, same -mwasm64)
-# and caches their system libraries in one wasm64-emscripten lib dir; only the
+# The deps under build/deps/target are built -sMEMORY64=1: emscripten
+# compiles =1 and =2 identically (same wasm64 triple, same -mwasm64) and
+# caches their system libraries in one wasm64-emscripten lib dir; only the
 # link differs.
 #
 # The build dir is never reconfigured once it exists (the configure guard
@@ -88,7 +75,7 @@ fi
 # linked module.  -O2 took 28 -> 11 MB wasm, video -3 %, J2ME -5 %;
 # -O3 over -O2 is another -1.8 % on video (J2ME a tie).
 ONLY="$ROOT/qemu/configs/meson/asyncify-only.txt"
-LA="['-O3','-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8,HEAPU32','-sEXIT_RUNTIME=1']"
+LA="['-O3','-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8','-sEXIT_RUNTIME=1']"
 # qom_cast_debug: OBJECT_CHECK() casts assert the QOM type on every call —
 # the display path (lcd_transfer, the LCD/SSI pin handlers) does that per
 # FIFO word (~1.6 % of the vCPU in a redrawing J2ME app); a release build
