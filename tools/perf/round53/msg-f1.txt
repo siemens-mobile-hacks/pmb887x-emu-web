@@ -1,0 +1,34 @@
+tcg/wasm64: a same-page access reuses the previous TLB hit
+
+Every qemu_ld/st paid its own inline TLB probe -- three dependent loads
+(mask, table, comparator) and ~12 x64 before the addend load -- although
+hot TBs spill and refill the guest stack in ldm/stm/push/pop clusters
+whose words share a page: in the hottest J2ME blit TB 8 of its 10 stack
+accesses do.
+
+A hit that another access of the same kind (mmu_idx, load or store) and
+the same address base follows now leaves the entry's page and addend in
+two locals, and that next access tests its address against the page
+instead of probing: ((addr ^ page) & (PAGE_MASK | a_mask)) == 0 for an
+access that cannot straddle, (addr ^ page) < PAGE_SIZE - adj for an
+unaligned one.  A miss of the probe resets the page to -1, which no
+zero-extended address matches.  The memo is kept only across
+straight-line code: any call (a helper may refill the TLB) or label (a
+join) ends it at translation time.  A scan at TB start pairs the
+accesses: same kind, and addresses derived from one (temp, version) by
+moves and constant adds -- the words of an ldm (addr += 4), the fields
+of one struct -- so an access through an unrelated register never pays
+the test to miss it, and a lone access emits exactly what it did before.
+An entry that hit is clean for its whole page, so the flags (MMIO,
+NOTDIRTY, watchpoints) it was compared with hold for the second access
+too.
+
+Without the base pairing the memo hit 83 % of 173 k tests/Mi and lost
+(J2ME +3.4 % +- 0.5): the 30 k misses/Mi paid the test, a mispredict
+and then the probe.  With it: 130.6 k tests/Mi, 94 % hits.  CENSUS
+
+J2ME game 1, 3-round ABBA at tb-size=768: J2ME.
+Video (Berlin.3gp), 2-round ABBA: VIDEO.  gate keep GREEN.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017Pi3AyaAcS7NktApXoFQec

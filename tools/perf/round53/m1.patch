@@ -1,0 +1,45 @@
+diff --git a/tcg/wasm64/tcg-target.c.inc b/tcg/wasm64/tcg-target.c.inc
+index c12f094825..0d8050ca66 100644
+--- a/tcg/wasm64/tcg-target.c.inc
++++ b/tcg/wasm64/tcg-target.c.inc
+@@ -2155,27 +2155,29 @@ static void tgen_movcond(TCGContext *s, TCGType t, TCGCond c, TCGReg ret,
+                          TCGArg vt, bool const_vt, TCGArg vf, bool const_vf)
+ {
+     w64_ir_movcond(t, c, ret, c1, c2, const_c2, vt, const_vt, vf, const_vf);
+-    w64_get(s, c1, t);
+-    if (const_c2) {
+-        w64_const(s, t, c2);
+-    } else {
+-        w64_get(s, c2, t);
+-    }
+-    w64_cmp_op(s, t, c);
+-    w64_u8(s, 0x04);                       /* if (result t) */
+-    w64_u8(s, t == TCG_TYPE_I32 ? 0x7f : 0x7e);
++    /*
++     * `select`, not `if/else`: both arms are a register or a constant, so
++     * there is nothing to skip, and TurboFan makes a cmov of it where the
++     * branch form compiled to a compare, a jump and a join.
++     */
+     if (const_vt) {
+         w64_const(s, t, vt);
+     } else {
+         w64_get(s, vt, t);
+     }
+-    w64_u8(s, 0x05);                       /* else */
+     if (const_vf) {
+         w64_const(s, t, vf);
+     } else {
+         w64_get(s, vf, t);
+     }
+-    w64_u8(s, 0x0b);                       /* end */
++    w64_get(s, c1, t);
++    if (const_c2) {
++        w64_const(s, t, c2);
++    } else {
++        w64_get(s, c2, t);
++    }
++    w64_cmp_op(s, t, c);
++    w64_u8(s, 0x1b);                       /* select */
+     if (t == TCG_TYPE_I32) {
+         w64_set_i32(s, ret);
+     } else {

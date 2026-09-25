@@ -1,0 +1,484 @@
+diff --git a/tcg/wasm64/tcg-target.c.inc b/tcg/wasm64/tcg-target.c.inc
+index 87b3d3c80b..b7d974a036 100644
+--- a/tcg/wasm64/tcg-target.c.inc
++++ b/tcg/wasm64/tcg-target.c.inc
+@@ -23,6 +23,7 @@
+ #define W64_MAX_FIXUPS  1024
+ #define W64_MAX_BLK     128     /* nested mode: one block per label */
+ #define W64_MAX_LABELS  1024
++#define W64_MAX_MEMO    256     /* qemu_ld/st per TB the TLB memo tracks */
+ 
+ /* w64_type / w64_import / table caps come from wasm64.h (the batch
+  * union tables in wasm64.c use them too) */
+@@ -63,8 +64,74 @@ static __thread struct {
+ 
+     /* register representation: bit r set = value in the i64 local */
+     uint32_t rep;
++
++    /*
++     * TLB memo ($mkey/$madd, see w64_memo_test): valid while memo_epoch ==
++     * epoch, which every call and every label bumps; memo_kind names the
++     * (mmu_idx, load/store) whose comparator the memo holds.
++     */
++    uint32_t epoch, memo_epoch;
++    unsigned memo_kind;
++    /* by qemu_ld/st ordinal (w64_scan_labels): memo_prod, an access of
++     * the same kind and address base follows before any call or label, so
++     * this one sets the memo; memo_use, this one is that access */
++    uint64_t memo_prod[W64_MAX_MEMO / 64];
++    uint64_t memo_use[W64_MAX_MEMO / 64];
++    unsigned n_memop;
++    bool cur_use;
+ } W;
+ 
++/*
++ * Address bases for the memo scan: a temp's base is the (temp, version)
++ * it was derived from by adds of a constant and moves, so the words of an
++ * ldm/stm (addr += 4) and the fields of one struct (r1 + 4, r1 + 8) share
++ * one, while an access through another register does not and would only
++ * pay the memo test to miss it.
++ */
++static __thread uint16_t w64_broot[TCG_MAX_TEMPS], w64_bver[TCG_MAX_TEMPS],
++                         w64_tver[TCG_MAX_TEMPS];
++
++static uint32_t w64_base_of(TCGArg a)
++{
++    size_t t = temp_idx(arg_temp(a));
++
++    return w64_broot[t] | (uint32_t)w64_bver[t] << 16;
++}
++
++static void w64_base_def(TCGOp *op, unsigned nb_oargs)
++{
++    unsigned i;
++    int src = -1;
++
++    if (op->opc == INDEX_op_mov) {
++        src = 1;
++    } else if (op->opc == INDEX_op_add) {
++        if (arg_temp(op->args[2])->kind == TEMP_CONST) {
++            src = 1;
++        } else if (arg_temp(op->args[1])->kind == TEMP_CONST) {
++            src = 2;
++        }
++    }
++    for (i = 0; i < nb_oargs; i++) {
++        size_t d = temp_idx(arg_temp(op->args[i]));
++
++        if (src >= 0) {
++            size_t f = temp_idx(arg_temp(op->args[src]));
++            w64_broot[d] = w64_broot[f];
++            w64_bver[d] = w64_bver[f];
++        } else {
++            w64_broot[d] = d;
++            w64_bver[d] = ++w64_tver[d];
++        }
++    }
++}
++
++/* a memo holds one comparator: addr_read or addr_write of one mmu_idx */
++static unsigned w64_memo_kind(MemOpIdx oi, bool is_ld)
++{
++    return get_mmuidx(oi) * 2 + is_ld;
++}
++
+ enum {
+     W64_BLK_REGION,         /* if (bp <= k) label region            */
+     W64_BLK_IF,             /* transient emitter if                 */
+@@ -156,6 +223,7 @@ static void w64_hint(TCGContext *s, bool likely)
+ /* `call <import>`: @uimp indexes the batch's union import table */
+ static void w64_call(TCGContext *s, uint8_t uimp)
+ {
++    W.epoch++;                              /* a helper may refill the TLB */
+     w64_u8(s, 0x10);
+     w64_uleb(s, uimp);
+ }
+@@ -168,7 +236,8 @@ static void w64_call(TCGContext *s, uint8_t uimp)
+  *   3 .. 3+NL-1                 i32 reg locals (+ $bp at 3+NL)
+  *   3+NL+1 .. 3+NL+NL           i64 reg locals
+  *   3+2*NL+1                    i32 scratch ($scr32)
+- *   3+2*NL+2..+4                three i64 scratch locals              */
++ *   3+2*NL+2..+4                three i64 scratch locals
++ *   3+2*NL+5, +6                TLB memo: i64 $mkey, i32 $madd        */
+ #define W64_NL        TCG_AREG0
+ #define W64_P_ENV     0
+ #define W64_P_SP      1
+@@ -180,6 +249,8 @@ static void w64_call(TCGContext *s, uint8_t uimp)
+ #define W64_L_SCR0    (W64_L_SCR32 + 1)
+ #define W64_L_SCR1    (W64_L_SCR0 + 1)
+ #define W64_L_SCR2    (W64_L_SCR1 + 1)   /* ld/st addr snapshot */
++#define W64_L_MKEY    (W64_L_SCR2 + 1)
++#define W64_L_MADD    (W64_L_MKEY + 1)
+ 
+ /* type-matched scratch local */
+ static int w64_scr(TCGType t)
+@@ -356,14 +427,45 @@ static void w64_scan_labels(TCGContext *s)
+ {
+     TCGOp *op;
+     int prologue_target = -1;   /* label branched to before any is placed */
++    int prev = -1;              /* last qemu_ld/st ordinal since a call/label */
++    unsigned prev_kind = 0, kind, k = 0, i;
++    uint32_t prev_base = 0, base;
+ 
+     W.nested = true;
+     W.selfloop = false;
++    memset(W.memo_prod, 0, sizeof(W.memo_prod));
++    memset(W.memo_use, 0, sizeof(W.memo_use));
++    for (i = 0; i < s->nb_temps; i++) {
++        w64_broot[i] = i;
++        w64_bver[i] = w64_tver[i] = 0;
++    }
+     QTAILQ_FOREACH(op, &s->ops, link) {
+         TCGLabel *l;
+ 
+         switch (op->opc) {
++        case INDEX_op_qemu_ld:
++        case INDEX_op_qemu_st:
++            kind = w64_memo_kind(op->args[2], op->opc == INDEX_op_qemu_ld);
++            base = w64_base_of(op->args[1]);
++            if (prev >= 0 && kind == prev_kind && base == prev_base &&
++                k < W64_MAX_MEMO) {
++                W.memo_prod[prev / 64] |= 1ull << (prev % 64);
++                W.memo_use[k / 64] |= 1ull << (k % 64);
++            }
++            prev = k < W64_MAX_MEMO ? k : -1;
++            prev_kind = kind;
++            prev_base = base;
++            k++;
++            if (op->opc == INDEX_op_qemu_ld) {
++                w64_base_def(op, 1);
++            }
++            break;
++        case INDEX_op_call:
++            prev = -1;
++            w64_base_def(op, TCGOP_CALLO(op));
++            break;
+         case INDEX_op_set_label:
++            prev = -1;
+             l = arg_label(op->args[0]);
+             if (l->id >= W64_MAX_LABELS || W.n_labels == 0xffff) {
+                 W.overflow = true;
+@@ -393,6 +495,7 @@ static void w64_scan_labels(TCGContext *s)
+             }
+             break;
+         default:
++            w64_base_def(op, tcg_op_defs[op->opc].nb_oargs);
+             break;
+         }
+     }
+@@ -715,6 +818,7 @@ static void tcg_out_set_label(TCGContext *s, TCGLabel *l)
+     int i;
+ 
+     w64_ir_set_label(l);
++    W.epoch++;                              /* a join: the memo's path is gone */
+ 
+     if (W.nested) {
+         uint16_t idx = l->id < W64_MAX_LABELS ? W.label_idx[l->id] : 0;
+@@ -1581,7 +1685,9 @@ struct w64_tlb_ctx {
+     uint64_t tlb_mask;    /* TARGET_PAGE_MASK | a_mask */
+     unsigned shr;         /* TARGET_PAGE_BITS - CPU_TLB_ENTRY_BITS */
+     unsigned adj;         /* s_mask - a_mask when a_mask < s_mask */
++    unsigned a_mask;
+     unsigned cmp_ofs;     /* offsetof addr_read / addr_write */
++    unsigned kind;        /* w64_memo_kind */
+ };
+ 
+ static bool w64_tlb_setup(struct w64_tlb_ctx *tc, TCGContext *s,
+@@ -1601,11 +1707,104 @@ static bool w64_tlb_setup(struct w64_tlb_ctx *tc, TCGContext *s,
+     tc->tlb_mask = (uint64_t)(int64_t)(int)TARGET_PAGE_MASK | a_mask;
+     tc->shr = TARGET_PAGE_BITS - CPU_TLB_ENTRY_BITS;
+     tc->adj = a_mask >= s_mask ? 0 : s_mask - a_mask;
++    tc->a_mask = a_mask;
+     tc->cmp_ofs = is_ld ? offsetof(CPUTLBEntry, addr_read)
+                         : offsetof(CPUTLBEntry, addr_write);
++    tc->kind = w64_memo_kind(oi, is_ld);
+     return true;
+ }
+ 
++/*
++ * The TLB memo.  A hit that another access of the same kind follows
++ * (W.memo_prod) leaves the entry's page, zero-extended, in $mkey and its
++ * addend in $madd; the miss arm sets $mkey to -1, which no zero-extended
++ * address matches.  The next access tests its address against $mkey
++ * instead of probing, as long as nothing between the two can have changed
++ * the TLB -- no call (W.epoch) -- and both arms of the first one reach it
++ * -- no label.  An entry that hit is clean for its whole page, so a second
++ * access inside that page, aligned as its own memop demands, may use the
++ * addend.  Two tests, both a single compare against the i64 key:
++ *   adj == 0:    ((addr ^ mkey) & (PAGE_MASK | a_mask)) == 0
++ *   a_mask == 0: (addr ^ mkey) < PAGE_SIZE - adj     (no page straddle)
++ * Hot TBs spill and refill the guest stack in ldm/stm/push/pop clusters,
++ * one page for the whole cluster.
++ */
++extern uint64_t wasm_bench_ctr[8];
++static void w64_census(TCGContext *s, int k)
++{
++    w64_const_addr(s, (uintptr_t)&wasm_bench_ctr[k]);
++    w64_const_addr(s, (uintptr_t)&wasm_bench_ctr[k]);
++    w64_u8(s, 0x29);  w64_memarg(s, 3, 0);        /* i64.load */
++    w64_const_i64(s, 1);
++    w64_u8(s, 0x7c);                              /* i64.add */
++    w64_u8(s, 0x37);  w64_memarg(s, 3, 0);        /* i64.store */
++}
++
++static bool w64_memo_test(TCGContext *s, const struct w64_tlb_ctx *tc)
++{
++    if (!W.cur_use || W.memo_epoch != W.epoch || W.memo_kind != tc->kind ||
++        (tc->adj && tc->a_mask)) {
++        return false;
++    }
++    w64_census(s, 3);
++    w64_local_get(s, W64_L_SCR2);
++    w64_local_get(s, W64_L_MKEY);
++    w64_u8(s, 0x85);                        /* i64.xor */
++    if (tc->adj == 0) {
++        w64_const_i64(s, (int64_t)tc->tlb_mask);
++        w64_u8(s, 0x83);                    /* i64.and */
++        w64_u8(s, 0x50);                    /* i64.eqz */
++    } else {
++        w64_const_i64(s, TARGET_PAGE_SIZE - tc->adj);
++        w64_u8(s, 0x54);                    /* i64.lt_u */
++    }
++    return true;
++}
++
++/* the hit arm of a producer: $mkey = the page (the hit proved it is the
++ * entry's), $madd was teed by w64_tlb_haddr */
++static void w64_memo_set(TCGContext *s)
++{
++    w64_local_get(s, W64_L_SCR2);
++    w64_const_i64(s, (int64_t)(int)TARGET_PAGE_MASK);
++    w64_u8(s, 0x83);                        /* i64.and */
++    w64_local_set(s, W64_L_MKEY);
++}
++
++/* the miss arm of a producer, ahead of the helper call: nothing of the
++ * old memo stays live across it */
++static void w64_memo_kill(TCGContext *s)
++{
++    w64_const_i64(s, -1);
++    w64_local_set(s, W64_L_MKEY);
++    w64_const_i32(s, 0);
++    w64_local_set(s, W64_L_MADD);
++}
++
++/* called once per qemu_ld/st, in op order, like the scan's ordinal */
++static bool w64_memo_prod(void)
++{
++    unsigned k = W.n_memop++;
++
++    W.cur_use = k < W64_MAX_MEMO && (W.memo_use[k / 64] >> (k % 64)) & 1;
++    return k < W64_MAX_MEMO && (W.memo_prod[k / 64] >> (k % 64)) & 1;
++}
++
++static void w64_memo_end(TCGContext *s, bool fast, bool memo, bool prod,
++                         const struct w64_tlb_ctx *tc)
++{
++    if (fast) {
++        w64_blk_pop(s);                     /* end (probe if/else) */
++    }
++    if (memo) {
++        w64_blk_pop(s);                     /* end (memo if/else) */
++    }
++    if (prod) {
++        W.memo_epoch = W.epoch;
++        W.memo_kind = tc->kind;
++    }
++}
++
+ /*
+  * The probe runs in i32 (a 32-bit guest, w64_tlb_setup): every i64 sum
+  * ahead of an address costs V8 a movl to narrow it, three on the chain
+@@ -1656,14 +1855,27 @@ static void w64_tlb_probe(TCGContext *s, int al, const struct w64_tlb_ctx *tc)
+     w64_u8(s, 0x46);                        /* i32.eq */
+ }
+ 
+-/* push the host address [addr + entry->addend] for the fast access */
+-static void w64_tlb_haddr(TCGContext *s, int al)
++enum {
++    W64_HA_ENTRY,           /* addend from the probed entry */
++    W64_HA_MEMO_SET,        /* ... and keep it in $madd */
++    W64_HA_MEMO,            /* addend from $madd */
++};
++
++/* push the host address [addr + addend] for the fast access */
++static void w64_tlb_haddr(TCGContext *s, int al, int how)
+ {
+     w64_local_get(s, al);
+     w64_u8(s, 0xa7);                        /* i32.wrap_i64 */
+-    w64_local_get(s, W64_L_SCR32);
+-    w64_u8(s, 0x28);                        /* i32.load */
+-    w64_memarg(s, 2, 24);                   /* addend */
++    if (how == W64_HA_MEMO) {
++        w64_local_get(s, W64_L_MADD);
++    } else {
++        w64_local_get(s, W64_L_SCR32);
++        w64_u8(s, 0x28);                    /* i32.load */
++        w64_memarg(s, 2, 24);               /* addend */
++        if (how == W64_HA_MEMO_SET) {
++            w64_local_tee(s, W64_L_MADD);
++        }
++    }
+     w64_u8(s, 0x6a);                        /* i32.add */
+ }
+ 
+@@ -1686,9 +1898,9 @@ static const uint8_t w64_fast_st[2][16] = {
+ /* the fast arm of a guest load/store, factored out so a second check in
+  * front of the inline probe can emit it too */
+ static void w64_ld_fast(TCGContext *s, TCGType type, TCGReg data,
+-                        MemOp mop, unsigned s_bits)
++                        MemOp mop, unsigned s_bits, int how)
+ {
+-    w64_tlb_haddr(s, W64_L_SCR2);
++    w64_tlb_haddr(s, W64_L_SCR2, how);
+     w64_u8(s, w64_fast_ld[type == TCG_TYPE_I64][mop & MO_SSIZE]);
+     w64_memarg(s, s_bits, 0);
+     if (type == TCG_TYPE_I32) {
+@@ -1698,9 +1910,10 @@ static void w64_ld_fast(TCGContext *s, TCGType type, TCGReg data,
+     }
+ }
+ 
+-static void w64_st_fast(TCGContext *s, TCGReg data, bool q, unsigned s_bits)
++static void w64_st_fast(TCGContext *s, TCGReg data, bool q, unsigned s_bits,
++                        int how)
+ {
+-    w64_tlb_haddr(s, W64_L_SCR2);
++    w64_tlb_haddr(s, W64_L_SCR2, how);
+     if (q) {
+         w64_get_i64(s, data);
+     } else {
+@@ -1718,7 +1931,7 @@ static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
+     uint8_t p[4] = { 1, 1, 0, 1 };
+     uint8_t uimp;
+     struct w64_tlb_ctx tc;
+-    bool fast;
++    bool fast, prod, memo = false;
+     unsigned s_bits = mop & MO_SIZE;
+ 
+     tcg_debug_assert(type == TCG_TYPE_I32 || type == TCG_TYPE_I64);
+@@ -1736,6 +1949,7 @@ static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
+         w64_union_type(4, p, 1));
+ 
+     fast = w64_tlb_setup(&tc, s, oi, true);
++    prod = w64_memo_prod() && fast;
+     if (fast) {
+         /* Snapshot the zero-extended address before the arms: with
+          * data == addr (legal — e.g. ldrd's 64-bit load into the
+@@ -1744,11 +1958,26 @@ static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
+          * make the arm emitted second read a stale local. */
+         w64_get_i64(s, addr);
+         w64_local_set(s, W64_L_SCR2);
++        memo = w64_memo_test(s, &tc);
++        if (memo) {
++            w64_hint(s, true);
++            w64_blk_push(s, W64_BLK_IF, -1);
++            w64_census(s, 4);
++            w64_ld_fast(s, type, data, mop, s_bits, W64_HA_MEMO);
++            w64_u8(s, 0x05);                /* else */
++        }
+         w64_tlb_probe(s, W64_L_SCR2, &tc);
+         w64_hint(s, true);
+         w64_blk_push(s, W64_BLK_IF, -1);
+-        w64_ld_fast(s, type, data, mop, s_bits);
++        w64_ld_fast(s, type, data, mop, s_bits,
++                    prod ? W64_HA_MEMO_SET : W64_HA_ENTRY);
++        if (prod) {
++            w64_memo_set(s);
++        }
+         w64_u8(s, 0x05);                    /* else */
++        if (prod) {
++            w64_memo_kill(s);
++        }
+     }
+ 
+     /* miss (or a memop the probe refuses): the *_mmu helper */
+@@ -1768,9 +1997,7 @@ static void tgen_qemu_ld(TCGContext *s, TCGType type, TCGReg data,
+         w64_set_i64(s, data);
+     }
+ 
+-    if (fast) {
+-        w64_blk_pop(s);                     /* end (if/else) */
+-    }
++    w64_memo_end(s, fast, memo, prod, &tc);
+ }
+ 
+ static const TCGOutOpQemuLdSt outop_qemu_ld = {
+@@ -1787,7 +2014,7 @@ static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
+     uint8_t p[5] = { 1, 1, q, 0, 1 };
+     uint8_t uimp;
+     struct w64_tlb_ctx tc;
+-    bool fast;
++    bool fast, prod, memo = false;
+     unsigned s_bits = mop & MO_SIZE;
+ 
+     /* helper signature: (env*, uint64_t addr, val, uint32_t oi,
+@@ -1799,14 +2026,30 @@ static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
+         w64_union_type(5, p, 0xff));
+ 
+     fast = w64_tlb_setup(&tc, s, oi, false);
++    prod = w64_memo_prod() && fast;
+     if (fast) {
+         w64_get_i64(s, addr);               /* snapshot (see ld above) */
+         w64_local_set(s, W64_L_SCR2);
++        memo = w64_memo_test(s, &tc);
++        if (memo) {
++            w64_hint(s, true);
++            w64_blk_push(s, W64_BLK_IF, -1);
++            w64_census(s, 4);
++            w64_st_fast(s, data, q, s_bits, W64_HA_MEMO);
++            w64_u8(s, 0x05);                /* else */
++        }
+         w64_tlb_probe(s, W64_L_SCR2, &tc);
+         w64_hint(s, true);
+         w64_blk_push(s, W64_BLK_IF, -1);
+-        w64_st_fast(s, data, q, s_bits);
++        w64_st_fast(s, data, q, s_bits,
++                    prod ? W64_HA_MEMO_SET : W64_HA_ENTRY);
++        if (prod) {
++            w64_memo_set(s);
++        }
+         w64_u8(s, 0x05);                    /* else */
++        if (prod) {
++            w64_memo_kill(s);
++        }
+     }
+ 
+     /* miss (or a memop the probe refuses): the *_mmu helper */
+@@ -1825,9 +2068,7 @@ static void tgen_qemu_st(TCGContext *s, TCGType type, TCGReg data,
+     w64_const_i64(s, ra);
+     w64_call(s, uimp);
+ 
+-    if (fast) {
+-        w64_blk_pop(s);                     /* end (if/else) */
+-    }
++    w64_memo_end(s, fast, memo, prod, &tc);
+ }
+ 
+ static const TCGOutOpQemuLdSt outop_qemu_st = {
+@@ -2739,6 +2980,9 @@ static void tcg_out_tb_start(TCGContext *s)
+     W.nested = false;
+     W.selfloop = false;
+     W.rep = 0;
++    W.epoch = 1;
++    W.memo_epoch = 0;
++    W.n_memop = 0;
+     n_hint = 0;
+     w64_ir_reset(nlabels);
+     w64_scan_labels(s);
+@@ -2776,13 +3020,14 @@ static void tcg_out_tb_start(TCGContext *s)
+     /* body: [body-size LEB (patched)] [locals] [expr...] */
+     s->code_ptr = s->code_buf + W64_BODY_OFF;
+     w64_uleb32_p5(s, 0);
+-    w64_u8(s, 0x04);                        /* local runs */
++    w64_u8(s, 0x05);                        /* local runs */
+     w64_uleb(s, W64_NL + 1);                /* i32: regs + $bp */
+     w64_u8(s, 0x7f);
+     w64_uleb(s, W64_NL);                    /* i64: regs */
+     w64_u8(s, 0x7e);
+     w64_u8(s, 0x01); w64_u8(s, 0x7f);       /* i32: $scr32 */
+-    w64_u8(s, 0x03); w64_u8(s, 0x7e);       /* i64: $scr0..$scr2 */
++    w64_u8(s, 0x04); w64_u8(s, 0x7e);       /* i64: $scr0..$scr2, $mkey */
++    w64_u8(s, 0x01); w64_u8(s, 0x7f);       /* i32: $madd */
+ 
+     /* prologue: per-TB-entry accounting, inline */
+     if (w64_guest_insns_inline()) {

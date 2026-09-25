@@ -1,0 +1,19 @@
+tcg: intern constants in a stamped table, not a GHashTable cleared per TB
+
+tcg_func_start cleared both constant-interning GHashTables on every
+translation; GLib shrinks a cleared table to 8 buckets and regrows it
+8 -> 16 -> 32 through the next TB's inserts, a realloc and a rehash each
+step, and every tcg_constant_* lookup went through two indirect calls
+(hash and equality).  That was the ~1 % g_hash_table_* self time in the
+boot profile plus its malloc children.
+
+The table is now 256 open-addressed slots inside TCGContext, valid while
+their stamp equals const_gen; tcg_func_start clears it by bumping the
+stamp (the array is only zeroed when the counter wraps).  A probe is at
+most eight slots: interning is a space saving, not a requirement, so a TB
+with more distinct constants than that gets a fresh temp for the surplus.
+
+S75 boot, idlebench milestones, 4 runs per arm: BOOT.  gate keep GREEN.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017Pi3AyaAcS7NktApXoFQec

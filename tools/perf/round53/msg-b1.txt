@@ -1,0 +1,17 @@
+tcg: la_cross_call is a no-op on wasm64
+
+liveness_pass_1 sweeps every temp at each call and at each memory op
+(they carry TCG_OPF_CALL_CLOBBER) to strip the call-clobbered registers
+from the temps' preferences.  The allocator frees the clobbered
+registers at the call regardless, so the sweep is quality-only -- and
+the wasm64 backend clobbers R0 and R1 alone, the last two in its
+allocation order, with spills all but nonexistent, so it changed no
+allocation while costing an estimated quarter of the pass (the pass was
+4.4 % of a boot's first 12 s).  Registers are wasm locals here; a spill
+would be a local too.
+
+S75 boot, idlebench milestones, 4 runs per arm (slot 2 = tcg_reg_free
+syncs on both arms): BOOT.  gate keep GREEN.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017Pi3AyaAcS7NktApXoFQec

@@ -1,0 +1,157 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index feeaa34d4f..0206fa17aa 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -125,6 +125,16 @@ void icount_rtcap_set_waiting(bool waiting)
+     qatomic_set(&rtcap_vcpu_waiting, waiting);
+ }
+ 
++/* Bench hook (tools/perf/bench-hooks.patch): not part of the port. */
++void icount_rtcap_set_enabled(bool on)
++{
++    if (on) {
++        rtcap_v0 = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++        rtcap_r0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    }
++    qatomic_set(&icount_rtcap, on);
++}
++
+ /* Polled from the browser main thread while the vCPU thread writes it. */
+ int icount_rtcap_mode(void)
+ {
+diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
+index 03d3a4d52e..407961e385 100644
+--- a/accel/tcg/tb-maint.c
++++ b/accel/tcg/tb-maint.c
+@@ -1172,6 +1172,13 @@ static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
+     uint32_t orig_cflags = tb_cflags(tb);
+ 
+     assert_memory_lock();
++#ifdef CONFIG_TCG_WASM64
++    {
++        /* bench census slot 7 (tools/perf/bench-hooks.patch) */
++        extern uint64_t wasm_bench_ctr[8];
++        wasm_bench_ctr[7]++;
++    }
++#endif
+     qemu_thread_jit_write();
+ 
+     /* make sure no further incoming jumps will be chained to this TB */
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+index 61b0a9dea1..c11b85ca72 100644
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -93,5 +93,6 @@ int64_t icount_rtcap_excess_ns(int64_t vtarget);
+ void icount_rtcap_set_waiting(bool waiting);
+ /* 0 = off, 1 = banked (the boot window), 3 = budget.  Safe from any thread. */
+ int icount_rtcap_mode(void);
++void icount_rtcap_set_enabled(bool on);
+ 
+ #endif /* EXEC_ICOUNT_H */
+diff --git a/tcg/tcg.c b/tcg/tcg.c
+index 83df93fc34..c9dff794a4 100644
+--- a/tcg/tcg.c
++++ b/tcg/tcg.c
+@@ -4636,6 +4636,8 @@ static void tcg_reg_free(TCGContext *s, TCGReg reg, TCGRegSet allocated_regs)
+ {
+     TCGTemp *ts = s->reg_to_temp[reg];
+     if (ts != NULL) {
++        /* CENSUS (scratch): slot 2 = a live register forced out (spill) */
++        { extern uint64_t wasm_bench_ctr[8]; wasm_bench_ctr[2]++; }
+         temp_sync(s, ts, allocated_regs, 0, -1);
+     }
+ }
+diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
+index d2b899b2d9..7178cb38e3 100644
+--- a/tcg/wasm64/wasm64.c
++++ b/tcg/wasm64/wasm64.c
+@@ -20,6 +20,12 @@
+ #include "wasm64.h"
+ #include "w64-interp.h"
+ 
++/* Bench census slots (tools/perf/bench-hooks.patch): not part of the port.
++ * 0 translations, 1 modules instantiated, 2 evictions, 3 retires,
++ * 4 tb_flush, 5 live modules summed per translation (/slot 0 = mean live),
++ * 6 code-buffer bytes consumed, 7 TBs invalidated (tb-maint.c). */
++extern uint64_t wasm_bench_ctr[8];
++
+ QEMU_BUILD_BUG_ON(W64_TCP_FIDX != W64_DESC_FIDX);
+ QEMU_BUILD_BUG_ON(W64_TCP_TIDX != W64_DESC_TIDX);
+ 
+@@ -453,6 +459,17 @@ static void w64_batch_close(void);
+  */
+ void w64_batch_begin_tb(void)
+ {
++    {
++        static uintptr_t prev_cg;
++        uintptr_t cg = (uintptr_t)tcg_ctx->code_gen_ptr;
++
++        wasm_bench_ctr[0]++;
++        wasm_bench_ctr[5] += w64_live_n;
++        if (cg > prev_cg && cg - prev_cg < (1u << 20)) {
++            wasm_bench_ctr[6] += cg - prev_cg;
++        }
++        prev_cg = cg;
++    }
+     if (B.id != 0 &&
+         (B.n_uimp > W64_UMAX_IMPORTS - W64_MAX_IMPORTS - 1 ||
+          B.n_utypes > W64_UMAX_TYPES - W64_MAX_TYPES - 1)) {
+@@ -709,6 +726,7 @@ static uint32_t w64_assemble_instantiate(const struct w64_bsrc *src)
+     uint32_t thunk;
+     unsigned m, i;
+     unsigned nfn = src->n_member + 1;   /* members, then the thunk */
++    wasm_bench_ctr[1]++;
+     mb_put(&mod, magic, sizeof(magic));
+ 
+     /* type section: union types + the thunk signature */
+@@ -877,6 +895,7 @@ static void w64_batch_evict_oldest(void)
+     if (!l) {
+         return;
+     }
++    wasm_bench_ctr[2]++;
+     w64_live_head = l->next;
+     if (!w64_live_head) {
+         w64_live_tail = NULL;
+@@ -952,6 +971,7 @@ static G_NORETURN void w64_batch_retire(CPUArchState *env, uintptr_t tcptr)
+                 (unsigned)tcptr);
+         abort();
+     }
++    wasm_bench_ctr[3]++;
+     tb_w64_retire(env_cpu(env), tb);
+ }
+ 
+@@ -1111,6 +1131,7 @@ void w64_batch_flush(void)
+     struct w64_landed *l;
+     unsigned m;
+ 
++    wasm_bench_ctr[4]++;
+     w64_irec_flush();
+     for (l = w64_live_head; l; l = l->next) {
+         w64_remove((int)l->thunk);
+diff --git a/ui/wasm.c b/ui/wasm.c
+index 565cf13434..1c28fa5747 100644
+--- a/ui/wasm.c
++++ b/ui/wasm.c
+@@ -202,6 +202,22 @@ int32_t wasm_rtcap(void)
+     return icount_rtcap_mode();
+ }
+ 
++/* Bench hook (tools/perf/bench-hooks.patch): not part of the port. */
++EMSCRIPTEN_KEEPALIVE
++void wasm_rtcap_set(int32_t on)
++{
++    icount_rtcap_set_enabled(!!on);
++}
++
++/* Bench census slots: temporary increment sites add to these. */
++uint64_t wasm_bench_ctr[8];
++
++EMSCRIPTEN_KEEPALIVE
++uint64_t wasm_bench_ctr_get(int32_t i)
++{
++    return wasm_bench_ctr[i & 7];
++}
++
+ /* ------------------------------------------------------------------ */
+ /* Key input: SPSC ring filled from the JS main thread, drained by BH  */
+ /* ------------------------------------------------------------------ */

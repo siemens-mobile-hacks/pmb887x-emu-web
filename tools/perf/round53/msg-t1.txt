@@ -1,0 +1,21 @@
+tcg/wasm64: the chain table is typed
+
+A return_call_indirect through a funcref table pays, on every TB
+boundary, two loads for the expected canonical signature and a compare
+against the entry's; through a table whose type is the call's own,
+(ref null (func (param i64 i64 i64) (result i32))), V8 emits a null check
+on the entry instead -- two x64 and a dependent load fewer per boundary
+(probed on Node's V8 with --print-wasm-code; round fifty-three's
+hot-TB read had the boundary at 17-21 instructions).
+
+The JS API cannot create a typed function table, so a 34-byte owner
+module (type, table, export) does, once, and the batches import it as
+(ref null 0) with typed active element segments (ref.func expressions).
+Every batch's type 0 is the same structure, hence the same canonical
+type.  grow, set(null) and a trap on a null entry were checked offline.
+
+J2ME game 1, 2-round ABBA at tb-size=768: J2ME.  Video (Berlin.3gp),
+2 rounds: VIDEO.  gate keep GREEN; firefox gate FIREFOX.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017Pi3AyaAcS7NktApXoFQec

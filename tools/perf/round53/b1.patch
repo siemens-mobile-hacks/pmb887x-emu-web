@@ -1,0 +1,32 @@
+diff --git a/tcg/tcg.c b/tcg/tcg.c
+index 83df93fc34..83e622c3e2 100644
+--- a/tcg/tcg.c
++++ b/tcg/tcg.c
+@@ -3783,6 +3783,7 @@ static void la_global_kill(TCGContext *s, int ng)
+ }
+ 
+ /* liveness analysis: note live globals crossing calls.  */
++#ifndef CONFIG_TCG_WASM64
+ static void la_cross_call(TCGContext *s, int nt)
+ {
+     TCGRegSet mask = ~tcg_target_call_clobber_regs;
+@@ -3803,6 +3804,19 @@ static void la_cross_call(TCGContext *s, int nt)
+         }
+     }
+ }
++#else
++/*
++ * Preferences only: the allocator frees the clobbered registers at the
++ * call regardless.  The wasm64 backend clobbers R0 and R1 alone, the last
++ * two in its allocation order, and spills there are all but nonexistent,
++ * so this sweep over every temp at each call - and at each memory op,
++ * which carries TCG_OPF_CALL_CLOBBER - was a quarter of liveness_pass_1
++ * for nothing.  Registers are wasm locals; a spill is a local too.
++ */
++static inline void la_cross_call(TCGContext *s, int nt)
++{
++}
++#endif
+ 
+ /*
+  * Liveness analysis: Verify the lifetime of TEMP_TB, and reduce

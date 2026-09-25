@@ -162,6 +162,14 @@ pricing any emitted-code idea. With the TLB probe cheaper, the TB
 boundary below is a larger share of wall than when round forty-one
 measured it.
 
+**Round fifty-three (2026-09-24) took J2ME down by five commits** —
+a code page's ram_addr from its TLB entry (−8.9 %), TB bodies out of the
+code buffer (−2.8 %, video −2.6 %), the jump and pc caches at 16 bits
+(−5.6 %), the flag-setting register shifts inline (video −1.1 %), plus a
+generation-stamped jump-cache flush and a per-thread dispatcher frame —
+and cleaned the branch toward upstream. It closed with five levers built
+and unmeasured; they are the first open item below.
+
 **Read round forty-one's opening before planning a round against this
 meter.** A TB boundary is 8–9 ns and the 88 316 of them per Mi are 22 %
 of wall — the only large row left. Everything else is the emitted code
@@ -560,6 +568,64 @@ Three conclusions the table is for:
    for one.
 
 ## Open items (ranked)
+
+### Round fifty-three's queue: five built levers, each one A/B away from a commit
+
+Everything below is built, applies to the pin (`c4919f185b`), compiles,
+and waits only for its measurement and gate. The patches, the draft
+commit messages (placeholders `J2ME` / `VIDEO` / `BOOT` / `CENSUS` for the
+numbers) and the drivers are in `tools/perf/round53/`:
+
+```bash
+bash tools/perf/round53/run-lever.sh f1m       # builds dist-base + arms, runs the A/B (tree must be clean)
+# fill the numbers into tools/perf/round53/msg-f1.txt, then:
+bash tools/perf/round53/gate-lever.sh tools/perf/round53/f1m.patch tools/perf/round53/msg-f1.txt
+# then by hand: pin in versions.env + history line, doc entry, superproject commit of the gitlink
+```
+
+Run them one at a time on a quiet host (check `uptime` first; round
+fifty-three lost three J2ME fits to a load of 21–25 from outside), and
+rebuild `dist-base` for every lever (`run-lever.sh` does) because each
+commit moves HEAD. In order of expected value:
+
+1. **F1m, the TLB memo with base pairing (`f1m.patch`, census twin
+   `f1mc.patch`).** A same-page qemu_ld/st reuses the previous hit's page
+   and addend from two locals instead of probing (round fifty-three § F1
+   has the mechanism and the x64). The census: 130.6 k memo tests per Mi
+   in J2ME play, **94 % hits**. The one ABBA so far (2 rounds, two base
+   legs at busy 0.10–0.15, residual sd 0.059): **J2ME −3.17 % ± 2.55**.
+   The firm run (3 J2ME rounds + 2 video rounds + a video census) was
+   stopped at leg 4 when the round closed; `run-lever.sh f1m` repeats it
+   whole. Take it if both workloads are ≤ 0, then gate. Its unpaired
+   predecessor (`f1`, not kept) lost +3.4 % ± 0.5 on 83 % hits: see the
+   lesson in § F1 before widening the pairing.
+2. **T1, a typed chain table (`t1.patch`).** Drops the signature compare
+   from every TB tail call (2 x64 and a dependent load of the ~17–21 a
+   boundary costs, 0.5–0.8 % of wall by round forty-one's price).
+   Validated offline in V8; needs the **Firefox gate** as well as `keep`,
+   because the owner module uses typed function references (Firefox ≥ 120).
+3. **M1, `movcond` as `select` (`m1.patch`).** Two x64 and a branch per
+   movcond (the refund blocks at every early exit, S1's carry fix-up).
+   Small; measure it with T1's arms' method (J2ME + video, 2 rounds each).
+4. **B1, `la_cross_call` compiled out on wasm64 (`b1.patch`)**, and
+5. **B1b, a stamped 256-slot constant table replacing the two
+   `GHashTable`s cleared per translation (`b1b.patch`).** Boot-translation
+   levers, measured on S75 boot milestones with `b1-hooks.patch` on both
+   arms (the base hooks plus a `tcg_reg_free` spill counter in slot 2,
+   which is where a preference the sweep used to trim would show up).
+   Separate commits.
+
+Not taken this round and kept for reference: `v1c.patch` (V1, the
+EL-aware hflags skip; video +0.6 % ± 1.7, only 20 % of mode crossings
+stay in EL1). N6 and N4c are described in the round log and not kept as
+patches.
+
+Beyond the queue, designed and not built: F1's frontend form (mark
+`ldm/stm` words 2..n "same page as the previous" under one straddle guard,
+so the memo test disappears too; worth trying only after F1m is in, and
+only if a census shows the remaining test cost), and the owner's
+convergence items (zero-behaviour extractions ~1 750 lines, device-model
+upstreaming ~1 900 lines; the owner's call, round fifty-three § cleanup).
 
 ### ~~KE970: the flash write-behind flushed a block request per ~30 programmed words, and every programmed word flipped ROMD twice~~ — TAKEN in round fifty-one (1000 M milestone 15.8 → 10.7 s)
 
@@ -3033,7 +3099,7 @@ exception entries skip. Verified by the lockstep gate (register state per
 instruction against native) and `tests/tcg-isa/t_psr.c` through the
 op-suite.
 
-### B1: `la_cross_call` is a no-op on wasm64 (built, in test)
+### B1: `la_cross_call` is a no-op on wasm64 (built, not measured — open item)
 
 From the boot-translation study. `liveness_pass_1` sweeps every temp at
 each call *and* at each memory op (they carry `TCG_OPF_CALL_CLOBBER`) to
@@ -3058,7 +3124,7 @@ not a requirement, so the probe is eight slots and a TB with more distinct
 constants than that gets a fresh temp for the surplus. Same meter, its
 own commit.
 
-### F1: one TLB probe per same-page access cluster (built as a backend memo, in test)
+### F1: one TLB probe per same-page access cluster (a backend TLB memo; paired by address base, −3.2 % on a first ABBA — open item)
 
 Built in a different shape than designed below, needing nothing from the
 frontend and no duplicated cluster body: a TLB memo in the backend. A hit
@@ -3086,6 +3152,31 @@ accepts between probe and store; the pmb887x boards use no dirty logging
 (the LCD is fed over SPI). A census arm counts memo tests and hits
 (slots 3 and 4, near zero in the base patch at tb-size=768).
 
+**Measured, in four steps, all J2ME game 1 at tb-size=768:**
+
+| arm | memo tests /Mi | hits | J2ME ms/Mi vs base |
+|---|---|---|---|
+| `f1`: pair any two same-kind accesses | 173 186 | 143 366 (83 %) | **+3.41 % ± 0.48** (3 rounds, sd 0.014) |
+| `f1b`: `f1` without the branch hint on the memo test | — | — | +3.18 % ± 0.79 (2 rounds) |
+| `f1` under `--no-liftoff` (TurboFan only) | — | — | +7.17 % ± 0.94 (2 rounds) |
+| `f1m`: pair only accesses with one address base | 130 597 | 122 335 (94 %) | **−3.17 % ± 2.55** (2 rounds, sd 0.059) |
+
+The TurboFan x64 of the hottest `f1` TB (grabbed with `wasmgrab.mjs`)
+shows the hit path exactly as intended — an `stm` cluster's later words
+compile to `mov; xor; test imm; jnz; lea; store`, no loads, against the
+first word's 12-instruction probe with three dependent loads — so the
+loss was not the hit path, not Liftoff (the loss grows without it), and
+not the hint (removing it changed nothing). What `f1m` changed is the
+misses: 30 k/Mi → 8 k/Mi. A miss pays the test, a mispredicted branch
+(the page an unrelated register points at is data-dependent) and then
+the whole probe; at ~5 ns each, 30 k/Mi is ~0.15 ms/Mi, more than the
+hits saved. **Lesson: a memo test is only as cheap as its predictability;
+pair accesses statically by address base, not by kind alone.** The base
+tracking lives in the TB-start scan: each temp's base is the
+(temp, version) it was derived from by moves and constant adds, so an
+`ldm`'s `addr += 4` chain and `r1+4 / r1+8` share one. `f1m` is the
+first open item; its firm A/B was stopped at leg 4 when the round closed.
+
 The original design:
 
 The largest item the hot-TB read left: every word of a `push/pop/ldm/
@@ -3109,7 +3200,7 @@ ARM code), a day's work with the lockstep gate as the judge. Below the
 meter and not pursued: the pc-cache entry address in i32 and the
 single-CPU `cpu_index` compare (3 x64 per pcc probe, ~0.2 %).
 
-### Probe: a typed chain table drops the signature compare (T1, not built)
+### Probe: a typed chain table drops the signature compare (T1, built, not measured — open item)
 
 Three 60-byte modules compiled by Node's V8 with `--print-wasm-code`:
 `return_call_indirect` through a `funcref` table (what the port does),
@@ -3157,7 +3248,7 @@ The formulas were model-checked against the four helpers' C over every
 count 0-255 (and a few wider ones), 207 operands and both CF states: no
 mismatch. Then the lockstep gate (CPSR per instruction against native).
 
-### M1: `movcond` as `select` (built, in test)
+### M1: `movcond` as `select` (built, not measured — open item)
 
 `tgen_movcond` emitted `if (result t) vt else vf end`, which TurboFan
 compiles to a compare, a jump and a join — the refund blocks at every

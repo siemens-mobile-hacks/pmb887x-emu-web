@@ -1,0 +1,202 @@
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index 6f7875271c..6bf9c16259 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -2414,6 +2414,7 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
+     arm_cpu_register_gdb_commands(cpu);
+ 
+     arm_init_cpreg_list(cpu);
++    cpu->aarch32_cpsr_mask = aarch32_cpsr_valid_mask(env->features, &cpu->isar);
+ 
+ #ifndef CONFIG_USER_ONLY
+     MachineState *ms = MACHINE(qdev_get_machine());
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index 614a43ebf3..04f0a6cd39 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -1112,6 +1112,8 @@ struct ArchCPU {
+     uint32_t reset_fpsid;
+     uint64_t ctr;
+     uint32_t reset_sctlr;
++    /* aarch32_cpsr_valid_mask() of the realized features (eret, SPSR loads) */
++    uint32_t aarch32_cpsr_mask;
+     uint64_t pmceid0;
+     uint64_t pmceid1;
+     uint64_t mp_affinity; /* MP ID without feature bits */
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index 89a8aaadd5..0345ce2200 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -8266,7 +8266,7 @@ uint32_t cpsr_read(CPUARMState *env)
+         | (env->GE << 16) | (env->daif & CPSR_AIF);
+ }
+ 
+-void cpsr_write(CPUARMState *env, uint32_t val, uint32_t mask,
++void QEMU_FLATTEN cpsr_write(CPUARMState *env, uint32_t val, uint32_t mask,
+                 CPSRWriteType write_type)
+ {
+     uint32_t changed_daif;
+@@ -8278,14 +8278,29 @@ void cpsr_write(CPUARMState *env, uint32_t val, uint32_t mask,
+     /*
+      * M, E, IL and PAN are the only CPSR bits hflags read, so rebuild only
+      * when a write moves one of them.  Testing the mask alone rebuilt on
+-     * every `msr cpsr_c` - every guest critical section, 873k rebuilds a
+-     * second on an EL71 boot.  A mode switch refused below rebuilds once
+-     * for nothing; the bad-mode path that sets IL is only reached when the
+-     * mode bits differ, which this test already caught.
++     * every `msr cpsr_c` - every guest critical section.  On a core the
++     * fast rebuild covers (internals.h HFLAGS_A32_FAST_FEATURES) the mode
++     * matters only as the exception level, so a switch between two
++     * privileged modes rebuilds nothing either.  A mode switch refused
++     * below rebuilds once for nothing; the bad-mode path that sets IL is
++     * v8-only, which the feature test above routes to the full test.
+      */
+-    rebuild_hflags = (write_type != CPSRWriteRaw) &&
+-        ((env->uncached_cpsr ^ val) & mask &
+-         (CPSR_M | CPSR_E | CPSR_IL | CPSR_PAN)) != 0;
++    if (write_type == CPSRWriteRaw) {
++        rebuild_hflags = false;
++    } else if (env->features & HFLAGS_A32_FAST_FEATURES) {
++        rebuild_hflags = ((env->uncached_cpsr ^ val) & mask &
++                          (CPSR_M | CPSR_E | CPSR_IL | CPSR_PAN)) != 0;
++    } else {
++        rebuild_hflags = arm_a32_hflags_moved(env->uncached_cpsr,
++                                              (env->uncached_cpsr & ~mask) |
++                                              (val & mask));
++    }
++    /* CENSUS (scratch): 2 = mode-moving writes, 3 = of which no rebuild */
++    if (write_type != CPSRWriteRaw && ((env->uncached_cpsr ^ val) & mask & CPSR_M)) {
++        extern uint64_t wasm_bench_ctr[8];
++        wasm_bench_ctr[2]++;
++        wasm_bench_ctr[3] += !rebuild_hflags;
++    }
+ 
+     if (mask & CPSR_NZCV) {
+         env->ZF = (~val) & CPSR_Z;
+@@ -8885,10 +8900,11 @@ void aarch64_sync_64_to_32(CPUARMState *env)
+     env->regs[15] = env->pc;
+ }
+ 
+-static void take_aarch32_exception(CPUARMState *env, int new_mode,
+-                                   uint32_t mask, uint32_t offset,
+-                                   uint32_t newpc)
++static void QEMU_FLATTEN take_aarch32_exception(CPUARMState *env,
++                                                int new_mode, uint32_t mask,
++                                                uint32_t offset, uint32_t newpc)
+ {
++    uint32_t old_cpsr = env->uncached_cpsr;
+     int new_el;
+ 
+     /* Change the CPU state so as to actually take the exception. */
+@@ -8960,9 +8976,24 @@ static void take_aarch32_exception(CPUARMState *env, int new_mode,
+     }
+     env->regs[15] = newpc;
+ 
+-    if (tcg_enabled()) {
++    /*
++     * An exception taken from EL1 into EL1 (SVC/IRQ from a system mode,
++     * the common case on a privileged firmware) moves nothing hflags
++     * read unless SCTLR.EE or PAN made E or PAN differ: skip the rebuild
++     * then (internals.h arm_a32_hflags_moved).
++     */
++    if (tcg_enabled() &&
++        ((env->features & HFLAGS_A32_FAST_FEATURES) ||
++         arm_a32_hflags_moved(old_cpsr, env->uncached_cpsr))) {
+         arm_rebuild_hflags(env);
+     }
++    /* CENSUS (scratch): 2 = exception entries, 3 = of which no rebuild */
++    {
++        extern uint64_t wasm_bench_ctr[8];
++        wasm_bench_ctr[2]++;
++        wasm_bench_ctr[3] += !((env->features & HFLAGS_A32_FAST_FEATURES) ||
++                               arm_a32_hflags_moved(old_cpsr, env->uncached_cpsr));
++    }
+ }
+ 
+ void arm_do_plugin_vcpu_discon_cb(CPUState *cs, uint64_t from)
+@@ -9367,7 +9398,7 @@ void cpsr_write_from_spsr_elx(CPUARMState *env, uint32_t val)
+         val |= CPSR_DIT;
+     }
+ 
+-    mask = aarch32_cpsr_valid_mask(env->features, &env_archcpu(env)->isar);
++    mask = env_archcpu(env)->aarch32_cpsr_mask;
+     cpsr_write(env, val, mask, CPSRWriteRaw);
+ }
+ 
+diff --git a/target/arm/internals.h b/target/arm/internals.h
+index 6a02554216..f101ffd393 100644
+--- a/target/arm/internals.h
++++ b/target/arm/internals.h
+@@ -1333,6 +1333,34 @@ ARMMMUIdx stage_1_mmu_idx(ARMMMUIdx mmu_idx);
+ ARMMMUIdx arm_stage1_mmu_idx(CPUARMState *env);
+ #endif
+ 
++/*
++ * The features whose absence makes every question rebuild_hflags_a32()
++ * asks answerable from two words of state (hflags.c
++ * rebuild_hflags_a32_fast): the exception level, SCTLR and CPSR.{E, IL,
++ * PAN}.  An ARMv5 A-profile core with an MMU - the pmb887x's ARM926EJ-S -
++ * has none of them.
++ */
++#define HFLAGS_A32_FAST_FEATURES                                        \
++    ((1ULL << ARM_FEATURE_M) | (1ULL << ARM_FEATURE_AARCH64) |          \
++     (1ULL << ARM_FEATURE_EL2) | (1ULL << ARM_FEATURE_EL3) |            \
++     (1ULL << ARM_FEATURE_PMSA) | (1ULL << ARM_FEATURE_V6))
++
++/*
++ * On such a core, does hflags change between two CPSR values?  The mode
++ * bits matter only as the exception level, USR against every other mode:
++ * SVC, SYS, IRQ, ABT, UND and FIQ all read sctlr_el[1] through the same
++ * mmu_idx, so an exception taken from EL1, and a mode-changing msr inside
++ * EL1, leave hflags where they were.
++ */
++static inline bool arm_a32_hflags_moved(uint32_t old_cpsr, uint32_t new_cpsr)
++{
++    uint32_t moved = old_cpsr ^ new_cpsr;
++
++    return (moved & (CPSR_E | CPSR_IL | CPSR_PAN)) ||
++           (((old_cpsr & CPSR_M) == ARM_CPU_MODE_USR) !=
++            ((new_cpsr & CPSR_M) == ARM_CPU_MODE_USR));
++}
++
+ static inline uint32_t aarch32_cpsr_valid_mask(uint64_t features,
+                                                const ARMISARegisters *id)
+ {
+diff --git a/target/arm/tcg/hflags.c b/target/arm/tcg/hflags.c
+index 17d9fbc79b..76e5363bcf 100644
+--- a/target/arm/tcg/hflags.c
++++ b/target/arm/tcg/hflags.c
+@@ -165,17 +165,9 @@ static bool sme_fa64(CPUARMState *env, int el)
+ }
+ 
+ /*
+- * The features whose absence makes every question rebuild_hflags_a32()
+- * asks answerable from two words of state.  An ARMv5 A-profile core with
+- * an MMU - the pmb887x's ARM926EJ-S - has none of them.
+- */
+-#define HFLAGS_A32_FAST_FEATURES                                        \
+-    ((1ULL << ARM_FEATURE_M) | (1ULL << ARM_FEATURE_AARCH64) |          \
+-     (1ULL << ARM_FEATURE_EL2) | (1ULL << ARM_FEATURE_EL3) |            \
+-     (1ULL << ARM_FEATURE_PMSA) | (1ULL << ARM_FEATURE_V6))
+-
+-/*
+- * What each absent feature buys, in the order rebuild_hflags_a32() and
++ * HFLAGS_A32_FAST_FEATURES (internals.h): the features whose absence makes
++ * every question rebuild_hflags_a32() asks answerable from two words of
++ * state.  What each absent feature buys, in the order rebuild_hflags_a32() and
+  * its two tails ask:
+  *
+  *   arm_sctlr(env, el)     no EL2/EL3 -> arm_mmu_idx_el(env, 0) is
+diff --git a/target/arm/tcg/op_helper.c b/target/arm/tcg/op_helper.c
+index 731cacdf73..cfc9f3e151 100644
+--- a/target/arm/tcg/op_helper.c
++++ b/target/arm/tcg/op_helper.c
+@@ -851,7 +851,7 @@ void HELPER(cpsr_write_eret)(CPUARMState *env, uint32_t val)
+         bql_unlock();
+     }
+ 
+-    mask = aarch32_cpsr_valid_mask(env->features, &env_archcpu(env)->isar);
++    mask = env_archcpu(env)->aarch32_cpsr_mask;
+     cpsr_write(env, val, mask, CPSRWriteExceptionReturn);
+ 
+     /* Generated code has already stored the new PC value, but

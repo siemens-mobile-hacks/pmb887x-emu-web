@@ -1,0 +1,13 @@
+tcg/wasm64: movcond as `select`
+
+tgen_movcond emitted `if (result t) vt else vf end`, which TurboFan
+compiles to a compare, a jump and a join; the refund block at every
+early TB exit paid nine instructions and two jumps for it.  Both arms are
+a register or a constant, so there is nothing to skip: `select` is a
+cmov.
+
+J2ME game 1, 2-round ABBA at tb-size=768: J2ME.  Video (Berlin.3gp),
+2 rounds: VIDEO.  gate keep GREEN.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017Pi3AyaAcS7NktApXoFQec

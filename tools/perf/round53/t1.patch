@@ -1,0 +1,58 @@
+diff --git a/tcg/wasm64/wasm64.c b/tcg/wasm64/wasm64.c
+index 6cad0a3ec6..18c0f12ddf 100644
+--- a/tcg/wasm64/wasm64.c
++++ b/tcg/wasm64/wasm64.c
+@@ -643,7 +643,21 @@ EM_JS(int, w64_batch_instantiate,
+     const dv = __v.dv;
+     const mod_bytes = HEAPU8.slice(Number(modp), Number(modp) + Number(modlen));
+     if (!globalThis.__w64tab) {
+-        globalThis.__w64tab = new WebAssembly.Table({ element: 'anyfunc', initial: 1 << 14 });
++        /*
++         * The chain table is typed, (ref null (func (i64 i64 i64) -> i32)):
++         * a return_call_indirect through a funcref table pays two loads and
++         * a compare for the callee's signature on every TB boundary, through
++         * a table of the call's own type only a null check.  The JS API
++         * cannot create a typed function table, so a 40-byte owner module
++         * exports one (type section, table section, export section).
++         */
++        const owner = new Uint8Array([
++            0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
++            1, 8, 1, 0x60, 3, 0x7e, 0x7e, 0x7e, 1, 0x7f,        /* type 0 */
++            4, 6, 1, 0x63, 0, 0x00, 0x80, 0x80, 0x01,           /* table: ref null 0, min 16384 */
++            7, 5, 1, 1, 0x74, 0x01, 0,                          /* export "t" table 0 */
++        ]);
++        globalThis.__w64tab = new WebAssembly.Instance(new WebAssembly.Module(owner)).exports.t;
+     }
+     const TAB = globalThis.__w64tab;
+     if (maxtidx >= TAB.length) {
+@@ -755,7 +769,8 @@ static uint32_t w64_assemble_instantiate(const struct w64_bsrc *src)
+     mb_u8(&sec, 1); mb_u8(&sec, 'e');
+     mb_u8(&sec, 1); mb_u8(&sec, 't');
+     mb_u8(&sec, 0x01);                    /* table */
+-    mb_u8(&sec, 0x70);                    /* funcref */
++    mb_u8(&sec, 0x63);                    /* ref null <type 0>: the TB */
++    mb_uleb(&sec, 0);                     /*   signature, so no sig check */
+     mb_u8(&sec, 0x00);                    /* limits: min only */
+     mb_uleb(&sec, 1);
+     for (i = 0; i < src->n_uimp; i++) {
+@@ -793,12 +808,19 @@ static uint32_t w64_assemble_instantiate(const struct w64_bsrc *src)
+         uint32_t tidx = ((const uint32_t *)(uintptr_t)src->member[m].tcptr)
+                         [W64_DESC_TIDX / 4];
+         maxtidx = MAX(maxtidx, tidx);
+-        mb_u8(&sec, 0x00);                /* active, table 0 */
++        /* active segment into table 0 with typed element expressions:
++         * the table's type is (ref null 0), so the elements say so too */
++        mb_u8(&sec, 0x06);
++        mb_uleb(&sec, 0);                 /* table 0 */
+         mb_u8(&sec, 0x41);                /* i32.const */
+         mb_sleb32(&sec, (int32_t)tidx);
+         mb_u8(&sec, 0x0b);                /* end */
++        mb_u8(&sec, 0x63);                /* ref null 0 */
++        mb_uleb(&sec, 0);
+         mb_uleb(&sec, 1);
++        mb_u8(&sec, 0xd2);                /* ref.func */
+         mb_uleb(&sec, src->n_uimp + m);
++        mb_u8(&sec, 0x0b);                /* end */
+     }
+     mb_sec(&mod, 9, &sec);
+ 
