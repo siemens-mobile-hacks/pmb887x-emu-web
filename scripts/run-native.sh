@@ -19,9 +19,10 @@
 #   DISPLAY_MODE=none    none | vnc=[:display] | sdl | gtk
 #   SERIAL=path          serial log file     (default /tmp/pmb887x-serial.log)
 #   MONITOR=stdio        stdio | unix:path | none
-#   ICOUNT=<spec>        -icount value; "none" omits it (default
-#                        shift=3,sleep=off — same timing model as the web
-#                        page, see site/app.js)
+#   ICOUNT=<spec>        -icount value; "none" omits it, "vt" runs the web
+#                        page's vcpu-timers clock instead (default
+#                        shift=3,sleep=off: deterministic, which lockstep
+#                        and the test suites need)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -62,8 +63,8 @@ OPERATOR="${OPERATOR:-00101}"
 DISPLAY_MODE="${DISPLAY_MODE:-none}"
 SERIAL="${SERIAL:-/tmp/pmb887x-serial.log}"
 MONITOR="${MONITOR:-stdio}"
-# Timing model mirrors the web page: an instruction-driven virtual clock —
-# stock icount, fixed shift, deterministic sleep=off — for every board.
+# Timing model: an instruction-driven virtual clock — stock icount, fixed
+# shift, deterministic sleep=off — for every board.
 ICOUNT="${ICOUNT:-shift=3,sleep=off}"
 # bare unix:path means "listen" — add the server options unless given fully
 if [[ "$MONITOR" == unix:* && "$MONITOR" != *,* ]]; then
@@ -101,7 +102,11 @@ echo
 
 # ICOUNT=none boots without -icount entirely
 ICOUNT_ARGS=()
-[ "$ICOUNT" != "none" ] && ICOUNT_ARGS=(-icount "$ICOUNT")
+if [ "$ICOUNT" = "vt" ]; then
+  ICOUNT_ARGS=(-accel tcg,thread=multi,vcpu-timers=on)
+elif [ "$ICOUNT" != "none" ]; then
+  ICOUNT_ARGS=(-icount "$ICOUNT")
+fi
 
 : > "$SERIAL"
 exec "$QEMU" \

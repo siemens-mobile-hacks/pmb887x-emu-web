@@ -299,9 +299,10 @@ linear Unix seconds, LG packed calendar).
   - Drivers in `tools/` that set controls in the two panels need a viewport
     at least 900x621, or the panel they are reaching into is a closed sheet.
 - `boards.tar` unpacked into `/boards`; qemu args mirror the native
-  launcher (`-display wasm -icount shift=3,sleep=off -machine pmb887x
-  -drive if=pflash… -serial file:/serial.log`, every board alike;
-  `QEMU_ICOUNT_RTCAP=budget:30:500` unless `?rt=` says otherwise).
+  launcher (`-display wasm -accel tcg,thread=multi,vcpu-timers=on
+  -machine pmb887x -drive if=pflash… -serial file:/serial.log`, every board
+  alike; `?icount=` swaps the accel for `-icount`, under which
+  `QEMU_ICOUNT_RTCAP=budget:30:500` applies unless `?rt=` says otherwise).
 - LCD canvas repaints from the staging buffer on `requestAnimationFrame`;
   every phone key is a `<button>` mapped to linux keycodes, plus
   physical-key mapping.

@@ -73,44 +73,24 @@ with a small `-display wasm` backend (see below). It is built from the
 code in the first ~0.75 G instructions, and after that the guest's own
 timeline (see [doc/performance-handoff.md](doc/performance-handoff.md)).
 
-**Timing model (stock icount, `-icount shift=3,sleep=off`):** Siemens
-firmware needs a virtual clock that is decoupled from wall time — with
-virtual≈real (no icount, or the fork's former adaptive `precise-clocks=on`)
-every firmware wall-clock budget, the L1↔DSP handshake first of all,
-gets only a fraction of the native instruction budget on wasm and the
-phone crashes (`>>EXIT<< FILE: l1bbcsg`). The fix is plain upstream
-QEMU icount, no fork-specific virtual-clock patch: `shift=3` (8 ns per
-guest insn, ≈ the phones' 104 MHz ARM9) makes virtual time strictly
-instruction-proportional, and `sleep=off` makes idle deterministic too
-(virtual time jumps to the next timer deadline instead of the vCPU
-parking in realtime) — with the default `sleep=on` the handshake still
-dies on any host slower than the phone. Deadlines then always arrive
-with the full native instruction budget, so the machine merely boots in
-slow motion. On top of that the wasm builds default to a **real-time
-cap** on the idle warp (`QEMU_ICOUNT_RTCAP=budget:30:500`, page `?rt=off|
-banked|banked:<n>|strict|budget[:<win>[:<ms>]]`): the compute-bound boot is
-never throttled, but a halted guest's clock and animations run at wall
-speed instead of racing ahead. Thirty seconds of the guest's own clock —
-roughly the boot — after start, the cap's budget settles at 500 ms: the
-boot itself may still catch up as fast as it can, while a stall *after* it
-is repaid by at most 500 ms of sprinted clock rather than freezing the
-phone's countdowns while it skips minutes. Until it switches, the status
-pill's `slow` warning stays off: below 1.00× is what a banked boot looks
-like by construction.
-**LG boards use the same model.** They used to boot on the plain realtime
-clock, but with the DSP LLE the DSP's boot-ROM poll loop runs in lockstep on
-the vCPU thread, and in real time it starves the ARM (KE800 then powers off
-before its startup hold ends, or trips a fatal in its DSP driver). Override
-the default with `?icount=<spec>`
-(`shift=N`, `none`, …). Why this model and not
-another: [doc/lessons.md](doc/lessons.md).
+**Timing model (upstream TCG vcpu-timers,
+`-accel tcg,thread=multi,vcpu-timers=on`):** the virtual clock counts
+guest CPU cycles at the CPU clock the CGU programs, and the virtual timers
+run on the vCPU thread. Every firmware timing budget — the L1↔DSP handshake
+first of all — therefore carries the full native instruction budget however
+slow the host is: a slow host slows the clock (by more than 100 ms it is
+not caught up later), a fast one waits for wall time, as the real phone
+does. Every board uses it. `?icount=<spec>` selects stock icount instead
+(`shift=3,sleep=off` is the deterministic model the lockstep tools use;
+with it the page's real-time cap applies, `?rt=off|banked|banked:<n>|
+strict|budget[:<win>[:<ms>]]`, default `budget:30:500`); `?icount=none`
+runs the plain realtime clock. Why not the plain realtime clock:
+[doc/lessons.md](doc/lessons.md).
 
 **Where the time goes:** on the wasm64 backend an S75 boot to the idle
-screen is ~29 s of wall with the real-time cap off and ~39 s with it on
-(the shipping default) — the last ~12 s are virtual time the guest
-spends halted on device timers, which the cap pays out as real sleep.
-The first ~0.75 G instructions are compile-bound cold code (~197 MB of
-wasm compiled per boot). Full analysis: [doc/](doc/) — in particular
+screen is ~26 s of wall: ~23 s is the guest's own boot timeline, the rest
+is time lost in the first ~11 s, where translation of cold code, the DSP's
+cell search and ARM execution keep the host below real time. Full analysis: [doc/](doc/) — in particular
 [doc/optimization-playbook.md](doc/optimization-playbook.md) (the
 measurement method + what landed/rejected),
 [doc/performance-handoff.md](doc/performance-handoff.md) (current

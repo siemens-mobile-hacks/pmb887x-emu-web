@@ -1321,7 +1321,7 @@ async function bootSuite(url) {
     const engineWasmMod = await ensureEngine();
     const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
     let modRef = null; // FS access in onExit (qemuModule not yet assigned)
-    /* ?icount=1: the phones' stock timing model — measures the icount
+    /* ?icount=1: the icount timing model — measures the icount
      * tax on the tcgbench workload (TB icount-capping + accounting +
      * virtual-timer runs) against the same run without it */
     const icount = new URLSearchParams(location.search).get("icount") === "1";
@@ -1603,24 +1603,24 @@ async function boot() {
       if (n === 1 || n % 500 === 0) console.log(`[qemu${n > 1 ? " x" + n : ""}]`, t);
     };
 
-    // Timing model: stock icount with a fixed shift and sleep=off — virtual
-    // time is strictly instruction-proportional (plus deterministic jumps to
-    // the next timer deadline while the guest sleeps), so every firmware
-    // timing budget carries a full instruction budget regardless of how slow
-    // the wasm interpreter is (the phone merely boots in slow motion; see
-    // doc/livelock-postmortem.md §4). LG boards use it too since the DSP
-    // LLE: on the realtime clock the DSP's boot-ROM poll loop starves the ARM.
-    // ?icount= overrides (e.g. shift=4, none).
-    // ?rt=off: no real-time cap on the icount clock (the benchmarks use it
-    // to measure engine speed). The cap is on by default: banked for the
-    // guest's first 30 s of its own clock, so the boot is never slowed
-    // further, then capped at 500 ms of repayable stall.
-    const icountBase = qsp.get("icount") ?? "shift=3,sleep=off";
-    const icount = icountBase !== "none" && qsp.get("rt") === "off"
+    // Timing model: TCG vcpu-timers — the virtual clock counts guest CPU
+    // cycles at the CGU's CPU clock and virtual timers run on the vCPU
+    // thread, paced to wall time like the real phone. A slow host slows the
+    // clock rather than starving firmware timing budgets.
+    // ?icount=<spec> selects the instruction-counting model instead (the
+    // lockstep tools need its determinism); ?icount=none runs neither.
+    // ?rt=off: no real-time cap on the icount clock.
+    // A ?qargs= with its own -accel replaces the default one.
+    const icountBase = qsp.get("icount");
+    const icount = icountBase && icountBase !== "none" && qsp.get("rt") === "off"
       ? icountBase + ",rtcap=off"
       : icountBase;
     const trace = qsp.get("trace");
     const extraArgs = (qsp.get("qargs") ?? "").split(/\s+/).filter(Boolean);
+    const timingArgs = icount
+      ? (icount === "none" ? [] : ["-icount", icount])
+      : extraArgs.includes("-accel") ? []
+      : ["-accel", "tcg,thread=multi,vcpu-timers=on"];
     // The guest's mixer resamples straight to the output device's own rate,
     // so the worklet copies frames instead of interpolating them. ?sound=off
     // leaves the machine without an audiodev at all — the benchmark harnesses
@@ -1631,7 +1631,7 @@ async function boot() {
     const args = [
       "-display", "wasm",
       ...audioArgs,
-      ...(icount === "none" ? [] : ["-icount", icount]),
+      ...timingArgs,
       "-machine", "pmb887x",
       // always writable: the image lives in MEMFS, so the firmware's writes
       // only ever touch this run's copy — and "Export flash" hands that
@@ -2496,9 +2496,9 @@ document.fonts?.ready.then(refitHud);
 
 // Per-second guest rates, on the page itself so a phone can report them
 // without a debugger. Line 1: speed (virtual seconds per wall second — 1.0
-// is real time), MIPS (guest insns/s; 125 = real time under the stock icount
-// shift=3), fps, the page's own paint cost, lag (wall − virtual since the
-// run started: what the real-time cap still owes) and halts/s. Line 2: the
+// is real time), MIPS (guest insns/s), fps, the page's own paint cost, lag
+// (wall − virtual since the run started: time the guest lost to a slow
+// host, or under ?icount= what the real-time cap still owes) and halts/s. Line 2: the
 // machine they were measured on. Whatever the width, it is exactly two
 // lines: tokens are dropped off the line, never wrapped or shrunk.
 let paintMs = 0;

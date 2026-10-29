@@ -85,6 +85,8 @@ class WasmSide {
     fs.mkdirSync(this.dir, { recursive: true });
     const q = [
       `dist=${dist}`,
+      // the page's default vcpu-timers clock is not deterministic
+      "icount=" + encodeURIComponent("shift=3,sleep=off"),
       "rt=off",
       "lockstep=1",
       `ls-insns=${this.args.insns}`,
