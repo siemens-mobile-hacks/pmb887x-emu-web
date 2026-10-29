@@ -10,7 +10,7 @@
 //   6 active  7 generation  8 underruns
 
 const H_CAP = 1, H_CH = 2, H_FREQ = 3, H_READ = 4, H_WRITE = 5,
-      H_GEN = 7, H_UNDER = 8;
+      H_ACTIVE = 6, H_GEN = 7, H_UNDER = 8;
 const HDR_WORDS = 16;
 const HDR_BYTES = HDR_WORDS * 4;
 
@@ -77,8 +77,12 @@ class QemuAudio extends AudioWorkletProcessor {
     if (!(this.freq > 0)) {
       return true;    // no voice open yet
     }
-    const ratio = this.freq / sampleRate;
     const write = Atomics.load(hdr, H_WRITE);
+    if (!Atomics.load(hdr, H_ACTIVE)) {
+      this.mute(write);
+      return true;
+    }
+    const ratio = this.freq / sampleRate;
     const avail = (write - this.read) | 0;
     this.measureRate(write, n, ratio);
 
@@ -140,6 +144,22 @@ class QemuAudio extends AudioWorkletProcessor {
     return true;
   }
 }
+
+// Muted (or the page stopped listening): what is banked would otherwise keep
+// playing for as long as the cushion lasts, and the drain would count as a
+// dropout. Drop it and start the next unmute from the base cushion.
+QemuAudio.prototype.mute = function (write) {
+  if (this.read !== write) {
+    this.read = write;
+    Atomics.store(this.hdr, H_READ, write);
+  }
+  this.pos = 0;
+  this.priming = true;
+  this.prime = this.basePrime;
+  this.quiet = 0;
+  this.rateWrite = write;
+  this.rateFrames = 0;
+};
 
 // Producer speed over the last half second of output, in ring seconds per
 // output second. qemu pads silence while the guest is quiet, so this only

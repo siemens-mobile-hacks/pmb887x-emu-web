@@ -98,7 +98,8 @@ try {
   const pageT = targets.find((t) => t.type === "page" && t.url.includes("127.0.0.1"));
   const pageSession = ((await send("Target.attachToTarget", { targetId: pageT.targetId, flatten: true })).result || {}).sessionId;
   await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, pageSession);
-  await new Promise((r) => setTimeout(r, attachPort ? 1500 : 8000)); // workers spawn during boot
+  // PROF_WAIT=<ms>: how long to wait for the workers before attaching (early-boot profiles).
+  await new Promise((r) => setTimeout(r, attachPort ? 1500 : Number(process.env.PROF_WAIT || 8000))); // workers spawn during boot
 
   const workers = attached.filter((a) => a.targetInfo.type === "worker");
   console.log("attached workers:", workers.map((w) => w.targetInfo.url.slice(-46)).join(" | "));
