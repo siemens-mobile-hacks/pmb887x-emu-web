@@ -828,9 +828,10 @@ function render() {
   // selected (in either mode; the dropdown is locked while a run is live).
   soundBtn.hidden = !currentDevice()?.startsWith("lg-");
   const finishing = !!recorder && !pillRec;
-  recBtn.title = finishing ? "Finish recording and save the .webm"
+  const recFmt = recExt(recType()).slice(1);
+  recBtn.title = finishing ? `Finish recording and save the .${recFmt}`
     : recBtn.dataset.unsupported ? "this browser has no MediaRecorder"
-    : "Record the LCD to a .webm video";
+    : `Record the LCD to a .${recFmt} video`;
   recBtn.setAttribute("aria-label", finishing ? "Finish recording"
     : canRecord ? "Start recording" : "Start recording (emulator not running)");
 
@@ -1828,7 +1829,7 @@ function downloadMemfs(path, name) {
 }
 
 /* ------------------------------------------------------------------ */
-/* LCD capture: a PNG of the screen, or a .webm of it                   */
+/* LCD capture: a PNG of the screen, or a .mp4/.webm of it            */
 /* ------------------------------------------------------------------ */
 
 // "pmb887x-siemens-s75-20260915-023000" — the run this file came from
@@ -1847,7 +1848,17 @@ $("btn-shot").addEventListener("click", () => {
 // at a fixed 30 fps so a still screen still produces a playable file.
 // "Finish" is the only verb for ending a capture — "Stop" belongs to the
 // emulator, and on a phone the two controls sit side by side.
-const REC_TYPES = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+const REC_TYPES = [
+  "video/mp4;codecs=avc1.42E01E", "video/mp4;codecs=avc1", "video/mp4",
+  "video/webm;codecs=h264",
+  "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm",
+];
+// H.264 first: where the browser can record it the file plays anywhere,
+// and the mp4 container is the one Safari writes. VP9/VP8 webm remain
+// the fallback, so the extension follows whatever isTypeSupported picks.
+const recType = () => typeof MediaRecorder === "undefined" ? undefined
+  : REC_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
+const recExt = (t) => t?.startsWith("video/mp4") ? ".mp4" : ".webm";
 let recorder = null;
 let recDone = null;   // ran after the file has been handed over
 const recBtn = $("btn-record");
@@ -1867,7 +1878,7 @@ const stopRecording = () => finishRecording();
 
 function startRecording() {
   if (recorder || recBtn.dataset.unsupported) return;
-  const mimeType = REC_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
+  const mimeType = recType();
   const stream = canvas.captureStream(30);
   const chunks = [];
   recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
@@ -1877,7 +1888,7 @@ function startRecording() {
     recorder = null;
     setRecordLabel(false);
     if (chunks.length) downloadBlob(new Blob(chunks, { type: mimeType || "video/webm" }),
-      captureName() + ".webm");
+      captureName() + recExt(mimeType));
     say("Recording saved");
     const after = recDone;
     recDone = null;
