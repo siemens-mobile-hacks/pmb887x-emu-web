@@ -58,11 +58,10 @@
 //     the deltas of tIdle / window / t0.5G / t1.3G medians; |delta| >
 //     --regress (5) % is flagged REGRESSION / IMPROVEMENT on stdout, so
 //     a slower build cannot pass silently.
-//   - RT env: real-time cap mode (0032) the page boots with — default
-//     "off" so milestones measure engine speed; RT=banked pins the cap,
-//     RT=ship omits ?rt= so the page uses its own built-in default
-//     (budget:30:500) and the run measures what a user actually gets.  Like
-//     JS_FLAGS/EXTRA_Q, an RT!=off run never becomes the baseline.
+//   - BANK env: guest seconds of the vcpu-timers clock bank the page boots
+//     with (?bank=); unset = the page's own default, the "what a user gets"
+//     leg.  BANK=0 is upstream's clock (lag is never caught up).  Like
+//     JS_FLAGS/EXTRA_Q, a BANK run never becomes the baseline.
 //   - JS_FLAGS env: extra V8 flags for the browser (e.g. "--no-wasm-lazy-compilation").
 //   - EXTRA_Q env: extra query string appended to the page URL.
 //   - RATES=1 env: per-sample guest insns/s added to the JSON.
@@ -187,18 +186,9 @@ const port = process.env.PORT || "8080";
 const noref = argv.includes("--noref") || quick;
 const jsFlags = process.env.JS_FLAGS || "";
 const extraQ = process.env.EXTRA_Q || "";
-// RT env: the 0032 real-time cap mode the page boots with.  The default
-// stays "off" so the milestone numbers keep measuring engine speed (a
-// boot that runs faster than wall must not be paced), but the cap IS the
-// shipping default, so a regression that only exists under it was
-// invisible here until this knob existed — measure it whenever anything
-// touches icount/halt/timers.  RT=banked pins the cap and is the stable
-// A/B leg; RT=ship drops ?rt= entirely so the page picks its own default
-// and the tool cannot go stale when that default changes — but those
-// numbers straddle the banked→budget switch, so they are the "what a user
-// gets" leg, not the leg to A/B engine work against.
-const rtMode = process.env.RT || "off";
-const rtQuery = rtMode === "ship" ? "" : `&rt=${rtMode}`;
+// BANK env: see the header.
+const bankS = process.env.BANK;
+const bankQuery = bankS === undefined ? "" : `&bank=${bankS}`;
 const SAMPLE_MS = 1000;        // before the floor (v/insns curve)
 const SAMPLE_MS_IDLE = 500;    // at/after the floor (tIdle resolution)
 const INSN_MILESTONES = board.insnMilestones;
@@ -368,9 +358,7 @@ async function runOne(dist, hashes, r) {
     });
 
     try {
-      // rt=off by default: the real-time cap would pace a
-      // faster-than-realtime boot (RT=ship measures what users get)
-      await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(dist)}${distQuery(dist) ? "&" + distQuery(dist) : ""}${rtQuery}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+      await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(dist)}${distQuery(dist) ? "&" + distQuery(dist) : ""}${bankQuery}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
       await p.selectOption("#startup", "ONLINE");
       await p.click("#ff-mode-own");
       await p.setInputFiles("#fullflash", [FLASH, ...SIDECARS]);
@@ -589,9 +577,9 @@ const out = {
 // "latest" aliases: full runs -> idlebench-latest.json, --quick runs ->
 // idlebench-quick-latest.json (different caps, keep the baselines apart);
 // boards other than s75 get idlebench-<board>-[quick-]latest.json.
-// Knob runs (JS_FLAGS / EXTRA_Q / RT set) never become a baseline.
+// Knob runs (JS_FLAGS / EXTRA_Q / BANK set) never become a baseline.
 const latestPath = here + `../tests/results/idlebench-${boardId === "s75" ? "" : boardId + "-"}${quick ? "quick-" : ""}latest.json`;
-const knobRun = !!(jsFlags || extraQ || rtMode !== "off" ||
+const knobRun = !!(jsFlags || extraQ || bankS !== undefined ||
                    dists.some((d) => d.includes("@")));
 const baselinePath = opt("baseline", latestPath);
 let baseline = null;

@@ -10,8 +10,8 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 | Param | Effect |
 |---|---|
 | `?dist=<dir>` | build output under `site/` to run: default `dist-jit` (wasm64 TCG backend); `dist` = the TCI interpreter; any `dist-*` A/B snapshot |
-| `?icount=<spec>` | run `-icount <spec>` instead of the default `-accel tcg,thread=multi,vcpu-timers=on` (`shift=3,sleep=off` = the deterministic model the lockstep tools use; `none` = plain realtime clock). A `?qargs=` that carries its own `-accel` also drops the default |
-| `?rt=off\|banked\|banked:<n>\|strict\|budget[:<win>[:<ms>]]` | `QEMU_ICOUNT_RTCAP` — with `?icount=` only: the real-time cap on the sleep=off idle warp. Default **`budget:30:500`**: `banked` (the boot is never throttled, idle time is paced to wall) for the guest's first 30 seconds of *its own* clock, then the bank is capped at 500 ms — a later stall is repaid, but never by more than 500 ms of sprinted clock, so the phone stays close behind wall time instead of skipping minutes. `<win>`/`<n>` are guest seconds, not wall seconds — the boot costs the same virtual time on every host but anywhere from 39 s to minutes of wall. Plain `banked` and `strict` are pinned for the whole run and are the stable A/B legs (`banked:<n>` = banked then strict); benchmarks pass `rt=off` to measure engine speed. While the cap is still banking the pill's `slow` warning stays off (see below) |
+| `?icount=<spec>` | run `-icount <spec>` instead of the default `-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30` (`shift=3,sleep=off` = the deterministic, unpaced model the lockstep tools use; `none` = plain realtime clock). A `?qargs=` that carries its own `-accel` also drops the default |
+| `?bank=<s>` | `vcpu-timers-bank`: for the guest's first `<s>` seconds of its own clock (default 30, the boot) time lost to a slow host is caught up — whenever the guest idles — instead of dropped; `0` = upstream (lag over 100 ms is dropped). The clock never runs ahead of wall time. While banked the pill's `slow` warning stays off (see below) |
 | `?trace=<channels>` | `PMB887X_TRACE_IO/LOG` (e.g. `trace=dsp,scu`); channels: dsp, scu, gptu, tpu, vic, capcom, usart, rtc, … |
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
 | `?debug=1` | print every stderr line to console (no dedup) |
@@ -54,9 +54,9 @@ than covering the idle panel. It used to be `?hud=1`, then a band across the
 top of the page. The choice is remembered; with none stored it starts on at
 phone widths, the one place with no debugger to fall back to, and off on
 desktop. Either way the pill itself turns amber and gains `· slow` after
-three seconds under 0.80× — except while the real-time cap is still banking
-(`?rt=` above), where below 1.00× is what a boot looks like by construction:
-the guest is behind and allowed to catch up, not slow. The three-second
+three seconds under 0.80× — except while the clock is still banked
+(`?bank=` above), where below 1.00× is a guest that is behind and will
+catch up, not a slow one. The three-second
 hysteresis restarts at the switch. The HUD's own `×` and `lag` tokens keep
 their colours throughout: the strip is a raw instrument, the pill is a
 judgement about whether the user should care.

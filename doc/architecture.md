@@ -135,12 +135,12 @@ dispatch resolution + flag-masked victim-TLB compare), `0040` (fill-time
 TLB growth), `0043` (physical-address summary for the range flush),
 `0045` (skip `arm_rebuild_hflags` on CPSR writes that cannot change it).
 
-Timing/halt path: `0023` (idle warp on the vCPU thread), `0024`
-(pmb887x completion timers on the virtual clock), `0025`, `0027`,
-`0028`, `0032` (real-time cap on the sleep=off warp — wasm default
-`budget:30:500`, i.e. `banked` for the guest's first 30 s of its own clock
-and a bank capped at 500 ms after, page `?rt=`), `0035`/`0037` (virtual
-timers serviced when icount is off — the LG boards). `0033` selects
+Timing/halt path: the default clock is upstream's TCG `vcpu-timers`; the
+fork adds `vcpu-timers-bank` (lag caught up during the boot, page
+`?bank=`) and one host-clock read per vCPU budget. The icount-era patches
+(`0023` idle warp on the vCPU thread, `0032` real-time cap, `0035`/`0037`
+virtual timers without icount) are gone; `0024` (pmb887x completion
+timers on the virtual clock) remains. `0033` selects
 the RTC `CNT` layout from the board config (`[rtc] format`: Siemens
 linear Unix seconds, LG packed calendar).
 
@@ -299,10 +299,10 @@ linear Unix seconds, LG packed calendar).
   - Drivers in `tools/` that set controls in the two panels need a viewport
     at least 900x621, or the panel they are reaching into is a closed sheet.
 - `boards.tar` unpacked into `/boards`; qemu args mirror the native
-  launcher (`-display wasm -accel tcg,thread=multi,vcpu-timers=on
-  -machine pmb887x -drive if=pflash… -serial file:/serial.log`, every board
-  alike; `?icount=` swaps the accel for `-icount`, under which
-  `QEMU_ICOUNT_RTCAP=budget:30:500` applies unless `?rt=` says otherwise).
+  launcher (`-display wasm -accel
+  tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30 -machine pmb887x
+  -drive if=pflash… -serial file:/serial.log`, every board alike;
+  `?bank=` sets the bank, `?icount=` swaps the accel for `-icount`).
 - LCD canvas repaints from the staging buffer on `requestAnimationFrame`;
   every phone key is a `<button>` mapped to linux keycodes, plus
   physical-key mapping.
@@ -323,7 +323,7 @@ linear Unix seconds, LG packed calendar).
   of the dying screen. `tools/exitcheck.mjs` drives the whole path.
 - URL params (see [diagnostics.md](diagnostics.md)): `?dist=<dir>`
   runs another build output (A/B snapshots), `?suite=` boots a bare-metal image headlessly,
-  `?env=NAME=VAL` passes build knobs, `?icount=`/`?rt=`/`?trace=`/
+  `?env=NAME=VAL` passes build knobs, `?icount=`/`?bank=`/`?trace=`/
   `?qargs=`/`?iorewind=1` override the boot recipe, `?lockstep=1` turns
   on the built-in guest-state fold.
 

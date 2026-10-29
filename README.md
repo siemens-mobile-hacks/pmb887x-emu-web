@@ -74,23 +74,27 @@ code in the first ~0.75 G instructions, and after that the guest's own
 timeline (see [doc/performance-handoff.md](doc/performance-handoff.md)).
 
 **Timing model (upstream TCG vcpu-timers,
-`-accel tcg,thread=multi,vcpu-timers=on`):** the virtual clock counts
-guest CPU cycles at the CPU clock the CGU programs, and the virtual timers
-run on the vCPU thread. Every firmware timing budget — the L1↔DSP handshake
-first of all — therefore carries the full native instruction budget however
-slow the host is: a slow host slows the clock (by more than 100 ms it is
-not caught up later), a fast one waits for wall time, as the real phone
-does. Every board uses it. `?icount=<spec>` selects stock icount instead
-(`shift=3,sleep=off` is the deterministic model the lockstep tools use;
-with it the page's real-time cap applies, `?rt=off|banked|banked:<n>|
-strict|budget[:<win>[:<ms>]]`, default `budget:30:500`); `?icount=none`
-runs the plain realtime clock. Why not the plain realtime clock:
+`-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30`):** the
+virtual clock counts guest CPU cycles at the CPU clock the CGU programs,
+and the virtual timers run on the vCPU thread. Every firmware timing
+budget — the L1↔DSP handshake first of all — therefore carries the full
+native instruction budget however slow the host is: a slow host slows the
+clock, a fast one waits for wall time, as the real phone does. Upstream
+drops any lag over 100 ms; `vcpu-timers-bank` (this fork, page `?bank=<s>`,
+default 30, `0` = upstream) makes the guest catch up on all of it during
+its first 30 s of its own clock — the boot — which it does whenever it
+idles, so the boot ends close to the phone's own timeline. It never runs
+ahead of wall time. Every board uses it. `?icount=<spec>` selects stock
+icount instead (`shift=3,sleep=off` is the deterministic model the
+lockstep tools use; it runs unpaced); `?icount=none` runs the plain
+realtime clock. Why not the plain realtime clock:
 [doc/lessons.md](doc/lessons.md).
 
 **Where the time goes:** on the wasm64 backend an S75 boot to the idle
-screen is ~26 s of wall: ~23 s is the guest's own boot timeline, the rest
-is time lost in the first ~11 s, where translation of cold code, the DSP's
-cell search and ARM execution keep the host below real time. Full analysis: [doc/](doc/) — in particular
+screen is ~23.7 s of wall against ~23 s of the guest's own boot timeline:
+the first ~11 s (translation of cold code, the DSP's cell search, ARM
+execution) run below real time, and the bank repays that in the idle
+stretches after it. On a slower host the compute-bound part grows. Full analysis: [doc/](doc/) — in particular
 [doc/optimization-playbook.md](doc/optimization-playbook.md) (the
 measurement method + what landed/rejected),
 [doc/performance-handoff.md](doc/performance-handoff.md) (current

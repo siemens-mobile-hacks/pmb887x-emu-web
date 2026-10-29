@@ -172,11 +172,11 @@ let esnAbort = null;
 // §6 of the HUD criteria: the guest has been slower than 0.80x for three
 // seconds. Drawn on the pill whether or not the HUD itself is shown.
 let slow = false;
-// icount_rtcap_mode(): 0 off, 1 banked, 3 budget. The cap is banked for the
-// guest's first 30 s of its own clock — the boot — and then budgets: a stall
-// is repaid, but never by more than 500 ms of sprinted clock. §6 stays quiet
-// while banked (see trackSpeed).
-let rtcapMode = 0;
+// The clock is banked for the guest's first ?bank= seconds of its own clock —
+// the boot: time lost to a slow host is caught up rather than dropped, so
+// v/wall below 1 is not "slow" yet. §6 stays quiet while banked (see
+// trackSpeed).
+let banked = false;
 // §6b: the guest has stopped executing while the page still believes it is
 // running. The vCPU is a worker thread and the state machine above never
 // hears about one that dies or wedges — the run stays "Running · 0:21" with
@@ -847,7 +847,7 @@ function render() {
   window.__ui = {
     state: emuState, mode: ffMode, device: currentDevice(),
     ready: firmwareReady(), error: errorMsg, exitCode, slow,
-    rtcap: ["off", "banked", "strict", "budget"][rtcapMode],
+    bank: banked ? "banked" : "off",
     serialTap: serialTapped,
     exit: exitReport && {
       type: exitReport.type, code: exitReport.code,
@@ -1607,20 +1607,19 @@ async function boot() {
     // cycles at the CGU's CPU clock and virtual timers run on the vCPU
     // thread, paced to wall time like the real phone. A slow host slows the
     // clock rather than starving firmware timing budgets.
+    // ?bank=<s>: for the guest's first <s> seconds (default 30, the boot)
+    // time lost to the host is caught up instead of dropped; 0 = never.
     // ?icount=<spec> selects the instruction-counting model instead (the
     // lockstep tools need its determinism); ?icount=none runs neither.
-    // ?rt=off: no real-time cap on the icount clock.
     // A ?qargs= with its own -accel replaces the default one.
-    const icountBase = qsp.get("icount");
-    const icount = icountBase && icountBase !== "none" && qsp.get("rt") === "off"
-      ? icountBase + ",rtcap=off"
-      : icountBase;
+    const icount = qsp.get("icount");
+    const bank = qsp.get("bank") ?? "30";
     const trace = qsp.get("trace");
     const extraArgs = (qsp.get("qargs") ?? "").split(/\s+/).filter(Boolean);
     const timingArgs = icount
       ? (icount === "none" ? [] : ["-icount", icount])
       : extraArgs.includes("-accel") ? []
-      : ["-accel", "tcg,thread=multi,vcpu-timers=on"];
+      : ["-accel", `tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=${bank}`];
     // The guest's mixer resamples straight to the output device's own rate,
     // so the worklet copies frames instead of interpolating them. ?sound=off
     // leaves the machine without an audiodev at all — the benchmark harnesses
@@ -2685,13 +2684,12 @@ function hudTick() {
   // minus virtual *since then*, the only thing this window can measure
   hudV0 ??= s.v;
   lagV0 ??= s.v;
-  // old dists have no such export — treat them as "off", i.e. exactly today
-  const rt = m._wasm_rtcap ? m._wasm_rtcap() : 0;
-  if (rt !== rtcapMode) {
-    // the bank is written off at the switch (budget keeps only its 500 ms
-    // cap), so lag restarts from here
-    if (rtcapMode === 1) { lagT0 = s.t; lagV0 = s.v; }
-    rtcapMode = rt;
+  // old dists have no such export — treat them as "off"
+  const b = !!(m._wasm_clock_banked && m._wasm_clock_banked());
+  if (b !== banked) {
+    // lag left at the end of the bank is written off, so it restarts here
+    if (banked) { lagT0 = s.t; lagV0 = s.v; }
+    banked = b;
     render();     // __ui is rebuilt there, not per tick
   }
   if (hudLast) {
@@ -2756,12 +2754,11 @@ function stallReason() {
 // over it turn it green again. The hysteresis is the point — one slow sample
 // (a GC pause, a tab coming back) must not flicker the pill.
 function trackSpeed(vratio, now) {
-  // While the cap is still banking (the guest's first 30 s of its own clock:
-  // the boot) v/wall is below 1 by construction — the guest is behind and
-  // allowed to catch up, not slow. Clearing both timers means the first
-  // paced sample starts a clean three seconds rather than inheriting the
-  // boot's.
-  if (rtcapMode === 1) {
+  // While the clock is still banked (the boot) v/wall below 1 is a guest
+  // that is behind and will catch up, not a slow one. Clearing both timers
+  // means the first paced sample starts a clean three seconds rather than
+  // inheriting the boot's.
+  if (banked) {
     slowSince = 0; fastSince = 0;
     if (slow) { slow = false; render(); }
     return;
@@ -2783,7 +2780,7 @@ function hudReset() {
   hudSamples = [];
   hudLast = null; hudNow = null; hudV0 = null; hudT0 = performance.now();
   lagV0 = null; lagT0 = hudT0;
-  slowSince = 0; fastSince = 0; slow = false; rtcapMode = 0;
+  slowSince = 0; fastSince = 0; slow = false; banked = false;
   stalled = false; stallMark = null; stallSince = hudT0; fatalMsg = null;
   logTail.length = 0;
   if (!hudEl.hidden) drawHud();
@@ -2928,8 +2925,8 @@ function diagnostics() {
     cores: navigator.hardwareConcurrency ?? null,
     deviceMemory: navigator.deviceMemory ?? null,
     isolated: crossOriginIsolated,
-    // rtcap makes vratio readable: 0.6x is a slow host under strict or
-    // budget, but a guest still catching up under banked
+    // bank makes vratio readable: 0.6x is a slow host once the bank is
+    // over, but a guest still catching up while banked
     device: currentDevice(), state: emuState, slow, exitCode,
     // §6b: a run that says "running" with a dead guest behind it, and the
     // last thing qemu said — the whole report a stalled phone can give
@@ -2941,7 +2938,7 @@ function diagnostics() {
     // what Advanced ▸ Siemens keys was set to, and what it did to this image
     siemensMode: currentDevice()?.startsWith("siemens-") ? siemensMode() : null,
     siemensKeys: keyReport,
-    rtcap: ["off", "banked", "strict", "budget"][rtcapMode],
+    bank: banked ? "banked" : "off",
     // the firmware's own crash dump, if this run ended in one
     exit: exitReport && Object.fromEntries(exitReport.rows),
     avg10s: {
