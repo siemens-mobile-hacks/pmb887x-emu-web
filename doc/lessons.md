@@ -114,11 +114,13 @@ because neither is anything the build script says.
   virtual time on every host while its wall time ranges from ~39 s to
   minutes, so a wall window would expire mid-boot on exactly the slow
   machines `banked` exists to protect.
-- **LG firmware needs no icount at all** and boots on the realtime
-  clock; the page and `run-native.sh` omit `-icount` for `lg-*`. Those
-  boards are therefore the only coverage of the non-icount timer/idle
-  paths (0035/0037 were found that way) and are not deterministic
-  enough for digest comparison.
+- **LG firmware needed no icount** and booted on the realtime clock
+  until the DSP LLE (2026-10-29): the DSP's boot-ROM poll loop now runs in
+  lockstep on the vCPU thread, and in real time it starves the ARM, so
+  the page and `run-native.sh` give `lg-*` the same `shift=3,sleep=off`.
+  Before that the LG boards were the only coverage of the non-icount
+  timer/idle paths (0035/0037 were found that way); `?icount=none` still
+  reaches them.
 - **Any `>>EXIT<<` on serial means the phone crashed.** Do not wait for
   recovery; stop there.
 - **Virtual time outrunning instructions kills the boot** (BROM delay

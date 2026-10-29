@@ -19,9 +19,9 @@
 #   DISPLAY_MODE=none    none | vnc=[:display] | sdl | gtk
 #   SERIAL=path          serial log file     (default /tmp/pmb887x-serial.log)
 #   MONITOR=stdio        stdio | unix:path | none
-#   ICOUNT=<spec>        -icount value; "none" omits it (default: LG boards
-#                        none, everything else shift=3,sleep=off — same
-#                        timing model as the web page, see site/app.js)
+#   ICOUNT=<spec>        -icount value; "none" omits it (default
+#                        shift=3,sleep=off — same timing model as the web
+#                        page, see site/app.js)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -62,10 +62,9 @@ OPERATOR="${OPERATOR:-00101}"
 DISPLAY_MODE="${DISPLAY_MODE:-none}"
 SERIAL="${SERIAL:-/tmp/pmb887x-serial.log}"
 MONITOR="${MONITOR:-stdio}"
-# Timing model mirrors the web page: LG firmware boots fine on the plain
-# realtime clock (no icount); Siemens firmware needs an instruction-driven
-# virtual clock — stock icount, fixed shift, deterministic sleep=off.
-ICOUNT="${ICOUNT:-$([[ "$BOARD" == lg-* ]] && echo none || echo "shift=3,sleep=off")}"
+# Timing model mirrors the web page: an instruction-driven virtual clock —
+# stock icount, fixed shift, deterministic sleep=off — for every board.
+ICOUNT="${ICOUNT:-shift=3,sleep=off}"
 # bare unix:path means "listen" — add the server options unless given fully
 if [[ "$MONITOR" == unix:* && "$MONITOR" != *,* ]]; then
   MONITOR="$MONITOR,server=on,wait=off"

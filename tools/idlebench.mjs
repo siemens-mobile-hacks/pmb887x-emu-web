@@ -13,13 +13,10 @@
 //   - ke800: fullflashes/KE800-v11b.bin + its .cfi-efa sidecar (LG EEPROM
 //     block), reference tools/test_targets/KE800-v11b_idle.png, bottom
 //     --rows (150) rows (the widget bar and the soft keys; the clock,
-//     date and "No network" line above them change).  The LG board runs
-//     WITHOUT icount (site/app.js), so virtual time is wall time: the
-//     v-window is not reported, the instruction milestones are NOT a
-//     deterministic amount of work (the firmware busy-polls the system
-//     timer for ~15 s before the logo, so the count at the logo scales
-//     with engine speed — 0.6 G on a cold wasm page, 2.5 G natively) and
-//     tIdle is the number.  Progress/stall is judged in instructions.
+//     date and "No network" line above them change).  Since the DSP LLE
+//     the LG board runs the same icount model as the Siemens ones
+//     (site/app.js), so the v-window is reported; tIdle is still the
+//     number.  Progress/stall is judged in instructions.
 //   - startup=ONLINE, fresh browser per run, SEQUENTIAL: one browser at
 //     a time, dists interleaved (d1 r1, d2 r1, d1 r2, ...) so host-load
 //     drift hits both sides equally.  --parallel runs all dists at once
@@ -154,7 +151,7 @@ const BOARDS = {
   ke800: {
     flash: "KE800-v11b.bin", sidecars: ["KE800-v11b.bin.cfi-efa"], ref: "KE800-v11b_idle.png", rows: 150,
     insnMilestones: [0.5e9, 1.0e9, 1.5e9, 1.8e9],
-    cmpInsns: 1.6e9, icount: false, pct: 3.0,
+    cmpInsns: 1.6e9, icount: true, pct: 3.0,
   },
 };
 const boardId = opt("board", "s75");

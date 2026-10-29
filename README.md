@@ -75,7 +75,7 @@ timeline (see [doc/performance-handoff.md](doc/performance-handoff.md)).
 
 **Timing model (stock icount, `-icount shift=3,sleep=off`):** Siemens
 firmware needs a virtual clock that is decoupled from wall time — with
-virtual≈real (no icount, or the fork's adaptive `precise-clocks=on`)
+virtual≈real (no icount, or the fork's former adaptive `precise-clocks=on`)
 every firmware wall-clock budget, the L1↔DSP handshake first of all,
 gets only a fraction of the native instruction budget on wasm and the
 phone crashes (`>>EXIT<< FILE: l1bbcsg`). The fix is plain upstream
@@ -97,10 +97,12 @@ is repaid by at most 500 ms of sprinted clock rather than freezing the
 phone's countdowns while it skips minutes. Until it switches, the status
 pill's `slow` warning stays off: below 1.00× is what a banked boot looks
 like by construction.
-**LG firmware needs no icount at all** — it boots fine on the plain
-realtime clock — so the page omits `-icount` for `lg-*` devices by
-default. Override either default with `?icount=<spec>`
-(`precise-clocks=on`, `shift=N`, `none`, …). Why this model and not
+**LG boards use the same model.** They used to boot on the plain realtime
+clock, but with the DSP LLE the DSP's boot-ROM poll loop runs in lockstep on
+the vCPU thread, and in real time it starves the ARM (KE800 then powers off
+before its startup hold ends, or trips a fatal in its DSP driver). Override
+the default with `?icount=<spec>`
+(`shift=N`, `none`, …). Why this model and not
 another: [doc/lessons.md](doc/lessons.md).
 
 **Where the time goes:** on the wasm64 backend an S75 boot to the idle
@@ -163,7 +165,7 @@ scripts/run-native.sh fullflashes/KE800-v11b.bin
 ```
 
 `run-native.sh` mirrors the web boot exactly (same `-icount
-shift=3,sleep=off` — or no `-icount` at all for LG boards —, `-drive
+shift=3,sleep=off`, `-drive
 if=pflash…`, `-serial file:…` and `PMB887X_*` env vars; board inferred
 from the fullflash filename, IMEI/ESN → OTP included; `ICOUNT=<spec>`
 overrides the timing model). Options via env: `BOARD= STARTUP= SIM=`
@@ -289,17 +291,36 @@ ring that lives in the wasm heap; because the heap is a `SharedArrayBuffer`,
 Nothing is copied per buffer and the main thread is never on the path.
 
 The page passes `out.frequency=<AudioContext.sampleRate>,out.channels=2`, so
-the guest's mixer resamples the AFE's 8/11/22 kHz mono straight to the output
+the guest's mixer resamples the DSP's 8/16 kHz output straight to the output
 device and the worklet copies frames rather than interpolating them.
 
-Pacing is the ring itself: a full ring means a short `write()`,
-`audio_generic_run_buffer_out()` stops there, the AFE FIFO backs up and the
-HLE DSP stops asking for refills — so a guest running faster than real time
-is held to the speed its audio is actually consumed at. Muting is *not* the
-same as having no audiodev: the backend keeps consuming at the nominal rate
-when nobody is listening, so a mute drops audio instead of stalling the
-phone. `?sound=off` leaves the machine without an audiodev at all, which is
-what the benchmarks use.
+The sound itself comes from the real DSP firmware: qemu-pmb887x `dsp-lle`
+runs the Teak DSP (mask ROM plus the code the ARM downloads) through a TCG
+JIT on the vCPU thread, in lockstep with the guest's virtual clock. Two host
+voices carry it: the AFE DAC ring (PMB8876 boards: S75, EL71, C81, CX70, LG)
+and the I2S2 link to the PASIC codec in the d1094xx PMIC (PMB8875 boards such
+as SL65, whose mask ROM renders melodies there).
+
+Nothing back-pressures the guest any more — the DSP produces samples at the
+speed of the guest's virtual clock, and during a Siemens boot that is ~0.25×
+real time in the browser. Three pieces keep that from coming out as stutter:
+
+- `hw/arm/pmb887x/audio/buffer.c` leaves a mid-stream underrun as a gap
+  instead of padding it with silence; it pads only after 200 ms with no
+  samples (an enabled voice that never writes would stall every other voice
+  on the mixer).
+- `wasmaudio.c` paces its writes on the host clock, so that idle padding
+  cannot fill the ring ahead of real time (≈70 ms queued at steady state).
+- `audio-worklet.js` banks a cushion before playing and after every dropout.
+  It starts at 80 ms; a dropout grows it to cover a 5 s sound rendered at
+  the measured producer speed (at least doubling, at most 4 s), and a second
+  of silence resets it and skips the silent backlog. The C81 boot chime,
+  rendered over ~8 s of wall time, plays in one piece once it is banked.
+
+Muting is *not* the same as having no audiodev: the backend keeps consuming
+at the nominal rate when nobody is listening, so a mute drops audio instead of
+stalling the phone. `?sound=off` leaves the machine without an audiodev at
+all, which is what the benchmarks use.
 
 Verify with `tools/audioprobe.mjs` (`TOGGLE_AT=` exercises mute/unmute):
 
@@ -307,54 +328,58 @@ Verify with `tools/audioprobe.mjs` (`TOGGLE_AT=` exercises mute/unmute):
 TESTFLASH=fullflashes/KE800-v11b.bin node tools/audioprobe.mjs
 ```
 
-The LG KE800 startup jingle lands ~31 s in at peak 27844, matching a native
-`-audio wav` capture. The Siemens boards stay silent: their DSP firmware
-issues a PCMPLAY variant (`switch=0x0140`/`0x0240`, plus unknown CH2 commands
-0x31/0x32) that `hw/arm/pmb887x/dsp.c` rejects as unknown — a separate
-reverse-engineering job, unrelated to this backend.
+Boot chimes in the browser (ring peak, matching a native `-audio wav`
+capture): C81 23317, EL71 13059, SL65 6841, KE800 13262, KE970 8571. S75
+v40 has no boot chime, only a short blip. The LG chimes are about half the
+level the old HLE path produced (27844 / 28937): that is the DSP's own
+output now, not a loss on the way. Native captures: `node` + `-audio wav,path=…` on
+`scripts/run-native.sh`.
 
 ## Pins
 
 `versions.env` pins:
 
-- qemu-pmb887x `b7822c674b` — the tip of the series branch
-  (`wasm-browser-port` locally, `wasm-patches` on Azq2/qemu-pmb887x):
-  qemu-pmb887x master merged in, the series on top of it, the "hacky
-  AFE (LLE+HLE)" DSP fix cherry-picked from alula's `dsp-stuff` branch,
-  and the per-board RTC seed. Master alone aborts every Siemens fullflash
-  during L1 GSM frame handling (`>>EXIT<< FILE: l1bbcsg`, ~25–30 s);
-  the AFE commit is what makes s75/el71/c81 boot. The master merge also
-  brought the SGOLD DSP mask-ROM fix, which upstream leaves inside a
-  disabled `#ifdef STUB_DSP` and this branch compiles. `alula/dsp-stuff`
-  is merged too and changed nothing: both of its content commits are
-  already here verbatim (same patch-id), and its remaining differences are
-  a `dsp_hexdump()` that indexes words where the offset counts bytes, the
-  pre-fix `dsp_realize()`, and two `#if 0` debug blocks.
-- bsp (pmb887x-dev) `63b56fa` — bsp master as of 2026-09-22, stopping one
-  commit short of the tip. It brings the KE970 board config that wires the
-  jog dial up (`[peripheral.SCROLL] type = "ke970-scroll"`, bound to
-  `NAV_UP`/`NAV_DOWN`), so the wheel the on-screen KE970 keypad draws as a
-  pad reaches the firmware. The tip itself (`eb4f9fc`, "lib: fix pad names")
-  is held back on purpose: it swaps the names of GPIO 39 and 99
-  (`DIF_HD` ↔ `MMCI_DAT1`), names 32/33 `I2S2_RX`/`I2S2_TX` and rewrites
-  five board configs against the new names, while qemu's pad table is
-  generated from bsp and committed in the submodule (`gen/cpu_regs.h`, still
-  the old names) — those configs would alias the wrong pins. Take it once
-  qemu regenerates. The earlier `e79169f` round added the M65, M75, ME75,
-  SK65 and SL65 boards (the device list grew matching rules), reworked CX75
-  onto the `siemens-sgl-sirius` include, and carries the WHBABCON/WHBABSTAT
-  bits and USART RX pacing. perk11's LG `[rtc] format = "calendar"`
-  (PR#6) landed in master as `e8d490e`, so there is no fix pin and no merge
-  in `scripts/sync-bsp.sh` any more — a plain checkout of the pin is the
-  whole tree. Master is also where `[peripheral.RF] type = "hd155153np"` — a
-  device the emulator has no table entry for — got commented out, which is
-  why there is no longer a `bsp-patches/` directory to apply.
-- pmb887x-emu `eb53c78` — master. Not built from (qemu comes from the root
+- qemu-pmb887x `6e821e08b6` — the series branch (`wasm-browser-port`
+  locally, `wasm-patches` on Azq2/qemu-pmb887x) with
+  siemens-mobile-hacks/qemu-pmb887x `dsp-lle` (`393263e08d`) merged in.
+  `dsp-lle` replaces the HLE DSP and the "hacky AFE (LLE+HLE)" fix this
+  branch used to carry with a real DSP LLE (the Teak mask ROM and the
+  downloaded code run through a TCG JIT, synchronously on the vCPU thread),
+  which is what gives the Siemens boards sound. It also reworks
+  capcom/dif/dmac/flash/vic/lcd (taken as is), drops icount2 /
+  `precise-clocks` (gone from the series too: the wasm64 backend, cputlb,
+  qemu-timer and translate.c lost their icount2 paths) and adds
+  `-accel tcg,thread=multi,vcpu-timers=on`. Because the DSP JIT now runs
+  nested inside an ARM MMIO access, `tcg_qemu_tb_exec` on wasm64 is
+  re-entrant (a frame per nesting depth; interpreter records freed only
+  once no run is using them). On top of the merge: the 0602 mask ROM's
+  `mov [Rn], cfgj` translates (it halted the SL65 DSP before the first
+  sample), the audio buffer leaves mid-stream underruns as gaps (see
+  Sound), `screendump` writes unpadded PPM rows (130-pixel-wide
+  LCDs such as the SL65's came out sheared), and three LG fixes: the
+  USIF's TX DMA asks for one word per request (with dsp-lle's DMAC
+  request FIFO a burst request moved 16 bytes, short Bluetooth packets
+  never completed and `twu_transport_usif.c` reset the phone every ~16 s),
+  the DIF v2 holds back a firmware-written TX DMA request until its now
+  slowly draining FIFO has room (the extra burst overflowed it and the
+  idle screen arrived in fragments), and an AFE rate change reinitialises
+  the host voice in place instead of reopening it (which truncated a
+  `-audio wav` file).
+- bsp (pmb887x-dev) `e90ceb3` — bsp master as of 2026-10-29. qemu's
+  generated `gen/` tables match it byte for byte (regenerated with
+  `tools/qemu.sh` and compared), so the pad-name hold-back of the previous
+  pin is over. Older history: `63b56fa` brought the KE970 jog dial
+  (`[peripheral.SCROLL] type = "ke970-scroll"`), `e79169f` the M65, M75,
+  ME75, SK65 and SL65 boards, and perk11's LG `[rtc] format = "calendar"`
+  (PR#6) landed as `e8d490e`; a plain checkout of the pin is the whole
+  tree, with no `bsp-patches/` to apply.
+- pmb887x-emu `91a9b14` — master. Not built from (qemu comes from the root
   submodule); it is the source of the siemensfw library (`src/siemens`)
   that `scripts/build-recalc-wasm.sh` compiles for the page's Siemens-key
-  and device-detection module. The 2026-09-20 bump (7819a6c..eb53c78) moves
-  only its own bsp/qemu submodule pointers and adds tests — `src/siemens`
-  is unchanged.
+  and device-detection module. The 2026-10-29 bump (eb53c78..91a9b14) adds
+  unit-test runners, a `--headless` option and moves its submodule
+  pointers — `src/siemens` is unchanged. Its own runner still passes
+  `-icount precise-clocks=on`, which `dsp-lle` no longer has.
 - emsdk 4.0.10, glib 2.84.0, pixman 0.44.2, zlib 1.3.2, libffi v3.5.2
   (mirrors qemu's `emsdk-wasm64-cross.docker`).
 

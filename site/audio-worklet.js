@@ -20,9 +20,16 @@ class QemuAudio extends AudioWorkletProcessor {
     this.hdr = null;
     // How much has to be banked before playback starts, and after every
     // dropout. A guest that renders slower than real time would otherwise
-    // spend its whole life one frame short.
-    this.prime = Math.round(sampleRate * (options?.processorOptions?.prime ?? 0.08));
+    // spend its whole life one frame short. Times are in output seconds.
+    this.basePrime = options?.processorOptions?.prime ?? 0.08;
+    this.prime = this.basePrime;
     this.priming = true;
+    // Producer speed, in ring seconds per output second, and how long the
+    // output has been silent.
+    this.rate = 1;
+    this.rateWrite = 0;
+    this.rateFrames = 0;
+    this.quiet = 0;
     this.gen = -1;
     this.pos = 0;     // fractional read position within the ring
     this.read = 0;    // whole frames handed to the ring's read cursor
@@ -63,13 +70,22 @@ class QemuAudio extends AudioWorkletProcessor {
       Atomics.store(hdr, H_READ, this.read);
       this.pos = 0;
       this.priming = true;
+      this.rateWrite = this.read;
+      this.rateFrames = 0;
     }
 
-    const ratio = this.freq > 0 ? this.freq / sampleRate : 1;
-    const avail = (Atomics.load(hdr, H_WRITE) - this.read) | 0;
+    if (!(this.freq > 0)) {
+      return true;    // no voice open yet
+    }
+    const ratio = this.freq / sampleRate;
+    const write = Atomics.load(hdr, H_WRITE);
+    const avail = (write - this.read) | 0;
+    this.measureRate(write, n, ratio);
 
     if (this.priming) {
-      if (avail < this.prime) {
+      // A stream that ends before the cushion fills still plays: qemu pads
+      // silence once the guest goes quiet, and that tops the ring up.
+      if (avail < this.prime * this.freq) {
         return true;
       }
       this.priming = false;
@@ -79,12 +95,16 @@ class QemuAudio extends AudioWorkletProcessor {
     const need = Math.ceil(this.pos + n * ratio) + 1;
     if (avail < need) {
       Atomics.add(hdr, H_UNDER, 1);
+      this.growPrime();
       this.priming = true;
       this.pos = 0;
       return true;    // a clean 2.7 ms gap beats a torn half-buffer
     }
 
     const pcm = this.pcm, mask = this.mask, ch = this.channels;
+    if (this.quiet >= sampleRate) {
+      this.shedSilence(avail - need - Math.ceil(this.basePrime * this.freq));
+    }
     const base = this.read;
     let pos = this.pos;
 
@@ -101,6 +121,18 @@ class QemuAudio extends AudioWorkletProcessor {
       pos += ratio;
     }
 
+    let loud = false;
+    for (let c = 0; c < out.length && !loud; c++) {
+      const o = out[c];
+      for (let i = 0; i < n; i++) {
+        if (o[i] !== 0) { loud = true; break; }
+      }
+    }
+    this.quiet = loud ? 0 : this.quiet + n;
+    if (this.quiet >= sampleRate) {
+      this.prime = this.basePrime;    // between sounds: back to low latency
+    }
+
     const used = pos | 0;
     this.read = (base + used) | 0;
     this.pos = pos - used;
@@ -108,5 +140,49 @@ class QemuAudio extends AudioWorkletProcessor {
     return true;
   }
 }
+
+// Producer speed over the last half second of output, in ring seconds per
+// output second. qemu pads silence while the guest is quiet, so this only
+// drops below 1 while a sound is being rendered slower than real time.
+QemuAudio.prototype.measureRate = function (write, n, ratio) {
+  this.rateFrames += n;
+  if (this.rateFrames < sampleRate / 2) {
+    return;
+  }
+  const produced = (write - this.rateWrite) | 0;
+  this.rate = produced / (this.rateFrames * ratio);
+  this.rateWrite = write;
+  this.rateFrames = 0;
+};
+
+// A cushion banked for a slow sound outlives it: once the guest goes quiet qemu
+// pads in real time and the backlog would stay as latency. Skip the silent
+// frames at the head of the ring, never into the next sound.
+QemuAudio.prototype.shedSilence = function (excess) {
+  const pcm = this.pcm, mask = this.mask, ch = this.channels;
+  let skip = 0;
+  while (skip < excess) {
+    const a = ((this.read + skip) & mask) * ch;
+    if (pcm[a] !== 0 || (ch > 1 && pcm[a + 1] !== 0)) {
+      break;
+    }
+    skip++;
+  }
+  if (skip > 0) {
+    this.read = (this.read + skip) | 0;
+    Atomics.store(this.hdr, H_READ, this.read);
+  }
+};
+
+// A dropout mid-sound: bank enough that a sound of PRIME_HORIZON seconds
+// rendered at the measured speed plays through without another one, and at
+// least twice the last cushion, so a producer that keeps falling short
+// converges in a few dropouts instead of stuttering throughout.
+const PRIME_HORIZON = 5;
+const PRIME_MAX = 4;
+QemuAudio.prototype.growPrime = function () {
+  const deficit = Math.max(0, 1 - this.rate) * PRIME_HORIZON;
+  this.prime = Math.min(PRIME_MAX, Math.max(this.prime * 2, deficit));
+};
 
 registerProcessor("qemu-audio", QemuAudio);

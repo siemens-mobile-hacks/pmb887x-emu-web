@@ -10,9 +10,8 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 | Param | Effect |
 |---|---|
 | `?dist=<dir>` | build output under `site/` to run: default `dist-jit` (wasm64 TCG backend); `dist` = the TCI interpreter; any `dist-*` A/B snapshot |
-| `?icount=<spec>` | override `-icount` (default `shift=3,sleep=off`; `none` for `lg-*` devices — `precise-clocks=on`, `shift=N`, `none`, …) |
+| `?icount=<spec>` | override `-icount` (default `shift=3,sleep=off` for every board — `shift=N`, `none`, …) |
 | `?rt=off\|banked\|banked:<n>\|strict\|budget[:<win>[:<ms>]]` | `QEMU_ICOUNT_RTCAP` — the real-time cap on the sleep=off idle warp. Default **`budget:30:500`**: `banked` (the boot is never throttled, idle time is paced to wall) for the guest's first 30 seconds of *its own* clock, then the bank is capped at 500 ms — a later stall is repaid, but never by more than 500 ms of sprinted clock, so the phone stays close behind wall time instead of skipping minutes. `<win>`/`<n>` are guest seconds, not wall seconds — the boot costs the same virtual time on every host but anywhere from 39 s to minutes of wall. Plain `banked` and `strict` are pinned for the whole run and are the stable A/B legs (`banked:<n>` = banked then strict); benchmarks pass `rt=off` to measure engine speed. While the cap is still banking the pill's `slow` warning stays off (see below) |
-| `?icount2debug=1` | `QEMU_ICOUNT2_DEBUG=1` — only meaningful with `?icount=precise-clocks=on`: prints the controller state each second |
 | `?trace=<channels>` | `PMB887X_TRACE_IO/LOG` (e.g. `trace=dsp,scu`); channels: dsp, scu, gptu, tpu, vic, capcom, usart, rtc, … |
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
 | `?debug=1` | print every stderr line to console (no dedup) |

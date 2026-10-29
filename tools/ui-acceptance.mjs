@@ -433,7 +433,7 @@ ok("v2.1 exactly one row above the screen", await page.evaluate(() => {
 }));
 ok("v2.1 row is 32px tall", await page.$eval(".status-row", (e) =>
   Math.round(e.getBoundingClientRect().height) === 32));
-ok("v2.1 pill + four 28px buttons", await page.evaluate(() => {
+ok("v2.1 pill + five 28px buttons", await page.evaluate(() => {
   const row = document.querySelector(".status-row");
   const ids = [...row.children].map((e) => e.id);
   const sq = (id) => {
@@ -441,13 +441,12 @@ ok("v2.1 pill + four 28px buttons", await page.evaluate(() => {
     return Math.round(r.width) === 28 && Math.round(r.height) === 28;
   };
   // rec-pill sits in the record button's place and is hidden until a
-  // capture runs (recording criteria §2); btn-sound is hidden until an LG
-  // board — the only ones that drive a speaker — is the selected device;
-  // fullscreen follows the recorder
+  // capture runs (recording criteria §2); the speaker and fullscreen
+  // follow the recorder
   return ids.join() === "status,btn-shot,btn-record,rec-pill,btn-sound,btn-fullscreen,btn-settings"
     && document.getElementById("rec-pill").hidden
-    && document.getElementById("btn-sound").hidden
-    && sq("btn-shot") && sq("btn-record") && sq("btn-fullscreen") && sq("btn-settings")
+    && !document.getElementById("btn-sound").hidden
+    && sq("btn-shot") && sq("btn-record") && sq("btn-sound") && sq("btn-fullscreen") && sq("btn-settings")
     && document.getElementById("btn-settings").getAttribute("aria-label") === "Settings";
 }), await page.evaluate(() => [...document.querySelector(".status-row").children].map((e) => e.id).join()));
 
@@ -1023,8 +1022,9 @@ if (!process.env.SKIP_BOOT) {
     const row = [...document.querySelector(".status-row").children]
       .filter((e) => !e.hidden).map((e) => e.id);
     const b = document.getElementById("btn-record");
-    // fullscreen is back too: it stands down only while a capture runs
-    return row.join() === "status,btn-shot,btn-record,btn-fullscreen,btn-settings"
+    // the speaker and fullscreen are back too: they stand down only while
+    // a capture runs
+    return row.join() === "status,btn-shot,btn-record,btn-sound,btn-fullscreen,btn-settings"
       && b.getAttribute("aria-label") === "Start recording"
       && Math.round(b.getBoundingClientRect().width) === 28;
   }));

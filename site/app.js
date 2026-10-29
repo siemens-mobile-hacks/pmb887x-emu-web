@@ -154,6 +154,7 @@ let dlLoaded = 0, dlTotal = 0; // the download in progress, for the pill
 let dlWhat = "fullflash";      // ...and whether it is the preset's or the engine's
 let esnPct = 0;                // ESN sweep progress, likewise
 let errorMsg = null;      // shown in place of the pill's state text
+let noEfaWarning = false; // this LG run booted without its EFA block
 let startBlocked = false; // a failure Start cannot recover from (isolation)
 // The exports read this run's MEMFS, which outlives the guest: once a boot
 // has got that far they stay available after Stop, until the next Start
@@ -758,6 +759,9 @@ function captionText() {
   // line carries the whole of it, and the caption's track is one nowrap
   // line wide, so here it is only the headline.
   if (exitReport) return "Firmware EXIT";
+  if (noEfaWarning && emuState !== "idle") {
+    return "No EFA block — the firmware may factory-reset.";
+  }
   if (emuState !== "idle" || firmwareReady()) return "";
   if (ffMode === "own") return "Choose a file and device to start";
   return cacheAvailable() ? "Choose a firmware to start"
@@ -823,10 +827,11 @@ function render() {
   // fullscreen stands down while a capture runs — it is not something to
   // toggle mid-capture anyway, since it resizes the canvas under the recorder.
   if (fsSupported) fsBtn.hidden = pillRec;
-  // The speaker belongs to the LG boards — on anything else the button
-  // would be a dead switch, so it only appears once one of them is
-  // selected (in either mode; the dropdown is locked while a run is live).
-  soundBtn.hidden = !currentDevice()?.startsWith("lg-");
+  // Every board's DSP firmware renders sound now (the DSP LLE), so the
+  // speaker is always offered — except during a capture, where it stands
+  // down like fullscreen (the recording is video only, and the pill needs
+  // the room at 320px).
+  soundBtn.hidden = pillRec;
   const finishing = !!recorder && !pillRec;
   const recFmt = recExt(recType()).slice(1);
   recBtn.title = finishing ? `Finish recording and save the .${recFmt}`
@@ -1603,16 +1608,14 @@ async function boot() {
     // the next timer deadline while the guest sleeps), so every firmware
     // timing budget carries a full instruction budget regardless of how slow
     // the wasm interpreter is (the phone merely boots in slow motion; see
-    // doc/livelock-postmortem.md §4). LG firmware has no such budgets — it
-    // boots fine on the plain realtime clock, so icount is off for it.
-    // ?icount= overrides (e.g. precise-clocks=on, shift=4, none).
+    // doc/livelock-postmortem.md §4). LG boards use it too since the DSP
+    // LLE: on the realtime clock the DSP's boot-ROM poll loop starves the ARM.
+    // ?icount= overrides (e.g. shift=4, none).
     // ?rt=off: no real-time cap on the icount clock (the benchmarks use it
     // to measure engine speed). The cap is on by default: banked for the
     // guest's first 30 s of its own clock, so the boot is never slowed
     // further, then capped at 500 ms of repayable stall.
-    const icountBase =
-      qsp.get("icount") ??
-      (device.startsWith("lg-") ? "none" : "shift=3,sleep=off");
+    const icountBase = qsp.get("icount") ?? "shift=3,sleep=off";
     const icount = icountBase !== "none" && qsp.get("rt") === "off"
       ? icountBase + ",rtcap=off"
       : icountBase;
@@ -1685,9 +1688,6 @@ async function boot() {
           mod.ENV.PMB887X_TRACE_LOG = trace;
           mod.ENV.PMB887X_TRACE_IO = trace;
         }
-        if (qsp.get("icount2debug") === "1") {
-          mod.ENV.QEMU_ICOUNT2_DEBUG = "1";
-        }
         // ?lockstep=1: built-in guest-state fold (wasm64 backend,
         // doc/wasm-tcg-backend-plan.md §5) — env-driven twin of the
         // tests/lockstep.c plugin. Extra ls-* params map to
@@ -1733,12 +1733,9 @@ async function boot() {
   running = true;
   exportsReady = true;
   runStartedAt = Date.now();
+  noEfaWarning = noEfa;
   setEmuState("running");
   attachAudio();   // needs liveModule(); the worklet loads on its own time
-  if (noEfa) {
-    captionEl.textContent = "No EFA block — the firmware may factory-reset.";
-    captionEl.hidden = false;
-  }
 }
 
 function onGuestExit(code) {

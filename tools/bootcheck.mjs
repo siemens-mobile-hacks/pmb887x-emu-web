@@ -7,7 +7,7 @@
 // is the useful set: S75 and EL71 are icount boards that exercise
 // different firmware paths (EL71 programs its flash file system during
 // boot — the 0034 retaddr bug only ever showed there), KE800 is the LG
-// board and the only one that boots without icount.
+// board.
 //
 //   node tools/bootcheck.mjs [--dist dist-jit] [--secs 150] [--flash id,id]
 //
@@ -45,10 +45,9 @@ const QUERY = [opt("query", ""), process.env.EXTRA_Q || ""].filter(Boolean).join
 // config and the "probe" measures nothing (this cost two bogus rounds).
 
 // minInsns: instructions the board must have executed by --secs.  KE800
-// runs without icount and its firmware waits ~15 s of real time at the
-// LG logo (~0.6 G on a cold page), then needs ~1.3 G more to reach the
-// idle screen; a guest parked at the logo (the pre-0049 GPTU timer storm
-// starved the vCPU there) still "made progress" at ~10 k insns/s.
+// needs ~1.3 G past the LG logo to reach the idle screen; a guest parked
+// at the logo (the pre-0049 GPTU timer storm starved the vCPU there)
+// still "made progress" at ~10 k insns/s.
 const BOARDS = [
   { id: "s75", file: "s75_working20060710172101.bin" },
   { id: "el71", file: "rr_ff_el71_stock.bin" },
