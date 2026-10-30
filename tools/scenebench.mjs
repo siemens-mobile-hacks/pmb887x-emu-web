@@ -1,11 +1,11 @@
-// Scenario benchmark: boot the EL71, walk the keypad into an app and
+// Scenario benchmark: boot a phone, walk the keypad into an app and
 // measure how the emulator keeps up with it.  Self-contained (own browser
 // per run, no session daemon).
 //
 //   PORT=8080 node tools/scenebench.mjs <scenario> [dist[,dist@query...]]
 //        [--runs 3] [--measure S] [--flash path]
 //
-// Scenarios (EL71v41lg91, the page's EL71 preset):
+// Scenarios (EL71v41lg91, the page's EL71 preset, unless named):
 //   stopwatch  Extras -> Stopwatch, started.  The app redraws as fast as it
 //              can, so the guest is compute-bound and the parallel LCD bus
 //              (DIF + DMAC) carries a full-screen refill every frame.
@@ -15,11 +15,14 @@
 //              while the phone waits (cpu = host cores the browser used).
 //   music      My stuff -> Sounds -> "This time" (967 kB AAC, 2:01) in the
 //              media player.  The number is the audio the listener hears:
-//              underruns (dropouts), gapMs/gapPct (output silenced by them,
+//              underruns (dropouts; underrunAt: [second of the window, audio
+//              rendered in it] per dropout), gapMs/gapPct (output silenced by them,
 //              from site/audio-worklet.js), cushion (latency the worklet
 //              grew to absorb them), produced (ring seconds rendered per
 //              wall second; < 1 while the guest renders slower than real
 //              time) and peak (> 0: not silence).
+//   midi       SL65v49 (TIM): My stuff -> Sounds -> Poly -> "Asia" (9 kB
+//              MIDI, loops) in the media player; the same audio numbers.
 //
 // Every scenario reports cpu: host CPU seconds per wall second used by the
 // browser this tool launched (all its processes and threads), so a build
@@ -28,13 +31,14 @@
 //
 // SCENEBENCH_DEVTOOLS=<port> opens the browser's CDP port and logs when the
 // measurement starts, so tools/wprof2.mjs (PROF_ATTACH=<port>) can profile it.
+// SCENEBENCH_CONSOLE=<text> prints the page console lines containing it.
 //
 // Slow hosts: wrap it, e.g. CORES=0-3 SPIN=2 tools/slowhost.sh node
 // tools/scenebench.mjs music.  The browser's audio thread is throttled
 // with it, as on a real slow machine.
 //
 // Every navigation is checked against an LCD reference
-// (tools/test_targets/el71v41_*.png, title-bar rows) and redone from the
+// (tools/test_targets/<phone>_*.png, title-bar rows) and redone from the
 // idle screen when a key press was dropped — the firmware drops them freely
 // under load.  A dist may be "<dir>@<query>" (extra page parameters, %2C
 // for commas).  Runs are sequential and interleaved across dists so host
@@ -54,17 +58,21 @@ const dists = (positional[1] || "dist-jit").split(",");
 const runs = Number(opt("runs", 3));
 const port = process.env.PORT || "8080";
 const keyScale = Number(opt("keyscale", 1));
-const flash = opt("flash", [here + "../fullflashes/EL71v41lg91.bin", here + "../../fullflashes/EL71v41lg91.bin"]
-  .find((f) => existsSync(f)));
-if (!flash || !existsSync(flash)) throw new Error("EL71v41lg91.bin not found: pass --flash <path>");
 
 const ref = (name) => PNG.sync.read(readFileSync(here + "test_targets/" + name));
-// title bar of the 240x320 EL71 LCD, under the status icons
-const TITLE = [20, 56];
+const EL71 = {
+  image: "EL71v41lg91.bin",
+  // title bar of the 240x320 LCD, under the status icons
+  title: [20, 56],
+  // boot done once the guest has run this many instructions and gone quiet
+  bootInsns: 1e9,
+};
+const SL65 = { image: "SL65v49lg1_TIM.bin", title: [0, 12], bootInsns: 5e8 };
 
 const scenarios = {
-  idle: { measure: 30, path: null },
+  idle: { ...EL71, measure: 30, path: null },
   stopwatch: {
+    ...EL71,
     measure: 20,
     // idle -> menu grid (opens on the centre icon) -> Extras (bottom left)
     // -> Stopwatch, the 6th entry
@@ -81,6 +89,7 @@ const scenarios = {
     },
   },
   music: {
+    ...EL71,
     measure: 60,
     // idle -> menu grid -> My stuff (bottom centre) -> Sounds -> 3rd entry
     path: [["center", 3000], ["down", 1200], ["down", 1200], ["center", 3000], ["center", 3000],
@@ -91,6 +100,17 @@ const scenarios = {
       return s.moving([250, 285], 2500);
     },
   },
+  midi: {
+    ...SL65,
+    measure: 60,
+    // idle -> menu grid -> 8 My stuff -> Sounds (4th) -> Poly (2nd) -> 1st
+    path: [["center", 3000], ["8", 3000], ["down", 1200], ["down", 1200], ["down", 1200], ["center", 3000],
+      ["down", 1200], ["center", 3000], ["center", 5000]],
+    ref: ref("sl65v49_midiplayer.png"),
+    async start(s) {
+      return s.moving([80, 100], 2500);
+    },
+  },
 };
 const sc = scenarios[scenarioName];
 if (!sc) {
@@ -98,6 +118,9 @@ if (!sc) {
   process.exit(2);
 }
 const measureS = Number(opt("measure", sc.measure));
+const flash = opt("flash", [here + "../fullflashes/" + sc.image, here + "../../fullflashes/" + sc.image]
+  .find((f) => existsSync(f)));
+if (!flash || !existsSync(flash)) throw new Error(`${sc.image} not found: pass --flash <path>`);
 const distDir = (spec) => spec.split("@")[0];
 const distQuery = (spec) => { const i = spec.indexOf("@"); return i < 0 ? "" : spec.slice(i + 1); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -154,7 +177,11 @@ async function runOnce(spec, run) {
   const p = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   let pageErr = null, serialExit = false;
   p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });
-  p.on("console", (m) => { if (m.text().includes(">>EXIT<<")) serialExit = true; });
+  const conMatch = process.env.SCENEBENCH_CONSOLE;
+  p.on("console", (m) => {
+    if (m.text().includes(">>EXIT<<")) serialExit = true;
+    if (conMatch && m.text().includes(conMatch)) console.log(`[console] ${m.text().slice(0, 300)}`);
+  });
   const tag = `${distDir(spec)}-r${run}`;
   const shoot = async (what) => {
     try { await (await p.$("#lcd")).screenshot({ path: `${outBase}-${tag}-${what}.png` }); } catch {}
@@ -208,7 +235,7 @@ async function runOnce(spec, run) {
       const c = await p.evaluate(SNAP);
       quiet = (c.insns - last.insns) / ((c.t - last.t) / 1000) < 8e6 ? quiet + 1 : 0;
       last = c;
-      if ((Date.now() - t0) / 1000 >= 15 && quiet >= 4 && c.insns >= 1e9) break;
+      if ((Date.now() - t0) / 1000 >= 15 && quiet >= 4 && c.insns >= sc.bootInsns) break;
     }
     result.tIdle = +((Date.now() - t0) / 1000 - 4).toFixed(1);
     await sleep(10000);   // the network search banner and first redraws settle
@@ -218,14 +245,14 @@ async function runOnce(spec, run) {
     await s.key("end", 1500);
     await s.key("end", 1500);
     const idle = await grab();
-    const SOFT = [idle.height - 28, idle.height];
+    const SOFT = [idle.height - Math.round(idle.height * 28 / 320), idle.height];
     const atIdle = async () => (await diffPct(idle, SOFT)) <= 2;
     let there = !sc.path;
     for (let attempt = 1; attempt <= 4 && !there; attempt++) {
       for (let i = 0; i < 6 && !(await atIdle()); i++) await s.key("end", 1500);
       for (const [k, ms] of sc.path) await s.key(k, ms);
       for (let i = 0; i < 5 && !there; i++) {
-        there = (await diffPct(sc.ref, TITLE)) <= 2;
+        there = (await diffPct(sc.ref, sc.title)) <= 2;
         if (!there) await sleep(1000);
       }
       if (!there) console.log(`[scenebench] ${tag}: attempt ${attempt} missed the app, retrying`);
@@ -239,12 +266,18 @@ async function runOnce(spec, run) {
     await sleep(3000);
     const a = await p.evaluate(SNAP);
     const cpu0 = treeCpuS();
-    let minFill = Infinity;
+    let minFill = Infinity, prev = a;
+    const underrunAt = [];
     for (let el = 0; el < measureS * 1000; el += 1000) {
       await sleep(1000);
       const c = await p.evaluate(SNAP);
       if (c.freq) minFill = Math.min(minFill, ((c.write - c.read) | 0) / c.freq * 1000);
+      // second of the window, and audio rendered in it (s per wall s)
+      if (c.under !== prev.under)
+        underrunAt.push([Math.round((c.t - a.t) / 1000), +(((c.write - prev.write) | 0) / c.freq / ((c.t - prev.t) / 1000)).toFixed(2)]);
+      prev = c;
     }
+    if (a.freq) result.underrunAt = JSON.stringify(underrunAt);
     const c = await p.evaluate(SNAP);
     const cpu1 = treeCpuS();
     await shoot("end");
