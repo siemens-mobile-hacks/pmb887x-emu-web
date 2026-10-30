@@ -829,8 +829,8 @@ function render() {
   if (fsSupported) fsBtn.hidden = pillRec;
   // Every board's DSP firmware renders sound now (the DSP LLE), so the
   // speaker is always offered — except during a capture, where it stands
-  // down like fullscreen (the recording is video only, and the pill needs
-  // the room at 320px).
+  // down like fullscreen (the recording takes the sound whether or not the
+  // speaker plays it, and the pill needs the room at 320px).
   soundBtn.hidden = pillRec;
   const finishing = !!recorder && !pillRec;
   const recFmt = recExt(recType()).slice(1);
@@ -1853,11 +1853,17 @@ const REC_TYPES = [
   "video/webm;codecs=h264",
   "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm",
 ];
+// The same order with the phone's sound: AAC beside H.264, Opus in webm.
+const REC_AV_TYPES = [
+  "video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4",
+  "video/webm;codecs=h264,opus",
+  "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
+];
 // H.264 first: where the browser can record it the file plays anywhere,
 // and the mp4 container is the one Safari writes. VP9/VP8 webm remain
 // the fallback, so the extension follows whatever isTypeSupported picks.
-const recType = () => typeof MediaRecorder === "undefined" ? undefined
-  : REC_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
+const recType = (sound = true) => typeof MediaRecorder === "undefined" ? undefined
+  : (sound ? REC_AV_TYPES : REC_TYPES).find((t) => MediaRecorder.isTypeSupported(t));
 const recExt = (t) => t?.startsWith("video/mp4") ? ".mp4" : ".webm";
 let recorder = null;
 let recDone = null;   // ran after the file has been handed over
@@ -1878,13 +1884,24 @@ const stopRecording = () => finishRecording();
 
 function startRecording() {
   if (recorder || recBtn.dataset.unsupported) return;
-  const mimeType = recType();
-  const stream = canvas.captureStream(30);
+  const video = canvas.captureStream(30);
+  const sound = recordSound();
+  let stream = new MediaStream([...video.getVideoTracks(), ...(sound?.getAudioTracks() ?? [])]);
+  let mimeType = recType(!!sound);
+  try {
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  } catch {
+    // a browser that cannot mux the sound in still records the screen
+    endRecordSound();
+    stream = video;
+    mimeType = recType(false);
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  }
   const chunks = [];
-  recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
   recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
   recorder.onstop = () => {
     for (const t of stream.getTracks()) t.stop();
+    endRecordSound();
     recorder = null;
     setRecordLabel(false);
     if (chunks.length) downloadBlob(new Blob(chunks, { type: mimeType || "video/webm" }),
@@ -2100,6 +2117,8 @@ const RING_WORDS = 16, RING_ACTIVE = 6, RING_UNDERRUNS = 8;
 const SOUND_KEY = "opt-sound";
 let audioCtx = null;      // one per page — boots reuse it
 let audioNode = null;
+let speaker = null;       // gain between the worklet and the device: the mute
+let recSound = null;      // MediaStreamAudioDestinationNode while a capture records
 let audioHdr = null;      // Int32Array over the ring header while attached
 let workletReady = null;  // addModule() promise, resolved once
 let soundOn = localStorage.getItem(SOUND_KEY) !== "0";
@@ -2115,7 +2134,7 @@ function audioContext() {
   }
   // A backgrounded tab suspends the context: stop claiming a listener, or the
   // ring fills and back-pressure stalls the guest's audio pipeline.
-  audioCtx.onstatechange = () => setRingActive(soundOn && audioCtx.state === "running");
+  audioCtx.onstatechange = updateListening;
   return audioCtx;
 }
 
@@ -2127,6 +2146,32 @@ function audioRate() {
 
 function setRingActive(on) {
   if (audioHdr) Atomics.store(audioHdr, RING_ACTIVE, on ? 1 : 0);
+}
+
+// The ring is drained while the speaker plays or a capture records; a mute
+// during a capture only closes the speaker's gain.
+function updateListening() {
+  setRingActive((soundOn || !!recSound) && audioCtx?.state === "running");
+  if (speaker) speaker.gain.value = soundOn ? 1 : 0;
+}
+
+// The phone's sound for a capture (null without one), whether or not the
+// speaker is muted. Called from the record click, so the context may resume.
+function recordSound() {
+  const ac = audioContext();
+  if (!ac?.createMediaStreamDestination) return null;
+  recSound = ac.createMediaStreamDestination();
+  audioNode?.connect(recSound);
+  ac.resume().catch(() => {}).then(updateListening);
+  updateListening();
+  return recSound.stream;
+}
+
+function endRecordSound() {
+  if (!recSound) return;
+  try { audioNode?.disconnect(recSound); } catch { /* the guest went away first */ }
+  recSound = null;
+  updateListening();
 }
 
 async function attachAudio() {
@@ -2141,11 +2186,16 @@ async function attachAudio() {
     audioNode = new AudioWorkletNode(ac, "qemu-audio", {
       numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
     });
-    audioNode.connect(ac.destination);
+    if (!speaker) {
+      speaker = ac.createGain();
+      speaker.connect(ac.destination);
+    }
+    audioNode.connect(speaker);
+    if (recSound) audioNode.connect(recSound);
     audioNode.port.postMessage({ type: "ring", buffer: m.HEAPU8.buffer, ptr });
     audioHdr = new Int32Array(m.HEAPU8.buffer, ptr, RING_WORDS);
-    if (soundOn) await ac.resume();
-    setRingActive(soundOn && ac.state === "running");
+    if (soundOn || recSound) await ac.resume();
+    updateListening();
   } catch (e) {
     workletReady = null;   // a failed addModule must not poison the next boot
     console.log("[audio]", e);
@@ -2177,7 +2227,7 @@ soundBtn.addEventListener("click", async () => {
   if (soundOn) {
     try { await ac.resume(); } catch { /* no gesture yet: the next Start has one */ }
   }
-  setRingActive(soundOn && ac.state === "running");
+  updateListening();
 });
 renderSound();
 

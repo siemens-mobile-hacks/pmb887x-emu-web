@@ -314,6 +314,11 @@ Verify with `tools/audioprobe.mjs` (`TOGGLE_AT=` exercises mute/unmute):
 TESTFLASH=fullflashes/KE800-v11b.bin node tools/audioprobe.mjs
 ```
 
+A video capture records the sound too, also while the speaker is muted (the
+mute then only closes the speaker's gain). `tools/recprobe.mjs` plays a MIDI
+on the SL65, records it with the page's button and checks the file with
+ffprobe/ffmpeg (`--unmuted` for the other case).
+
 Boot chimes in the browser (ring peak, matching a native `-audio wav`
 capture): C81 23317, EL71 13059, SL65 6841, KE800 13262, KE970 8571. S75
 v40 has no boot chime, only a short blip. The LG chimes are about half the
