@@ -84,7 +84,9 @@ drops any lag over 100 ms; `vcpu-timers-bank` (this fork, page `?bank=<s>`,
 default 30, `0` = upstream) makes the guest catch up on all of it during
 its first 30 s of its own clock — the boot — which it does whenever it
 idles, so the boot ends close to the phone's own timeline. It never runs
-ahead of wall time. Every board uses it. `?icount=<spec>` selects stock
+ahead of wall time. `vcpu-timers-idle-lead` (page `?idlelead=<us>`) lets a
+waiting guest run its timers in batches up to that far ahead instead, one
+host sleep per batch. Every board uses it. `?icount=<spec>` selects stock
 icount instead (`shift=3,sleep=off` is the deterministic model the
 lockstep tools use; it runs unpaced); `?icount=none` runs the plain
 realtime clock. Why not the plain realtime clock:
@@ -407,6 +409,10 @@ SGOLD boards, the flat-view variant cache and the module pipeline, to
   S75v40lg1, walks the keypad to Extras → Stopwatch and prints `vratio`,
   virtual seconds per wall second while a J2ME app redraws (1.0 = real
   time; the guest never halts there, so it is also guest MIPS ÷ 125);
+  `node tools/scenebench.mjs <stopwatch|music|idle>` does the same on the
+  EL71 and measures sound: dropouts and silenced time while the media
+  player plays an AAC track (`tools/slowhost.sh` in front of it for a
+  slow machine);
   profiling: `tools/wprof2.mjs` (per-worker CDP CPU profiles, `PROF_ATTACH=`
   to profile a page another tool drove), `tools/profcat.mjs` /
   `tools/profjit.mjs` (cost-class split, JIT-time concentration),

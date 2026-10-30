@@ -28,4 +28,5 @@ for range in ${CORES//,/ }; do
   done
 done
 echo "slowhost: cores=$CORES spinners/core=$SPIN (~$((100 / (SPIN + 1))) % of each core)" >&2
-exec taskset -c "$CORES" "$@"
+# not exec: the EXIT trap must outlive the command to stop the spinners
+taskset -c "$CORES" "$@"

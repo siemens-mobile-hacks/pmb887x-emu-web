@@ -137,7 +137,10 @@ TLB growth), `0043` (physical-address summary for the range flush),
 
 Timing/halt path: the default clock is upstream's TCG `vcpu-timers`; the
 fork adds `vcpu-timers-bank` (lag caught up during the boot, page
-`?bank=`) and one host-clock read per vCPU budget. The icount-era patches
+`?bank=`), `vcpu-timers-idle-lead` (an idle guest's timers run in batches
+ahead of wall time, page `?idlelead=`), a host-clock reading reused while
+the guest is behind real time, and spent budgets renewed inside
+`cpu_exec()` (`mttcg_cpu_next_budget`) instead of a loop exit per timer. The icount-era patches
 (`0023` idle warp on the vCPU thread, `0032` real-time cap, `0035`/`0037`
 virtual timers without icount) are gone; `0024` (pmb887x completion
 timers on the virtual clock) remains. `0033` selects
@@ -373,6 +376,7 @@ host.
 | tcgbench | fast-iteration per-phase A/B + the device/icount-tax mirrors | `tools/tcgbench.mjs` |
 | idlebench | deterministic boot-to-idle wall time + guest-work milestones (the human metric) | `tools/idlebench.mjs` |
 | stopwatch | in-guest pacing while a J2ME app redraws (`vratio`) | `tools/stopwatch.mjs` |
+| scenebench | EL71 scenarios: stopwatch redraw speed, music playback dropouts, idle host CPU | `tools/scenebench.mjs` |
 
 Working method (measure → commit → A/B → keep/revert → document):
 [optimization-playbook.md](optimization-playbook.md).

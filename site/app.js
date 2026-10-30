@@ -1609,17 +1609,21 @@ async function boot() {
     // clock rather than starving firmware timing budgets.
     // ?bank=<s>: for the guest's first <s> seconds (default 30, the boot)
     // time lost to the host is caught up instead of dropped; 0 = never.
+    // ?idlelead=<us>: while the guest waits for an interrupt its timers run
+    // in batches up to <us> (default 2000) ahead of wall time, one host sleep per batch
+    // instead of one per timer; 0 = follow wall time exactly.
     // ?icount=<spec> selects the instruction-counting model instead (the
     // lockstep tools need its determinism); ?icount=none runs neither.
     // A ?qargs= with its own -accel replaces the default one.
     const icount = qsp.get("icount");
     const bank = qsp.get("bank") ?? "30";
+    const idleLead = qsp.get("idlelead") ?? "2000";
     const trace = qsp.get("trace");
     const extraArgs = (qsp.get("qargs") ?? "").split(/\s+/).filter(Boolean);
     const timingArgs = icount
       ? (icount === "none" ? [] : ["-icount", icount])
       : extraArgs.includes("-accel") ? []
-      : ["-accel", `tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=${bank}`];
+      : ["-accel", `tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=${bank},vcpu-timers-idle-lead=${idleLead}`];
     // The guest's mixer resamples straight to the output device's own rate,
     // so the worklet copies frames instead of interpolating them. ?sound=off
     // leaves the machine without an audiodev at all — the benchmark harnesses

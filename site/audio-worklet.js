@@ -8,9 +8,11 @@
 // Header layout (int32 words, then int16 frames at byte offset 64):
 //   0 magic  1 capacity  2 channels  3 freq  4 read  5 write
 //   6 active  7 generation  8 underruns
+//   9 gap frames (output frames silenced by dropouts)  10 cushion ms
+//   11 producer speed x1000 — 9-11 are stats for tools only
 
 const H_CAP = 1, H_CH = 2, H_FREQ = 3, H_READ = 4, H_WRITE = 5,
-      H_ACTIVE = 6, H_GEN = 7, H_UNDER = 8;
+      H_ACTIVE = 6, H_GEN = 7, H_UNDER = 8, H_GAP = 9, H_PRIME = 10, H_RATE = 11;
 const HDR_WORDS = 16;
 const HDR_BYTES = HDR_WORDS * 4;
 
@@ -24,6 +26,7 @@ class QemuAudio extends AudioWorkletProcessor {
     this.basePrime = options?.processorOptions?.prime ?? 0.08;
     this.prime = this.basePrime;
     this.priming = true;
+    this.dropout = false;   // priming again after an underrun: audible gap
     // Producer speed, in ring seconds per output second, and how long the
     // output has been silent.
     this.rate = 1;
@@ -70,6 +73,7 @@ class QemuAudio extends AudioWorkletProcessor {
       Atomics.store(hdr, H_READ, this.read);
       this.pos = 0;
       this.priming = true;
+      this.dropout = false;
       this.rateWrite = this.read;
       this.rateFrames = 0;
     }
@@ -90,15 +94,21 @@ class QemuAudio extends AudioWorkletProcessor {
       // A stream that ends before the cushion fills still plays: qemu pads
       // silence once the guest goes quiet, and that tops the ring up.
       if (avail < this.prime * this.freq) {
+        if (this.dropout) {
+          Atomics.add(hdr, H_GAP, n);
+        }
         return true;
       }
       this.priming = false;
+      this.dropout = false;
     }
 
     // +1 for the interpolation partner of the last frame.
     const need = Math.ceil(this.pos + n * ratio) + 1;
     if (avail < need) {
       Atomics.add(hdr, H_UNDER, 1);
+      Atomics.add(hdr, H_GAP, n);
+      this.dropout = true;
       this.growPrime();
       this.priming = true;
       this.pos = 0;
@@ -155,6 +165,7 @@ QemuAudio.prototype.mute = function (write) {
   }
   this.pos = 0;
   this.priming = true;
+  this.dropout = false;
   this.prime = this.basePrime;
   this.quiet = 0;
   this.rateWrite = write;
@@ -171,6 +182,8 @@ QemuAudio.prototype.measureRate = function (write, n, ratio) {
   }
   const produced = (write - this.rateWrite) | 0;
   this.rate = produced / (this.rateFrames * ratio);
+  Atomics.store(this.hdr, H_RATE, Math.round(this.rate * 1000));
+  Atomics.store(this.hdr, H_PRIME, Math.round(this.prime * 1000));
   this.rateWrite = write;
   this.rateFrames = 0;
 };

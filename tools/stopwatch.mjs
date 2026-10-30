@@ -99,7 +99,8 @@ async function key(k, waitMs = 700) {
 }
 async function snap() {
   return p.evaluate(() => {
-    const m = window.__qemu; const g = (i) => Number(m._wasm_memstat(i));
+    // wasm_memstat is a counter build's export; without it they read 0
+    const m = window.__qemu; const g = (i) => m._wasm_memstat ? Number(m._wasm_memstat(i)) : 0;
     return { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
       tbs: Number(m._wasm_tbs()), fb: Number(m._wasm_fb_updates()),
       ioLd: g(2), ioSt: g(3), fill: g(4), lookup: g(13), qhtHit: g(15), tlbFlush: g(18), tlbFlushRange: g(19),
