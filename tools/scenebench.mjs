@@ -26,6 +26,9 @@
 // that renders the same guest with less host work shows up even when both
 // keep real time.
 //
+// SCENEBENCH_DEVTOOLS=<port> opens the browser's CDP port and logs when the
+// measurement starts, so tools/wprof2.mjs (PROF_ATTACH=<port>) can profile it.
+//
 // Slow hosts: wrap it, e.g. CORES=0-3 SPIN=2 tools/slowhost.sh node
 // tools/scenebench.mjs music.  The browser's audio thread is throttled
 // with it, as on a real slow machine.
@@ -145,7 +148,9 @@ const SNAP = `(() => {
 })()`;
 
 async function runOnce(spec, run) {
-  const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
+  const devtools = process.env.SCENEBENCH_DEVTOOLS;
+  const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required",
+    ...(devtools ? [`--remote-debugging-port=${devtools}`] : [])] });
   const p = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   let pageErr = null, serialExit = false;
   p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });
@@ -229,6 +234,7 @@ async function runOnce(spec, run) {
     if (!there) fail("could not reach the app");
     if (sc.start && !(await sc.start(s))) fail("app did not start");
     await shoot("start");
+    if (devtools) console.log(`[scenebench] ${tag}: measuring`);
 
     await sleep(3000);
     const a = await p.evaluate(SNAP);
