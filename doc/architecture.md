@@ -376,7 +376,7 @@ host.
 | tcgbench | fast-iteration per-phase A/B + the device/icount-tax mirrors | `tools/tcgbench.mjs` |
 | idlebench | deterministic boot-to-idle wall time + guest-work milestones (the human metric) | `tools/idlebench.mjs` |
 | stopwatch | in-guest pacing while a J2ME app redraws (`vratio`) | `tools/stopwatch.mjs` |
-| scenebench | EL71 scenarios: stopwatch redraw speed, music playback dropouts, idle host CPU | `tools/scenebench.mjs` |
+| scenebench | EL71 scenarios: stopwatch redraw speed, music playback dropouts, idle host CPU; SL65 MIDI and S75 J2ME game with sound | `tools/scenebench.mjs` |
 
 Working method (measure → commit → A/B → keep/revert → document):
 [optimization-playbook.md](optimization-playbook.md).

@@ -23,6 +23,9 @@
 //              time) and peak (> 0: not silence).
 //   midi       SL65v49 (TIM): My stuff -> Sounds -> Poly -> "Asia" (9 kB
 //              MIDI, loops) in the media player; the same audio numbers.
+//   bobby      s75_working: Games -> "Bobby Carrot 3 Evolution" (J2ME) with
+//              its sound turned on, first level, Bobby walking left and
+//              right through the window; vratio, fps and the audio numbers.
 //
 // Every scenario reports cpu: host CPU seconds per wall second used by the
 // browser this tool launched (all its processes and threads), so a build
@@ -68,6 +71,7 @@ const EL71 = {
   bootInsns: 1e9,
 };
 const SL65 = { image: "SL65v49lg1_TIM.bin", title: [0, 12], bootInsns: 5e8 };
+const S75 = { image: "s75_working20060710172101.bin", bootInsns: 1e9 };
 
 const scenarios = {
   idle: { ...EL71, measure: 30, path: null },
@@ -109,6 +113,29 @@ const scenarios = {
     ref: ref("sl65v49_midiplayer.png"),
     async start(s) {
       return s.moving([80, 100], 2500);
+    },
+  },
+  bobby: {
+    ...S75,
+    measure: 60,
+    // idle -> menu grid -> 7 Games -> 7th entry; the game loads behind its
+    // splash, the right soft key opens its menu: Sound (4th) toggles from the
+    // off it is saved with to on, Start Game (2nd) opens the level list
+    path: [["center", 3000], ["7", 3000], ...Array(6).fill(["down", 1200]), ["center", 20000], ["right_soft", 4000],
+      ["down", 1200], ["down", 1200], ["down", 1200], ["center", 2500], ["up", 1200], ["up", 1200], ["center", 4000]],
+    ref: ref("s75_bobby_levels.png"),
+    title: [36, 136],
+    // the first level: its clock (top left) counts the seconds
+    async start(s) {
+      await s.key("center", 6000);
+      return s.moving([0, 12], 2000);
+    },
+    // a J2ME canvas only redraws what moves
+    async play(s, until) {
+      while (Date.now() < until) {
+        await s.key("right", 800);
+        await s.key("left", 800);
+      }
     },
   },
 };
@@ -218,6 +245,8 @@ async function runOnce(spec, run) {
     const s = {
       // a hold: an instant down/up is missed by the firmware's keypad scan
       key: async (k, waitMs) => { await p.click(`[data-key="${k}"]`, { delay: 80 }); await sleep(waitMs * keyScale); },
+      // the same hold, but the wait is not stretched by --keyscale
+      tap: async (k, waitMs) => { await p.click(`[data-key="${k}"]`, { delay: 80 }); await sleep(waitMs); },
       moving: async (rows, waitMs = 1500) => {
         const a = await grab();
         await sleep(waitMs * keyScale);
@@ -268,6 +297,7 @@ async function runOnce(spec, run) {
     const cpu0 = treeCpuS();
     let minFill = Infinity, prev = a;
     const underrunAt = [];
+    const playing = sc.play ? sc.play({ key: s.tap }, Date.now() + measureS * 1000) : null;
     for (let el = 0; el < measureS * 1000; el += 1000) {
       await sleep(1000);
       const c = await p.evaluate(SNAP);
@@ -277,6 +307,7 @@ async function runOnce(spec, run) {
         underrunAt.push([Math.round((c.t - a.t) / 1000), +(((c.write - prev.write) | 0) / c.freq / ((c.t - prev.t) / 1000)).toFixed(2)]);
       prev = c;
     }
+    await playing;
     if (a.freq) result.underrunAt = JSON.stringify(underrunAt);
     const c = await p.evaluate(SNAP);
     const cpu1 = treeCpuS();
