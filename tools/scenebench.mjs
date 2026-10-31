@@ -26,6 +26,10 @@
 //   bobby      s75_working: Games -> "Bobby Carrot 3 Evolution" (J2ME) with
 //              its sound turned on, first level, Bobby walking left and
 //              right through the window; vratio, fps and the audio numbers.
+//   video      SL65v49 (TIM): My stuff -> Videos -> "Berlin.3gp" (~25 s,
+//              loops) in the video player.  The player never idles, so on a
+//              fast host it keeps real time at a full core; the numbers that
+//              move are fps (frames drawn) and, on a slow host, vratio.
 //
 // Every scenario reports cpu: host CPU seconds per wall second used by the
 // browser this tool launched (all its processes and threads), so a build
@@ -35,6 +39,8 @@
 // SCENEBENCH_DEVTOOLS=<port> opens the browser's CDP port and logs when the
 // measurement starts, so tools/wprof2.mjs (PROF_ATTACH=<port>) can profile it.
 // SCENEBENCH_CONSOLE=<text> prints the page console lines containing it.
+// SCENEBENCH_SAVEREF=<png> saves the LCD the path ends on as the scenario's
+// reference and stops (how tools/test_targets/*.png are made).
 //
 // Slow hosts: wrap it, e.g. CORES=0-3 SPIN=2 tools/slowhost.sh node
 // tools/scenebench.mjs music.  The browser's audio thread is throttled
@@ -137,6 +143,17 @@ const scenarios = {
         await s.key("left", 800);
       }
     },
+  },
+};
+scenarios.video = {
+  ...SL65,
+  measure: 30,
+  // idle -> menu grid -> 8 My stuff -> Videos (2nd) -> the first clip
+  path: [["center", 3000], ["8", 3000], ["down", 1200], ["center", 3000], ["center", 6000]],
+  ref: existsSync(here + "test_targets/sl65v49_videoplayer.png") ? ref("sl65v49_videoplayer.png") : null,
+  // the picture under the title bar changes every frame
+  async start(s) {
+    return s.moving([20, 110], 2000);
   },
 };
 const sc = scenarios[scenarioName];
@@ -276,6 +293,16 @@ async function runOnce(spec, run) {
     const idle = await grab();
     const SOFT = [idle.height - Math.round(idle.height * 28 / 320), idle.height];
     const atIdle = async () => (await diffPct(idle, SOFT)) <= 2;
+    const saveRef = process.env.SCENEBENCH_SAVEREF;
+    if (saveRef) {
+      for (const [k, ms] of sc.path) await s.key(k, ms);
+      const live = await grab();
+      const png = new PNG({ width: live.width, height: live.height });
+      png.data = Buffer.from(live.data);
+      writeFileSync(saveRef, PNG.sync.write(png));
+      await shoot("saveref");
+      fail(`reference saved to ${saveRef}`);
+    }
     let there = !sc.path;
     for (let attempt = 1; attempt <= 4 && !there; attempt++) {
       for (let i = 0; i < 6 && !(await atIdle()); i++) await s.key("end", 1500);
