@@ -5,13 +5,15 @@
 #
 #   tools/parbench.sh <scenario> <distA,distB,...> [runs per dist] [measure s]
 #
-# Prints each dist's sorted cpu values, the median and the underruns.
+# Prints each dist's sorted cpu values (METRIC=vratio, fps, ... picks another
+# scenebench number), the median and the underruns.
 # Under the contention the absolute cpu reads higher than a lone run
 # (~1.0 instead of ~0.8 cores for bobby on a 32-core host), but the legs
 # share it, so they compare; noise is about +-1 %, so repeat a marginal
 # result with the dists swapped.  Twelve or more browsers saturate the host
 # (underruns appear): keep runs x dists at 8 or so.
 sc=$1; dists=$2; n=${3:-3}; m=${4:-30}
+metric=${METRIC:-cpu}
 if [ -z "$sc" ] || [ -z "$dists" ]; then
   echo "usage: $0 <scenario> <distA,distB,...> [runs per dist] [measure s]" >&2
   exit 2
@@ -31,10 +33,10 @@ done
 wait
 for d in "${D[@]}"; do
   lines=$(grep -h "SCENEBENCH $sc $d median" "$out"/*.log)
-  vals=$(echo "$lines" | sed -nE 's/.*cpu=([0-9.]+).*/\1/p' | sort -n | tr '\n' ' ')
+  vals=$(echo "$lines" | sed -nE "s/.* $metric=([0-9.]+).*/\\1/p" | sort -n | tr '\n' ' ')
   fails=$(echo "$lines" | grep -c "ok=0")
   med=$(echo $vals | awk '{n=split($0,a," "); if(n) print a[int((n+1)/2)]}')
   und=$(echo "$lines" | sed -nE 's/.*underruns=([0-9]+).*/\1/p' | tr '\n' ' ')
-  echo "PAR $sc $d cpu=[$vals] median=$med underruns=[$und] fails=$fails"
+  echo "PAR $sc $d $metric=[$vals] median=$med underruns=[$und] fails=$fails"
 done
 echo "logs: $out"
