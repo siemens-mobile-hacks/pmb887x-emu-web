@@ -26,6 +26,10 @@
 //   bobby      s75_working: Games -> "Bobby Carrot 3 Evolution" (J2ME) with
 //              its sound turned on, first level, Bobby walking left and
 //              right through the window; vratio, fps and the audio numbers.
+//   towerblox  s75_working: Games -> "Tower Bloxx" (J2ME) with its sound
+//              turned on, Quick Game, a block dropped every 1.5 s through
+//              the window (missed ones end the game, the next press starts a
+//              new one); vratio, fps and the audio numbers.
 //   video      SL65v49 (TIM): My stuff -> Videos -> "Berlin.3gp" (~25 s,
 //              loops) in the video player.  The player never idles, so on a
 //              fast host it keeps real time at a full core; the numbers that
@@ -142,6 +146,31 @@ const scenarios = {
         await s.key("right", 800);
         await s.key("left", 800);
       }
+    },
+  },
+  towerblox: {
+    ...S75,
+    measure: 60,
+    // idle -> menu grid -> 7 Games -> 8th entry from the bottom (up wraps
+    // around); the game asks on every launch whether to enable sounds (right
+    // soft key: yes), then its menu opens on Build City, Quick Game below it
+    path: [["center", 3000], ["7", 3000], ...Array(8).fill(["up", 1200]), ["center", 12000], ["right_soft", 6000],
+      ["down", 1500]],
+    ref: ref("s75_towerblox_menu.png"),
+    // the highlighted Quick Game bar; clouds drift through the rest
+    title: [59, 71],
+    // the crane swings the block through the bar's rows
+    async start(s) {
+      for (let i = 0; i < 3; i++) {
+        await s.key("center", 4000);
+        if (await s.moving([59, 71])) return true;
+      }
+      return false;
+    },
+    // blind drops mostly miss: three misses end the game and fall back to the
+    // menu on Quick Game, which the next press starts again
+    async play(s, until) {
+      while (Date.now() < until) await s.key("center", 1500);
     },
   },
 };
