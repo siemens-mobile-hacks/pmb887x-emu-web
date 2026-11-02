@@ -1,0 +1,221 @@
+# WASM port fast paths in the QEMU fork
+
+This lists the changes in `qemu/` (branch `wasm-browser-port`) that differ from
+upstream only to make the emulator faster. Use it when rebasing onto a newer
+upstream, or when deleting an optimization to bring a file back towards upstream.
+
+- **Upstream reference:** `smh/dsp-lle` (siemens-mobile-hacks/qemu-pmb887x),
+  merged up to `a58f2b61a9` by merge `c97e554e5d`. To see a file's divergence,
+  run `git -C qemu diff a58f2b61a9 -- <file>`.
+- **State described:** fork `e227c7e9a3`. Written 2026-11-02.
+- **Sources:** the fork-delta review of 2026-11-02 (parts A–F), the commit
+  messages (`git -C qemu log -1 <sha>`), and
+  [performance-handoff.md](performance-handoff.md). The numbers below are quoted
+  from those sources. "Not measured" means none of them gives a number.
+
+## What counts as a fast path
+
+A fast path meets all three conditions:
+
+1. It exists only for speed.
+2. It does not change what the guest sees: the same instructions, values and
+   virtual-time events.
+3. Deleting it restores upstream code (or the plain fork code it short-cuts)
+   without breaking anything else, apart from the dependencies listed below.
+
+The following are **porting necessities, not fast paths**, and are not itemized:
+
+- **The wasm64 TCG backend** `tcg/wasm64/*`, including its interpreter tier,
+  batching and eviction. Also the shared-code glue it needs:
+  - `HAVE_TCG_QEMU_TB_EXEC`
+  - the `tcg.c` label and finalize hooks
+  - the `w64_ra_*` return-address decode in `region.c` and `translate-all.c`
+  - tagged table indexes in goto_tb slots and goto_ptr targets
+    (`tb_set_jmp_target`, `w64_dispatch_target`, and the `fidx == 0` refusal in
+    `tb_add_jump`)
+  - batch unstage and retire (`tb_w64_retire`), and `w64_exec_unwound`
+- **Emscripten threading:** the futex `QemuCond`/`QemuEvent`, the main-loop
+  futex wait, event notifiers, `coroutine-wasm.c` and
+  `qemu_coroutine_forbid_current_thread`, and the flash-blk write-behind.
+- **Browser UI and audio:** `ui/wasm.c`, `audio/wasmaudio.c`, the exported
+  counters (`wasm_vcpu_idle_count`, `wasm_guest_insns`, `w64_acct_*`),
+  `configs/meson/asyncify-only.txt`, and the meson/configure glue.
+- **Verification and timing options:** the lockstep fold (`W64_LOCKSTEP*`),
+  `vcpu-timers-bank` and `vcpu-timers-idle-lead`. Both options change timing
+  on purpose.
+- **Correctness fixes:**
+  - the `a32.decode` compare-Rd fix
+  - the LG fixes in usif.c and dif_v2.c (`dif_defer_tx_isr`)
+  - the afe-audio and d1094xx drain fixes
+  - the `ppm_save` row stride
+  - `gen_eret_end_tb`'s IRQ fix
+  - the flag-masked victim-TLB compare
+
+## Marking
+
+Each entry's **Mark** column says how isolated the fast path is:
+
+| Mark | Meaning |
+|---|---|
+| **FILE** | In its own file, which carries a `WASM PORT FAST PATH (removable)` comment |
+| **MARK** | Inline in an upstream file, but carries the `WASM PORT FAST PATH (removable)` comment |
+| **wasm** | Inline in an upstream file, unmarked, under `#ifdef CONFIG_TCG_WASM64` or `__EMSCRIPTEN__`. Native builds are unaffected |
+| **all** | Inline in shared code, unmarked, and compiled into native builds too. Native lockstep and reference runs execute it |
+
+Today only R6 carries the comment: its own file, plus MARK comments on its
+hooks. Everything else is unmarked and inline. New fast paths should follow
+R6's pattern: put the code in its own file, and give every hook in an upstream
+file the comment.
+
+## Removing one
+
+1. Delete what the **Remove** column names. Afterwards,
+   `git -C qemu diff a58f2b61a9 -- <file>` should have lost exactly those hunks.
+2. Rebuild with `scripts/ninja-fast.sh`, then run `scripts/gate.sh keep` and
+   lockstep on S75 and EL71 (`tools/lockstep-wasm.mjs`, and the native
+   `scripts/run-lockstep.sh`). Export
+   `PLAYWRIGHT_BROWSERS_PATH=$PWD/tools/chrome` first, or every browser gate
+   fails within about 60 s.
+3. For DSP entries, also run the `pmb887x-dsp-tcg` unit test
+   (`hw/arm/pmb887x/dsp/tests/tcg.c`).
+4. Price the removal with a paired A/B (`tools/scenebench.mjs`; the scenes are
+   towerblox, stopwatch and bobby, plus video and midi for SL65 or DSP work).
+   Use the browser's bounds-checked (Android-style) mode.
+
+**Check column:** gate + lockstep apply to every entry. The column names any
+extra checker. "Checker (not in repo)" means the commit message or the perf
+notes describe a differential checker that was never committed. Rebuild it
+before relying on it.
+
+## 1. accel/tcg core
+
+| ID | Where | What it does | Benefit | Remove | Check | Mark |
+|---|---|---|---|---|---|---|
+| A1 | `tb-jmp-cache.h` (`TB_JMP_CACHE_BITS 16`, `gen`, `tb_jmp_cache_key`), `tb-hash.h` (wasm64 `tb_jmp_cache_hash_func`), `translate-all.c` `tcg_flush_jmp_cache`, `cpu-exec.c` `tb_lookup` / `cpu_exec_loop` | Jump cache: 64K entries, one entry per halfword of a page with 2 TB-flag bits in the hash, and a full flush done as a generation bump | 16 bits: J2ME −5.6 % (3fb2c66465). Halfword hash: stopwatch qht lookups 60k → 6k per 2 s (5c8cf5bc65). Generation flush: neutral on S75, saves 1–10 % of CX70 idle with the 64K table (741597d60a) | Delete the wasm64 branches. The `(pc, flags)` signature of `tb_jmp_cache_hash_func` changed for all builds and can go back too. The translator emits the same hash (`w64_pcc_shape`), so remove A2's pc cache first or together | — | wasm (signature: all) |
+| A2 | `cpu-exec.c` `HELPER(lookup_tb_ptr_lc)`, `w64_lc_fill`, `w64_pcc[]`, `w64_pcc_put`, `w64_pcc_shape`, `HELPER(tb_key_gen_bump)`; `translate-all.c` `cpu_tb_key_gen_bump`; generation bumps in `tb-maint.c`, `hflags.c` `arm_set_hflags`, `vfp_fpscr.c`, `translate-vfp.c`, `gdbstub.c`; `hflags.c` `arm_w64_lc_key`; `translation-block.h` `w64_lc`; `translate.c` `gen_goto_ptr`, `gen_goto_ptr_pcc`, `gen_pcc_key_cmp`, `w64_key_static`, `w64_abs_base` | Inline next-TB caches on every goto_ptr: a per-TB slot, then a global pc-keyed table. A generation counter retires them when TB-key inputs change | Per-TB slot: stopwatch +7..9 % (62bdab8192). pcc table: +6.8 % (c7a12330d9). The inline pcc probe answers 17 % of indirect entries (census 2026-11-02); its A/B was unsettled when it landed (5f7d480d9a). `w64_abs_base`: towerblox +2.4 % / +2.0 % with bounds checks (2e70b8bed0, 305999f747) | Return `gen_goto_ptr` to the upstream `tcg_gen_lookup_and_goto_ptr`. Drop both helpers, the pcc table, the generation and all its bumps, and the `return tb->tc.ptr` added in the log branch of `HELPER(lookup_tb_ptr)` | — | wasm |
+| A3 | `translate.c`: `w64_back_edge`, `w64_defer_taken`, `w64_absorb`, `w64_abs_cross_page`, `w64_try_join`, `w64_inline_call`/`_return`, `w64_inl_*`, `w64_refund`, `w64_charge_cycles`, `w64_emit_deferred_taken`, `w64_emit_inline_misses` (the `#ifdef` span from `w64_acct_add` to `w64_key_static`, plus call sites in `gen_jmp_tb`, `trans_BX`, `trans_BL` and the insn loop); `translate.h` w64 fields; `translator.c` `w64_page1`, `w64_lin_end`, page-1 `translator_ld` and `translator_use_goto_tb`; `cpu-exec.c` `tb_lookup_cmp` `W64_INL_VPAGE1` probe, `tb_add_jump` inlined list, the `last_tb` keep; `tb-maint.c` `tb_page_span`, `w64_inl_cross_stream`, `tb_unlink_inlined`; `translate-all.c` `w64_inl_pending`, `w64_tb_insn_index`; `target/arm/cpu.c` CF_PCREL off and `pagebits ≥ 12`; `board.c` `minimum_page_bits = 12` | Superblocks (loops branch back inside the TB, short forward branches absorbed, join points) and inlining of BL/BX callees into the caller's TB, on 4 KB guest pages | Superblocks: stopwatch vratio 0.58 → 0.87, video −8 %, music −5 %, Bobby −4 % CPU (2ff4e374c3). Back-edge +7.65 %, join +6 %. Inlining + 4 KB pages: 18–19 % faster than inlining off; 4 KB beats 1 KB by ~8 % (performance-handoff.md, round forty). Chaining to page 1: video +2.6 % (e149f370ff). Inlined-TB unlink list: up to 40 % of the vCPU in EL71 boot (99166ef386) | The entry points are the six functions called from `gen_jmp_tb`, `trans_BX`, `trans_BL` and the insn loop. With all six refusing, `tb->w64_inl` and `w64_lin_end` stay 0 and the accel hooks do nothing (inferred from the code; not tested). Then delete. CF_PCREL off exists only for inlining (unwind offsets). The 4 KB page can stay on its own. R6 depends on `w64_back_edge` | — | wasm |
+| A4 | `tb-maint.c` `PageDesc.code_mask`, `tb_gmask_*`, `tb_page_granules`, `tb_page_covers`, `tb_store_misses_code` (declared in `tb-internal.h`) | Per-page bitmap of the 4-byte code granules, so that a store to a code page's data skips the TB-list walk | CX70 titles +2..15 % (2b8c359001). 4-byte granules: J2ME −6..−10 %, video −1.2 % (cb4dbe103f) | Delete the bitmap and `tb_page_covers`. C3's `do_ram_notdirty_1p` uses it and goes too | — | wasm |
+| A5 | `translate-all.c` `wasm_add_io_barrier` / `wasm_is_io_barrier` and the `cpu_io_recompile` hunk; the two `__EMSCRIPTEN__` blocks in the `translator.c` loop | A PC that needed an io_recompile becomes a single-instruction TB, so the next MMIO access there does not rewind again | No A/B. Review A calls it required in the browser: each rewind is a JS-exception unwind (~15 µs in the review; a longjmp round trip was later priced at 595.7 ns, playbook round 30) | Delete the blocks. `cpu_io_recompile` then rewinds every time, as upstream does | — | wasm |
+| A6 | `translate-all.c` `setjmp_gen_code` (`w64_tb_env`), `translation-block.h`; `dsp/tcg.c` `tcg_prepare_block`; consumed by `tcg/wasm64` | With a single CPU, a TB addresses env fields as constants | towerblox +12.4 %, stopwatch +8 % with bounds checks (4dc162bbf6) | Never set `w64_tb_env` (leave it 0). The backend then falls back to env-relative addressing | — | wasm |
+| A7 | `system/cpus.c` `bql_lock_mmio`, `bql_unlock_mmio`, `bql_release_lazy`, `bql_wanted_by_other`, and the adopt/wanted changes in `bql_lock_impl`; `include/qemu/main-loop.h`; callers in `cputlb.c` (MMIO paths), `helper.c`, `op_helper.c`, and the `cpu_exec_loop` check | Lean BQL pair for MMIO. The release is deferred while no other thread wants the lock | BQL 4.6 → 2.4 % of the S75 idle vCPU (3cc26447e4). Deferred release: S75 idle +4.0 %, KE800 boot −10 % (fa15ac991b). Both measured under icount/rr in September, not re-measured under vcpu-timers + mttcg | Return the callers to `bql_lock()` / `bql_unlock()` and drop the four functions and the `bql_lock_impl` changes | — | all |
+
+## 2. cputlb, memory, physmem
+
+| ID | Where | What it does | Benefit | Remove | Check | Mark |
+|---|---|---|---|---|---|---|
+| C1 | `cputlb.c` `tlb_resolve_io_dispatch`, `tlb_resolve_io_subpage`, `CPUTLBEntryFull` `io_*` fields, `io_read_fn`/`io_write_fn` calls in `int_ld/st_mmio_*`; `physmem.c` / `memory.h` `memory_region_subpage_leaf` | Resolves MMIO dispatch, including subpage leaves, at TLB fill time. An access is then one mask test plus an indirect call | EL71 +10 %, S75 MIPS +22 %, S75 J2ME stopwatch +9..35 % (fc11bb2acb, 274a0e4c24) | Return accesses to `memory_region_dispatch_read/write` and drop `subpage_leaf`. C2 depends on C1 | — | all |
+| C2 | `cputlb.c` `do_ld_mmio_1p`, `do_st_mmio_1p`, `io_fast_bswap`, `tlb_io_in_range`, and their call blocks at the top of `do_ld{1,2,4,8}_mmu` / `do_st{1,2,4,8}_mmu` | Fused single-piece MMIO load and store paths that skip `mmu_lookup` | Loads: EL71 MIPS +6.9 %, fps +41 % (24d4eb318d). Stores: cover 98.8 % of S75 stores, no separate clock number (0a24e4e53a) | Delete the call blocks and the functions. **Open:** the fused load does not charge `memory_region_get_read_cycles()` under `CF_MEMORY_TIMING` (opt-in `PMB887X_MEMORY_TIMING`; review A side finding, not fixed) | — | all |
+| C3 | `cputlb.c` `do_ram_1p`, `do_ram_notdirty_1p` (the `#ifdef CONFIG_TCG_WASM64` block before the helpers) and the 8 `#ifdef` call blocks in the load/store helpers | RAM fast path in the C helpers. Stores to the data of a code page skip NOTDIRTY when A4 says the store misses code | `do_ram_1p`: +0.81 % (0979a60509; only the interpreter tier gains). notdirty: J2ME game 5 −8.9 % (7538f05950) | Delete the block and the call blocks. Removing A4 forces the notdirty part out too | — | wasm |
+| C4 | `cputlb.c` `get_page_addr_code_hostp` | Takes a code page's ram_addr from the TLB entry, not from `qemu_ram_addr_from_host_nofail` | J2ME −8.9 % ± 4.2 (5f450abf1b) | Restore `return qemu_ram_addr_from_host_nofail(p);`. `io_rom_device` is then unused | — | all |
+| C5 | `cputlb.c` `tlb_set_page_full` growth, `tlb_mmu_resize_locked` hunk; `tlb-bounds.h` `TLB_FILL_GROW_MAX_BITS` | Grows a TLB at fill time. Upstream resizes only at flush, and full flushes run at ~0/s here | Not measured (6aa4c4f0cd). Without it the tables stay at 256 entries; they reach 8192 / 2048–4096 / 64 here (review A) | Delete the hunks. Run an A/B before removing | — | all |
+| C6 | `cputlb.c` `tlb_flush_phys_ranges`, `tlb_phys_note` / `_bit` / `_blk_bit` (16 MB buckets); `physmem.c` `tcg_region_changed`; `memory.c` `romd_stash_*`, `flatviews_update_romd`, `romd_off_mrs` / `ro_on_mrs`, `topo_gen`, `memory_topology_commit_full`, `memory_topology_views_recycled` | ROMD and readonly flips reuse cached FlatView variants, and the TLB is flushed only over the changed physical ranges | Topology commit 3857 → 421 ms per boot (529a995448). Readonly flip as a variant: fixed-work boot EL71 +55.6 %, CX70 +31.5 %, S75 +15.1 % (9970030816). Phys summary: ~4 % of the vCPU in KE970 boot (4b54517d3a, 95055ff451). Boot phase only | Return `memory.c` to full topology rebuilds and `physmem.c` to a full flush per commit. The correctness companions go with it: jump-cache flush on commit and the full commit on eventfd add/del (a0d035f4f0) | — | all |
+| C7 | `cputlb.c` `tlb_watch_ram_dirty`, `tlb_reset_dirty_logged`, `tlb_ram_watch_note`, the dirty-mode skip in `tlb_reset_dirty`, `tlb_set_ram_write_guard` + `ram_write_guard_hits` / `_trap` in `notdirty_write`; `include/exec/cputlb.h` | Targeted dirty resets inside a watched RAM range, plus a write-guard callback on stores to guarded RAM | `tlb_reset_dirty_range_all` 494 → 13 ms per 20 s, from 2.4 % of the vCPU (9692169830). The guard is what makes D1 correct (0c3c3c8c9b) | Only together with D1. Its only user is `dif_v2.c` | — | all |
+
+## 3. target/arm translator and helpers
+
+| ID | Where | What it does | Benefit | Remove | Check | Mark |
+|---|---|---|---|---|---|---|
+| R1 | `translate.c` `arm_excp_exit_ok` + DISAS_SWI in `arm_tr_tb_stop`; `op_helper.c` `HELPER(svc_inline)`; `helper-defs.h`; `helper.c` / `internals.h` `arm_take_svc_aarch32` | Takes an SVC inside the TB (cores without EL2/EL3), with no cpu_loop_exit unwind | Without it the boot window is −26 %; video +16.2 % (f5df8cb003, round forty). Dispatcher iterations 2387 → 28 /Mi | Return DISAS_SWI to `gen_exception` and drop the helper and `arm_take_svc_aarch32` | — | wasm |
+| R2 | `op_helper.c` `HELPER(cpsr_write_eret)`; `translate.c` `gen_eret_end_tb` (wasm branch) | An exception return skips the BQL pairs around empty hook lists and continues through goto_ptr. The second `arm_rebuild_hflags` is dropped | Hook skip: video −5.7 % ± 1.5; `bql_lock` 1.29M/s → 6k/s (46d7aa3e64). Rebuild drop: ~0.7 % of the vCPU, below wall-clock resolution (addf630b8e) | Restore the upstream lock/unlock and the `arm_rebuild_hflags(env)` line. The rebuild drop is unconditional (it affects native too). Keep `cpsr_write_check_irq`, which R3 needs | — | wasm (rebuild: all) |
+| R3 | `translate.c` `w64_psr_can_continue`, `w64_psr_continue`, `w64_psr_new_miss`, `w64_gen_irq_pending_br`, `w64_emit_psr_misses`, `w64_cpsr_write_inline`, `w64_gen_cpsr_read`, the wasm tail of `gen_set_psr` and the `#ifndef` around `gen_lookup_tb_after_cpsr_write`; `op_helper.c` `cpsr_write_check_irq` | `msr` / `mrs cpsr` inline, and CPSR/SPSR writes that do not end the TB | `msr` continuation + SPSR no-end: video +1.8 % (4d1a392927). Inline CPSR write: video −2.16 % ± 0.85 ms/Mi (e2976ebbfe). Inline `mrs`: −2.47 % ± 0.92 (4e60f930b2). Returning the tail to upstream was part of a losing bundle on 2026-11-02 (stopwatch −1.4 %, towerblox −0.8 %) | Return `gen_set_psr`, `gen_rfe` and the `mrs` path to upstream | — | wasm |
+| R4 | `translate.c` `gen_shift_cc_w64` and its `#ifdef` in `gen_arm_shift_reg` | Inline flag-setting register shifts | Video −1.09 % ± 0.52, J2ME −0.72 % ± 1.20 (c4919f185b). Borderline | Delete both `#ifdef` blocks | — | wasm |
+| R5 | `hflags.c` `rebuild_hflags_a32_fast`, `rebuild_hflags_a32_el`, and the A32 shortcut in `rebuild_hflags_internal` | Short hflags rebuild for pre-v6 A-profile at EL0/EL1 | S75 idle +3.9 %, 4/4 pairs (90e45a1cec). Current value uncertain (review B) | Return `rebuild_hflags_internal` to its upstream body and delete the two functions | — | all |
+| R6 | `target/arm/tcg/w64-fill.c`/`.h`, `HELPER(w64_fill)` in `helper-defs.h`, the line in `target/arm/tcg/meson.build`, `translate.h` `w64_fill_words`, `translate.c` `w64_fill_match` (called from `w64_back_edge`) and the recording in `thumb_tr_translate_insn` | Runs more passes of the 6-instruction Thumb J2ME fill loop in C at the back-edge, charging icount, cycles and counters exactly as the generated code would | towerblox ~+1.5 % (7/10 pairs); stopwatch and bobby neutral (3116fa62be) | Delete the file pair, the meson line, the helper entry and the marked hooks. The meson line is unmarked | Lockstep is **blind** to it (framebuffer SDRAM is only soft-compared). Predict-and-compare checker (not in repo) | FILE |
+
+## 4. pmb887x devices
+
+All of these are plain C in upstream device files, with no `#ifdef` and no
+marker (**all**). The DIF v2 lazy and fed paths run only under vcpu-timers
+(runtime check `qemu_virtual_timers_on_vcpu`). `dif_v2.c` is about 640 lines
+from upstream.
+
+| ID | Where | What it does | Benefit | Remove | Check |
+|---|---|---|---|---|---|
+| D1 | `dif_v2.c` `dif_tx_bus_go_lazy`, `_lazy_wake`, `_catch_up`, `_leave_lazy`, `_write_trap`, `_dmac_catch_up`, `dif_get_guarded_tx_source`; uses T5, C7 and `pmb887x_dmac_set_catch_up` | Display-bus wakes go lazy while the vCPU runs. A guard and catch-up run them before anything can observe the bus | Stopwatch vratio under contention 0.466 → 0.569 and 0.567 → 0.686 (0c3c3c8c9b) | Delete these and the lazy branch of the wake path, together with T5's only user and C7's guard | Wake and store differential checkers (not in repo) |
+| D2 | `dif_v2.c` `dif_run_fed_tx_bus`, `dif_plan_fed_tx_bus`, `dif_count_fed_tx_wakes`, `dif_get_fed_tx_bus_words`, `dif_skip_fed_tx_wakes`, `is_mux_shifts` / `mux_*shift*` in `dif_update_mux` + `dif_mux_entries`; `dmac.c` `pmb887x_dmac_count_bulk_bursts`, `_get_bulk_source`, `_serve_bulk_bursts` | Runs the bus wakes of a halted CPU in one callback, with a planned batch, a closed-form plan and a shift-based mux | Bobby 0.860 → 0.762, −11 % (62b16312dd). Batch cap 512: +1.3/+4.2/+1.6/+1.7 % (0d749b0fd6). Word hoist: 2.1 → 1.5 % of busy ticks (3867c78042). Closed-form plan: 1.02 → 0.25 % (78b8a15418). Shift mux: 1.59 → 1.01 % (b51a7c5b18). The last two are profile shares only | Delete the fed branch. It needs D3 and `vcpu-timers-idle-lead` > 0 (`cpu_clock_owner_idle_reaches`) | Differential checks (`dif_v2.c.chk*`, not in repo) |
+| D3 | `dif_v2.c` / `dif_v1.c` `dif_serve_tx_burst`, `dif_raise_tx_burst_request`, coalesced `dif_clear_dma_requests`; `dmac.c` `pmb887x_dmac_serve_burst`, `dmac_get_served_channel` | Serves a display TX burst without the DMA request handshake | Bobby 0.812 → 0.796 → 0.771 (a85157e75b). Load-bearing for D2 | Delete together with D2 | Native lockstep, base vs fast path |
+| D4 | `dif_v2.c` `dif_sync_mux` (lazy mux rebuild); `dif_occupy_tx_bus(..., now_ps)` | Rebuilds the bit mux only when it is used, and reads the clock once per TX FIFO pass | Lazy mux: ~1.2 % of the vCPU (6c8f08898c). Clock cache: stopwatch +1.7 % under parbench, biased (d5ac642584). Reverting D2's plan and shift mux + D4's clock cache + D10's baseband together cost stopwatch 3–7 % (2026-11-02) | Restore the upstream eager rebuild and the per-entry clock reads | — |
+| D5 | `dif_v1.c` `dif_serve_tx_burst`, `dif_dma_write_block` (DMA block sink), `dif_build_mux_lut` / `dif_mux`, `dif_transfer_run` | DIF v1 (SL65) serves display words without the DMAC pass and the bus | Video 0.724 → 0.677, MIDI −1.6 % (8b7c975f81). Video 0.730 → 0.672 (e91e76773d). Parts never priced separately | Restore upstream `dif_v1.c` | — |
+| D6 | `dmac.c` `dmac_translate`, `dmac_memory_commit` (MemoryListener), `dmac_read_bytes`; `dma_sink.c` `__thread` owner/class cache | Caches the FIFO's bus translations, and the DMA-sink class lookup | Stopwatch +1.8 % (d7590ed13c). Bobby −1.7 % (e576fc3017). Sink cache not priced alone (ab1b086728) | Delete the cache. The `(mr, offset)` signature of `pmb887x_dma_sink_write_block` belongs with it | — |
+| D7 | `tpu.c` `tpu_update_timer` (re-arm only on a moved deadline), `tpu_advance` (single advance), `tpu_ram_write_moves_deadline`, the word fast path in `tpu_ram_write` (`size == 4 \|\| size == 2`) | Cuts TPU timer re-arms and advances per register or event-RAM write | Re-arm: S75 idle MIPS +11 %, EL71 +21 % (0662edf94c). Single advance: `tpu_advance` 5.8 → 2.9 % (5797540d62). Event-RAM early return: S75 +7..20 % (de7cdf5fd0). One-event window: not claimed (3b2d98faed). Word path: not measured alone (0b9ef383a0). Reverting the word path + P7 + P8 cost bobby/towerblox ~2 % (2026-11-02) | Restore upstream `tpu.c` (the window then reverts to 0068's fork test, not to upstream) | — |
+| D8 | `gptu.c` `gptu_t01_observable`, `_matters`, `_free_running`, `_ticks_to_boundary`, `_advance`, `gptu_ev_wants_timer` | Arms the GPTU T0/T1 QEMU timer only for overflows the guest can observe | KE800 went from never reaching idle to booting; S75 boot −4..5 % (a2b52c7c77; the 474bff9dbe syncs are its correctness fixes) | Restore upstream `gptu.c` | — |
+| D9 | `ssc/lcd_common.c` (GRAM drain in place, polling writer, `lcd_transfer_bytes`, `lcd_queue_ram_byte_run`); `ssc/s1d13716.c` `gimmick_transfer_block` / `_bytes` and the plain cast in `gimmick_transfer`; `hw/ssi/ssi.c` `ssi_transfer_bytes` + `transfer_bytes` hook and the plain casts in `ssi_transfer` | Moves display bytes to the LCD in runs, with no per-byte QOM casts or condvar wakes | Drain in place: stopwatch vratio 0.892 → 0.943 (3a4052ddc7). Polling: futex wakes 2.13 → 0.29 % (43c24bb03d). Byte runs: ~1.3 % profile (2f09e9c30f). s1d13716 pass-through: +12 % J2ME window, September (ed6a5daa97). Restoring the checked casts was part of the 2026-11-02 losing bundle | Restore upstream `lcd_common.c`, `ssi.c` / `ssi.h` and `s1d13716.c`. D2 calls `ssi_transfer_bytes` | — |
+| D10 | `fifo.h` compare-and-wrap; `dsp/peripheral/baseband.c` `baseband_publish_range`; `hw/audio/i2s.c` class cache; `audio/buffer.c` `pmb887x_audio_buffer_note_push` | Small per-call cuts: no `%` in FIFO steps, stepped ring indices, cached QOM class, push counting | FIFO: never priced alone (8727ef7edf). Baseband: 3.09 → 2.49 % profile (ce4d3f684a). i2s: Bobby 0.919 → 0.909 (01c6acb0bb). Push counter: ~0.2 s/10 s of vCPU profile (4a7b35247c) | Restore upstream (for the push counter, the previous code is fork code from 6e821e08b6, not upstream) | — |
+
+## 5. DSP translator (`hw/arm/pmb887x/dsp/tcg.c`)
+
+All of these are inline in the upstream file, unmarked, and compiled natively
+(**all**). The exceptions are the wasm64 parts of P10 and A6.
+
+| ID | Where | What it does | Benefit | Remove | Check |
+|---|---|---|---|---|---|
+| P1 | The kernel section from `tcg_fast_loop_35be[]` to `tcg_execute_fast()` (contiguous since 3de1546af5, after `tcg_execute_prepared_block`; ~1370 lines: `tcg_fast_run_35be` / `tcg_fast_iterate_35be` via `TEAK_FAST_LOOP` / `TEAK_FAST_RUNNER`, 643F/6489/64A9, `tcg_fast_discover`, `_relocate`, `_lookup`, `_invalidate`, `_verify`); hooks in `tcg_prepare_block`, the program-write paths, `HELPER(teak_tcg_chain)` and the slice runners; forward declarations near the top; `core.h` `fast_runs` | Hot GSM correlator loops run as C kernels instead of chained TCG blocks | All loops on vs off: SL65 MIDI 0.566 vs 0.632 cores, EL71 AAC 0.610 vs 0.682 (4d7343564d / 90f3562467). 35BE also saves 0.7 s of boot. Follow-ups: 8fe212e31d (video 35BE 24.4 → 18.9 % of vCPU), 13c43bfff0 (video +3.8 %), d0b6cad865 (+7.6 %), a2fc4f3414 (MIDI 0.508 → 0.484), fefdb61f9d (SL65 0.594 → 0.531), 2ba75a9b95 (~0.8 %) | Delete the section and its hooks. There is no runtime switch (TEAK_TCG_FAST was removed in 90f3562467) | Unit tests `35be-iterations`, `relocated-fast-loop`; differential checkers (not in repo) |
+| P2 | Temp pool (near the top of the file) | Reuses TCG temps so that 64-instruction blocks fit TCG_MAX_TEMPS | Not measured. Load-bearing: without it blocks are halved | Restore upstream temp allocation | — |
+| P3 | `tcg_emit_data_read` / `_write` (branchless constant layout, inline store above MMIO); `core.h` `direct_data_high_write_base` / `_size`; `runtime.c` | Hot data-memory path without branches. Stores above MMIO are plain stores | Inline high store: Bobby 0.969 → 0.953 (c4889876a7). Branchless layout not measured (4d7343564d) | Restore upstream emitters and drop the two core fields | — |
+| P4 | `tcg_remove_dead_state_stores`, `tcg_call_hides_state`; `dsp.c` + `runtime.c` / `.h` `dsp_runtime_get_trace_pc` | Removes flag, pc and state stores that the next instruction overwrites | State stores: −0.6 / −0.9 % (4c84885f3c). pc stores: Bobby −0.85 % (37b179e59c). Flags not measured | Drop the pass and return `dsp.c` to `dsp_runtime_get_pc`. P6 relies on the pass | — |
+| P5 | `tcg_demote_label_dead_temps` | Demotes temps that are dead across labels | Bobby 1.079 → 1.034 (4ace13cbc9) | Delete the call and the function | — |
+| P6 | `tcg_emit_inline_register_read`, `tcg_emit_inline_mov_accumulator_write`, `tcg_emit_inline_alb_register` | Inline register reads, mov to accumulator halves and register ALB ops | Bobby 0.949 → 0.927 (b2e3e17771). Bobby vratio +3.0..3.8 %, video +0.5..3.3 % (6a18783ada) | Restore the helper calls | Checkers `albchk.py` / `movchk.py` (not in repo) |
+| P7 | `tcg_emit_shift_by_value` and its use in `tcg_emit_shift_conditional` | Inline accumulator shift by the shift-value register | Bobby +1.8 %, MIDI +0.5 %, noisy; ceiling ~1 % (bdae25233c) | Revert bdae25233c (applies cleanly per review E) | Checker `shchk.py` (not in repo) |
+| P8 | `tcg_emit_shifted_product` (branchless); `tcg_emit_accumulator_value_flags` fz/fe reuse | Product-shift arithmetic instead of 4 labels, and flag temp reuse | Not measured (4d7343564d). The flag reuse is load-bearing for P4 | Restore the upstream function bodies | — |
+| P9 | Batching of loops that write, repeat bodies and inline plain registers (7a1e2d1106); `level_free` (ab1b086728) | Runs more loop iterations per block entry | Music 0.686 → 0.602 (7a1e2d1106). Music 0.783 → 0.699 (ab1b086728) | Revert those hunks | Unit tests `batched-loop-exit-after-write`, `block-repeat-body-exit-after-write` |
+| P10 | `HELPER(teak_tcg_chain)` with `core.h` `chain_prev` and `succ[]` in the cache entry; the wasm64 `target` / `evict_epoch` fields | Chain-link entry caches. On wasm64, the chain also returns the tagged table index | Video vratio +2.8..3.4 %, Bobby +2.5..3.1 % (3488724de2) | Restore the upstream lookup in the chain helper | — |
+
+## 6. Timers and clock
+
+All of these sit in upstream's vcpu-timers code and work only under
+vcpu-timers.
+
+| ID | Where | What it does | Benefit | Remove | Mark |
+|---|---|---|---|---|---|
+| T1 | `cpu-exec.c` `cpu_cycle_budget_exit`; `tcg-accel-ops-mttcg.c` `mttcg_cpu_next_budget`; `tcg-accel-ops.h` | Renews a spent budget inside `cpu_exec`, without leaving the loop | Stopwatch 0.907 → 0.975 (23593204f5, per review A) | Return to `cpu_cycle_budget_expired` in `cpu_handle_interrupt` | all |
+| T2 | `cpu-timers.c` `cpu_clock_owner_raw` (`CPU_CLOCK_OWNER_REREAD_NS`), `cpu_clock_owner_limit_lag`; `mttcg_wait_for_clock(…, realp)` | Reuses a host-clock reading (a JS call on wasm) for up to 10 ms | Stopwatch 0.70 → ~0.85; host reads per budget 3 → 1 (23593204f5, per review C) | Read the host clock at each use, as upstream does | all |
+| T3 | `cpu-timers.c` `cpu_clock_owner_idle` (`cpu_clock_owner_idle_raw`) | Re-reads the host clock in owner idle only when the thread would sleep | Bobby 0.928 → 0.817 cores (afe23d9974) | Delete the cache | all |
+| T4 | `cpu-timers.c` `cpu_clock_owner_shorten_budget_at` | A newly armed timer shortens the budget without a host read | `timer_mod_ns` 1.03 → 0.32 s per 20 s (11699de202) | Return to the host-reading path | all |
+| T5 | `include/qemu/timer.h` `QEMU_TIMER_ATTR_LAZY`; `qemu-timer.c` `timer_first_eager`, `timer_others_expire_time_ns` | Timers that neither cap the clock nor end the budget | Mechanism of D1 (0c3c3c8c9b) | Only with D1 | all |
+| B1 | `meson.build`: `-ftrivial-auto-var-init=zero` left out on emscripten | Avoids zeroing every uninitialized local | Video 4.19 % ± 2.88, J2ME 1.45 % ± 1.18 (0a3e5f2ce3) | Move the flag back into `hardening_flags` unconditionally | wasm (meson condition) |
+
+## Dependencies between entries
+
+- R6 needs A3 (`w64_back_edge`). A2's pc cache emits A1's hash shape.
+- C2 needs C1. C3's notdirty half needs A4.
+- D1 needs C7 (write guard, dirty skip), T5 and the DMAC catch-up.
+- D2 needs D3 and `vcpu-timers-idle-lead` > 0. D9's `ssi_transfer_bytes` is
+  D2's output path.
+- R3 needs `cpsr_write_check_irq`. R1 and R2 use A7's `bql_lock_mmio` /
+  `bql_release_lazy`.
+- P6 and P8's flag reuse rely on P4. `dsp_runtime_get_trace_pc` exists only
+  because of P4's pc-store drop.
+- A3's CF_PCREL-off exists only for inlining.
+
+## Removed since the 2026-11-02 review
+
+- **3de1546af5:** dead code removed:
+  - the C-side pcc probe and `arm_w64_lc_key_pc`
+  - memory `write_run`, `write_direct` and the topology generation counter
+  - the dead DSP chain lookup and `tcg_fast_run` parameters
+  - the DSP kernel section moved after upstream's functions
+  - backend leftovers
+  - the native `qemu_cond_timedwait_ns`
+- **b12dea95f2:** returned to upstream:
+  - `arm_rebuild_hflags_mode_change` and the `cpsr_read` test in `cpsr_write`
+  - the WFI no-longjmp
+  - the EXITTB fast path without the BQL
+  - the lean BQL pair in `cpu_handle_exception`
+  - the kick-flag barrier skip
+- **3116fa62be:** added R6, the Thumb fill loop.
+- **092f67eff7:** returned to upstream: `io_clock_window` /
+  `io_open_clock_window` (icount-only) and the `mod.c` ctz loops. Both
+  neutral.
+- **e227c7e9a3:** returned to upstream: `timer_notify_main_loop` /
+  `qemu_in_main_loop_thread` (was T6), and the `rtc.c` negative-interval
+  guard (a census found no backward clock read once the window was gone).
+  Both neutral.
+- **Measured and dropped, never committed:**
+  - the DSP bus deferral
+  - the literal-pool load folding (`w64_load_literal` / `w64_lit_end`). It
+    folded 3.2 % of stopwatch instructions, but the A/B was noise: towerblox
+    +0.2/−1.3/−1.3/−0.7 %, stopwatch −1.1/+1.3/+2.4 %. The patch was kept
+    outside the repo.
+  - returning `gen_set_psr`'s tail to upstream (R3), the SSI/s1d13716 checked
+    casts (D9) and the `fifo.h` modulo (D10). As a bundle with the commits
+    above they cost stopwatch −1.4 % and towerblox −0.8 %, so they stay.
