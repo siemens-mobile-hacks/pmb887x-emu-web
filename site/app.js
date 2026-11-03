@@ -1614,6 +1614,8 @@ async function boot() {
     // instead of one per timer; 0 = follow wall time exactly.
     // ?icount=<spec> selects the instruction-counting model instead (the
     // lockstep tools need its determinism); ?icount=none runs neither.
+    // cross-page-links=on chains TBs across guest pages (unlinked on every
+    // TLB flush): EL71 boot window -5.8 %, steady state neutral to +1 %.
     // A ?qargs= with its own -accel replaces the default one.
     const icount = qsp.get("icount");
     const bank = qsp.get("bank") ?? "30";
@@ -1623,7 +1625,7 @@ async function boot() {
     const timingArgs = icount
       ? (icount === "none" ? [] : ["-icount", icount])
       : extraArgs.includes("-accel") ? []
-      : ["-accel", `tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=${bank},vcpu-timers-idle-lead=${idleLead}`];
+      : ["-accel", `tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=${bank},vcpu-timers-idle-lead=${idleLead},cross-page-links=on`];
     // The guest's mixer resamples straight to the output device's own rate,
     // so the worklet copies frames instead of interpolating them. ?sound=off
     // leaves the machine without an audiodev at all — the benchmark harnesses
