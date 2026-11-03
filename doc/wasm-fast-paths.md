@@ -219,3 +219,11 @@ vcpu-timers.
   - returning `gen_set_psr`'s tail to upstream (R3), the SSI/s1d13716 checked
     casts (D9) and the `fifo.h` modulo (D10). As a bundle with the commits
     above they cost stopwatch −1.4 % and towerblox −0.8 %, so they stay.
+  - two EL71 boot fixes: a code-page gate on the key-generation bump in
+    `tb_jmp_cache_clear_page`, and lean `goto_ptr` exits without the inline
+    pcc probe, promoted by retranslation. Gate alone: boot and steady state
+    neutral. Lean exits: boot window 0.942, but towerblox −1.7 % over 8
+    pairs, even when gated to translation bursts. Upstream's
+    `cross-page-links=on`, now the page default (`site/app.js`), gives the
+    same 0.942 boot window and is neutral to +0.8 % in steady state, so
+    neither went in.
