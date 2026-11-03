@@ -4,10 +4,14 @@ This lists the changes in `qemu/` (branch `wasm-browser-port`) that differ from
 upstream only to make the emulator faster. Use it when rebasing onto a newer
 upstream, or when deleting an optimization to bring a file back towards upstream.
 
-- **Upstream reference:** `smh/dsp-lle` (siemens-mobile-hacks/qemu-pmb887x),
-  merged up to `a58f2b61a9` by merge `c97e554e5d`. To see a file's divergence,
-  run `git -C qemu diff a58f2b61a9 -- <file>`.
-- **State described:** fork `e227c7e9a3`. Written 2026-11-02.
+- **Upstream reference:** `smh/master` (siemens-mobile-hacks/qemu-pmb887x),
+  merged up to `c1db99c3de` by merge `d617e13d02`, with the SIM PPS commit
+  `e0db2079eb` reverted (`f45db9a125`: it makes the pristine EL71 fullflash
+  abort in modeman_sm). To see a file's divergence, run
+  `git -C qemu diff c1db99c3de -- <file>` (`hw/arm/pmb887x/sim/` also shows the
+  revert).
+- **State described:** fork `e227c7e9a3`. Written 2026-11-02. Identifiers
+  re-checked against `f45db9a125` on 2026-11-03.
 - **Sources:** the fork-delta review of 2026-11-02 (parts A–F), the commit
   messages (`git -C qemu log -1 <sha>`), and
   [performance-handoff.md](performance-handoff.md). The numbers below are quoted
@@ -70,7 +74,7 @@ file the comment.
 ## Removing one
 
 1. Delete what the **Remove** column names. Afterwards,
-   `git -C qemu diff a58f2b61a9 -- <file>` should have lost exactly those hunks.
+   `git -C qemu diff c1db99c3de -- <file>` should have lost exactly those hunks.
 2. Rebuild with `scripts/ninja-fast.sh`, then run `scripts/gate.sh keep` and
    lockstep on S75 and EL71 (`tools/lockstep-wasm.mjs`, and the native
    `scripts/run-lockstep.sh`). Export
@@ -140,7 +144,7 @@ from upstream.
 | D7 | `tpu.c` `tpu_update_timer` (re-arm only on a moved deadline), `tpu_advance` (single advance), `tpu_ram_write_moves_deadline`, the word fast path in `tpu_ram_write` (`size == 4 \|\| size == 2`) | Cuts TPU timer re-arms and advances per register or event-RAM write | Re-arm: S75 idle MIPS +11 %, EL71 +21 % (0662edf94c). Single advance: `tpu_advance` 5.8 → 2.9 % (5797540d62). Event-RAM early return: S75 +7..20 % (de7cdf5fd0). One-event window: not claimed (3b2d98faed). Word path: not measured alone (0b9ef383a0). Reverting the word path + P7 + P8 cost bobby/towerblox ~2 % (2026-11-02) | Restore upstream `tpu.c` (the window then reverts to 0068's fork test, not to upstream) | — |
 | D8 | `gptu.c` `gptu_t01_observable`, `_matters`, `_free_running`, `_ticks_to_boundary`, `_advance`, `gptu_ev_wants_timer` | Arms the GPTU T0/T1 QEMU timer only for overflows the guest can observe | KE800 went from never reaching idle to booting; S75 boot −4..5 % (a2b52c7c77; the 474bff9dbe syncs are its correctness fixes) | Restore upstream `gptu.c` | — |
 | D9 | `ssc/lcd_common.c` (GRAM drain in place, polling writer, `lcd_transfer_bytes`, `lcd_queue_ram_byte_run`); `ssc/s1d13716.c` `gimmick_transfer_block` / `_bytes` and the plain cast in `gimmick_transfer`; `hw/ssi/ssi.c` `ssi_transfer_bytes` + `transfer_bytes` hook and the plain casts in `ssi_transfer` | Moves display bytes to the LCD in runs, with no per-byte QOM casts or condvar wakes | Drain in place: stopwatch vratio 0.892 → 0.943 (3a4052ddc7). Polling: futex wakes 2.13 → 0.29 % (43c24bb03d). Byte runs: ~1.3 % profile (2f09e9c30f). s1d13716 pass-through: +12 % J2ME window, September (ed6a5daa97). Restoring the checked casts was part of the 2026-11-02 losing bundle | Restore upstream `lcd_common.c`, `ssi.c` / `ssi.h` and `s1d13716.c`. D2 calls `ssi_transfer_bytes` | — |
-| D10 | `fifo.h` compare-and-wrap; `dsp/peripheral/baseband.c` `baseband_publish_range`; `hw/audio/i2s.c` class cache; `audio/buffer.c` `pmb887x_audio_buffer_note_push` | Small per-call cuts: no `%` in FIFO steps, stepped ring indices, cached QOM class, push counting | FIFO: never priced alone (8727ef7edf). Baseband: 3.09 → 2.49 % profile (ce4d3f684a). i2s: Bobby 0.919 → 0.909 (01c6acb0bb). Push counter: ~0.2 s/10 s of vCPU profile (4a7b35247c) | Restore upstream (for the push counter, the previous code is fork code from 6e821e08b6, not upstream) | — |
+| D10 | `fifo.h` compare-and-wrap; `dsp/peripheral/baseband.c` `baseband_publish_range`; `hw/audio/i2s.c` class cache | Small per-call cuts: no `%` in FIFO steps, stepped ring indices, cached QOM class | FIFO: never priced alone (8727ef7edf). Baseband: 3.09 → 2.49 % profile (ce4d3f684a). i2s: Bobby 0.919 → 0.909 (01c6acb0bb). The `audio/buffer.c` push counter (4a7b35247c) is gone: upstream `c410218bf8` replaced the clocked underrun padding with a prefill threshold, which reads no clock at all | Restore upstream | — |
 
 ## 5. DSP translator (`hw/arm/pmb887x/dsp/tcg.c`)
 
