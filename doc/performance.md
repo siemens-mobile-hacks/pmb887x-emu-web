@@ -4,8 +4,8 @@ Where the speed work stands, how to measure and validate a change, and what
 has already been tried. Read this before doing performance work on the
 emulator.
 
-- **State described:** fork `1b51f8e577`, the 2026-11-04 deviation cleanup
-  on top of merge `6cd424cdb5` (smh/master `a05a9df1da`). Written
+- **State described:** fork `92f6a90e56`, merge of smh/master `d9cf65ef40`
+  on top of the 2026-11-04 deviation cleanup (`1b51f8e577`). Written
   2026-11-04.
 - **Replaces** `doc/performance-handoff.md`, the September 2026 round log of
   the icount era (still in this repo's git history).
@@ -772,6 +772,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-03 | `d617e13d02`, `f45db9a125` (`de0adbd`, `7807572`) | `cross-page-links=on` default; smh/master `c1db99c3de` with PPS reverted. Towerblox −3 % = upstream's AFE/audio workload change. The EL71 PPS abort depended on the pristine `rr_ff_el71_stock.bin` FFS state and reproduced in pure upstream |
 | 2026-11-04 | `6e41e38a16`, `36e4130ef8`, `f8612575ce` | smh/master `326ab1b4d5` + chain caches kept across DSP bank switches: vs `f45db9a125` stopwatch +2.4 %, towerblox +2.1 %, midi +0.7 %, video mips +11 % (free-run) |
 | 2026-11-04 | `6cd424cdb5` | smh/master `a05a9df1da`: SIM rewrite (`hw/smartcard`) fixes PPS, revert dropped; needs bsp ≥ `85d4f78` and `-device gsm-sim`. Lockstep references stamped; swab.sh + freerun.diff; deviation cleanup (below) |
+| 2026-11-04 | `92f6a90e56` | smh/master `d9cf65ef40`: DSP chain exits with two links (program context and mode checked inline), chain and batch exits only for deliverable interrupts, one running cycle count per slice. Free-run A/B vs `1b51f8e577`, 4 pairs: bobby +4.4 % (4/4), midi +1.4 % (4/4), video mips +0.7 % (4/4), towerblox +3.6 %, stopwatch +1.9 % (3/4 each) |
 
 ## 2026-11-04 deviation cleanup
 

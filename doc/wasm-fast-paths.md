@@ -5,14 +5,14 @@ upstream only to make the emulator faster. Use it when rebasing onto a newer
 upstream, or when deleting an optimization to bring a file back towards upstream.
 
 - **Upstream reference:** `smh/master` (siemens-mobile-hacks/qemu-pmb887x),
-  merged up to `a05a9df1da` by merge `6cd424cdb5`. Upstream's SIM rewrite
-  (`hw/smartcard`) fixed PPS, so
+  merged up to `d9cf65ef40` by merge `92f6a90e56`. Upstream's SIM rewrite
+  (`hw/smartcard`, merged in `6cd424cdb5`) fixed PPS, so
   the earlier revert of `e0db2079eb` is gone. To see a file's divergence, run
-  `git -C qemu diff a05a9df1da -- <file>`.
+  `git -C qemu diff d9cf65ef40 -- <file>`.
 - **State described:** fork `e227c7e9a3`. Written 2026-11-02. Identifiers
-  re-checked against `f45db9a125` on 2026-11-03, and against `1b51f8e577`
+  re-checked against `f45db9a125` on 2026-11-03, against `1b51f8e577`
   (merge `6cd424cdb5` plus the 2026-11-04 cleanup, see the end) on
-  2026-11-04.
+  2026-11-04, and against `92f6a90e56` the same day.
 - **Sources:** the fork-delta review of 2026-11-02 (parts A–F), the commit
   messages (`git -C qemu log -1 <sha>`), and the September round log
   `doc/performance-handoff.md` (removed 2026-11-04, in git history). The
@@ -77,7 +77,7 @@ file the comment.
 ## Removing one
 
 1. Delete what the **Remove** column names. Afterwards,
-   `git -C qemu diff a05a9df1da -- <file>` should have lost exactly those hunks.
+   `git -C qemu diff d9cf65ef40 -- <file>` should have lost exactly those hunks.
 2. Rebuild with `scripts/ninja-fast.sh`, then run `scripts/gate.sh keep` and
    lockstep on S75 and EL71 (`tools/lockstep-wasm.mjs`, and the native
    `scripts/run-lockstep.sh`). Run `tools/lockstep-wasm.mjs` once more with
@@ -167,7 +167,7 @@ All of these are inline in the upstream file, unmarked, and compiled natively
 | P7 | `tcg_emit_shift_by_value` and its use in `tcg_emit_shift_conditional` | Inline accumulator shift by the shift-value register | Bobby +1.8 %, MIDI +0.5 %, noisy; ceiling ~1 % (bdae25233c) | Revert bdae25233c (applies cleanly per review E) | Checker `shchk.py` (not in repo) |
 | P8 | `tcg_emit_shifted_product` (branchless); `tcg_emit_accumulator_value_flags` fz/fe reuse | Product-shift arithmetic instead of 4 labels, and flag temp reuse | Not measured (4d7343564d). The flag reuse is load-bearing for P4 | Restore the upstream function bodies | — |
 | P9 | Batching of loops that write, repeat bodies and inline plain registers (7a1e2d1106); `level_free` (ab1b086728) | Runs more loop iterations per block entry | Music 0.686 → 0.602 (7a1e2d1106). Music 0.783 → 0.699 (ab1b086728) | Revert those hunks | Unit tests `batched-loop-exit-after-write`, `block-repeat-body-exit-after-write` |
-| P10 | `HELPER(teak_tcg_chain)` with `core.h` `chain_prev` and `succ[]` in the cache entry; the wasm64 `target` / `evict_epoch` fields | Chain-link entry caches. On wasm64, the chain also returns the tagged table index | Video vratio +2.8..3.4 %, Bobby +2.5..3.1 % (3488724de2) | Restore the upstream lookup in the chain helper | — |
+| P10 | `HELPER(teak_tcg_chain)` with `core.h` `chain_prev` and `succ[]` in the cache entry, keyed on `tcg_block_cache_epoch` / `succ_epoch`; the wasm64 `target` / `evict_epoch` fields (also in `teak_tcg_chain_link_t`) | Chain-link entry caches. The epoch moves only when entries are added or freed, so the caches survive program-bank switches (about 34k a second on S75). On wasm64, the chain also returns the tagged table index | Video vratio +2.8..3.4 %, Bobby +2.5..3.1 % (3488724de2). Epoch: towerblox +2.4 % (f8612575ce, whose program context in the inline links upstream has had since `581ac7bd9f`) | Restore the upstream lookup in the chain helper | — |
 
 ## 6. Timers and clock
 
