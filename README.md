@@ -314,14 +314,28 @@ real time in the browser. Three pieces keep that from coming out as stutter:
   60 ms of samples are queued, then plays until the queue runs dry; a
   mid-stream underrun stays a gap and waits for the next 60 ms instead of
   being padded with silence.
-- `wasmaudio.c` paces its writes on the host clock, so the mixer's silence
-  between bursts cannot fill the ring ahead of real time (≈70 ms queued at
-  steady state).
+- `wasmaudio.c` paces its writes on the host clock, so a guest that runs
+  ahead of real time cannot fill the ring ahead of it (≈70 ms queued at
+  steady state). It also publishes `streaming` in the ring header, which
+  drops when the mixer disables the voice. The mixer does that only after
+  the last device stopped and its frames were written, so it marks the end
+  of every sound.
 - `audio-worklet.js` banks a cushion before playing and after every dropout.
   It starts at 80 ms; a dropout grows it to cover a 5 s sound rendered at
-  the measured producer speed (at least doubling, at most 4 s), and a second
-  of silence resets it and skips the silent backlog. The C81 boot chime,
-  rendered over ~8 s of wall time, plays in one piece once it is banked.
+  the measured producer speed (at least doubling, at most 400 ms). The speed
+  is measured only while a sound is in progress. When a sound ends, whatever
+  it banked plays at once and the cushion goes back to 80 ms; a second of
+  silence inside a stream does the same and skips the silent backlog.
+- The worklet keeps the delay low inside a long stream such as game music.
+  After every 2 s in which the producer kept up and nothing dropped out, the
+  cushion halves, and the lowest the bank went above 80 ms is played out 10 %
+  faster at the same pitch: the worklet splices out 4–20 ms stretches where
+  the sound repeats itself, with a 12 ms crossfade (time-domain WSOLA, as
+  WebRTC's NetEQ does). The delay never stays above 500 ms: past it the bank
+  is cut back to the cushion in one crossfaded jump, so a guest that renders
+  slower than real time sounds choppy rather than late. The ring header
+  counts the frames skipped both ways (`drainedMs` and `cutMs` in
+  `tools/scenebench.mjs`).
 
 Muting is *not* the same as having no audiodev: the backend keeps consuming
 at the nominal rate when nobody is listening, so a mute drops audio instead of
