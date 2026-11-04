@@ -56,6 +56,8 @@ while [ $# -gt 0 ]; do
     *) echo "gate.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
+# bootcheck and earlykey take the server from the environment only
+export PORT
 
 # name | tiers | needs the browser server | command
 #
@@ -127,12 +129,14 @@ if [ "$LIST" = 1 ]; then
 fi
 
 selected=()
+names_selected=()
 for j in "${JOBS[@]}"; do
   IFS='|' read -r name tiers _srv _cmd <<<"$j"
   [[ " $tiers " == *" $TIER "* ]] || continue
   [ -z "$ONLY" ] || in_list "$name" "$ONLY" || continue
   [ -z "$SKIP" ] || ! in_list "$name" "$SKIP" || continue
   selected+=("$j")
+  names_selected+=("$name")
 done
 [ ${#selected[@]} -gt 0 ] || { echo "gate.sh: no jobs selected" >&2; exit 2; }
 
@@ -166,6 +170,28 @@ fi
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOGDIR="$ROOT/tests/results/gate-$STAMP"
 mkdir -p "$LOGDIR"
+
+# The native jobs run the reference builds of qemu/ as it is checked out;
+# bring them up to date before any job starts (incremental, seconds when
+# nothing changed).  Concurrent jobs must not each rebuild them, and a
+# lockstep job against a stale reference fails for nothing.
+need_jit=0 need_tci=0
+for name in "${names_selected[@]}"; do
+  case "$name" in
+    native|lockstep-wasm|lockstep-full) need_jit=1 ;;
+    opsuite|lockstep-native) need_jit=1 need_tci=1 ;;
+  esac
+done
+if [ "$need_jit" = 1 ]; then
+  echo "gate: native reference build (scripts/build-native.sh)"
+  bash "$ROOT/scripts/build-native.sh" >"$LOGDIR/build-native.log" 2>&1 ||
+    { echo "gate: native reference build failed: $LOGDIR/build-native.log"; exit 1; }
+fi
+if [ "$need_tci" = 1 ]; then
+  echo "gate: native TCI build (scripts/build-native-tci.sh)"
+  bash "$ROOT/scripts/build-native-tci.sh" >"$LOGDIR/build-native-tci.log" 2>&1 ||
+    { echo "gate: native TCI build failed: $LOGDIR/build-native-tci.log"; exit 1; }
+fi
 
 echo "gate: tier=$TIER dist=$DIST jobs=${#selected[@]} concurrency=$JOBS_MAX"
 echo "gate: logs in $LOGDIR"

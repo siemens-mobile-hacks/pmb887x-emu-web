@@ -10,7 +10,10 @@
 //
 // Requires: the wasm64 dist served on --port (see scripts/serve.mjs),
 // scripts/build-qemu-wasm64.sh output copied to site/dist-jit/, and the
-// native reference build from scripts/build-native.sh.  Both legs boot
+// native reference build from scripts/build-native.sh, up to date with the
+// qemu source the dist was built from (checked through the dist's
+// qemu-source.txt; --a-bin picks another build dir, --no-ref-check skips
+// the check for a deliberate cross-version comparison).  Both legs boot
 // the same fullflash with -accel tcg,one-insn-per-tb=on and the RTC
 // pinned (determinism prerequisites from phase 0b).
 //
@@ -39,6 +42,7 @@ function parseArgs() {
     aBin: path.join(ROOT, "build/qemu-native-build/qemu-system-arm"),
     label: "wasm",
     env: [],
+    refCheck: true,
   };
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
@@ -56,6 +60,7 @@ function parseArgs() {
       case "--port": a.port = argv[++i]; break;
       case "--dist": a.dist = argv[++i]; break;
       case "--a-bin": a.aBin = argv[++i]; break;
+      case "--no-ref-check": a.refCheck = false; break;
       case "--label": a.label = argv[++i]; break;
       case "env":
       case "--env": a.env.push(argv[++i]); break;
@@ -319,6 +324,27 @@ if (!flash) {
 if (!fs.existsSync(args.aBin)) {
   console.error(`native reference binary missing: ${args.aBin} (scripts/build-native.sh)`);
   process.exit(2);
+}
+// The reference must be built from the source the dist was built from: one
+// made from other code diverges on every guest-timing change, or agrees with
+// code the dist no longer has.  --no-ref-check compares regardless.
+if (args.refCheck) {
+  const refFail = (m) => {
+    console.error(`native reference check: ${m}`);
+    process.exit(2);
+  };
+  const stamp = (file, hint) => {
+    if (!fs.existsSync(file)) refFail(`${file} missing — ${hint}`);
+    return fs.readFileSync(file, "utf8").trim();
+  };
+  const distSrc = stamp(path.join(ROOT, "site", args.dist, "qemu-source.txt"),
+    "redeploy the dist (scripts/ninja-fast.sh)");
+  const refSrc = stamp(path.join(path.dirname(args.aBin), "qemu-source.txt"),
+    "rebuild the reference (scripts/build-native.sh)");
+  if (refSrc !== distSrc)
+    refFail(`${args.dist} is built from qemu ${distSrc}, the reference from ${refSrc}` +
+      " (scripts/build-native.sh builds qemu/ as checked out)");
+  log(`native reference: ${args.aBin} (qemu ${refSrc})`);
 }
 
 const stamp = claimRunStamp(args.label);

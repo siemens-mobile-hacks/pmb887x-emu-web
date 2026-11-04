@@ -49,6 +49,8 @@ check_link_args() {
 }
 check_link_args
 
+# taken before the build, so an edit made while it runs cannot be claimed
+SRC_ID="$(bash "$WEB_DIR/scripts/qemu-source-id.sh" "$BUILD_DIR")"
 T0=$SECONDS
 LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
@@ -81,6 +83,8 @@ for f in qemu-system-arm.js qemu-system-arm.wasm qemu-system-arm.worker.js qemu-
   [ -f "$f" ] && cp -f "$f" "$DIST/"
 done
 rm -f "$DIST/qemu-system-arm.wasm.gz" "$DIST/qemu-system-arm.js.gz"
+# what tools/lockstep-wasm.mjs matches the native reference against
+echo "$SRC_ID" > "$DIST/qemu-source.txt"
 # board configs live outside the ninja graph (build/bsp), and the page always
 # reads site/dist/boards.tar — repack on every deploy so iterating here can
 # never run a fresh qemu against yesterday's board configs

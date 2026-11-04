@@ -3,8 +3,8 @@
 # plugins enabled — the b-side binary of the phase-0b lockstep gate
 # (scripts/run-lockstep.sh; the a-side JIT comes from build-native.sh).
 #
-# Same pinned qemu-pmb887x worktree as build-native.sh
-# (build/qemu-native @ QEMU_PMB887X_REV). Upstream's configure disables
+# Same source as build-native.sh: the qemu/ submodule as it is checked
+# out, so both lockstep sides run the code under test. Upstream's configure disables
 # plugins by default when --enable-tcg-interpreter is set (CI cost of
 # the mem-instrumentation test, not a hard incompatibility — see commit
 # 7866b0f721 "deprecation: don't enable TCG plugins by default with
@@ -15,34 +15,20 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$ROOT/versions.env"
 SRC="$ROOT/qemu"
-WT="$ROOT/build/qemu-native"
 BUILD="$ROOT/build/qemu-native-tci-build"
 
-# worktree at the pinned revision (shares the existing clone's objects;
-# build-native.sh normally creates it — do it here too for standalone use)
-git -C "$ROOT" submodule update --init
-# versions.env pins an abbreviated hash, so compare full hashes: a short
-# pin never equals `rev-parse HEAD`, and the checkout below then ran on every
-# build; two concurrent gate builds raced on index.lock and the loser's
-# `checkout -f` fallback wiped uncommitted qemu edits (2026-09-24).
-PIN="$(git -C "$SRC" rev-parse --verify -q "$QEMU_PMB887X_REV^{commit}")"
-if [ "$(git -C "$SRC" rev-parse HEAD)" != "$PIN" ]; then
-  git -C "$SRC" checkout -q -B "$QEMU_PMB887X_BRANCH" "$PIN" 2>/dev/null \
-    || { git -C "$SRC" diff --quiet HEAD \
-          || { echo "$(basename "$0"): qemu/ has uncommitted changes and is not at the pin $QEMU_PMB887X_REV; refusing to force a checkout" >&2; exit 1; }
-        git -C "$SRC" checkout -q -f "$PIN"; }
-fi
-if [ ! -d "$WT" ]; then
-  git -C "$SRC" worktree add --detach "$WT" "$QEMU_PMB887X_REV"
-elif [ "$(git -C "$WT" rev-parse HEAD)" != "$PIN" ]; then
-  git -C "$WT" checkout -q -f --detach "$QEMU_PMB887X_REV"
+[ -e "$SRC/.git" ] || git -C "$ROOT" submodule update --init qemu
+
+# meson cannot move a build dir between sources (the old pinned worktree)
+INFO="$BUILD/meson-info/meson-info.json"
+if [ -f "$INFO" ] && ! grep -q "\"source\": *\"$SRC\"" "$INFO"; then
+  rm -rf "$BUILD"
 fi
 
 mkdir -p "$BUILD"
 cd "$BUILD"
-[ -f Makefile ] || "$WT/configure" \
+[ -f Makefile ] || "$SRC/configure" \
   --target-list=arm-softmmu \
   --disable-docs --disable-werror --enable-tcg-interpreter --enable-plugins
 

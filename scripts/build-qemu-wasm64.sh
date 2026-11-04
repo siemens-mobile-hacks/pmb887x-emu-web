@@ -84,10 +84,12 @@ LA="['-O3','-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1',
 # override, which is why every flag that has to survive goes through here.
 # (qemu's configure pins meson's optimization to -O2 through the same
 # built-in option; -O3 was measured a tie in round thirty-seven and
-# rejected — see doc/performance-handoff.md § Open items.)
+# rejected — see doc/performance-handoff.md (git history) § Open items.)
 ( cd "$BUILD" && meson configure -Dc_link_args="$LA" -Dcpp_link_args="$LA" -Dqom_cast_debug=false >/dev/null )
 
 echo "== ninja qemu-system-arm.js"
+# taken before the build, so an edit made while it runs cannot be claimed
+SRC_ID="$(bash scripts/qemu-source-id.sh "$BUILD")"
 ninja -C "$BUILD" qemu-system-arm.js
 
 echo "== deploy -> $DIST (atomic: temp name + rename — the server may
@@ -102,6 +104,8 @@ done
 for f in "$BUILD"/qemu-system-arm.js.symbols; do
   [ -f "$f" ] && cp "$f" "$DIST/" && break
 done
+# what tools/lockstep-wasm.mjs matches the native reference against
+echo "$SRC_ID" > "$DIST/qemu-source.txt"
 # board configs (site/dist/boards.tar, what the page always fetches) are not
 # part of this build's ninja graph — refresh them with the deploy.
 # Both of these live in the shared site/dist/ and are live inputs to whatever
