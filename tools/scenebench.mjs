@@ -56,7 +56,7 @@
 // under load.  A dist may be "<dir>@<query>" (extra page parameters, %2C
 // for commas).  Runs are sequential and interleaved across dists so host
 // drift hits all of them.  Results: tests/results/scenebench-<scenario>-<ts>.json.
-import { chromium } from "playwright-core";
+import { chromium, firefox } from "playwright-core";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,9 +89,10 @@ const scenarios = {
     ...EL71,
     measure: 20,
     // idle -> menu grid (opens on the centre icon) -> Extras (bottom left)
-    // -> Stopwatch, the 6th entry
+    // -> Stopwatch, 4th from the end: counted from the top it moves when the
+    // SIM's toolkit adds its "SAT" entry
     path: [["center", 3000], ["down", 1200], ["down", 1200], ["left", 1200], ["center", 3000],
-      ["down", 900], ["down", 900], ["down", 900], ["down", 900], ["down", 900], ["center", 4000]],
+      ["up", 900], ["up", 900], ["up", 900], ["up", 900], ["center", 4000]],
     ref: ref("el71v41_stopwatch.png"),
     // centre toggles run/stop, so whether it runs is read off the digits
     async start(s) {
@@ -221,7 +222,10 @@ function treeCpuS() {
   return total;
 }
 const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
-const outBase = path.join(here, `../tests/results/scenebench-${scenarioName}-${stamp}`);
+// SCENEBENCH_BROWSER=firefox runs Playwright's Firefox instead of Chromium
+const browserName = process.env.SCENEBENCH_BROWSER || "chromium";
+const outBase = path.join(here, `../tests/results/scenebench-${scenarioName}-` +
+  `${browserName === "chromium" ? "" : browserName + "-"}${stamp}`);
 
 const SNAP = `(() => {
   const m = window.__qemu;
@@ -245,8 +249,15 @@ const SNAP = `(() => {
 
 async function runOnce(spec, run) {
   const devtools = process.env.SCENEBENCH_DEVTOOLS;
-  const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required",
-    ...(devtools ? [`--remote-debugging-port=${devtools}`] : [])] });
+  const browser = browserName === "firefox"
+    ? await firefox.launch({ headless: true, firefoxUserPrefs: {
+      "media.autoplay.default": 0,
+      "media.autoplay.block-webaudio": false,
+      "media.autoplay.blocking_policy": 0,
+    } })
+    : await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required",
+      ...(devtools ? [`--remote-debugging-port=${devtools}`] : []),
+      ...(process.env.SCENEBENCH_CHROME_ARGS ? process.env.SCENEBENCH_CHROME_ARGS.split(" ") : [])] });
   const p = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   let pageErr = null, serialExit = false;
   p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });
@@ -347,6 +358,7 @@ async function runOnce(spec, run) {
     if (sc.start && !(await sc.start(s))) fail("app did not start");
     await shoot("start");
     if (devtools) console.log(`[scenebench] ${tag}: measuring`);
+    if (process.env.SCENEBENCH_AT_MEASURE) await p.evaluate(process.env.SCENEBENCH_AT_MEASURE);
 
     await sleep(3000);
     const a = await p.evaluate(SNAP);
@@ -423,7 +435,7 @@ for (const d of dists) {
   console.log(`SCENEBENCH ${scenarioName} ${d} median: ` + Object.entries(summary[d]).map(([k, v]) => `${k}=${v}`).join(" "));
 }
 writeFileSync(`${outBase}.json`, JSON.stringify({
-  scenario: scenarioName, stamp, measureS, flash: path.basename(flash),
+  scenario: scenarioName, browser: browserName, stamp, measureS, flash: path.basename(flash),
   loadavg: readFileSync("/proc/loadavg", "ascii").split(" ").slice(0, 3).join(" "),
   slowhost: process.env.SPIN ? { cores: process.env.CORES, spin: process.env.SPIN } : null,
   summary, results,

@@ -76,6 +76,9 @@ for line in open(log, errors="replace"):
             mod = int(p[7], 16) - int(idx)    # logged as module base + index
             mod_fns[mod] += 1
             name = ("W", mod, idx, p[8] == "*")    # "*" = TurboFan
+        elif name.startswith("tb_") and len(p) > 8:
+            # a W64_NAME_TBS build: tb_<pc>_<icount>_<flags>
+            name = ("W", 0, name, p[8] == "*")
         else:
             name = (kind, name)
         add(addr, size, name)
@@ -90,7 +93,28 @@ for line in open(log, errors="replace"):
         libs.append((p[1].rsplit("/", 1)[-1], int(p[2], 16), int(p[3], 16)))
     elif t == "tick":
         pc, us, vms = int(p[1], 16), int(p[2]), p[5]
-        ticks.append((us, pc, vms, lookup(pc)))
+        caller = None
+        if os.environ.get("V8T_CXXCALLER") and lookup(pc) is None:
+            for a in p[6:]:
+                try:
+                    caller = lookup(int(a, 16))
+                except ValueError:
+                    continue
+                if caller is not None:
+                    break
+        chain = None
+        if os.environ.get("V8T_CHAIN"):
+            chain = []
+            for a in p[6:]:
+                try:
+                    c = lookup(int(a, 16))
+                except ValueError:
+                    continue
+                if c is not None:
+                    chain.append(c)
+                if len(chain) >= 12:
+                    break
+        ticks.append((us, pc, vms, lookup(pc), caller, chain))
 
 main_mod = mod_fns.most_common(1)[0][0]
 tmax = ticks[-1][0]
@@ -103,6 +127,8 @@ def cat_of(pc, nm):
         return "chrome C++" if lib.startswith("chrome") else "lib " + lib
     if nm[0] == "W":
         if nm[1] == main_mod:
+            if os.environ.get("V8T_MAINTIER"):
+                return "main-module wasm, " + ("TurboFan" if nm[3] else "Liftoff")
             return "main-module wasm"
         return "TB-module wasm, " + ("TurboFan" if nm[3] else "Liftoff")
     return nm[0]
@@ -113,7 +139,7 @@ def cat_of(pc, nm):
 if os.environ.get("V8T_TIMELINE"):
     step = float(os.environ["V8T_TIMELINE"]) * 1e6
     bins = {}
-    for us, pc, vms, nm in ticks:
+    for us, pc, vms, nm, *_ in ticks:
         bins.setdefault(int((us - t0) // step), Counter())[cat_of(pc, nm)] += 1
     for b in sorted(bins):
         c = bins[b]
@@ -132,7 +158,7 @@ else:
     win = [x for x in ticks if x[0] >= tmax - last * 1e6]
 if drop_fn:
     bins, hot = Counter(), Counter()
-    for us, pc, vms, nm in win:
+    for us, pc, vms, nm, *_ in win:
         bins[us // 1000000] += 1
         if nm and nm[0] == "W" and nm[1] == main_mod and sym.get(nm[2]) == drop_fn:
             hot[us // 1000000] += 1
@@ -141,7 +167,7 @@ if drop_fn:
     print(f"dropped {len(bad)} of {len(bins)} 1 s bins where {drop_fn} > {100 * drop_share:.1f} %")
 n = len(win)
 bucket, fn, vm = Counter(), Counter(), Counter()
-for us, pc, vms, nm in win:
+for us, pc, vms, nm, *_ in win:
     vm[vms] += 1
     cat = cat_of(pc, nm)
     bucket[cat] += 1
@@ -156,5 +182,54 @@ print(f"window {last:.0f}s: {n} ticks of {len(ticks)}; vmstate {dict(vm)}")
 for k, v in bucket.most_common():
     print(f"  {100 * v / n:6.2f} %  {k}")
 print("top entries outside TB modules:")
-for k, v in fn.most_common(45):
+for k, v in fn.most_common(int(os.environ.get("V8T_N", 45))):
     print(f"  {100 * v / n:6.2f} %  {k}")
+# V8T_CXXCALLER=1: who calls into the C++/library code (first resolvable stack frame)
+if os.environ.get("V8T_CXXCALLER"):
+    cc = Counter()
+    for us, pc, vms, nm, caller, *_ in win:
+        if nm is None:
+            c = caller
+            if c is None:
+                key = "?"
+            elif c[0] == "W":
+                key = ("C " + sym.get(c[2], c[2])) if c[1] == main_mod else "TB code"
+            else:
+                key = c[0] + " " + c[1]
+            cc[(cat_of(pc, nm), key)] += 1
+    print("C++/lib ticks by first known caller:")
+    for k, v in cc.most_common(40):
+        print(f"  {100 * v / n:6.2f} %  {k[0]} <- {k[1]}")
+# V8T_CHAIN=<substring>: main-module call chains of the ticks whose stack holds a frame named so
+if os.environ.get("V8T_CHAIN"):
+    want = os.environ["V8T_CHAIN"]
+    ch = Counter()
+    def nmof(c):
+        if c[0] == "W":
+            return sym.get(c[2], c[2]) if c[1] == main_mod else "TB"
+        return c[1].split(" ")[0]
+    for us, pc, vms, nm, caller, chain in win:
+        names = [nmof(c) for c in chain or []]
+        if nm is not None:
+            names.insert(0, nmof(nm))
+        if any(want in x for x in names):
+            i = next(i for i, x in enumerate(names) if want in x)
+            if os.environ.get("V8T_LEAF"):
+                ch[" < ".join(names[:min(i, 3)]) or names[0]] += 1
+            else:
+                ch[" < ".join(names[i:i + 6])] += 1
+    print(f"chains through {want}:")
+    for k, v in ch.most_common(25):
+        print(f"  {100 * v / n:6.2f} %  {k}")
+# V8T_TBTOP=<n>: the hottest TB-module functions (module base, index, tier)
+if os.environ.get("V8T_TBTOP"):
+    tbf = Counter()
+    for us, pc, vms, nm, *_ in win:
+        if nm and nm[0] == "W" and nm[1] != main_mod:
+            tbf[(nm[1], nm[2], "T" if nm[3] else "L")] += 1
+    tot = sum(tbf.values())
+    acc = 0
+    print(f"TB functions with ticks: {len(tbf)}")
+    for k, v in tbf.most_common(int(os.environ["V8T_TBTOP"])):
+        acc += v
+        print(f"  {100 * v / n:6.2f} %  (cum {100 * acc / tot:5.1f} % of TB)  mod {k[0]:#x} fn {k[1]} {k[2]}")
