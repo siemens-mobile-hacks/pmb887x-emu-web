@@ -100,6 +100,14 @@ echo "fullflash: $FLASH$([ "${RW:-0}" = 1 ] && echo ' (writable)')"
 echo "serial:   $SERIAL   monitor: $MONITOR   display: $DISPLAY_MODE"
 echo
 
+# bsp 85d4f78 and later give the board an empty "iso7816-slot" and the card
+# is a device of its own; older board sets carry the card and configure it
+# from the PMB887X_SIM* variables above
+SIM_ARGS=()
+if [ "$SIM" = virtual ] && grep -rqs '"iso7816-slot"' "$BOARDS"; then
+  SIM_ARGS=(-device "gsm-sim,operator=$OPERATOR")
+fi
+
 # ICOUNT=none boots without -icount entirely
 ICOUNT_ARGS=()
 if [ "$ICOUNT" = "vt" ]; then
@@ -116,4 +124,5 @@ exec "$QEMU" \
   -drive "if=pflash,format=raw,file=$FLASH${READONLY:+,$READONLY}" \
   -serial "file:$SERIAL" \
   -monitor "$MONITOR" \
+  "${SIM_ARGS[@]}" \
   "$@"

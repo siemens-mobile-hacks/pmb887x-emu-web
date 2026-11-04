@@ -1633,6 +1633,13 @@ async function boot() {
     const audioArgs = qsp.get("sound") === "off"
       ? []
       : ["-audio", `wasm,out.frequency=${audioRate()},out.channels=2`];
+    // bsp 85d4f78 and later give the board an empty "iso7816-slot" and the
+    // card is a device of its own; older board sets carry the card and
+    // configure it from the PMB887X_SIM* variables set in preRun
+    const simSlot = [...boardText.values()].some((t) => t.includes('"iso7816-slot"'));
+    const simArgs = simSlot && sim === "virtual"
+      ? ["-device", `gsm-sim,operator=${operator}`]
+      : [];
     const args = [
       "-display", "wasm",
       ...audioArgs,
@@ -1644,6 +1651,7 @@ async function boot() {
       "-drive", `if=pflash,format=raw,file=${FULLFLASH_PATH}`,
       "-serial", "file:/serial.log",
       "-monitor", "none",
+      ...simArgs,
       ...extraArgs,
     ];
 
