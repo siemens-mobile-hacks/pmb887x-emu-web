@@ -529,6 +529,7 @@ Every share below is as of its date, and later work moved some of them.
 | Stopwatch, free-run + bounds checks (2026-11-02) | TB code 62 %, DSP kernels ~10 %, SVC/eret/mode-switch path ~2.5 % (upstream target/arm), BQL futex waits ~1.2 %, `lcd_handle_cd` lock 0.3 %, JS clock reads ~2.4 % (a free-run artifact: the raw-clock cache applies only when behind real time) |
 | Stopwatch, V8 `--prof` (2026-11-01) | TB TurboFan 46 %, main module 26 %, TB Liftoff 6.4 % + `WasmLiftoffFrameSetup` 2.4 %, libc 16 % (`ATOMICS_WAIT`, i.e. idle) |
 | Towerblox (2026-11-02) | ARM TBs 47 %, DSP TBs 19 %, rest 33 %. The fill loop at a0a04cc6 was ~35 % of guest insns in ~6.5 % of the time before `3116fa62be`. Liftoff-tier TB code ~9 % + frame setup 1.5 % |
+| Towerblox, V8 `--prof`, free-run + bounds checks (2026-11-04, `92f6a90e56`) | TB TurboFan 59 %, main module 31–33 %, TB Liftoff 4–5 % + `WasmLiftoffFrameSetup` 1.5 %. TB code by owner: ARM 40 %, DSP 23 %. Top C: `tcg_fast_run_35be` 4.2–4.7, `dsp_bus_advance` 3.1 (callers: data reads 1.1, the `dsp_sync` timer 1.0, data writes 0.8, `dsp_runtime_advance_cycles` 0.6), chain helper 2.1–2.3, `helper_w64_fill` 1.9–2.1, `dsp_sync` 1.5–1.7, kernels 643f/64a9/6489 ~1.2/1.1/0.7. Nothing else above 0.8 %; from entry 26 down, each is ≤ 0.3 %. The hottest ARM TB (2 %) is the fill loop's own superblock |
 | Bobby (2026-10-31) | Worker busy time: DSP 61 %, ARM 19 %, display 13 % |
 | Video (2026-11-01/02) | Busy 11.8 s of 20 s = ARM JIT 5.0 s, DSP 4.4 s, ARM-side C 2.1 s. GSM search kernels (35be+643f+6489+64a9) ~30 % of free-run ticks (midi 12 %, bobby 9 %) |
 | MIDI (2026-10-30/11-01) | DSP ~62 % of the vCPU, ~48M DSP cycles/s. Hot blocks: f4ec 27 % of chained cycles, e20d 16 %, f4b8 10 %. DSP-bound: only faster DSP execution helps |
@@ -544,6 +545,7 @@ unless noted).
 |---|---|
 | ARM TB entries | 16.5–19M/s; ~50 % indirect (goto_ptr): per-TB slot hit 83 %, inline hash 17 % |
 | ARM ns per guest insn | stopwatch ~1.7, towerblox ~3.5 (its fill loop ~0.75) |
+| Thumb fill helper (towerblox, 2026-11-04) | all 16-bit stores; ~16 passes per call on average, and 3 of 4 calls run fewer than 16 passes, so the per-call cost dominates (23M calls, 373M passes over a 30 s real-time window plus boot) |
 | SVC / eret / mode MSR / IRQ (stopwatch) | ~240k / ~245k / ~250k / ~1.9k per s |
 | ARM MMIO accesses | ~50k/s, no polling; `mmu_lookup1` ~18k/s in steady state |
 | New ARM TBs in steady state | stopwatch ≈ 0; towerblox ~135–300/s (JIT-compiled Java at fresh addresses, no invalidation churn) |
@@ -747,7 +749,11 @@ unless noted).
   semantic cost. It is a large, upstream-divergent rewrite.
 - **Direct DSP block linking** (≤ 3 %).
 - **Kernels:** EE49 (~1.5 % on Bobby, S75 only) and DDDE (~1 % on towerblox).
-- **Lazy DSP flags.** Not tried.
+- **Lazy DSP flags.** Not tried. Priced on 2026-11-04 at ~3–4 % of
+  towerblox: `tcg_remove_dead_flag_stores` already drops flag stores that a
+  later instruction of the same block overwrites, so only the flags that die
+  across blocks are left to save, and it means rewriting the flag emitters of
+  upstream's `dsp/tcg.c`.
 - **EL71 boot window:** TCG liveness/register-allocation temp loops cost ~3 %.
   ~1.35k TB invalidations per boot each bump a global key.
 
