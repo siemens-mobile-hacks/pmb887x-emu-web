@@ -7,7 +7,7 @@
 // tools/uibench.mjs a board's idle/menu steady state.  Neither runs Java:
 // the J2ME VM is a different workload — a bytecode interpreter over a
 // software framebuffer whose frame loop sleeps on a guest timer — and
-// § Open items 7 of doc/performance-handoff.md has wanted a meter for it
+// § Open items 7 of doc/performance-handoff.md (git history) has wanted a meter for it
 // since round nine.  This is that meter.
 //
 // Nothing here is specific to one firmware or one game.  The walk is

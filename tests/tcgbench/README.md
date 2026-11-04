@@ -94,7 +94,7 @@ These are the numbers the workstream was priced with; the MMIO
 conclusions below were acted on the same day (0018: mmiopoll 534 → 202
 ns/access on dist-jit, 606 → 252 on dist — native parity at 223), and
 the "phone boot at TCI parity" reading was later shown to be phase
-cancellation and then fixed (see doc/performance-handoff.md). The
+cancellation and then fixed (see doc/performance-handoff.md (git history)). The
 compute ratios and the mirror method still hold; re-run
 `node tools/tcgbench.mjs` for current absolutes.
 

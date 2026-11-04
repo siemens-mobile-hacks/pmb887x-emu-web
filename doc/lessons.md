@@ -6,6 +6,20 @@ for it, and how it was established. The live working rules for perf
 work are in [optimization-playbook.md](optimization-playbook.md); this
 file is the "why" behind them and behind the timing model.
 
+The examples are those of the build that was measured, and many of the
+tools and knobs they name are gone. The 2026-09-22 review (qemu
+`b9971ade2e`) removed `include/qemu/wasm-diag.h` with every
+`wasm_memstat` counter and every `W64_*` env knob except the lockstep
+ones, speculative translation and the TCI browser build (batch
+compaction followed on 2026-09-24, `f36417f69f`), so `workbench.mjs`,
+`diagall.mjs`, `counters.mjs` and `tools/perf/exitrate.sh` no longer
+work. The DSP LLE merge (2026-10-29)
+dropped icount2 and `precise-clocks`; the real-time cap (`rt=`,
+`budget:30:500`) was removed the same day, and the page has run the TCG
+`vcpu-timers` clock by default since then. Defaults and figures quoted
+below (slot counts, cache sizes, MIPS, boot times) are those of their
+date. Current measurement methods are in [performance.md](performance.md).
+
 ## Read the engine's machine code, not the wasm you emitted
 
 **A call on a cold arm is paid on the hot path unless the engine is told
@@ -85,42 +99,39 @@ because neither is anything the build script says.
   L1↔DSP handshake and other firmware budgets are wall-clock budgets in
   guest terms; on a host slower than the phone, any model that locks
   virtual time to real time (no icount, or the fork's adaptive
-  `precise-clocks=on`) starves the guest of instructions per virtual
-  second and the phone aborts with `>>EXIT<< FILE: l1bbcsg`. Locking
-  the clock to a fixed 104 MHz fixed it, and stock `-icount
-  shift=3,sleep=off` does the same with no fork-specific code — that is
-  the shipping model. Correctness must never depend on execution speed;
-  the lockstep gates enforce it.
+  `precise-clocks=on`, since removed) starves the guest of instructions
+  per virtual second and the phone aborts with `>>EXIT<< FILE: l1bbcsg`.
+  Locking the clock to a fixed 104 MHz fixed it, and stock `-icount
+  shift=3,sleep=off` does the same with no fork-specific code; that was
+  the shipping model until 2026-10-29. The page now runs TCG
+  `vcpu-timers`, which keeps the same property another way: the virtual
+  clock counts guest CPU cycles and is paced to wall time, so a slow
+  host slows the clock instead of starving the firmware. icount remains
+  for lockstep and `?icount=`. Correctness must never depend on
+  execution speed; the lockstep gates enforce it.
 - **`sleep=off` is the indispensable half.** With `sleep=on` the vCPU
   parks in real time during every idle window while execution runs far
   slower than 1×, and the half-host-paced DSP handshake desyncs:
   `shift=3` and `shift=4` with `sleep=on` both die with the same L1
   abort, in the browser and natively. `sleep=off` makes idle
   deterministic (virtual time jumps to the next deadline).
-- **The idle warp then needs a real-time cap** (0032, `banked`): with
-  `sleep=off` a halted guest's clock and animations run ahead of wall
-  (~3.7×). The cap sleeps only on idle overrun, never on the
-  compute-bound boot. Native has no cap by default, so native and web
-  agree on the timing model and disagree on pacing.
-- **…and the cap needs two phases** (`budget:30:500`, the shipping
-  default): `banked` is right *during* the boot — a guest that fell
-  behind must be allowed to catch up — and too generous after it,
-  because the same credit lets a later stall be repaid by sprinting the
-  phone's clock. So bank for the guest's first 30 s of its own clock,
-  then cap the repayable bank at 500 ms: a stall is still repaid, but
-  never by more than half a second of skipped clock, so the phone stays
-  close behind wall time instead of freezing its countdowns. The window
-  is measured in **guest** time on purpose: the boot costs the same
-  virtual time on every host while its wall time ranges from ~39 s to
-  minutes, so a wall window would expire mid-boot on exactly the slow
-  machines `banked` exists to protect.
+- **A catch-up bank must be windowed in guest time.** Under icount the
+  page once paced the idle warp with a real-time cap (removed
+  2026-10-29); `vcpu-timers-bank` now does the boot half of that job. A
+  guest that fell behind during the boot must be allowed to catch up,
+  but the same credit later lets a stall be repaid by sprinting the
+  phone's clock, so the bank is limited to the guest's first 30 s (the
+  page's `?bank=`); after that, time lost to the host is dropped. The window is measured in **guest** time on purpose:
+  the boot costs the same virtual time on every host while its wall
+  time ranges from ~39 s to minutes, so a wall window would expire
+  mid-boot on exactly the slow machines the bank exists to protect.
 - **LG firmware needed no icount** and booted on the realtime clock
   until the DSP LLE (2026-10-29): the DSP's boot-ROM poll loop now runs in
   lockstep on the vCPU thread, and in real time it starves the ARM, so
-  the page and `run-native.sh` give `lg-*` the same `shift=3,sleep=off`.
-  Before that the LG boards were the only coverage of the non-icount
-  timer/idle paths (0035/0037 were found that way); `?icount=none` still
-  reaches them.
+  `run-native.sh` gives `lg-*` the same `shift=3,sleep=off` (the page
+  runs every board on `vcpu-timers`). Before that the LG boards were the
+  only coverage of the non-icount timer/idle paths (0035/0037 were
+  found that way); `?icount=none` still reaches them.
 - **Any `>>EXIT<<` on serial means the phone crashed.** Do not wait for
   recovery; stop there.
 - **Virtual time outrunning instructions kills the boot** (BROM delay
@@ -186,7 +197,7 @@ because neither is anything the build script says.
   KE800 (r63400) are 240×320 — 3.3× the pixels through the same per-byte
   `ssi_transfer` → `lcd_transfer` chain, and the LCD data path is one
   byte per call regardless of panel.
-- **`tools/uibench.mjs` is the per-board meter** (`--board s75|el71|ke800`,
+- **`tools/uibench.mjs` was the per-board meter** (`--board s75|el71|ke800`,
   `--state idle|menu|both`).  Use `--settle <s>` rather than its rate
   detector whenever runs must be comparable: a boot has compile-bound
   stretches that read as "quiet" and end the wait 100 s early.
@@ -229,10 +240,14 @@ because neither is anything the build script says.
   because BSY is v1's own and a CPU may spin on it touching nothing
   else.
 
-## Measure at rt=off, but gate at rt=banked
+## Measure in the bench configuration, but gate on the shipping one
+
+The `rt=` cap below was removed on 2026-10-29; the same split now lies
+between the bench-only switches (`tools/perf/freerun.diff`,
+`?sound=off`) and the page default, which is what `bootcheck` runs.
 
 - **A change can be correct at `rt=off` and hang at `rt=banked`.**  Every
-  meter in this project runs `rt=off`, because the real-time cap's
+  meter in this project ran `rt=off`, because the real-time cap's
   pacing is not what an engine A/B is asking about.  Round fifteen's DIF
   v1 conversion booted, rendered and menu-navigated correctly at
   `rt=off` through several hundred runs — and stalled the CX70 at 140M
@@ -273,28 +288,6 @@ because neither is anything the build script says.
   PNG does not collide by luck), which is why the early results in this
   round were believable — but the check that decides is the lockstep.
 
-## Guest-event counters are the meter when the host is not yours
-
-- **Under icount the guest is a deterministic function of its
-  instruction count** — that is what makes the wasm-vs-native lockstep
-  gate possible — so the guest work between two instruction milestones
-  is identical in every run of every build that does not change
-  guest-visible behaviour.  `tools/workbench.mjs` times that stretch:
-  **0.9 % spread** on a CX70 where the idle meter swings ~15 %, because
-  none of the guest's own variability is in it.  It prints the virtual
-  time at each milestone as the check that the assumption held.
-- **It also prints counters, and those are load-independent.**  `lookup`,
-  `jcFlush`, `tlbFlush`, `fill` and `tbGen` count *guest* events, so a
-  change that removes work shows up in them at any host load.  When this
-  machine's load average went from 3 to 55 mid-session — it is a
-  container, `/proc/loadavg` is the host's and the other tenants are
-  invisible — wall-clock A/B stopped meaning anything (S75 idle read
-  32–40 MIPS against a 56 MIPS baseline, on the *unchanged* build), but
-  the mechanism could still be confirmed.
-- **Check `load=` in the result line before believing an A/B**, and
-  re-run anything measured above ~10.  Interleaving survives drift; it
-  does not survive the host being ten times busier for one leg.
-
 ## A meter that suits one board can be wrong for another
 
 - **`workbench.mjs` is right for a board that never halts and wrong for
@@ -302,7 +295,6 @@ because neither is anything the build script says.
   27091, `v/wall` 1.07 against 58), so its wall time is guest work.  The
   S75 spends the same window mostly halted, where wall time is wake
   latency, and the same meter read 41.3 then 31.1 MIPS for one build.
-  Use `uibench.mjs` idle there, as before.
 - **An animated idle screen is not a steady state.**  The SGOLD idle
   screen has a running clock and the GSM stack cycles through
   network-search phases, so idle MIPS swings ~15 % between runs of one
@@ -642,8 +634,9 @@ rows were a third of it, and the single largest row (3.4 %,
 The way to price a function without trusting a profile is to make it do
 its own work *n* extra times and measure the wall difference.  It is
 correct by construction when recomputation is idempotent — the guest
-stays bit-identical and only the cost moves — and `workbench.mjs`'s
-fixed-guest-work window resolves it.
+stays bit-identical and only the cost moves — and a paired meter (then
+`workbench.mjs`'s fixed-guest-work window, today a free-run A/B)
+resolves it.
 
 Two traps, both hit in one afternoon:
 
@@ -689,8 +682,8 @@ for translation and module compilation.  Rules learned doing it:
   boots at 27.8 MIPS and runs warm at 73.6, and it is very tempting to
   call the 2.65x "overhead the pipeline doesn't explain".  It is not:
   those windows execute *different guest code*, and MIPS is only
-  comparable across identical guest work — which is the whole reason
-  `workbench.mjs` exists.  What the timer does support is the narrow
+  comparable across identical guest work — which was the whole reason
+  for `workbench.mjs`.  What the timer does support is the narrow
   claim: the pipeline is 19.5 % of boot wall, so ~80 % is execution and
   devices, and that 80 % is unpriced.
 - **Calibrate the timer, or the floor will masquerade as the finding.**
@@ -925,8 +918,9 @@ The proof is in the same sweep, past the point that was fitted.  Going
 3 → 8 slots removes another 1.69 % of exits — the mechanism fires,
 `tools/exitrate.sh` confirms it at matched instruction counts — and the
 clock reads **−1.06 %**.  Fewer boundaries, more wall.  The terms in the
-bundle have opposite signs and they cross at three, which is why three
-is the shipped default.  A marginal price cannot change sign; a bundle
+bundle have opposite signs and they crossed at three, which is why three
+was the shipped default then (`W64_FT_MAX` is 6 today: later frontend
+changes moved the crossing).  A marginal price cannot change sign; a bundle
 price can, and this one does.
 
 The trap is that the fit quality argues for the wrong thing.  1.2 % on
@@ -963,18 +957,22 @@ grows 1880 -> 2903 bytes and the per-module cost reads **83.6 / 82.7 /
 83.3 us**.  A cost that is flat across a 1.5x size range is not paying for
 the work the phase is named after.
 
-It was not paying for compilation at all.  The same real module compiled
-**200 times back to back inside the vCPU worker's own isolate**
-(`W64_MODBENCH`) costs **12-31 us**; in the normal flow, once every
-~700 us between stretches of guest execution, the same bytes cost 83 us.
-Four fifths of "compile" is cold cache — the compiler's own code and data,
-evicted by the guest.
+What it *was* paying for was then mis-measured.  The same real module
+compiled **200 times back to back inside the vCPU worker's own isolate**
+(`W64_MODBENCH`) cost **12-31 us** against 83 us in the normal flow, and
+that was read as "four fifths of compile is cold cache".  Round 24
+withdrew it: the probe compiled identical wire bytes, which V8 serves
+from its compiled-module cache, and distinct bytes cost 2.0–3.8× more
+(see *A repeat-the-same-input microbenchmark of a compiler measures its
+cache* under Measuring).  The per-call intercept is real — an empty
+module still pays it (`tools/modshape-probe.mjs`) — but it is not cold
+cache.
 
 Two things follow.  A phase whose per-unit cost ignores its input size is
 telling you the unit, not the work: find what *is* proportional and rename
 the line item.  And a cost paid per *event* rather than per byte inverts
 the usual advice — making each unit smaller buys nothing, and only fewer
-events, or events adjacent to each other, can pay.
+events can pay.
 
 Note also what this exonerated.  Before the split, the obvious suspect for
 an inflated compile was the Firefox GC nudge next door in the same
@@ -1112,7 +1110,8 @@ and the wasm port had both wrong:
 
 Either one loses an edge, and on a board with **icount off the main loop
 is the only thing that runs `QEMU_CLOCK_VIRTUAL` deadlines** (see
-Timing model, and the comment at `main_loop_wait`).  So a lost edge is
+Timing model, and the comment at `main_loop_wait`; today that means
+`?icount=none`, since the default `vcpu-timers` runs them on the vCPU).  So a lost edge is
 not a delay, it is a stop: the loop sleeps out its timeout — `INFINITY`
 when no timer is armed — the vCPU blocks on the device completion that
 timer owed it, and the guest is dead with every counter frozen.  That is
@@ -1161,9 +1160,11 @@ for empty-list fan-out before assuming a notify is meaningful.
 And the asymmetry that nearly made it a regression: **who runs the
 timers decides whether the wake is waste.**  Under icount the vCPU
 thread runs QEMU_CLOCK_VIRTUAL timers, so waking the main loop for them
-is pure loss.  With `icount=none` — the LG boards — the main loop *is*
-the timer runner, and the same notify is the kick that keeps it
-iterating.  Gate on `icount_enabled()`, not on the shape of the code.
+is pure loss.  With `icount=none` — the LG boards then — the main loop
+*is* the timer runner, and the same notify is the kick that keeps it
+iterating.  Gate on who runs the timers, not on the shape of the code
+(`qemu_timer_notify_cb` now tests `qemu_virtual_timers_on_vcpu` before
+`icount_enabled()`).
 
 ## "This recomputation cannot change anything" — verify, don't argue
 
@@ -1255,8 +1256,7 @@ The numbers, all from `tools/locals-probe.mjs` and `--js-flags`:
   a first-class target.  277 TBs/s are still being translated in steady
   state, and a TB called a few thousand times a second needs seconds to
   leave the baseline tier.  The budget drains per call, so the fix is
-  fewer, bigger functions: see the module-local dispatch loop in
-  performance-handoff.md.
+  fewer, bigger functions.
 
 And the call you were avoiding is nearly free: a TB module's call into
 the main module is **2.1–2.4 ns** optimized, 3.6–4.4 ns baseline, the
@@ -1324,8 +1324,9 @@ mechanism: **"inlining is wrong here" is a statement about the tier, not
 about inlining**, so it expires when the tier does. If the module-local
 dispatch loop lands and TBs reach TurboFan ~277× sooner in TB-entry
 terms, the compare chain gets cheap while the helper call does not, and
-mechanism K should flip back to profitable. That is why it is being
-defaulted off behind a live knob rather than deleted. When you retire
+mechanism K should flip back to profitable. That is why it was
+defaulted off behind a knob rather than deleted (`gen_goto_ptr_pcc` is
+emitted on every `goto_ptr` again today). When you retire
 an optimization because emitted code is slow, write down what would have
 to change for it to come back.
 
@@ -2382,7 +2383,9 @@ attribution and it is worthless.
 - **TCI's `goto_tb` slot holds a code pointer, not a TB pointer.**
   Returning it to `cpu_exec` made `tb_add_jump` cmpxchg into the
   bytecode buffer → unaligned-access trap at TB #6.
-- **Speculative translation must probe non-faulting.** The first
+- **Speculative translation must probe non-faulting** (speculation was
+  removed on 2026-09-23; the rule holds for anything that translates
+  ahead of execution). The first
   speculative build recorded a Thumb `blx` target as a successor;
   `tb_htable_lookup` calls the faulting `get_page_addr_code`, ARM's
   tlb_fill flags a `pc & 3` fetch as an alignment fault, and the guest
@@ -2403,18 +2406,15 @@ attribution and it is worthless.
   resolution in the iotlb entry, 0018, reached native parity).
 - **A generation-agnostic interpreter tier is not free either**: TCI
   micro-optimization reached its floor with 0007–0016; the wasm64
-  backend supersedes it and TCI stays as the reference/oracle tier.
+  backend superseded it, and the TCI browser build was dropped on
+  2026-09-23.
 - **Native builds of the series must link**: `wasm_diag_stat` defined
   in `tcg/tci.c` (TCI-only) but referenced from always-compiled cputlb
   broke every native build for days. Build natively before publishing.
 - **qemu-11 outop machinery**: backends get immediates via
   `tcg_target_const_match` + `out_rri`/`out_ri`/`out_i`; a bare const
   constraint letter with no register class trips
-  `get_constraint_priority`'s assert at boot. TCI extra opcodes are
-  appended per patch; `#ifdef __EMSCRIPTEN__` blocks in
-  `tcg-target-opc.h.inc` shift numbering between builds.
-- **The TCI TB layout**: every TB starts with `tci_tbhdr`; anything that
-  jumps into a TB must land on the header.
+  `get_constraint_priority`'s assert at boot.
 
 ## Measuring
 
@@ -2938,8 +2938,7 @@ attribution and it is worthless.
   header after every enum edit (two measurements were read against a
   stale mapping).
 - **Single-run knob sweeps on this host are noise at ±5 %**; only
-  interleaved pairs decide. The compaction threshold has failed to move
-  twice — stop sweeping it.
+  interleaved pairs decide.
 - **Every TCI/longjmp patch of the early series was individually
   removal-tested** (2026-09-09): each costs 15–40 % of the window or
   collapses the boot when removed; the only removable surface was the
@@ -3173,19 +3172,15 @@ attribution and it is worthless.
   browser boot anyone watched for the whole 0019–0032 run; EL71 (the
   only one that programs flash during boot) and KE800 (the only one
   without icount) each hid a distinct bug the whole time while the
-  native suite stayed 4/4. CX70 joined for SGOLD. The four-board browser
-  gate (`tools/bootcheck.mjs`) is in every tier of `scripts/gate.sh`.
+  native suite stayed 4/4. CX70 joined for SGOLD, KE970 later. The
+  browser boot gate (`tools/bootcheck.mjs`) is in every tier of
+  `scripts/gate.sh`.
 - **The native suite is blind to every emscripten-gated change**, and a
   lockstep gate that forces `one-insn-per-tb` cannot see multi-insn-TB
-  bugs. The TCI dist is the oracle for JIT-only failures: diff the same
-  device trace between the two engines.
+  bugs.
 - **A stale `boards.tar` looks exactly like a qemu-side regression**
   (board settings such as `[rtc] format` silently revert); every deploy
   path repacks it.
-- **Any change near timers/halt/rr** also needs the precise-clocks smoke
-  (`?icount=precise-clocks=on` must keep v advancing) — icount2 runs
-  due timers synchronously inside `timer_mod`, and virtual-clock device
-  completions stalled it once.
 
 ## pmb887x facts worth knowing
 
@@ -3200,11 +3195,8 @@ attribution and it is worthless.
   commented the peripheral out at the source; the patch directory went
   with it (2026-09-15).
 - qemu-pmb887x master alone aborts every Siemens fullflash in L1 GSM
-  frame handling; the "hacky AFE (LLE+HLE)" DSP commit is required.
-- The boot consumes ~42 s of virtual time, ~31.5 s of it idle warp on
-  millisecond device timers — after t0.75G the shipping boot is
-  virtual-time-bound and no engine speed shortens it; whether that warp
-  is the right amount is a fidelity question needing a hardware
-  reference.
+  frame handling unless it carries the "hacky AFE (LLE+HLE)" DSP
+  commit; since 2026-10-29 the series runs the `dsp-lle` DSP instead
+  (see `versions.env`).
 - The J2ME stopwatch running slow is throughput (the guest never halts
-  there: `vratio` = guest MIPS / 125), not pacing.
+  there; under icount `vratio` = guest MIPS / 125), not pacing.

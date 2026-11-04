@@ -3,7 +3,7 @@
 //
 //   PORT=8080 node tools/wasmclone-probe.mjs [--count 4000] [--browsers chromium,firefox]
 //
-// Open item 1 in doc/performance-handoff.md prices the AOT cache at a
+// Open item 1 in doc/performance-handoff.md (git history) prices the AOT cache at a
 // ~19.5 %-of-boot ceiling *only if* restoring a module from IndexedDB is
 // much cheaper than compiling it.  Structured clone is specified to
 // preserve compiled code; implementations differ, and round nineteen

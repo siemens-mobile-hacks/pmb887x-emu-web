@@ -3,7 +3,7 @@
 # both with bench hooks, and run the lever's A/B.  The qemu tree must be
 # clean; the lever patch is applied only for its build.  Measurement only:
 # gate-lever.sh gates and commits.  Two binaries, both hooked; J2ME at
-# tb-size=768 (see doc/performance-handoff.md, round fifty-three).
+# tb-size=768 (see doc/performance-handoff.md (git history), round fifty-three).
 set -uo pipefail
 L=${1:?lever}
 R=/workspace/tools/perf/round53

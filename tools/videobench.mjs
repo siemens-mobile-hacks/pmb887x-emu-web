@@ -37,7 +37,7 @@
 // over idle inflating `rt` and no headroom to spend either.  A phone runs
 // roughly 5x slower per guest instruction than this desktop, so its `rt`
 // is about this one divided by five: anything under 5 here is under real
-// time there, which is the report.  See doc/performance-handoff.md
+// time there, which is the report.  See doc/performance-handoff.md (git history)
 // § round thirty-nine.
 //
 // Protocol:

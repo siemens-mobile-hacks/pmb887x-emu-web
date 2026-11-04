@@ -26,7 +26,7 @@
  *   sstub    stail through the same stub           <- the same, same-module
  *
  * `merged` is the probe for the module-local dispatch loop (see
- * performance-handoff.md): if a module's TBs were one function instead of
+ * performance-handoff.md (git history)): if a module's TBs were one function instead of
  * NFUNC of them, an intra-module transition would be `br` to the cascade head
  * plus a br_table, with no call at all.  It is also the only variant whose
  * risk is the compiler rather than the mechanism -- one function holding
