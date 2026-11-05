@@ -616,6 +616,7 @@ unless noted).
 | Forwarding env reloads after a store to the same field (~8 % of DSP env loads) | ≤ 0.5 %, not pursued | 2026-11-02 |
 | More register helpers inline (towerblox: ~500k calls/s over codes 8/10/14/15/24/31) | ≤ 0.5 %, left | 2026-11-02 |
 | Removing the fast loops (35BE/643F/6489/64A9) | They pay: midi 0.566 vs 0.632 cores, AAC 0.610 vs 0.682 | 2026-10-30 |
+| Removing 643F/6489/64A9 again (35BE kept), re-priced after the JIT got mode specialisation and dead flag stores | They still pay: midi −5.4 % (sd 0.18), video −7.7 %; towerblox neutral (+0.3 % over 12 pairs) | 2026-11-05 |
 | 35BE kernel rewrite for ~2 % | Rejected by the owner (divergence for a small gain) | 2026-10-31 |
 | 35BE MAC chain in registers | Saved 9 of 171–180 ns per iteration; reverted. `8fe212e31d` later did it on locals, with a volatile function pointer against Binaryen inlining (video kernel share 24.4 → 18.9 %) | 2026-10-31 |
 | Plain (non-sata) 35BE mode | 643f −1 %, 64a9 worse | 2026-11-01 |
@@ -636,6 +637,7 @@ unless noted).
 | DSP thread, exact (each MCU read is a synchronous job on the DSP worker) | Deterministic and ~6 % faster natively. On the web there was no gain on a fast host, it used more CPU, and it failed the spinner model. At 20 % duty: video +17 %, midi flat (DSP-bound). Branch `exp/dspthr2`: +4–17 % vratio for +40–70 % CPU, and ~12x slower on one core. Ceiling ~15 %: the MCU does ~12k DSP reads per virtual second, each a cross-thread round trip. The owner said no. `build/experiments/dsp-thread-sync-reads.patch` (applies to `11699de202`/`62b16312dd`), qemu branches `exp/dspthr` and `exp/dspthr2`. It also exposed wasm64 bugs that matter only when a second thread translates: `IR` must be `__thread`, `w64_acct_flags` must be per thread, and TBs translated without a vCPU must not account guest insns | 2026-10-31 – 11-02 |
 | Batching small `dsp_bus_advance` calls (inexact upper-bound build) | video +1.8 %, midi +0.5 %: noise | 2026-11-02 |
 | DSP bus deferral (`DSP_BUS_DEFER_ADVANCE`: advance the peripherals lazily inside a no-event horizon) | Exact (checker, lockstep clean) but neutral | 2026-11-02 |
+| The batching bound again, on towerblox (~600k calls/s, 4x video): advances batched to 512 cycles, flushed at every slice end (inexact) | +3.1 % (+4.1 / +2.1 %, 4 pairs in each order). The deferral above was never measured on towerblox; see Remaining levers | 2026-11-05 |
 | I2S rate memo, I2S rate cache, skipping the i2s divide | Neutral every time (≤ 0.23 %); re-tried twice by mistake | 2026-10-31, 11-02 |
 | `dsp_bus_advance` i2s 64-bit div/mod (~70 ns per call on Bobby) | ~0.3 % reachable, in an upstream file, left | 2026-11-01 |
 
@@ -694,7 +696,8 @@ unless noted).
 | LCD writer-thread wake thresholds 16K/32K, a 4 ms poll | No better than the 1 ms poll of `43c24bb03d` | 2026-11-01 |
 | Inline LCD drain at the CD edge (0.40 %) | Needs the LCD commands on the writer thread | 2026-11-01 |
 | DIF bus bytes (~7 MB/s on stopwatch, ~3 ns per byte) | Left alone | 2026-11-01 |
-| BQL waits in `cpu_exec_loop` (~1 %), QOM casts (~0.1 %), slow-path ld/st (~1 %, the direct MMIO path) | Real work, not levers | 2026-11-01 |
+| BQL waits in `cpu_exec_loop` (~1 %), QOM casts (~0.1 %), slow-path ld/st (~1 %, the direct MMIO path) | Real work, not levers. 2026-11-05: part of the BQL hold was the hidden text console below | 2026-11-01 |
+| Hidden text console. Without `-parallel none`, qemu backs the default parallel port with a `vc` (`parallel0: filename=vc`), and its cursor timer redraws all 80x24 glyphs every 250 ms on the main loop under the BQL (`cursor_timer_cb` 0.50 % of ticks, ~1.2 ms per redraw on the dev host; the vCPU's BQL futex waits were 0.85 %) | Landed as a page argument. Dev host +0.2 % over 8 pairs (noise); the hold grows with a slow main-loop core | 2026-11-05 |
 | Syscall proxying to the main thread | A few `fd_pwrite`s per minute, no vCPU stalls | 2026-11-02 |
 | `-accel tcg,thread=multi` without vcpu-timers | Unusable with the DSP LLE | 2026-11-02 |
 
@@ -730,8 +733,10 @@ unless noted).
   anything. The translation state is `__thread`, but the global landed
   registry in `wasm64.c` assumes one TCG thread.
 - **Zombie processes in the container:** PID 1 is `sleep`, so killed Chrome
-  processes stay zombies (~16.5k after 5 days; `pids.max` 134918). They are
-  harmless until near the limit. In `ps` they show lifetime %CPU, not load.
+  processes stay zombies (~16.5k after 5 days, ~31k after 8; `pids.max`
+  134918). They are harmless until near the limit. In `ps` they show
+  lifetime %CPU, not load. `python3 tools/perf/reap.py <cmd>` runs a
+  benchmark or the gate as a child subreaper, so its orphans are reaped.
 - **Shell traps:** never `pkill -f` a pattern that appears in your own
   command line; it kills the shell (exit 144). In zsh, `grep` may be a wrapper
   function that misses matches in binary serial logs (use `command grep -a`),
@@ -753,6 +758,42 @@ unless noted).
 - **Kernels:** EE49 (~1.5 % on Bobby, S75 only) and DDDE (~1 % on towerblox).
 - **EL71 boot window:** TCG liveness/register-allocation temp loops cost ~3 %.
   ~1.35k TB invalidations per boot each bump a global key.
+
+From the 2026-11-05 brainstorm (towerblox profile `92f6a90e56`; priced only
+where noted):
+
+- **Exact DSP bus deferral on towerblox.** The inexact bound is +3.1 %
+  (Closed ideas, DSP scheduling). An exact version needs a no-event horizon
+  for every active device, not only AFE and I2S RX
+  (`dsp_bus_get_cycles_until_event`), a flush before writes and before reads
+  of time-varying registers, and a checker. Expect ~1.5–2 %, in upstream
+  files.
+- **Rectangle-level Thumb fill.** Census (towerblox, real time): ~465k fill
+  rows/s; 65 % of rows sit in runs of 65–256 rows at a constant pitch, 15 %
+  in runs of 17–64, and 74 % of rows are ≤ 8 passes. Each row costs four TB
+  entries (a04cd2 tail, a04cc2 head, a04cce test, a04cc6 loop) plus one
+  helper call. A helper that also runs the tail and head must charge those
+  TBs' cycles and icount exactly and stop at any TB-start check that would
+  exit. ~1.5–2 % of towerblox; S75 J2ME only.
+- **Tier-up helper worker.** Liftoff TB code plus `WasmLiftoffFrameSetup` and
+  `CallIndirectIC` are ~7 % of towerblox ticks; 61 % of the Liftoff ticks are
+  in code older than 60 s. A second worker sharing the NativeModule could
+  call hot TBs until TurboFan publishes them. Ceiling ~4.5 % (the closed
+  tiering-budget row gives +3.7 %). It needs a second 2 GB memory and a new
+  worker: the owner's call.
+- **Main-module code cache.** `startEngine()` compiles from a synthetic
+  `new Response(tee)`, which most likely gets no Chrome wasm code cache, so
+  every load starts the 16 MB module in Liftoff. The first minute only.
+- **Display refresh off the BQL.** `gui_update` holds the BQL on the main
+  loop (0.26 % on the dev host). It matters with a slow main-loop core.
+- **DSP chain tail.** Every DSP block ends with 55–76 TCG ops of gates and
+  link checks; four gates are constant per block. Census first.
+- **One check per TLB probe.** A probe does three bounds-checked loads
+  (comparator, addend, data). A mirrored `{cmp32, addend32}` word makes it
+  two. ~1–1.5 %, ~10 hooks in `cputlb.c`.
+- **Queued DSP sync work.** `async_run_on_cpu` from `dsp_schedule_sync`
+  forces a `cpu_exec` exit; draining non-exclusive work in
+  `tcg_vcpu_timers_next_budget` would keep the loop. Census first.
 
 ## History
 

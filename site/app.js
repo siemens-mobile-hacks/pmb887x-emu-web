@@ -1334,6 +1334,7 @@ async function bootSuite(url) {
         ...(icount ? ["-icount", "shift=3,sleep=off"] : []),
         "-serial", "file:/serial.log",
         "-monitor", "none",
+        "-parallel", "none",
       ],
       ...engineInstantiate(engineWasmMod),
       printErr: (t) => console.log("[qemu]", t),
@@ -1651,6 +1652,9 @@ async function boot() {
       "-drive", `if=pflash,format=raw,file=${FULLFLASH_PATH}`,
       "-serial", "file:/serial.log",
       "-monitor", "none",
+      // otherwise qemu backs a default parallel port with a hidden text
+      // console, which a cursor timer redraws every 250 ms under the BQL
+      "-parallel", "none",
       ...simArgs,
       ...extraArgs,
     ];
