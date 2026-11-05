@@ -189,7 +189,8 @@ repo; `--flash` overrides that. Results go to
 - `cpu`: CPU seconds per wall second of the browser's whole process tree,
   from /proc.
 - Audio: `underruns`, `underrunAt`, `gapMs`/`gapPct`, `produced`,
-  `cushionMs`, `minFillMs` and `peak`.
+  `cushionMs`, `minFillMs`/`maxFillMs`, `drainedMs`/`cutMs`, `stretchedMs`
+  and `peak`.
 
 **Options:**
 

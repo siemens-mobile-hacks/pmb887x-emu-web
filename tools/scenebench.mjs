@@ -22,8 +22,10 @@
 //              wall second; < 1 while the guest renders slower than real
 //              time), minFillMs/maxFillMs (ring delay sampled once a
 //              second), drainedMs/cutMs (ring audio skipped to cut the
-//              delay: played faster, or cut at the 500 ms cap) and peak
-//              (> 0: not silence).
+//              delay: played faster, or cut at the 500 ms cap),
+//              stretchedMs (ring audio replayed to play slower while the
+//              guest renders slower than real time) and peak (> 0: not
+//              silence).
 //   midi       SL65v49 (TIM): My stuff -> Sounds -> Poly -> "Asia" (9 kB
 //              MIDI, loops) in the media player; the same audio numbers.
 //   bobby      s75_working: Games -> "Bobby Carrot 3 Evolution" (J2ME) with
@@ -239,7 +241,7 @@ const SNAP = `(() => {
     const h = new Int32Array(m.HEAPU8.buffer, ptr, 16);
     Object.assign(r, { freq: h[3], read: Atomics.load(h, 4), write: Atomics.load(h, 5), active: h[6],
       under: Atomics.load(h, 8), gap: Atomics.load(h, 9), primeMs: h[10], rateMilli: h[11],
-      drained: h[13], cut: h[14] });
+      drained: h[13], cut: h[14], stretched: h[15] });
     const cap = h[1], ch = h[2] || 1, pcm = new Int16Array(m.HEAPU8.buffer, ptr + 64, cap * ch);
     let peak = 0;
     for (let i = 1; i <= Math.min(cap, h[3] || 0); i++) {
@@ -411,6 +413,7 @@ async function runOnce(spec, run) {
         maxFillMs: Math.round(maxFill),
         drainedMs: Math.round(((c.drained - a.drained) | 0) / a.freq * 1000),
         cutMs: Math.round(((c.cut - a.cut) | 0) / a.freq * 1000),
+        stretchedMs: Math.round(((c.stretched - a.stretched) | 0) / a.freq * 1000),
         peak: c.peak,
         listening: !!c.active,
       });
@@ -437,7 +440,7 @@ for (let r = 1; r <= runs; r++) {
 }
 
 const median = (xs) => { const s = xs.filter((x) => x != null).sort((a, b) => a - b); return s.length ? s[(s.length - 1) >> 1] : null; };
-const keys = ["vratio", "mips", "fps", "cpu", "underruns", "gapMs", "gapPct", "produced", "cushionMs", "minFillMs", "maxFillMs", "drainedMs", "cutMs"];
+const keys = ["vratio", "mips", "fps", "cpu", "underruns", "gapMs", "gapPct", "produced", "cushionMs", "minFillMs", "maxFillMs", "drainedMs", "cutMs", "stretchedMs"];
 const summary = {};
 for (const d of dists) {
   const ok = results.filter((x) => x.dist === d && x.ok);

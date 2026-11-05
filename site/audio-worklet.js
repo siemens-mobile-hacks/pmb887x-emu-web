@@ -12,11 +12,11 @@
 //   11 producer speed x1000 — 9-11 are stats for tools only
 //   12 streaming: 0 once the last frame of a stream is in the ring
 //   13 ring frames drained by playing faster, 14 ring frames cut by the delay
-//   cap — stats for tools only
+//   cap, 15 ring frames replayed by playing slower — stats for tools only
 
 const H_CAP = 1, H_CH = 2, H_FREQ = 3, H_READ = 4, H_WRITE = 5,
       H_ACTIVE = 6, H_GEN = 7, H_UNDER = 8, H_GAP = 9, H_PRIME = 10, H_RATE = 11,
-      H_STREAMING = 12, H_DRAINED = 13, H_CUT = 14;
+      H_STREAMING = 12, H_DRAINED = 13, H_CUT = 14, H_STRETCHED = 15;
 const HDR_WORDS = 16;
 const HDR_BYTES = HDR_WORDS * 4;
 
@@ -30,7 +30,7 @@ const DRAIN_SPEED = 1.1;
 const DRAIN_WINDOW = 2;        // output seconds
 const DRAIN_KEEPUP = 0.98;     // producer speed that counts as keeping up
 const DRAIN_MIN = 0.02;        // seconds of excess worth draining
-const SPLICE_LAG_MIN = 0.004;  // input seconds one splice cuts
+const SPLICE_LAG_MIN = 0.004;  // input seconds one splice skips or replays
 const SPLICE_LAG_MAX = 0.02;
 const SPLICE_FADE = 0.012;     // crossfade, input seconds
 const SPLICE_CORR = 0.7;       // how alike the joined stretches must be
@@ -41,6 +41,17 @@ const SPLICE_QUIET = 32;       // RMS below which any spot will do
 // 100 ms the producer may run ahead (WASM_AUDIO_PACE_SLACK_NS).
 const DELAY_MAX = 0.5;
 const PRIME_MAX = 0.4;
+// While the producer renders slower than real time, the output slows down
+// with it, to STRETCH_MIN of real time at most, at the same pitch: splices
+// jump back to a stretch where the sound repeats itself and play it again.
+// The speed is the producer's, corrected by how far the bank is from the
+// cushion (STRETCH_TAU), and it applies only below STRETCH_BELOW, so the
+// jitter of a producer that keeps up never stretches. The ring is far longer
+// than DELAY_MAX, so the frames just behind the read cursor are still intact.
+const STRETCH_MIN = 0.5;
+const STRETCH_BELOW = 0.95;
+const STRETCH_TAU = 0.5;       // output seconds
+const STRETCH_RATE_TAU = 0.25; // smoothing of the producer speed it follows
 
 class QemuAudio extends AudioWorkletProcessor {
   constructor(options) {
@@ -56,8 +67,10 @@ class QemuAudio extends AudioWorkletProcessor {
     // Producer speed, in ring seconds per output second, and how long the
     // output has been silent.
     this.rate = 1;
+    this.fastRate = 1;
     this.rateWrite = 0;
     this.rateFrames = 0;
+    this.fastWrite = 0;
     this.quiet = 0;
     this.gen = -1;
     this.pos = 0;     // fractional read position within the ring
@@ -175,6 +188,7 @@ class QemuAudio extends AudioWorkletProcessor {
       this.cutDelay(avail);
     } else {
       this.drain(avail, n * ratio);
+      this.stretch(avail, n * ratio, streaming);
     }
     const pos = this.render(out, n, ratio, avail);
 
@@ -190,7 +204,8 @@ class QemuAudio extends AudioWorkletProcessor {
       this.prime = this.basePrime;    // between sounds: back to low latency
     }
 
-    const used = pos | 0;
+    // Negative after a splice that jumped back.
+    const used = Math.floor(pos);
     this.read = (this.read + used) | 0;
     this.pos = pos - used;
     this.xfAt -= used;
@@ -210,7 +225,7 @@ QemuAudio.prototype.render = function (out, n, ratio, avail) {
       pos += this.xfSkip;    // the crossfade is over: go on from the far side
       this.xfLen = 0;
     }
-    const f = pos | 0;
+    const f = Math.floor(pos);
     if (f + 1 >= avail) {
       break;
     }
@@ -264,12 +279,18 @@ QemuAudio.prototype.mute = function (write) {
 QemuAudio.prototype.resetRate = function (write) {
   this.rateWrite = write;
   this.rateFrames = 0;
+  this.fastWrite = write;
 };
 
 // Producer speed over the last half second of output, in ring seconds per
-// output second. It is measured only while a sound is in progress, so it drops
+// output second, and smoothed over STRETCH_RATE_TAU for the stretch to
+// follow. It is measured only while a sound is in progress, so it drops
 // below 1 only while one is being rendered slower than real time.
 QemuAudio.prototype.measureRate = function (write, n, ratio) {
+  const recent = (write - this.fastWrite) | 0;
+  this.fastWrite = write;
+  this.fastRate += (recent / (n * ratio) - this.fastRate) * n /
+    (STRETCH_RATE_TAU * sampleRate);
   this.rateFrames += n;
   if (this.rateFrames < sampleRate / 2) {
     return;
@@ -303,12 +324,13 @@ QemuAudio.prototype.shedSilence = function (excess) {
 };
 
 // A dropout mid-sound: bank enough that a sound of PRIME_HORIZON seconds
-// rendered at the measured speed plays through without another one, and at
-// least twice the last cushion, so a producer that keeps falling short
-// converges in a few dropouts instead of stuttering throughout.
+// rendered at the measured speed, and stretched as far as STRETCH_MIN allows,
+// plays through without another one, and at least twice the last cushion, so
+// a producer that keeps falling short converges in a few dropouts instead of
+// stuttering throughout.
 const PRIME_HORIZON = 5;
 QemuAudio.prototype.growPrime = function () {
-  const deficit = Math.max(0, 1 - this.rate) * PRIME_HORIZON;
+  const deficit = Math.max(0, STRETCH_MIN - this.rate) * PRIME_HORIZON;
   this.prime = Math.min(PRIME_MAX, Math.max(this.prime * 2, deficit));
 };
 
@@ -319,6 +341,7 @@ QemuAudio.prototype.resetDrain = function () {
   this.winDropout = false;
   this.drainGoal = 0;     // ring frames still to drain
   this.credit = 0;        // ring frames the speed limit allows to cut
+  this.stretchCredit = 0; // ring frames the stretch is behind on replaying
   this.wait = 0;          // ring frames to play before the next try
   this.xfLen = 0;
 };
@@ -385,36 +408,78 @@ QemuAudio.prototype.drain = function (avail, consumed) {
   if (this.credit < this.lagMax) {
     return;
   }
-  const p = this.pos | 0;
+  const p = Math.floor(this.pos);
   const hi = Math.min(this.lagMax, this.drainGoal);
   if (avail - p < hi + this.fadeFrames + Math.ceil(consumed) + 2) {
     return;
   }
-  const lag = this.findSplice(p, this.lagMin, hi, SPLICE_CORR);
-  if (lag < 0) {
+  const q = this.findSplice(p, p + this.lagMin, p + hi, SPLICE_CORR);
+  if (q === null) {
     this.wait = SPLICE_RETRY * this.freq;
     return;
   }
+  const lag = q - p;
   this.splice(lag);
   this.credit -= lag;
   this.drainGoal -= lag;
   Atomics.add(this.hdr, H_DRAINED, lag);
 };
 
+// Follows a producer slower than real time: one splice back whenever the
+// speed has fallen a whole maximal lag behind, by 1/2 to 1 maximal lag, so
+// that back-to-back splices can reach STRETCH_MIN.
+QemuAudio.prototype.stretch = function (avail, consumed, streaming) {
+  const fill = (avail - this.pos) / this.freq;
+  const speed = Math.max(STRETCH_MIN, Math.min(1,
+    this.fastRate + (fill - this.prime) / STRETCH_TAU));
+  if (!streaming || this.drainGoal > 0 || speed >= STRETCH_BELOW) {
+    this.stretchCredit = 0;
+    return;
+  }
+  this.stretchCredit = Math.min(this.stretchCredit + (1 - speed) * consumed,
+                                2 * this.lagMax);
+  if (this.xfLen) {
+    return;
+  }
+  if (this.wait > 0) {
+    this.wait -= consumed;
+    return;
+  }
+  if (this.stretchCredit < this.lagMax) {
+    return;
+  }
+  const p = Math.floor(this.pos);
+  if (avail - p < this.fadeFrames + Math.ceil(consumed) + 2) {
+    return;
+  }
+  // Short of half the cushion a dropout is near, and any splice beats one.
+  const minCorr = fill < this.prime / 2 ? -Infinity : SPLICE_CORR;
+  const q = this.findSplice(p, p - this.lagMax, p - (this.lagMax >> 1),
+                            minCorr);
+  if (q === null) {
+    this.wait = SPLICE_RETRY * this.freq;
+    return;
+  }
+  this.splice(q - p);
+  this.stretchCredit -= p - q;
+  Atomics.add(this.hdr, H_STRETCHED, p - q);
+};
+
 // Past DELAY_MAX the bank is cut back to the cushion in one splice: an
 // audible jump, but the delay stays bounded however the producer bursts.
 QemuAudio.prototype.cutDelay = function (avail) {
-  const p = this.pos | 0;
+  const p = Math.floor(this.pos);
   const keep = Math.ceil(this.prime * this.freq);
   const hi = avail - p - keep;
-  const lag = this.findSplice(p, Math.max(this.lagMin, hi - this.lagMax), hi,
-                              -Infinity);
-  this.splice(lag);
+  const q = this.findSplice(p, p + Math.max(this.lagMin, hi - this.lagMax),
+                            p + hi, -Infinity);
+  this.splice(q - p);
   this.drainGoal = 0;
   this.credit = 0;
-  Atomics.add(this.hdr, H_CUT, lag);
+  Atomics.add(this.hdr, H_CUT, q - p);
 };
 
+// Crossfades from the play position to lag frames away, ahead or back.
 QemuAudio.prototype.splice = function (lag) {
   this.xfAt = this.pos;
   this.xfLen = this.fadeFrames;
@@ -443,17 +508,18 @@ QemuAudio.prototype.mono = function (dst, p, count) {
   }
 };
 
-// The lag in [lo, hi] ring frames at which the sound from p on repeats
-// itself best over a crossfade: the normalized cross-correlation of the mono
-// mix, searched on a 1/dec decimation and refined at the full rate. Returns
-// -1 when the best match is below minCorr and the stretch is not quiet.
+// The position in [lo, hi] (ring frames, at most a maximal lag apart, ahead
+// of p or behind it) where the sound from p on repeats itself best over a
+// crossfade: the normalized cross-correlation of the mono mix, searched on a
+// 1/dec decimation and refined at the full rate. Returns null when the best
+// match is below minCorr and the stretch is not quiet.
 QemuAudio.prototype.findSplice = function (p, lo, hi, minCorr) {
   const d = this.dec, w = this.fadeFrames;
   const A = this.decA, B = this.decB;
   const na = Math.floor(w / d);
   const nb = Math.min(B.length, Math.floor((hi - lo + w) / d));
   this.decimate(A, p, na);
-  this.decimate(B, p + lo, nb);
+  this.decimate(B, lo, nb);
   let ea = 0, eb = 0;
   for (let i = 0; i < na; i++) {
     ea += A[i] * A[i];
@@ -479,15 +545,15 @@ QemuAudio.prototype.findSplice = function (p, lo, hi, minCorr) {
   const from = Math.max(lo, lo + bestK * d - d + 1);
   const to = Math.min(hi, lo + bestK * d + d - 1);
   this.mono(FA, p, w);
-  this.mono(FB, p + from, w + to - from);
+  this.mono(FB, from, w + to - from);
   let fa = 0;
   for (let i = 0; i < w; i++) {
     fa += FA[i] * FA[i];
   }
   best = -Infinity;
-  let lag = from, fbBest = 0;
-  for (let l = from; l <= to; l++) {
-    const o = l - from;
+  let at = from, fbBest = 0;
+  for (let q = from; q <= to; q++) {
+    const o = q - from;
     let c = 0, fb = 0;
     for (let i = 0; i < w; i++) {
       c += FA[i] * FB[o + i];
@@ -496,16 +562,16 @@ QemuAudio.prototype.findSplice = function (p, lo, hi, minCorr) {
     const nc = c / Math.sqrt(fa * fb + 1);
     if (nc > best) {
       best = nc;
-      lag = l;
+      at = q;
       fbBest = fb;
     }
   }
   this.lastCorr = best;
   const quietEnergy = SPLICE_QUIET * SPLICE_QUIET * w;
   if (best < minCorr && (fa > quietEnergy || fbBest > quietEnergy)) {
-    return -1;
+    return null;
   }
-  return lag;
+  return at;
 };
 
 registerProcessor("qemu-audio", QemuAudio);

@@ -322,7 +322,8 @@ real time in the browser. Three pieces keep that from coming out as stutter:
   of every sound.
 - `audio-worklet.js` banks a cushion before playing and after every dropout.
   It starts at 80 ms; a dropout grows it to cover a 5 s sound rendered at
-  the measured producer speed (at least doubling, at most 400 ms). The speed
+  the measured producer speed and stretched as far as the worklet stretches
+  (at least doubling, at most 400 ms). The speed
   is measured only while a sound is in progress. When a sound ends, whatever
   it banked plays at once and the cushion goes back to 80 ms; a second of
   silence inside a stream does the same and skips the silent backlog.
@@ -332,9 +333,14 @@ real time in the browser. Three pieces keep that from coming out as stutter:
   faster at the same pitch: the worklet splices out 4–20 ms stretches where
   the sound repeats itself, with a 12 ms crossfade (time-domain WSOLA, as
   WebRTC's NetEQ does). The delay never stays above 500 ms: past it the bank
-  is cut back to the cushion in one crossfaded jump, so a guest that renders
-  slower than real time sounds choppy rather than late. The ring header
-  counts the frames skipped both ways (`drainedMs` and `cutMs` in
+  is cut back to the cushion in one crossfaded jump.
+- While the guest renders slower than real time (below 95 %), the sound
+  slows down with it, to half speed at most, at the same pitch: the same
+  splices jump back instead of ahead and play a stretch where the sound
+  repeats itself again. The speed it follows is the producer's, smoothed
+  over 250 ms and corrected by how far the bank is from the cushion. Below
+  half speed the sound is choppy rather than late. The ring header counts the
+  frames skipped or replayed (`drainedMs`, `cutMs` and `stretchedMs` in
   `tools/scenebench.mjs`).
 
 Muting is *not* the same as having no audiodev: the backend keeps consuming
