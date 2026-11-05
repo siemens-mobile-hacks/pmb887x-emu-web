@@ -2147,11 +2147,26 @@ meaningless number, which is the failure mode worth fearing.
   eventfd `write`/`read` paid that per icount deadline (0021). Realtime
   clock reads are JS imports (~3 µs) and do not belong in the vCPU's
   budget loop (0025).
-- **wasm-EH longjmp and ASYNCIFY do not compose** (binaryen's Asyncify
-  pass crashes on `-sSUPPORT_LONGJMP=wasm`); ASYNCIFY is required for
-  the coroutine backend, so every `cpu_loop_exit` is a ~15 µs JS
-  exception unwind. Hence SVC exceptions delivered without the longjmp
-  (0013) and WFI without it (0025).
+- **wasm-EH longjmp composes with ASYNCIFY only while no instrumented
+  function calls setjmp.** Binaryen's Asyncify pass crashed on
+  `-sSUPPORT_LONGJMP=wasm` in September, before the `ASYNCIFY_ONLY` list
+  below; emcc still warns that code mixing the two "will not compile".
+  The list instruments none of the setjmp callers, and since 2026-11-05
+  the build is `-sSUPPORT_LONGJMP=wasm` (configure's wasm64
+  `CPU_CFLAGS`; `--extra-cflags` never reaches a compile line). Until
+  then every call a setjmp caller made went through a JS `invoke_*`
+  trampoline (`cpu_exec` once per entry, `setjmp_gen_code` three times
+  per translated TB), and a `cpu_loop_exit` was a ~15 µs JS exception
+  unwind: hence SVC exceptions delivered without the longjmp (0013) and
+  WFI without it (0025). The trampolines, not the unwinds, were the
+  cost (see "A path worth optimizing" below). Keep setjmp callers off
+  the list. Emit the standard instructions (`-sWASM_LEGACY_EXCEPTIONS=0
+  -mllvm -wasm-use-legacy-eh=0`): Firefox logs a deprecation warning
+  for the legacy `try`, which the close gate's Firefox boot counts as
+  errors, and emcc 4.0.10 passes LLVM the switch only for C++
+  exceptions, so the setting alone still emits `try`. Check with
+  `wasm-dis --all-features x.wasm | grep -c '(try_table'` (6, and no
+  `(try `). exnref needs Chrome 137, Firefox 131, Safari 18.4.
 - **Asyncify instrumentation must be an allowlist on the wasm64
   backend**: `ASYNCIFY_REMOVE=tcg_qemu_tb_exec` instrumented ~21k
   functions through the `invoke_*` wrappers (~25 % of early-boot vCPU,
@@ -2219,7 +2234,10 @@ of 223 302 guest exceptions unwound.** `cpu->jmp_env` has only one
 `siglongjmp` site (`cpu-exec-common.c:95`; `tb-maint.c:451` is a
 different jmp_buf), so there is no second path to have taken instead.
 The wasm64 port's exception delivery never unwinds, and the flag had
-nothing to act on.
+nothing to act on. (It landed on 2026-11-05 for the other half of the
+JS mode: the `invoke_*` trampoline around every call that a setjmp
+caller makes, paid with or without an unwind. See performance.md
+History.)
 
 Two things made this cheap to catch and would have made it expensive to
 miss:

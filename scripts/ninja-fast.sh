@@ -49,6 +49,17 @@ check_link_args() {
 }
 check_link_args
 
+# configure fixes the compiler's argv (CPU_CFLAGS) when the build dir is
+# made, and the build script never reconfigures one.  A dir made before
+# wasm-EH setjmp still builds, in emscripten's slower JS setjmp or in the
+# legacy EH instructions that Firefox deprecates.
+if grep -q -- "-wasm-use-legacy-eh=0" "$WEB_DIR/qemu/configure" &&
+   ! grep -q -- "-wasm-use-legacy-eh=0" config-meson.cross; then
+  echo "ninja-fast: $BUILD_DIR predates wasm-EH setjmp (configure CPU_CFLAGS);" \
+       "remove it and run scripts/build-qemu-wasm64.sh" >&2
+  exit 1
+fi
+
 # taken before the build, so an edit made while it runs cannot be claimed
 SRC_ID="$(bash "$WEB_DIR/scripts/qemu-source-id.sh" "$BUILD_DIR")"
 T0=$SECONDS

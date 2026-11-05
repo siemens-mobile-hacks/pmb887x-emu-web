@@ -65,6 +65,15 @@ if [ ! -f "$BUILD/build.ninja" ] || [ ! -f "$BUILD/meson-private/coredata.dat" ]
       -Dcpp_std=gnu++20 \
       --extra-cflags="-O3 -pthread -DWASM_BIGINT -sMEMORY64=2" )
 fi
+# A dir configured before wasm-EH setjmp (configure's CPU_CFLAGS) still
+# builds, in emscripten's slower JS setjmp or in the legacy EH
+# instructions that Firefox deprecates.
+if grep -q -- "-wasm-use-legacy-eh=0" "$SRC/configure" &&
+   ! grep -q -- "-wasm-use-legacy-eh=0" "$BUILD/config-meson.cross"; then
+  echo "build-qemu-wasm64: $BUILD predates wasm-EH setjmp (configure CPU_CFLAGS);" \
+       "remove it and rerun" >&2
+  exit 1
+fi
 
 # Instrument ONLY the functions that can be on the stack at a coroutine
 # switch (configs/meson/asyncify-only.txt): ~45 MB -> ~27 MB wasm,

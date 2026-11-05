@@ -107,9 +107,10 @@ emulator.
   for itself at that path's rate (see the rates table under Where the time
   goes). A change in shared qemu code (mark **all** in wasm-fast-paths.md) also
   changes the native lockstep reference.
-- **Emscripten traps.** wasm-EH longjmp does not compose with Asyncify,
-  `poll()` never sleeps, condvar waits are whole milliseconds, and proxied
-  syscalls take ~1 ms. See [lessons.md](lessons.md).
+- **Emscripten traps.** wasm-EH longjmp composes with Asyncify only while no
+  function on the Asyncify onlylist calls setjmp, `poll()` never sleeps,
+  condvar waits are whole milliseconds, and proxied syscalls take ~1 ms.
+  See [lessons.md](lessons.md).
 
 ### Landing a change
 
@@ -746,6 +747,7 @@ unless noted).
 | Promotion at 1024 hits (free-run, 4 pairs, against `434be28741`) | Video −2.1 %, towerblox −4.2 % (se 0.8): the retranslations themselves cost the steady state. Promotion was replaced by the module's probe function | 2026-11-05 |
 | Promotion counting only the slot's exit | Video −2.3 / −2.2 %, towerblox −0.2 %: a TB's second goto_ptr exit (keyed differently from the slot) went through `helper_lookup_tb_ptr`, whose ~280k pc-cache hits/s on video never counted | 2026-11-05 |
 | Selective batch landing (interpret ≥ 16 times before a module) | +2 % slower | 2026-11-02 |
+| Cold landing again, on top of the module probe (`W64_INTERP_LANDED` 4: a member with fewer than 4 interpreted entries keeps fidx 0 and its record when its batch lands, and `w64_batch_wake` points it at the thunk later; plus a hits reset in `w64_irec_put` and a TLB fast path in the interpreter) | EL71 boot, 20 pairs pooled against `36e3b3cc4c`: burst −2.1 % (se 1.3), audioMs −2.1 % (se 3.4), lagMax −4.4 % (se 2.5). Free-run, candidate against parent, one run of 4 pairs in each order: towerblox +0.6 %, stopwatch +4.1 %, midi ≈ 0, but video −0.9 / −0.3 % and bobby −0.8 / −2.3 %. Fails the no-loss rule. Probably the cold members, which cannot be chained to while fidx is 0; not censused. `build/experiments/w64-cold-landing.diff` (applies to `36e3b3cc4c`) | 2026-11-05 |
 | hflags kept in place on AArch32 mode changes (`8203411abf`) | Committed on 2026-11-01, returned to upstream in `b12dea95f2` (neutral) | 2026-11-02 |
 
 ### V8 and toolchain
@@ -761,7 +763,7 @@ unless noted).
 | wasm SIMD build; extra Binaryen passes | Neutral | 2026-11-01 |
 | Binaryen one-caller inline limit (N=200, or 1000 globally) | 200 is worse (splits `dsp_i2s_advance` out); 1000 is noise | 2026-11-02 |
 | ThinLTO main module | Noise. The wasm grew 12.3 → 16.2 MB, and ~30 Asyncify onlylist names went missing | 2026-11-03 |
-| wasm SjLj instead of the JS invoke trampoline around `cpu_exec` | `invoke_ijj` is ~1 % of midi and 0.2 % of video: not worth the Asyncify risk | 2026-11-01 |
+| wasm SjLj instead of the JS invoke trampoline around `cpu_exec` | `invoke_ijj` is ~1 % of midi and 0.2 % of video: not worth the Asyncify risk. **Reopened and landed 2026-11-05** (History): the onlylist instruments no setjmp caller, and the trampolines also wrap three calls per translated TB | 2026-11-01 |
 | Main-module code cache. Since the prefetch (`67e2d0e`, 2026-09-20) `startEngine()` compiled a `new Response(tee)`, which has no URL, so Chrome never cached the code, despite `deploy/nginx`'s `no-cache` + ETag set up for it. Fixed: compile the fetched response, count bytes on a clone | Landed. The profile's wasm code cache now holds ~7.8 MB after one boot (72 bytes before). Free-run S75 boot, warm vs cold: +17 % guest insns in the first 3 s, ~+20M insns by 20 s; the committed page was cold on every load. Bigger where tier-up is slow (the phone) | 2026-11-05 |
 | Fewer declared TB locals (the baseline tier zeroes them at every entry), re-priced now that Liftoff TB code is ~6.6 % of towerblox | A pad of 16 extra i64 locals per TB: +1.0 / +0.1 % (4 pairs in each order), noise. Not a lever | 2026-11-05 |
 
@@ -901,6 +903,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-05 | `d4380167b9` (`172f58552d`) | Shorter pc-cache probe at goto_ptr exits (own 3-op hash, no `cpu_index` compare on one CPU). EL71 boot (bootab.sh, 2 × 4 pairs): burst −1.5 % (se 0.9) / −4.7 % (se 3.4), median −1.7 %, audioMs −3.3 / −9.8 %. Free-run: towerblox +0.9 %, bobby +1.2 %, video +0.8 % (8 pairs), stopwatch +1.0 %, midi +0.4 % (4 pairs) |
 | 2026-11-05 | `434be28741` (`d4380167b9`) | The lookup helpers probe the pc cache; the inline probe is emitted only at goto_ptr exits whose pc-cache hits in C reach 65535 (the TB is retranslated). EL71 boot (bootab.sh, 2 × 4 pairs) vs `d4380167b9`: burst −7.0 % (se 0.9) / −5.4 % (se 0.8), audioMs −10.7 / −9.0 %, lagMax −13.7 / −10.6 %. Free-run, 4 pairs each: video −1.6 / −1.4 %, towerblox −0.7 / −1.3 %, bobby −1.4 %, midi −0.8 %, stopwatch −0.3 %, taken by the owner's one-time exception (rule 5). Census, paced video: ~35k slot misses/s and ~11k second-exit lookups/s answered in C, ~0.4 promotions/s, which at tens of ns each does not explain the ~1 % |
 | 2026-11-05 | `36e3b3cc4c` (`434be28741`) | The goto_ptr exits call `w64_pcc_probe`, a function each batch module carries, in place of the helper import: TurboFan inlines it into hot TBs, a cold TB's exit stays a 5-byte call, and a miss calls the helper. Promotion, its counters and `helper_lookup_tb_ptr_cnt` are gone. EL71 boot (bootab.sh, 4 pairs) vs `d4380167b9`: burst −6.5 % (se 0.7), audioMs −10.2 % (se 1.6), lagMax −10.3 % (se 1.4); vs `434be28741`, 3 × 4 pairs: +6.6 % (se 4.1, two outlier pairs) / −0.1 % / −0.7 %. Free-run vs `d4380167b9`, 4 pairs each: video +2.3 / −0.1 %, towerblox −0.4 / +1.0 %, bobby +0.2 %, midi +0.2 %, stopwatch −0.4 %, which recovers the steady state that `434be28741` gave up |
+| 2026-11-05 | `c5f522fbfa` (`36e3b3cc4c`) | `-sSUPPORT_LONGJMP=wasm` in configure's wasm64 `CPU_CFLAGS`, as standard exnref instructions (wasm-fast-paths.md A8; Firefox deprecates the legacy `try`, lessons.md): the 15 JS `invoke_*` trampolines are gone (`cpu_exec` once per entry, `setjmp_gen_code` three times per TB). EL71 boot (bootab.sh, 2 × 4 pairs): burst −4.4 % (se 2.6) / −7.6 % (se 2.7), audioMs −8.8 / −14.6 %, lagMax −9.8 / −13.6 %. Free-run, 4 pairs each: towerblox +4.9 % (se 1.1), video +3.6 % (se 0.9), bobby +1.2 %, midi +1.2 % (se 0.6), stopwatch −0.4 % (se 1.8), and in the swapped order the candidate led 4 of 4 pairs (+1.1 to +3.2 %, one +21 % outlier). Measured with the legacy instructions; the exnref build against it: boot burst +2.2 % (se 2.8) and +0.8 % (se 5.2) in the swapped order; free-run towerblox −0.1 %, video −0.8 %, bobby −0.8 % and +0.8 % swapped, midi −0.1 %, stopwatch +0.9 %: a tie. Raises the browser floor to Chrome 137, Firefox 131, Safari 18.4. A build dir made before it must be removed (both build scripts refuse it) |
 
 ## 2026-11-04 deviation cleanup
 
