@@ -48,7 +48,7 @@ const PRIME_MAX = 0.4;
 // cushion (STRETCH_TAU), and it applies only below STRETCH_BELOW, so the
 // jitter of a producer that keeps up never stretches. The ring is far longer
 // than DELAY_MAX, so the frames just behind the read cursor are still intact.
-const STRETCH_MIN = 0.5;
+const STRETCH_MIN = 0.25;
 const STRETCH_BELOW = 0.95;
 const STRETCH_TAU = 0.5;       // output seconds
 const STRETCH_RATE_TAU = 0.25; // smoothing of the producer speed it follows

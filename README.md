@@ -335,11 +335,11 @@ real time in the browser. Three pieces keep that from coming out as stutter:
   WebRTC's NetEQ does). The delay never stays above 500 ms: past it the bank
   is cut back to the cushion in one crossfaded jump.
 - While the guest renders slower than real time (below 95 %), the sound
-  slows down with it, to half speed at most, at the same pitch: the same
+  slows down with it, to a quarter speed at most, at the same pitch: the same
   splices jump back instead of ahead and play a stretch where the sound
   repeats itself again. The speed it follows is the producer's, smoothed
-  over 250 ms and corrected by how far the bank is from the cushion. Below
-  half speed the sound is choppy rather than late. The ring header counts the
+  over 250 ms and corrected by how far the bank is from the cushion. Below a
+  quarter speed the sound is choppy rather than late. The ring header counts the
   frames skipped or replayed (`drainedMs`, `cutMs` and `stretchedMs` in
   `tools/scenebench.mjs`).
 
