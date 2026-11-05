@@ -680,6 +680,8 @@ unless noted).
 | Binaryen one-caller inline limit (N=200, or 1000 globally) | 200 is worse (splits `dsp_i2s_advance` out); 1000 is noise | 2026-11-02 |
 | ThinLTO main module | Noise. The wasm grew 12.3 → 16.2 MB, and ~30 Asyncify onlylist names went missing | 2026-11-03 |
 | wasm SjLj instead of the JS invoke trampoline around `cpu_exec` | `invoke_ijj` is ~1 % of midi and 0.2 % of video: not worth the Asyncify risk | 2026-11-01 |
+| Main-module code cache. Since the prefetch (`67e2d0e`, 2026-09-20) `startEngine()` compiled a `new Response(tee)`, which has no URL, so Chrome never cached the code, despite `deploy/nginx`'s `no-cache` + ETag set up for it. Fixed: compile the fetched response, count bytes on a clone | Landed. The profile's wasm code cache now holds ~7.8 MB after one boot (72 bytes before). Free-run S75 boot, warm vs cold: +17 % guest insns in the first 3 s, ~+20M insns by 20 s; the committed page was cold on every load. Bigger where tier-up is slow (the phone) | 2026-11-05 |
+| Fewer declared TB locals (the baseline tier zeroes them at every entry), re-priced now that Liftoff TB code is ~6.6 % of towerblox | A pad of 16 extra i64 locals per TB: +1.0 / +0.1 % (4 pairs in each order), noise. Not a lever | 2026-11-05 |
 
 ### Devices, display, timers, clock
 
@@ -781,9 +783,6 @@ where noted):
   call hot TBs until TurboFan publishes them. Ceiling ~4.5 % (the closed
   tiering-budget row gives +3.7 %). It needs a second 2 GB memory and a new
   worker: the owner's call.
-- **Main-module code cache.** `startEngine()` compiles from a synthetic
-  `new Response(tee)`, which most likely gets no Chrome wasm code cache, so
-  every load starts the 16 MB module in Liftoff. The first minute only.
 - **Display refresh off the BQL.** `gui_update` holds the BQL on the main
   loop (0.26 % on the dev host). It matters with a slow main-loop core.
 - **DSP chain tail.** Every DSP block ends with 55–76 TCG ops of gates and

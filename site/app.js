@@ -1197,9 +1197,11 @@ function startEngine() {
     // counter runs without one
     st.total = res.headers.get("content-encoding") ? 0
       : Number(res.headers.get("content-length")) || 0;
-    // tee: one branch compiles while the body streams in, the other only
+    // the response itself compiles while the body streams in, so Chrome
+    // can cache the compiled code under its URL (a new Response() has none
+    // and every load would start in the baseline tier); a clone only
     // counts bytes for the pill and the overlay
-    const [forCompile, forCount] = res.body.tee();
+    const forCount = res.clone().body;
     const count = (async () => {
       const rd = forCount.getReader();
       for (;;) {
@@ -1209,11 +1211,9 @@ function startEngine() {
         engineTick();
       }
     })();
-    count.catch(() => {}); // a failed fetch errors both tee branches
+    count.catch(() => {}); // a failed fetch errors the response and its clone
     try {
-      return await WebAssembly.compileStreaming(new Response(forCompile, {
-        headers: { "content-type": "application/wasm" },
-      }));
+      return await WebAssembly.compileStreaming(res);
     } finally {
       // the compile is what failed: stop draining the counter branch (on
       // success this is a no-op on an exhausted stream)
