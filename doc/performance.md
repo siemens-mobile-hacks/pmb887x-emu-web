@@ -734,6 +734,7 @@ unless noted).
 | `W64_INTERP_THRESH` 32 / 256 at the EL71 boot | Neutral: +2.8 / +1.9 % burst, measured before the bootab.sh gzip fix that removed a ~2 % penalty on B | 2026-11-05 |
 | No inline pcc probe (EL71 boot, `bootab.sh`, page default `cross-page-links=on`) | Burst −4.3 % (se 0.6) / −7.0 % (se 2.5), audioMs −5 / −10 %, lagMax −8 / −11 %. Emitted but skipped at run time: +3.6 % (se 0.4). Emitting it costs ~8–10 % of the burst, and its hits save ~3.6 %. Steady state loses towerblox (row above) | 2026-11-05 |
 | The pc cache probed from the lookup helpers instead of inline (`w64_pcc_get` of `3de1546af5^` restored) | Boot burst −6.6 % (se 0.7) / −11.0 % (se 3.7), audioMs −9.9 / −20.5 %, lagMax −12 / −20 %. Steady towerblox −0.9 % (se 0.7) / −2.7 % (se 0.5), A/A +1.9 % (se 1.9), as with no pcc at all: behind a helper call, a hit on towerblox's dispatch exits saves nothing over the jump cache. The slimmer inline probe (own hash, no `cpu_index` compare) landed instead | 2026-11-05 |
+| Upstream goto_ptr exits at the EL71 boot (no slot, no probe: the ceiling of any out-of-line exit), against `d4380167b9` | Burst −2.1 % (se 1.2) / −2.4 % (se 1.0), but audioMs +6.2 / +5.0 %: the slot's hits matter where the sound plays | 2026-11-05 |
 | Selective batch landing (interpret ≥ 16 times before a module) | +2 % slower | 2026-11-02 |
 | hflags kept in place on AArch32 mode changes (`8203411abf`) | Committed on 2026-11-01, returned to upstream in `b12dea95f2` (neutral) | 2026-11-02 |
 
@@ -834,8 +835,10 @@ unless noted).
   exit is emitted with its own slot test, pc-cache probe, helper call and
   three `goto_ptr` tails; the probe alone is ~8–10 % of the burst
   (2026-11-05). One shared out-of-line exit per batch module would keep the
-  steady-state hits without the per-TB code. Unpriced; it needs a function
-  index known at translation time (an import, say).
+  steady-state hits without the per-TB code, but its ceiling is small: with
+  no inline exit code at all (upstream `lookup_and_goto_ptr`), the burst was
+  only −2.1 / −2.4 % faster than `d4380167b9` (se 1.2 / 1.0), and audioMs
+  got worse, +6.2 / +5.0 %.
 
 From the 2026-11-05 brainstorm (towerblox profile `92f6a90e56`; priced only
 where noted):
