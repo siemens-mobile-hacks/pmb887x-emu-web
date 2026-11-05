@@ -894,3 +894,59 @@ The wasm io-barrier single-instruction TBs (A5 in
 with `LS_QARGS` diverges at 16.7M insns on S75 and EL71 (wasm internal SRAM
 lags native), a hidden wasm io_recompile rewind divergence that is not fixed.
 The gate's own lockstep does not pin the RTC, so it does not see this.
+
+## 2026-11-05 audio worklet phase vocoder
+
+The slow-down in `site/audio-worklet.js` went from splices to a phase vocoder
+(README, Sound). It runs on the audio render thread, where a 128-frame
+quantum has 2.7–2.9 ms.
+
+- **Exactness:** every step of the port (plain port, `atan2` only at peaks,
+  fused FFT, warm-up) gave output bit-identical to the research prototype:
+  7 inputs × 5 producer-speed profiles, through an offline node harness that
+  fills a ring and calls `process()`.
+- **CPU per quantum** (node, one pinned core, pooled over the stretch
+  profiles):
+
+  | Worklet | Mean µs | p99 µs |
+  |---|---|---|
+  | splices (before) | 7.2 | 23.7 |
+  | prototype as ported | 36.1 | 169 |
+  | final | 22.9 | 107 |
+
+  The FFT was most of it. Two radix-2 stages per pass with the values kept in
+  locals (the same butterflies and IEEE operations, so signed zeros match
+  too) made it 2x faster. Keeping the previous frame's spectrum and rotations,
+  so `atan2` runs only at peaks, gained a little. The p99 is 4 % of a quantum
+  on the dev host. Not measured on the Pixel 8 Pro.
+- **V8 cold start.** The first vocoder frames ran interpreted, 5–9 ms each:
+  the first entry cost 42–56 ms extra, up to 8–12 ms in one quantum. Warming
+  up only the FFT did nothing. Calling the methods directly at full size took
+  65 ms and only halved the stall, and at a small size V8 deoptimized the code
+  on its first real use anyway:
+  - missing type feedback: N = 256 is a power of 4, so the fused FFT's final
+    single stage never ran;
+  - field constness: fields written once, then reassigned;
+  - Smi → Double field representation changes (map deprecation).
+
+  What works: on the first ring message, run two made-up voices (one gets
+  back to full speed, one starves) through `process()` itself on scratch
+  rings, with 128-frame
+  windows, then restore the fields. Every vocoder field is created in
+  `configurePv`, so the object keeps one shape. The warm-up costs 30–39 ms
+  once per worklet scope (a later processor skips it), and the first entry
+  then costs 2–5 ms extra, at most 1.3–3 ms in one quantum.
+- **Chrome, towerblox under `dutyhost.sh` `RUN=1 STOP=4`** (vratio ~0.58), the
+  two worklets alternated, one 60 s window each:
+
+  | Worklet | Underruns | gapMs | stretchedMs |
+  |---|---|---|---|
+  | splices | 5, 6 | 3500, 3767 | 23514, 22841 |
+  | vocoder | 5, 7 | 3225, 4005 | 21860, 21525 |
+
+  The same within this model's noise; the dropouts are the producer's. The
+  vocoder entered ~100 times per window. bobby under `RUN=1 STOP=2` (vratio
+  0.86): no underruns, 8.3 s stretched. Chrome cannot time the worklet: its
+  scope has no `performance`, `Date` sees the dutyhost stops, and its console
+  output does not reach Playwright (stats have to go through the ring
+  header).

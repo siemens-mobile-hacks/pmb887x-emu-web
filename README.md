@@ -335,12 +335,21 @@ real time in the browser. Three pieces keep that from coming out as stutter:
   WebRTC's NetEQ does). The delay never stays above 500 ms: past it the bank
   is cut back to the cushion in one crossfaded jump.
 - While the guest renders slower than real time (below 95 %), the sound
-  slows down with it, to a quarter speed at most, at the same pitch: the same
-  splices jump back instead of ahead and play a stretch where the sound
-  repeats itself again. The speed it follows is the producer's, smoothed
-  over 250 ms and corrected by how far the bank is from the cushion. Below a
-  quarter speed the sound is choppy rather than late. The ring header counts the
-  frames skipped or replayed (`drainedMs`, `cutMs` and `stretchedMs` in
+  slows down with it at the same pitch. The speed it follows is the
+  producer's, smoothed over 250 ms and corrected by how far the bank is from
+  the cushion. A phase vocoder does the slow-down: 2048-frame Hann windows
+  (43–46 ms) every quarter window, with identity phase locking (Laroche &
+  Dolson), so a note is held longer rather than repeated. Attacks go through
+  at full speed, and entering and leaving it are sample-exact. It slows down
+  to 0.15×, below the 0.25× the cushion is sized for, so the bank refills
+  and pays back the attacks. Until a window and a hop (~55 ms) are banked,
+  the same splices as above jump back instead of ahead and play a stretch
+  where the sound repeats itself again, down to a quarter speed. Below that
+  the sound is choppy rather than late. The vocoder's code runs once on
+  made-up input when the first ring is attached (30–40 ms on a desktop), so
+  V8 has compiled it before a real stream first needs it. The ring header
+  counts the frames skipped or replayed (`drainedMs`, `cutMs` and
+  `stretchedMs` in
   `tools/scenebench.mjs`).
 
 Muting is *not* the same as having no audiodev: the backend keeps consuming
