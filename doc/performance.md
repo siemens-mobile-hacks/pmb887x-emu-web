@@ -204,6 +204,32 @@ repo; `--flash` overrides that. Results go to
   `SCENEBENCH_BROWSER=firefox`. Headless Firefox needs PulseAudio, and it runs
   ~1.6x less efficiently than Chromium on towerblox.
 
+### Boot A/B (`tools/perf/bootab.sh`)
+
+`tools/bootbench.mjs` follows one boot from the Start click to the idle
+screen: guest clock, instruction count and audio ring every 200 ms (its
+header lists the outputs). `tools/perf/bootab.sh <phone> <distA> <distB> 4`
+boots the two dists side by side on swab.sh's core sets, paced as on the page
+(no free-run), and prints B/A per metric:
+
+- `burst`: wall seconds from guest 6 s to 12 s (`SPAN`), the EL71 burst
+  around the boot chime. While the guest is behind real time this is raw
+  emulator speed.
+- `audioMs` = `stretchedMs` + `gapMs`: ring audio replayed to slow the
+  sound down, plus underrun silence. The two trade against each other, so
+  judge the sound by the sum. `lagMax`: the furthest the guest fell behind.
+
+**Pitfalls:**
+
+- **First-request gzip:** `serve.mjs` compresses a dist's wasm on its first
+  request, so a dist built moments before made its legs wait while the other
+  side booted: B looked ~2 % (up to 5 %) slower in every A/B before
+  2026-11-05. bootab.sh now fetches both wasm files before starting. A/A
+  after the fix: +0.4 % (se 0.3).
+- **Outlier pairs:** one leg sometimes runs 10–15 % slow (seen on pair 3's
+  and 4's A side). A round's se then reads 3–4 % against ~0.7 % otherwise.
+  Run two rounds and compare the medians.
+
 ### The A/B method: paired free-run
 
 On this host the stopwatch keeps real time, so plain runs pin vratio at 1.0
@@ -563,6 +589,7 @@ Every share below is as of its date, and later work moved some of them.
 | Music AAC (2026-10-30) | 10 s of vCPU: DSP 4.7 s (JIT code 2.4, chain helper 0.6, 35BE kernel 0.44, bus/sync 0.35), ARM 1.4 s, idle 3 s |
 | S75 boot, vt + bank (2026-10-29) | Busy ~15 s = ARM 8.4 s (interpreter tier 2.0, TB code 4.7, helpers 0.75), DSP 3.3 s, translation 1.7 s, loop overhead 0.9 s |
 | EL71 boot window, guest 7–13.5 s (2026-11-02) | ARM translation 23 %, TB Liftoff 17 %, lazy compile 14 %, TurboFan 11 %; 30k of 73k TBs run once |
+| EL71 boot burst, guest 6–12 s, V8 `--prof` (2026-11-05, `172f58552d`) | TB Liftoff 22.5 % of ticks (4.1 % under `--wasm-tiering-budget=300000`), main-module Liftoff ~1 %. The inline pcc probe of every goto_ptr exit: emitting it costs ~8–10 % of the burst (translation and Liftoff compile), its hits save ~3.6 % (Closed ideas, ARM translator) |
 | EL71 idle (2026-10-29) | ~18.5 % of a core; DSP 1.09 s per 10 s |
 
 **Rates.** A per-event cost must pay for itself at these rates (free-run
@@ -703,7 +730,10 @@ unless noted).
 | Constant `w64_tb_tp` for the return-address store before helper calls | Neutral / −1 % | 2026-11-02 |
 | Inline ARM chain linking across wasm instances | Too large a change for ~1–2 % (a cross-instance call is ~5–7 ns) | 2026-11-02 |
 | TB lookup path | After `5c8cf5bc65`/`1cffcb62a0`: per-TB slot 83 %, inline hash 17 %, helper ~0. Not a lever | 2026-11-02 |
-| Code-page gate in `tb_jmp_cache_clear_page` + lean goto_ptr exits (EL71 boot) | Boot window −6 %, but steady towerblox −1.7 % (cause unknown). `cross-page-links=on` was chosen instead | 2026-11-02 – 03 |
+| Code-page gate in `tb_jmp_cache_clear_page` + lean goto_ptr exits (EL71 boot) | Boot window −6 %, but steady towerblox −1.7 % (the inline pcc probe's hits, see the 2026-11-05 rows). `cross-page-links=on` was chosen instead | 2026-11-02 – 03 |
+| `W64_INTERP_THRESH` 32 / 256 at the EL71 boot | Neutral: +2.8 / +1.9 % burst, measured before the bootab.sh gzip fix that removed a ~2 % penalty on B | 2026-11-05 |
+| No inline pcc probe (EL71 boot, `bootab.sh`, page default `cross-page-links=on`) | Burst −4.3 % (se 0.6) / −7.0 % (se 2.5), audioMs −5 / −10 %, lagMax −8 / −11 %. Emitted but skipped at run time: +3.6 % (se 0.4). Emitting it costs ~8–10 % of the burst, and its hits save ~3.6 %. Steady state loses towerblox (row above) | 2026-11-05 |
+| The pc cache probed from the lookup helpers instead of inline (`w64_pcc_get` of `3de1546af5^` restored) | Boot burst −6.6 % (se 0.7) / −11.0 % (se 3.7), audioMs −9.9 / −20.5 %, lagMax −12 / −20 %. Steady towerblox −0.9 % (se 0.7) / −2.7 % (se 0.5), A/A +1.9 % (se 1.9), as with no pcc at all: behind a helper call, a hit on towerblox's dispatch exits saves nothing over the jump cache. The slimmer inline probe (own hash, no `cpu_index` compare) landed instead | 2026-11-05 |
 | Selective batch landing (interpret ≥ 16 times before a module) | +2 % slower | 2026-11-02 |
 | hflags kept in place on AArch32 mode changes (`8203411abf`) | Committed on 2026-11-01, returned to upstream in `b12dea95f2` (neutral) | 2026-11-02 |
 
@@ -714,6 +744,8 @@ unless noted).
 | `--no-liftoff` (−10 % ns/insn on video) | A page cannot set V8 flags | 2026-10-31 |
 | Wasm compilation hints | Behind a flag in Chrome 153–155, no origin trial. Even with the flag there was no TurboFan | 2026-11-01 – 02 |
 | Forcing Liftoff tier-up by padding TBs | Tier-up budget is charged by machine-code offset at returns and tail calls, so it would take tens of KB per TB. Ceiling: `--wasm-tiering-budget=1300000` gives +3.7 % on towerblox. Closed for good | 2026-11-02 |
+| `--wasm-tiering-budget=300000` at the EL71 boot (ceiling) | Burst −8.2 %, stretchedMs −25 %, gaps unchanged; TB Liftoff ticks 22.5 → 4.1 %. All of it is TB tier-up: main-module Liftoff is ~1 %. V8's default budget is 13M. A page cannot set it | 2026-11-05 |
+| Tier-up spin: a loop in TB code that charges the tiering budget | A back-edge charges ~0.93 × the function's Liftoff size (~2.5 × its wasm body bytes) per iteration, under 1 ns each. A per-TB countdown with overshoot matched the flag's tier-ups, but the loop wrapper alone cost +3–9 %: net burst +0.5 % (se 0.9), gaps worse. A full charge on every TB floods TurboFan: +19.6 %. Closed | 2026-11-05 |
 | Masking indexes so V8 drops bounds checks | Impossible: V8 drops them only for constant indexes, and the memory size is a hoisted load | 2026-11-03 |
 | wasm SIMD build; extra Binaryen passes | Neutral | 2026-11-01 |
 | Binaryen one-caller inline limit (N=200, or 1000 globally) | 200 is worse (splits `dsp_i2s_advance` out); 1000 is noise | 2026-11-02 |
@@ -798,7 +830,12 @@ unless noted).
 - **Direct DSP block linking** (≤ 3 %).
 - **Kernels:** EE49 (~1.5 % on Bobby, S75 only) and DDDE (~1 % on towerblox).
 - **EL71 boot window:** TCG liveness/register-allocation temp loops cost ~3 %.
-  ~1.35k TB invalidations per boot each bump a global key.
+  ~1.35k TB invalidations per boot each bump a global key. Every goto_ptr
+  exit is emitted with its own slot test, pc-cache probe, helper call and
+  three `goto_ptr` tails; the probe alone is ~8–10 % of the burst
+  (2026-11-05). One shared out-of-line exit per batch module would keep the
+  steady-state hits without the per-TB code. Unpriced; it needs a function
+  index known at translation time (an import, say).
 
 From the 2026-11-05 brainstorm (towerblox profile `92f6a90e56`; priced only
 where noted):
@@ -845,6 +882,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-04 | `6e41e38a16`, `36e4130ef8`, `f8612575ce` | smh/master `326ab1b4d5` + chain caches kept across DSP bank switches: vs `f45db9a125` stopwatch +2.4 %, towerblox +2.1 %, midi +0.7 %, video mips +11 % (free-run) |
 | 2026-11-04 | `6cd424cdb5` | smh/master `a05a9df1da`: SIM rewrite (`hw/smartcard`) fixes PPS, revert dropped; needs bsp ≥ `85d4f78` and `-device gsm-sim`. Lockstep references stamped; swab.sh + freerun.diff; deviation cleanup (below) |
 | 2026-11-04 | `92f6a90e56` | smh/master `d9cf65ef40`: DSP chain exits with two links (program context and mode checked inline), chain and batch exits only for deliverable interrupts, one running cycle count per slice. Free-run A/B vs `1b51f8e577`, 4 pairs: bobby +4.4 % (4/4), midi +1.4 % (4/4), video mips +0.7 % (4/4), towerblox +3.6 %, stopwatch +1.9 % (3/4 each) |
+| 2026-11-05 | `d4380167b9` (`172f58552d`) | Shorter pc-cache probe at goto_ptr exits (own 3-op hash, no `cpu_index` compare on one CPU). EL71 boot (bootab.sh, 2 × 4 pairs): burst −1.5 % (se 0.9) / −4.7 % (se 3.4), median −1.7 %, audioMs −3.3 / −9.8 %. Free-run: towerblox +0.9 %, bobby +1.2 %, video +0.8 % (8 pairs), stopwatch +1.0 %, midi +0.4 % (4 pairs) |
 
 ## 2026-11-04 deviation cleanup
 
