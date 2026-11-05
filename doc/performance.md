@@ -275,6 +275,18 @@ always revert with `git apply -R`.
   6–7, and on 2026-11-04 it was the most negative midi pair in every
   round (−3.7, −1.2, −2.5 %). For a close call, run half the rounds with
   the dists swapped.
+- **Function placement alone moves a scene by ~1 %.** The `-O3` link
+  (binaryen) orders functions by use count, so one new out-of-line function,
+  or more call sites for an old one, renumbers thousands of functions whose
+  code did not change. The 2026-11-05 fill rectangles moved every hot DSP
+  function of bobby up one index, and bobby, which never reaches the fill,
+  measured −1.4 % over four rounds (se 0.24). A control with the same shift
+  and no new code that runs (a looped function behind 16 never-taken calls in
+  the base's fill helper) measured −0.8 %. Before blaming a change for a loss
+  on a scene that does not run it, compare the two `.wasm` code sections by
+  function (sizes, and the `.js.symbols` index of the scene's hot functions)
+  and A/B such a control. It is this host's V8 code placement and says
+  nothing about the phone.
 - **Upstream timing changes:** compare `mips`/`fps`, not vratio, across them.
   After the 326ab1b4d5 merge, video vratio fell 12–20 % because the SL65
   player draws more frames per virtual second, while mips rose 11 %.
@@ -505,6 +517,19 @@ Checkers built this way are described in the commit messages:
 - Baseband ranges.
 - Thumb fill loop: 24.4M checks. Lockstep is blind to it, because a value
   mutant passes.
+- Thumb fill rectangles (2026-11-05), two predictors that restore the state
+  and compare at the next helper call:
+  - one row transition at a time: 36.15M matched over 60 s of towerblox;
+  - the fused loop, 1–4 whole rows with a log of every store: 10.93M
+    predictions covering 26.25M rows matched, and again 10.93M over 26.26M
+    rows on the committed source (one mismatch).
+  The 4 + 3 + 1 mismatches all came with an interrupt handler's 22k–58k
+  instructions in between, and the main loop had re-armed the cycle budget.
+  The budget margins at prediction were 339–12,211 cycles against a
+  ~40-cycle transition. Mutants of the fused loop, 30 s each: storing
+  `v ^ 1` at the next row's first element failed all 5.93M predictions on
+  memory alone, and one cycle too many at the write-back failed all 5.92M
+  on the cycle count alone.
 - Literal folding.
 
 None of them is in the repo; rebuild one from its description before relying
@@ -531,6 +556,7 @@ Every share below is as of its date, and later work moved some of them.
 | Stopwatch, V8 `--prof` (2026-11-01) | TB TurboFan 46 %, main module 26 %, TB Liftoff 6.4 % + `WasmLiftoffFrameSetup` 2.4 %, libc 16 % (`ATOMICS_WAIT`, i.e. idle) |
 | Towerblox (2026-11-02) | ARM TBs 47 %, DSP TBs 19 %, rest 33 %. The fill loop at a0a04cc6 was ~35 % of guest insns in ~6.5 % of the time before `3116fa62be`. Liftoff-tier TB code ~9 % + frame setup 1.5 % |
 | Towerblox, V8 `--prof`, free-run + bounds checks (2026-11-04, `92f6a90e56`) | TB TurboFan 59 %, main module 31–33 %, TB Liftoff 4–5 % + `WasmLiftoffFrameSetup` 1.5 %. TB code by owner: ARM 40 %, DSP 23 %. Top C: `tcg_fast_run_35be` 4.2–4.7, `dsp_bus_advance` 3.1 (callers: data reads 1.1, the `dsp_sync` timer 1.0, data writes 0.8, `dsp_runtime_advance_cycles` 0.6), chain helper 2.1–2.3, `helper_w64_fill` 1.9–2.1, `dsp_sync` 1.5–1.7, kernels 643f/64a9/6489 ~1.2/1.1/0.7. Nothing else above 0.8 %; from entry 26 down, each is ≤ 0.3 %. The hottest ARM TB (2 %) is the fill loop's own superblock |
+| Towerblox fill, V8 `--prof`, free-run + bounds checks, named TBs (2026-11-05, `a357f7ab05`) | Before rectangles: loop TB a0a04cc6 1.45 %, head TB a0a04cc2 0.44 %, `helper_w64_fill` 1.68 %, 3.57 % in all. Row-at-a-time rectangles: loop TB 0.26 %, `w64_fill_row` 1.75 % + helper 1.67 %, no gain. Fused rectangles: loop TB 0.20 %, helper 1.75 % (every store included), ~2.0 % in all |
 | Bobby (2026-10-31) | Worker busy time: DSP 61 %, ARM 19 %, display 13 % |
 | Video (2026-11-01/02) | Busy 11.8 s of 20 s = ARM JIT 5.0 s, DSP 4.4 s, ARM-side C 2.1 s. GSM search kernels (35be+643f+6489+64a9) ~30 % of free-run ticks (midi 12 %, bobby 9 %) |
 | MIDI (2026-10-30/11-01) | DSP ~62 % of the vCPU, ~48M DSP cycles/s. Hot blocks: f4ec 27 % of chained cycles, e20d 16 %, f4b8 10 %. DSP-bound: only faster DSP execution helps |
@@ -547,6 +573,7 @@ unless noted).
 | ARM TB entries | 16.5–19M/s; ~50 % indirect (goto_ptr): per-TB slot hit 83 %, inline hash 17 % |
 | ARM ns per guest insn | stopwatch ~1.7, towerblox ~3.5 (its fill loop ~0.75) |
 | Thumb fill helper (towerblox, 2026-11-04) | all 16-bit stores; ~16 passes per call on average, and 3 of 4 calls run fewer than 16 passes, so the per-call cost dominates (23M calls, 373M passes over a 30 s real-time window plus boot) |
+| Thumb fill rows (towerblox, 2026-11-05, 60 s real time plus boot) | 36.8M rows finish inside the helper. 98.1 % go straight into the next row; 1.5 % end the rectangle, 0.4 % meet the cycle budget, and ~50 were in TBs still interpreted. A row costs two TB entries (a0a04cc2 head, the b absorbed; a0a04cc6 loop and tail). Done as a C transition per row, it cost ~23 ns, as much as the TB code it replaced |
 | SVC / eret / mode MSR / IRQ (stopwatch) | ~240k / ~245k / ~250k / ~1.9k per s |
 | ARM MMIO accesses | ~50k/s, no polling; `mmu_lookup1` ~18k/s in steady state |
 | New ARM TBs in steady state | stopwatch ≈ 0; towerblox ~135–300/s (JIT-compiled Java at fresh addresses, no invalidation churn) |
@@ -577,6 +604,17 @@ unless noted).
   (chain helper, prologue) matter. Block shapes cannot change, because block
   ends are interrupt points. 93 % of chain calls link through the successor
   cache (towerblox census, 2026-11-02).
+- **A C helper beats chained TurboFan TBs only by removing per-event work.**
+  The fill's row transition in C (four TLB probes, counter calls into other
+  files, a register write-back per row) cost as much as the two TB entries
+  and 15 instructions it replaced. It paid only once the rows ran in one
+  loop with the state in locals, one probe per page and one write-back.
+- **A TranslationBlock has room to grow up to 256 bytes.** `tcg_tb_alloc`
+  aligns each TB to `qemu_icache_linesize`, which is the 64-byte fallback on
+  emscripten (its libc has no cache-line `sysconf`), so the 232-byte wasm64
+  TB takes 256 bytes. A 16-byte field before `jmp_list_head` (2026-11-05)
+  measured +0.1 % on bobby and +0.4 % on stopwatch (4 pairs in each order,
+  noise).
 - **C kernels are not faster per cycle than the JIT** unless they run whole
   iterations. The kernels' remaining cost is semantics: ~480 wasm ops per
   9-instruction 643f iteration, with the state already in locals.
@@ -771,13 +809,6 @@ where noted):
   (`dsp_bus_get_cycles_until_event`), a flush before writes and before reads
   of time-varying registers, and a checker. Expect ~1.5–2 %, in upstream
   files.
-- **Rectangle-level Thumb fill.** Census (towerblox, real time): ~465k fill
-  rows/s; 65 % of rows sit in runs of 65–256 rows at a constant pitch, 15 %
-  in runs of 17–64, and 74 % of rows are ≤ 8 passes. Each row costs four TB
-  entries (a04cd2 tail, a04cc2 head, a04cce test, a04cc6 loop) plus one
-  helper call. A helper that also runs the tail and head must charge those
-  TBs' cycles and icount exactly and stop at any TB-start check that would
-  exit. ~1.5–2 % of towerblox; S75 J2ME only.
 - **Tier-up helper worker.** Liftoff TB code plus `WasmLiftoffFrameSetup` and
   `CallIndirectIC` are ~7 % of towerblox ticks; 61 % of the Liftoff ticks are
   in code older than 60 s. A second worker sharing the NativeModule could
