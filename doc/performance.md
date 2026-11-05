@@ -625,6 +625,7 @@ unless noted).
 | Envelope state-machine kernel (midi F6BC / bobby ED2A loop) | Too big (~10 new instruction types) | 2026-11-01 |
 | EE49 C kernel (S75 MAC loop: 27 % of chained cycles, 3.1 % of the vCPU) | Parked, ~1.5 % on Bobby, S75 only | 2026-11-02 |
 | Biquad routine 0xDDDE (~11 % of towerblox chains) | ~1 % reachable, parked | 2026-11-02 |
+| Lazy DSP flags. Upper bound: `fz fm fn fv fe fc0` dead at every block exit and at the chain helper (inexact, `tcg_remove_dead_flag_stores`) | towerblox −0.6 % ± 0.65 (4 pairs × 30 s). midi −38 %: the DSP reads those flags across blocks, so the inexact build changed its work, and it bounds nothing there. DSP TB code is ~23 % of towerblox, so even cutting a fifth of it is ~4–5 %, before materializing the flags read across blocks | 2026-11-05 |
 
 ### DSP scheduling and threading
 
@@ -749,11 +750,6 @@ unless noted).
   semantic cost. It is a large, upstream-divergent rewrite.
 - **Direct DSP block linking** (≤ 3 %).
 - **Kernels:** EE49 (~1.5 % on Bobby, S75 only) and DDDE (~1 % on towerblox).
-- **Lazy DSP flags.** Not tried. Priced on 2026-11-04 at ~3–4 % of
-  towerblox: `tcg_remove_dead_flag_stores` already drops flag stores that a
-  later instruction of the same block overwrites, so only the flags that die
-  across blocks are left to save, and it means rewriting the flag emitters of
-  upstream's `dsp/tcg.c`.
 - **EL71 boot window:** TCG liveness/register-allocation temp loops cost ~3 %.
   ~1.35k TB invalidations per boot each bump a global key.
 
