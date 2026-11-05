@@ -637,6 +637,7 @@ unless noted).
 | DSP thread, exact (each MCU read is a synchronous job on the DSP worker) | Deterministic and ~6 % faster natively. On the web there was no gain on a fast host, it used more CPU, and it failed the spinner model. At 20 % duty: video +17 %, midi flat (DSP-bound). Branch `exp/dspthr2`: +4–17 % vratio for +40–70 % CPU, and ~12x slower on one core. Ceiling ~15 %: the MCU does ~12k DSP reads per virtual second, each a cross-thread round trip. The owner said no. `build/experiments/dsp-thread-sync-reads.patch` (applies to `11699de202`/`62b16312dd`), qemu branches `exp/dspthr` and `exp/dspthr2`. It also exposed wasm64 bugs that matter only when a second thread translates: `IR` must be `__thread`, `w64_acct_flags` must be per thread, and TBs translated without a vCPU must not account guest insns | 2026-10-31 – 11-02 |
 | Batching small `dsp_bus_advance` calls (inexact upper-bound build) | video +1.8 %, midi +0.5 %: noise | 2026-11-02 |
 | DSP bus deferral (`DSP_BUS_DEFER_ADVANCE`: advance the peripherals lazily inside a no-event horizon) | Exact (checker, lockstep clean) but neutral | 2026-11-02 |
+| Queued DSP syncs (`dsp_schedule_sync` → `async_run_on_cpu`, each a `cpu_exec` exit and re-entry). Census, real time: towerblox ~4.9k/s, all queued from the vCPU thread (~1.5k/s refused by the in-loop budget renewal, the rest from device accesses mid-TB); bobby ~2.2k/s. Inexact bound: `dsp_sync()` in place when on the vCPU thread | towerblox −1.2 / +0.9 % (4 pairs in each order): the exits are cheap, not a lever | 2026-11-05 |
 | The batching bound again, on towerblox (~600k calls/s, 4x video): advances batched to 512 cycles, flushed at every slice end (inexact) | +3.1 % (+4.1 / +2.1 %, 4 pairs in each order). The deferral above was never measured on towerblox; see Remaining levers | 2026-11-05 |
 | I2S rate memo, I2S rate cache, skipping the i2s divide | Neutral every time (≤ 0.23 %); re-tried twice by mistake | 2026-10-31, 11-02 |
 | `dsp_bus_advance` i2s 64-bit div/mod (~70 ns per call on Bobby) | ~0.3 % reachable, in an upstream file, left | 2026-11-01 |
@@ -790,9 +791,6 @@ where noted):
 - **One check per TLB probe.** A probe does three bounds-checked loads
   (comparator, addend, data). A mirrored `{cmp32, addend32}` word makes it
   two. ~1–1.5 %, ~10 hooks in `cputlb.c`.
-- **Queued DSP sync work.** `async_run_on_cpu` from `dsp_schedule_sync`
-  forces a `cpu_exec` exit; draining non-exclusive work in
-  `tcg_vcpu_timers_next_budget` would keep the loop. Census first.
 
 ## History
 
