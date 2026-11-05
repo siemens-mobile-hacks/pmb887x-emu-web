@@ -69,7 +69,8 @@ emulator.
    culprits. One exception (2026-11-05): the owner took the EL71 boot win of
    the pc cache probed in the lookup helpers with its ~1 % steady-state cost
    (History). It was a one-time decision, not a licence to give up towerblox
-   or any other scene.
+   or any other scene. The cost is gone since the probe became a function of
+   each batch module (History, the next 2026-11-05 row).
 6. **Follow smh/master.** If upstream is broken, stay on its last working
    commit. For example, the SIM PPS commit was excluded from 2026-11-02 until
    upstream's SIM rewrite fixed it on 2026-11-04.
@@ -592,7 +593,9 @@ Every share below is as of its date, and later work moved some of them.
 | Music AAC (2026-10-30) | 10 s of vCPU: DSP 4.7 s (JIT code 2.4, chain helper 0.6, 35BE kernel 0.44, bus/sync 0.35), ARM 1.4 s, idle 3 s |
 | S75 boot, vt + bank (2026-10-29) | Busy ~15 s = ARM 8.4 s (interpreter tier 2.0, TB code 4.7, helpers 0.75), DSP 3.3 s, translation 1.7 s, loop overhead 0.9 s |
 | EL71 boot window, guest 7–13.5 s (2026-11-02) | ARM translation 23 %, TB Liftoff 17 %, lazy compile 14 %, TurboFan 11 %; 30k of 73k TBs run once |
-| EL71 boot burst, guest 6–12 s, V8 `--prof` (2026-11-05, `172f58552d`) | TB Liftoff 22.5 % of ticks (4.1 % under `--wasm-tiering-budget=300000`), main-module Liftoff ~1 %. The inline pcc probe of every goto_ptr exit: emitting it costs ~8–10 % of the burst (translation and Liftoff compile), its hits save ~3.6 % (Closed ideas, ARM translator). Since `434be28741` it is emitted only at promoted exits |
+| EL71 boot burst, guest 6–12 s, V8 `--prof` (2026-11-05, `172f58552d`) | TB Liftoff 22.5 % of ticks (4.1 % under `--wasm-tiering-budget=300000`), main-module Liftoff ~1 %. The inline pcc probe of every goto_ptr exit: emitting it costs ~8–10 % of the burst (translation and Liftoff compile), its hits save ~3.6 % (Closed ideas, ARM translator). Since `434be28741` it is emitted only at promoted exits, and since `36e3b3cc4c` not at all: TBs call their batch module's probe function |
+| EL71 boot, `434be28741`, Chrome trace and V8 `--prof` (2026-11-05) | ~900 batch modules and ~43k lazy compiles per boot. A lazy compile takes 43 µs on the vCPU thread: Liftoff ~19 ns per wasm byte plus ~13 µs fixed, of which ~11 µs is publishing (AddCompiledCode, PublishCode, two icache flushes); the mean TB body is 1.5 KB. Module decode, validation and instantiation are ~0.5 ms per module. TurboFan takes 1.6 ms per TB on the background threads, 45 % of it register allocation. Busy window, guest ~7–16 s: main-module wasm 35 %, TB Liftoff 19.6 %, TB TurboFan 17 %, Chrome C++ (the Liftoff compiler) 15 %, builtins 5 % (`WasmLiftoffFrameSetup` 3.3 %, which runs on every Liftoff entry while wasm inlining is on; `CallIndirectIC` 1.1 %, on every Liftoff `call_indirect` including the chains' tail calls). Top C: `tcg_gen_code` 6.3 % self (the register allocator and the inlined wasm64 emitters), `liveness_pass_1` 3.1 %, `helper_lookup_tb_ptr_lc` 1.2 % |
+| TB bytes by TCG op, EL71 boot census (2026-11-05) | `qemu_ld`/`qemu_st` ~44 % of the body bytes at ~100 bytes each, ~42 of them the slow arm (helper call and the `$tmask`/`$ttab` reload, which a helper's TLB resize forces). Moving the arm out of line would save ~1.5 % of the burst at most; the reload has to stay in the TB |
 | EL71 idle (2026-10-29) | ~18.5 % of a core; DSP 1.09 s per 10 s |
 
 **Rates.** A per-event cost must pay for itself at these rates (free-run
@@ -740,6 +743,7 @@ unless noted).
 | Upstream goto_ptr exits at the EL71 boot (no slot, no probe: the ceiling of any out-of-line exit), against `d4380167b9` | Burst −2.1 % (se 1.2) / −2.4 % (se 1.0), but audioMs +6.2 / +5.0 %: the slot's hits matter where the sound plays | 2026-11-05 |
 | The probe in the helpers only, on every scene (free-run, 4 pairs each, against `d4380167b9`) | Video −5.0 % (se 0.6) / −3.0 % (se 2.2), towerblox +0.3 / −3.3 %, midi −2.0 / +0.8 %, stopwatch +1.9 %, bobby +0.7 %. Exits promoted to the inline probe by their hits landed instead (History) | 2026-11-05 |
 | Promotion at 256 or 4096 pc-cache hits in C per TB | Boot burst +2.4 % (se 2.2) / −1.0 % (se 0.5), audioMs +8.9 / +4.2 %: a promotion costs ~3 ms at the boot (retranslation, interpreter tier, a new batch module, a generation bump). 65535 landed | 2026-11-05 |
+| Promotion at 1024 hits (free-run, 4 pairs, against `434be28741`) | Video −2.1 %, towerblox −4.2 % (se 0.8): the retranslations themselves cost the steady state. Promotion was replaced by the module's probe function | 2026-11-05 |
 | Promotion counting only the slot's exit | Video −2.3 / −2.2 %, towerblox −0.2 %: a TB's second goto_ptr exit (keyed differently from the slot) went through `helper_lookup_tb_ptr`, whose ~280k pc-cache hits/s on video never counted | 2026-11-05 |
 | Selective batch landing (interpret ≥ 16 times before a module) | +2 % slower | 2026-11-02 |
 | hflags kept in place on AArch32 mode changes (`8203411abf`) | Committed on 2026-11-01, returned to upstream in `b12dea95f2` (neutral) | 2026-11-02 |
@@ -840,12 +844,14 @@ unless noted).
   ~1.35k TB invalidations per boot each bump a global key, which is cheap:
   ~36 stale-slot lookups per bump (census, 2026-11-05). Every goto_ptr exit
   is emitted with its own slot test, helper call and `goto_ptr` tails. The
-  pc-cache probe, ~8–10 % of the burst when every exit had it, is emitted
-  only at promoted exits since `434be28741`. One shared out-of-line exit
-  per batch module would keep the steady-state hits without the per-TB
-  code, but its ceiling is small: with no inline exit code at all (upstream
+  pc-cache probe, ~8–10 % of the burst when every exit had it, is one
+  function per batch module since the module-probe commit (History). The
+  remaining exit code has a small ceiling: with none at all (upstream
   `lookup_and_goto_ptr`), the burst was only −2.1 / −2.4 % faster than
-  `d4380167b9` (se 1.2 / 1.0), and audioMs got worse, +6.2 / +5.0 %.
+  `d4380167b9` (se 1.2 / 1.0), and audioMs got worse, +6.2 / +5.0 %. The
+  same trick, a function the module defines instead of an import, suits any
+  per-TB code that TurboFan should inline but Liftoff should not have to
+  compile at every site.
 
 From the 2026-11-05 brainstorm (towerblox profile `92f6a90e56`; priced only
 where noted):
@@ -894,6 +900,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-04 | `92f6a90e56` | smh/master `d9cf65ef40`: DSP chain exits with two links (program context and mode checked inline), chain and batch exits only for deliverable interrupts, one running cycle count per slice. Free-run A/B vs `1b51f8e577`, 4 pairs: bobby +4.4 % (4/4), midi +1.4 % (4/4), video mips +0.7 % (4/4), towerblox +3.6 %, stopwatch +1.9 % (3/4 each) |
 | 2026-11-05 | `d4380167b9` (`172f58552d`) | Shorter pc-cache probe at goto_ptr exits (own 3-op hash, no `cpu_index` compare on one CPU). EL71 boot (bootab.sh, 2 × 4 pairs): burst −1.5 % (se 0.9) / −4.7 % (se 3.4), median −1.7 %, audioMs −3.3 / −9.8 %. Free-run: towerblox +0.9 %, bobby +1.2 %, video +0.8 % (8 pairs), stopwatch +1.0 %, midi +0.4 % (4 pairs) |
 | 2026-11-05 | `434be28741` (`d4380167b9`) | The lookup helpers probe the pc cache; the inline probe is emitted only at goto_ptr exits whose pc-cache hits in C reach 65535 (the TB is retranslated). EL71 boot (bootab.sh, 2 × 4 pairs) vs `d4380167b9`: burst −7.0 % (se 0.9) / −5.4 % (se 0.8), audioMs −10.7 / −9.0 %, lagMax −13.7 / −10.6 %. Free-run, 4 pairs each: video −1.6 / −1.4 %, towerblox −0.7 / −1.3 %, bobby −1.4 %, midi −0.8 %, stopwatch −0.3 %, taken by the owner's one-time exception (rule 5). Census, paced video: ~35k slot misses/s and ~11k second-exit lookups/s answered in C, ~0.4 promotions/s, which at tens of ns each does not explain the ~1 % |
+| 2026-11-05 | `36e3b3cc4c` (`434be28741`) | The goto_ptr exits call `w64_pcc_probe`, a function each batch module carries, in place of the helper import: TurboFan inlines it into hot TBs, a cold TB's exit stays a 5-byte call, and a miss calls the helper. Promotion, its counters and `helper_lookup_tb_ptr_cnt` are gone. EL71 boot (bootab.sh, 4 pairs) vs `d4380167b9`: burst −6.5 % (se 0.7), audioMs −10.2 % (se 1.6), lagMax −10.3 % (se 1.4); vs `434be28741`, 3 × 4 pairs: +6.6 % (se 4.1, two outlier pairs) / −0.1 % / −0.7 %. Free-run vs `d4380167b9`, 4 pairs each: video +2.3 / −0.1 %, towerblox −0.4 / +1.0 %, bobby +0.2 %, midi +0.2 %, stopwatch −0.4 %, which recovers the steady state that `434be28741` gave up |
 
 ## 2026-11-04 deviation cleanup
 
