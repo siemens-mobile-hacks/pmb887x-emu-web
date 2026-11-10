@@ -1,6 +1,6 @@
-// Boot with PMB887X_TRACE_IO=<spec> and capture the console trace.
+// Boot with ?trace=<spec> (-debug-channels) and capture the console trace.
 import { chromium } from "playwright-core";
-import { fullflash } from "/workspace/tools/testflash.mjs";
+import { fullflash } from "./testflash.mjs";
 const port = process.env.PORT || "8080";
 const secs = Number(process.argv[2] || 50);
 const spec = process.env.TRACE || "scu,dsp";

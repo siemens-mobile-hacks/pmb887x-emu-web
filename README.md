@@ -382,7 +382,9 @@ its comments record every bump and why. In outline:
 
 - qemu-pmb887x (`QEMU_PMB887X_REV`, branch `wasm-browser-port`) — the fork
   series on top of siemens-mobile-hacks/qemu-pmb887x master, which is
-  merged in regularly. The 2026-11-04 merge of `a05a9df1da` moved the SIM
+  merged in regularly (last: `9e5a6bbfd6` on 2026-11-09, which brought
+  `-debug-channels`, the CFI flash's own writeback and audio routing
+  through audio lines). The 2026-11-04 merge of `a05a9df1da` moved the SIM
   into a device of its own (`hw/smartcard/gsm-sim`, `-device gsm-sim`, PPS
   working), and the fork deviations that neither speed nor correctness
   needs went back to upstream's form after it
@@ -403,10 +405,9 @@ its comments record every bump and why. In outline:
   described in `versions.env`.
 - bsp (pmb887x-dev, `PMB887X_BSP_REV`) — a bsp master revision; a plain
   checkout of the pin is the whole tree, with no `bsp-patches/` to apply.
-  The merged qemu needs bsp 85d4f78 or later, where each board declares an
-  empty `iso7816-slot` for the card: the page and `run-native.sh` add
-  `-device gsm-sim,operator=…` only when the board set has that slot, and
-  configure the card through the `PMB887X_SIM*` variables otherwise.
+  Each board declares an empty `iso7816-slot` for the card (bsp 85d4f78
+  on): the page and `run-native.sh` add `-device gsm-sim,operator=…` when
+  the board set has that slot.
   qemu's generated `gen/` tables (pad names) must match the bsp
   (regenerate with bsp's `tools/qemu.sh` and compare). Older history:
   `63b56fa` brought the KE970 jog dial
@@ -420,8 +421,8 @@ its comments record every bump and why. In outline:
   unit-test runners, a `--headless` option and moves its submodule
   pointers — `src/siemens` is unchanged. Its own runner still passes
   `-icount precise-clocks=on`, which upstream qemu no longer has, and
-  configures the SIM through the `PMB887X_SIM*` variables instead of
-  `-device gsm-sim`.
+  configures the SIM through `PMB887X_SIM*` variables, which qemu no
+  longer reads, instead of `-device gsm-sim`.
 - emsdk, glib, pixman, zlib and libffi versions mirror qemu's
   `emsdk-wasm64-cross.docker`.
 

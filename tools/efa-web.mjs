@@ -2,7 +2,7 @@
 //   node tools/efa-web.mjs            positive: sidecar picked -> EFA loaded
 //   node tools/efa-web.mjs noefa      negative: flash only     -> warning
 // Requires the wasm build to be served (./serve.mjs) at 127.0.0.1:$PORT (8080).
-// Boots with ?trace=flash and greps the page console for the flash device's
+// Boots with ?trace=cfi-flash and greps the page console for the flash device's
 // "loaded EFA" line — no need to wait for the slow wasm boot. (Not
 // ?tracebuf=1: the flash trace fills that ring buffer, and the line the test
 // is looking for is printed before the first poll could read it.)
@@ -16,7 +16,7 @@ const errors = [];
 const log = [];
 page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
 page.on("console", (m) => { log.push(m.text()); if (log.length > 20000) log.splice(0, 5000); });
-await page.goto(`http://127.0.0.1:${process.env.PORT || "8080"}/?trace=flash`, { waitUntil: "networkidle", timeout: 120000 });
+await page.goto(`http://127.0.0.1:${process.env.PORT || "8080"}/?trace=cfi-flash`, { waitUntil: "networkidle", timeout: 120000 });
 
 const ff = fileURLToPath(new URL("../fullflashes/", import.meta.url));
 const files = [ff + "KE800-v11b.bin"];

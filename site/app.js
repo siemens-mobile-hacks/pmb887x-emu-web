@@ -1634,9 +1634,8 @@ async function boot() {
     const audioArgs = qsp.get("sound") === "off"
       ? []
       : ["-audio", `wasm,out.frequency=${audioRate()},out.channels=2`];
-    // bsp 85d4f78 and later give the board an empty "iso7816-slot" and the
-    // card is a device of its own; older board sets carry the card and
-    // configure it from the PMB887X_SIM* variables set in preRun
+    // the card is a device of its own, plugged into the board's empty
+    // "iso7816-slot"; a board without one runs with no SIM
     const simSlot = [...boardText.values()].some((t) => t.includes('"iso7816-slot"'));
     const simArgs = simSlot && sim === "virtual"
       ? ["-device", `gsm-sim,operator=${operator}`]
@@ -1656,6 +1655,8 @@ async function boot() {
       // console, which a cursor timer redraws every 250 ms under the BQL
       "-parallel", "none",
       ...simArgs,
+      // ?trace=dsp,scu: device log lines and register accesses
+      ...(trace ? ["-debug-channels", `log=${trace},io=${trace}`] : []),
       ...extraArgs,
     ];
 
@@ -1697,14 +1698,8 @@ async function boot() {
           mod.FS.writeFile(FULLFLASH_PATH + suffix, bytes);
         mod.ENV.PMB887X_BOARD = `/boards/${device}.toml`;
         mod.ENV.PMB887X_STARTUP = startup;
-        mod.ENV.PMB887X_SIM = sim;
-        mod.ENV.PMB887X_SIM_OPERATOR = operator;
         mod.ENV.PMB887X_FLASH0_OTP0 = otp0;
         mod.ENV.PMB887X_FLASH0_OTP1 = otp1;
-        if (trace) {
-          mod.ENV.PMB887X_TRACE_LOG = trace;
-          mod.ENV.PMB887X_TRACE_IO = trace;
-        }
         // ?lockstep=1: built-in guest-state fold (wasm64 backend,
         // doc/wasm-tcg-backend-plan.md §5) — env-driven twin of the
         // tests/lockstep.c plugin. Extra ls-* params map to

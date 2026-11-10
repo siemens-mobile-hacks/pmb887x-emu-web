@@ -5,14 +5,17 @@ upstream only to make the emulator faster. Use it when rebasing onto a newer
 upstream, or when deleting an optimization to bring a file back towards upstream.
 
 - **Upstream reference:** `smh/master` (siemens-mobile-hacks/qemu-pmb887x),
-  merged up to `d9cf65ef40` by merge `92f6a90e56`. Upstream's SIM rewrite
-  (`hw/smartcard`, merged in `6cd424cdb5`) fixed PPS, so
-  the earlier revert of `e0db2079eb` is gone. To see a file's divergence, run
-  `git -C qemu diff d9cf65ef40 -- <file>`.
+  merged up to `9e5a6bbfd6` by merge `d7fab9092f` (2026-11-09). That merge
+  moved the external chips out of `hw/arm/pmb887x` (CFI flash to
+  `hw/block/cfi-flash`, serial LCDs to `hw/lcd`, the Epson engines to
+  `hw/gpu`, the DMA sink to `hw/dma`), so several rows below name the new
+  files. To see a file's divergence, run
+  `git -C qemu diff 9e5a6bbfd6 -- <file>`.
 - **State described:** fork `e227c7e9a3`. Written 2026-11-02. Identifiers
   re-checked against `f45db9a125` on 2026-11-03, against `1b51f8e577`
   (merge `6cd424cdb5` plus the 2026-11-04 cleanup, see the end) on
-  2026-11-04, and against `92f6a90e56` the same day.
+  2026-11-04, against `92f6a90e56` the same day, and against merge
+  `d7fab9092f` on 2026-11-09 (every identifier grepped in the merged tree).
 - **Sources:** the fork-delta review of 2026-11-02 (parts A–F), the commit
   messages (`git -C qemu log -1 <sha>`), and the September round log
   `doc/performance-handoff.md` (removed 2026-11-04, in git history). The
@@ -43,7 +46,11 @@ The following are **porting necessities, not fast paths**, and are not itemized:
   - batch unstage and retire (`tb_w64_retire`), and `w64_exec_unwound`
 - **Emscripten threading:** the futex `QemuCond`/`QemuEvent`, the main-loop
   futex wait, event notifiers, `coroutine-wasm.c` and
-  `qemu_coroutine_forbid_current_thread`, and the flash-blk write-behind.
+  `qemu_coroutine_forbid_current_thread`, and the bottom half that starts
+  the CFI flash writeback (`cfi_flash_writeback_timer` in
+  `hw/block/cfi-flash/cfi-flash.c`; timer dispatch is not on the Asyncify
+  onlylist). Upstream's own writeback replaced the fork's flash-blk
+  write-behind on 2026-11-09.
 - **Browser UI and audio:** `ui/wasm.c`, `audio/wasmaudio.c`, the exported
   counters (`wasm_vcpu_idle_count`, `wasm_guest_insns`, `w64_acct_*`),
   `configs/meson/asyncify-only.txt`, and the meson/configure glue.
@@ -52,9 +59,9 @@ The following are **porting necessities, not fast paths**, and are not itemized:
   on purpose.
 - **Correctness fixes:**
   - the `a32.decode` compare-Rd fix
-  - the LG fixes in usif.c and dif_v2.c (`dif_defer_tx_isr`)
-  - the afe-audio and d1094xx drain fixes
-  - the `ppm_save` row stride
+  - the LG fix in dif_v2.c (`dif_defer_tx_isr`); the usif.c, afe-audio and
+    d1094xx fixes are upstream's
+  - the `ppm_save` row stride (`ui/ui-qmp-cmds.c`)
   - `gen_eret_end_tb`'s IRQ fix
   - the flag-masked victim-TLB compare
 
@@ -69,15 +76,18 @@ Each entry's **Mark** column says how isolated the fast path is:
 | **wasm** | Inline in an upstream file, unmarked, under `#ifdef CONFIG_TCG_WASM64` or `__EMSCRIPTEN__`. Native builds are unaffected |
 | **all** | Inline in shared code, unmarked, and compiled into native builds too. Native lockstep and reference runs execute it |
 
-Today only R6, A9 and A10 carry the comment: each has its own file, plus
-MARK comments on its hooks. Everything else is unmarked and inline. New fast paths should follow
+Today R6, A9 and A10 carry the comment: each has its own file, plus MARK
+comments on its hooks. D6's `dma_sink_write_block_mr` and D9's hunks in
+`hw/lcd/lcd.c` and `hw/gpu/s1d13716/s1d13716.c` are marked too (they moved
+with their files on 2026-11-09), and so is D11. Everything else is unmarked
+and inline. New fast paths should follow
 R6's pattern: put the code in its own file, and give every hook in an upstream
 file the comment.
 
 ## Removing one
 
 1. Delete what the **Remove** column names. Afterwards,
-   `git -C qemu diff d9cf65ef40 -- <file>` should have lost exactly those hunks.
+   `git -C qemu diff 9e5a6bbfd6 -- <file>` should have lost exactly those hunks.
 2. Rebuild with `scripts/ninja-fast.sh`, then run `scripts/gate.sh keep` and
    lockstep on S75 and EL71 (`tools/lockstep-wasm.mjs`, and the native
    `scripts/run-lockstep.sh`). Run `tools/lockstep-wasm.mjs` once more with
@@ -145,14 +155,14 @@ from upstream.
 |---|---|---|---|---|---|
 | D1 | `dif_v2.c` `dif_tx_bus_go_lazy`, `_lazy_wake`, `_catch_up`, `_leave_lazy`, `_write_trap`, `_dmac_catch_up`, `dif_get_guarded_tx_source`; uses T5, C7 and `pmb887x_dmac_set_catch_up` | Display-bus wakes go lazy while the vCPU runs. A guard and catch-up run them before anything can observe the bus | Stopwatch vratio under contention 0.466 → 0.569 and 0.567 → 0.686 (0c3c3c8c9b) | Delete these and the lazy branch of the wake path, together with T5's only user and C7's guard | Wake and store differential checkers (not in repo) |
 | D2 | `dif_v2.c` `dif_run_fed_tx_bus`, `dif_plan_fed_tx_bus`, `dif_count_fed_tx_wakes`, `dif_get_fed_tx_bus_words`, `dif_skip_fed_tx_wakes`, `is_mux_shifts` / `mux_*shift*` in `dif_update_mux` + `dif_mux_entries`; `dmac.c` `pmb887x_dmac_count_bulk_bursts`, `_get_bulk_source`, `_serve_bulk_bursts` | Runs the bus wakes of a halted CPU in one callback, with a planned batch, a closed-form plan and a shift-based mux | Bobby 0.860 → 0.762, −11 % (62b16312dd). Batch cap 512: +1.3/+4.2/+1.6/+1.7 % (0d749b0fd6). Word hoist: 2.1 → 1.5 % of busy ticks (3867c78042). Closed-form plan: 1.02 → 0.25 % (78b8a15418). Shift mux: 1.59 → 1.01 % (b51a7c5b18). The last two are profile shares only | Delete the fed branch. It needs D3 and `vcpu-timers-idle-lead` > 0 (`cpu_clock_owner_idle_reaches`) | Differential checks (`dif_v2.c.chk*`, not in repo) |
-| D3 | `dif_v2.c` / `dif_v1.c` `dif_serve_tx_burst`, `dif_raise_tx_burst_request`, coalesced `dif_clear_dma_requests`; `dmac.c` `pmb887x_dmac_serve_burst`, `dmac_get_served_channel` | Serves a display TX burst without the DMA request handshake | Bobby 0.812 → 0.796 → 0.771 (a85157e75b). Load-bearing for D2 | Delete together with D2 | Native lockstep, base vs fast path |
+| D3 | `dif_v2.c` `dif_serve_tx_burst`, `dif_raise_tx_burst_request`, coalesced `dif_clear_dma_requests`; `dmac.c` `pmb887x_dmac_serve_burst`, `dmac_get_served_channel` | Serves a display TX burst without the DMA request handshake | Bobby 0.812 → 0.796 → 0.771 (a85157e75b). Load-bearing for D2 | Delete together with D2 | Native lockstep, base vs fast path |
 | D4 | `dif_v2.c` `dif_occupy_tx_bus(..., now_ps)` | Reads the clock once per TX FIFO pass | Stopwatch +1.7 % under parbench, biased (d5ac642584). Reverting D2's plan and shift mux + this clock cache + D10's baseband together cost stopwatch 3–7 % (2026-11-02). The lazy mux rebuild that was also D4 (6c8f08898c) is upstream's own since the merge | Restore the per-entry clock reads | — |
-| D5 | `dif_v1.c` `dif_serve_tx_burst`, `dif_dma_write_block` (DMA block sink), `dif_build_mux_lut` / `dif_mux`, `dif_transfer_run` | DIF v1 (SL65) serves display words without the DMAC pass and the bus | Video 0.724 → 0.677, MIDI −1.6 % (8b7c975f81). Video 0.730 → 0.672 (e91e76773d). Parts never priced separately | Restore upstream `dif_v1.c` | — |
-| D6 | `dmac.c` `dmac_translate`, `dmac_memory_commit` (MemoryListener), `dmac_read_bytes`; `dma_sink.c` `__thread` owner/class cache | Caches the FIFO's bus translations, and the DMA-sink class lookup | Stopwatch +1.8 % (d7590ed13c). Bobby −1.7 % (e576fc3017). Sink cache not priced alone (ab1b086728) | Delete the cache. The `(mr, offset)` signature of `pmb887x_dma_sink_write_block` belongs with it | — |
+| D6 | `dmac.c` `dmac_translate`, `dmac_memory_commit` (MemoryListener), `dmac_read_bytes`; `hw/dma/dma-sink.c` `dma_sink_write_block_mr` (marked) | Caches the FIFO's bus translations and hands the sink the translated region. The sink lookup is upstream's `DMASinkCache` since 2026-11-09 (the fork's `__thread` owner/class cache is gone) | Stopwatch +1.8 % (d7590ed13c). Bobby −1.7 % (e576fc3017) | Delete the translation cache and call upstream's `dma_sink_write_block` with the bus address; drop `dma_sink_write_block_mr` | — |
 | D7 | `tpu.c` `tpu_update_timer` (re-arm only on a moved deadline), `tpu_advance` (single advance), `tpu_ram_write_moves_deadline` | Cuts TPU timer re-arms and advances per register or event-RAM write | Re-arm: S75 idle MIPS +11 %, EL71 +21 % (0662edf94c). Single advance: `tpu_advance` 5.8 → 2.9 % (5797540d62). Event-RAM early return: S75 +7..20 % (de7cdf5fd0). One-event window: not claimed (3b2d98faed). The word path in `tpu_ram_write` (0b9ef383a0) went back to upstream on 2026-11-04 | Restore upstream `tpu.c` (the window then reverts to 0068's fork test, not to upstream) | — |
 | D8 | `gptu.c` `gptu_t01_observable`, `_matters`, `_free_running`, `_ticks_to_boundary`, `_advance`, `gptu_ev_wants_timer` | Arms the GPTU T0/T1 QEMU timer only for overflows the guest can observe | KE800 went from never reaching idle to booting; S75 boot −4..5 % (a2b52c7c77; the 474bff9dbe syncs are its correctness fixes) | Restore upstream `gptu.c` | — |
-| D9 | `ssc/lcd_common.c` (GRAM drain in place, polling writer, `lcd_transfer_bytes`, `lcd_queue_ram_byte_run`); `ssc/s1d13716.c` `gimmick_transfer_block` / `_bytes` and the plain cast in `gimmick_transfer`; `hw/ssi/ssi.c` `ssi_transfer_bytes` + `transfer_bytes` hook and the plain casts in `ssi_transfer` | Moves display bytes to the LCD in runs, with no per-byte transfer calls or condvar wakes. The per-byte paths that remain skip the checked QOM casts and their trace point | Drain in place: stopwatch vratio 0.892 → 0.943 (3a4052ddc7). Polling: futex wakes 2.13 → 0.29 % (43c24bb03d). Byte runs: ~1.3 % profile (2f09e9c30f). s1d13716 pass-through: +12 % J2ME window, September (ed6a5daa97). Plain casts: with the checked ones back on 2026-11-04, `object_dynamic_cast_assert` rose 0.33 → 0.41 % of midi and 0.04 → 0.09 % of stopwatch, and midi leaned −0.6 % over three rounds | Restore upstream `lcd_common.c`, `ssi.c` / `ssi.h` and `s1d13716.c`. D2 calls `ssi_transfer_bytes` | — |
-| D10 | `fifo.h` compare-and-wrap; `dsp/peripheral/baseband.c` `baseband_publish_range`; `hw/audio/i2s.c` class cache | Small per-call cuts: no `%` in FIFO steps, stepped ring indices, cached QOM class | FIFO: never priced alone (8727ef7edf). Baseband: 3.09 → 2.49 % profile (ce4d3f684a). i2s: Bobby 0.919 → 0.909 (01c6acb0bb). The `audio/buffer.c` push counter (4a7b35247c) is gone: upstream `c410218bf8` replaced the clocked underrun padding with a prefill threshold, which reads no clock at all | Restore upstream | — |
+| D9 | `hw/lcd/lcd.c` (GRAM drain in place, polling writer, `lcd_transfer_bytes`, `lcd_queue_ram_byte_run`; marked); `hw/gpu/s1d13716/s1d13716.c` `s1d13716_transfer_block` / `_bytes` and the plain cast in `s1d13716_transfer` (marked); `hw/ssi/ssi.c` `ssi_transfer_bytes` + `transfer_bytes` hook and the plain casts in `ssi_transfer` | Moves display bytes to the LCD in runs, with no per-byte transfer calls or condvar wakes. The per-byte paths that remain skip the checked QOM casts and their trace point | Drain in place: stopwatch vratio 0.892 → 0.943 (3a4052ddc7). Polling: futex wakes 2.13 → 0.29 % (43c24bb03d). Byte runs: ~1.3 % profile (2f09e9c30f). s1d13716 pass-through: +12 % J2ME window, September (ed6a5daa97). Plain casts: with the checked ones back on 2026-11-04, `object_dynamic_cast_assert` rose 0.33 → 0.41 % of midi and 0.04 → 0.09 % of stopwatch, and midi leaned −0.6 % over three rounds | Restore upstream `hw/lcd/lcd.c`, `include/hw/lcd/lcd.h`, `ssi.c` / `ssi.h` and `s1d13716.c`. D2 calls `ssi_transfer_bytes` | — |
+| D10 | `dsp/peripheral/baseband.c` `baseband_publish_range`; `hw/audio/i2s.c` class cache | Small per-call cuts: stepped ring indices, cached QOM class. The FIFO compare-and-wrap is upstream's own since 2026-11-09 (core `Fifo8`/`Fifo32`, inlined) | Baseband: 3.09 → 2.49 % profile (ce4d3f684a). i2s: Bobby 0.919 → 0.909 (01c6acb0bb). The `audio/buffer.c` push counter (4a7b35247c) is gone: upstream `c410218bf8` replaced the clocked underrun padding with a prefill threshold, which reads no clock at all | Restore upstream | — |
+| D11 | `hw/audio/audio-line.c` `audio_line_write`, `audio_line_sink_port_init`; `include/hw/audio/audio-line.h` `AudioLineSinkPort.klass` (marked) | Holds the sink's interface class in the port and walks the bus without checked casts, as upstream's `i2s_tx_write` does. The AFE and the PMIC router write one sample frame per call | Without it the 2026-11-09 merge lost towerblox −4.2 % and midi −1.4 % (4/4 pairs); the class lookup alone was ~0.3 % of towerblox and ~0.6 % of midi (3486f1e2b7) | Call `AUDIO_LINE_SINK_GET_CLASS` per write again and drop the field | — |
 
 ## 5. DSP translator (`hw/arm/pmb887x/dsp/tcg.c`)
 
@@ -163,7 +173,6 @@ All of these are inline in the upstream file, unmarked, and compiled natively
 |---|---|---|---|---|---|
 | P1 | The kernel section from `tcg_fast_loop_35be[]` to `tcg_execute_fast()` (contiguous since 3de1546af5, after `tcg_execute_prepared_block`; ~1370 lines: `tcg_fast_run_35be` / `tcg_fast_iterate_35be` via `TEAK_FAST_LOOP` / `TEAK_FAST_RUNNER`, 643F/6489/64A9, `tcg_fast_discover`, `_relocate`, `_lookup`, `_invalidate`, `_verify`); hooks in `tcg_prepare_block`, the program-write paths, `HELPER(teak_tcg_chain)` and the slice runners; forward declarations near the top; `core.h` `fast_runs` | Hot GSM correlator loops run as C kernels instead of chained TCG blocks | All loops on vs off: SL65 MIDI 0.566 vs 0.632 cores, EL71 AAC 0.610 vs 0.682 (4d7343564d / 90f3562467). 35BE also saves 0.7 s of boot. Follow-ups: 8fe212e31d (video 35BE 24.4 → 18.9 % of vCPU), 13c43bfff0 (video +3.8 %), d0b6cad865 (+7.6 %), a2fc4f3414 (MIDI 0.508 → 0.484), fefdb61f9d (SL65 0.594 → 0.531), 2ba75a9b95 (~0.8 %) | Delete the section and its hooks. There is no runtime switch (TEAK_TCG_FAST was removed in 90f3562467) | Unit tests `35be-iterations`, `relocated-fast-loop`; differential checkers (not in repo) |
 | P2 | Temp pool (near the top of the file) | Reuses TCG temps so that 64-instruction blocks fit TCG_MAX_TEMPS | Not measured. Load-bearing: without it blocks are halved | Restore upstream temp allocation | — |
-| P3 | `tcg_emit_data_read` / `_write` (branchless constant layout, inline store above MMIO); `core.h` `direct_data_high_write_base` / `_size`; `runtime.c` | Hot data-memory path without branches. Stores above MMIO are plain stores | Inline high store: Bobby 0.969 → 0.953 (c4889876a7). Branchless layout not measured (4d7343564d) | Restore upstream emitters and drop the two core fields | — |
 | P4 | `tcg_remove_dead_state_stores`, `tcg_call_hides_state`; `dsp.c` + `runtime.c` / `.h` `dsp_runtime_get_trace_pc` | Removes flag, pc and state stores that the next instruction overwrites | State stores: −0.6 / −0.9 % (4c84885f3c). pc stores: Bobby −0.85 % (37b179e59c). Flags not measured. Removing it on 2026-11-04: bobby −1.5 %, towerblox −1.2 % | Drop the pass and return `dsp.c` to `dsp_runtime_get_pc`. P6 relies on the pass | — |
 | P5 | `tcg_demote_label_dead_temps` | Demotes temps that are dead across labels | Bobby 1.079 → 1.034 (4ace13cbc9) | Delete the call and the function | — |
 | P6 | `tcg_emit_inline_register_read`, `tcg_emit_inline_mov_accumulator_write`, `tcg_emit_inline_alb_register` | Inline register reads, mov to accumulator halves and register ALB ops | Bobby 0.949 → 0.927 (b2e3e17771). Bobby vratio +3.0..3.8 %, video +0.5..3.3 % (6a18783ada) | Restore the helper calls | Checkers `albchk.py` / `movchk.py` (not in repo) |
@@ -179,7 +188,7 @@ vcpu-timers.
 
 | ID | Where | What it does | Benefit | Remove | Mark |
 |---|---|---|---|---|---|
-| T1 | `cpu-exec.c` `cpu_cycle_budget_exit`; `tcg-accel-ops-mttcg.c` `mttcg_cpu_next_budget`; `tcg-accel-ops.h` | Renews a spent budget inside `cpu_exec`, without leaving the loop | Stopwatch 0.907 → 0.975 (23593204f5, per review A) | Return to `cpu_cycle_budget_expired` in `cpu_handle_interrupt` | all |
+| T1 | `cpu-exec.c` `cpu_cycle_budget_exit`; `tcg-accel-ops.c` `tcg_vcpu_timers_next_budget`; `tcg-accel-ops.h` | Renews a spent budget inside `cpu_exec`, without leaving the loop | Stopwatch 0.907 → 0.975 (23593204f5, per review A) | Return to `cpu_cycle_budget_expired` in `cpu_handle_interrupt` | all |
 | T2 | `cpu-timers.c` `cpu_clock_owner_raw` (`CPU_CLOCK_OWNER_REREAD_NS`), `cpu_clock_owner_limit_lag`; `mttcg_wait_for_clock(…, realp)` | Reuses a host-clock reading (a JS call on wasm) for up to 10 ms | Stopwatch 0.70 → ~0.85; host reads per budget 3 → 1 (23593204f5, per review C) | Read the host clock at each use, as upstream does | all |
 | T3 | `cpu-timers.c` `cpu_clock_owner_idle` (`cpu_clock_owner_idle_raw`) | Re-reads the host clock in owner idle only when the thread would sleep | Bobby 0.928 → 0.817 cores (afe23d9974) | Delete the cache | all |
 | T4 | `cpu-timers.c` `cpu_clock_owner_shorten_budget_at` | A newly armed timer shortens the budget without a host read | `timer_mod_ns` 1.03 → 0.32 s per 20 s (11699de202) | Return to the host-reading path | all |
@@ -266,3 +275,18 @@ vcpu-timers.
   cleanup, has the steps and numbers). P4, R3, R5 and R6 were measured and
   kept (their rows give the cost of removing them). A5 stayed because
   removing it breaks the pinned-RTC lockstep (see its row).
+- **2026-11-09 merge of `9e5a6bbfd6` (`d7fab9092f`):** gone because upstream
+  now has its own form:
+  - the flash-blk write-behind (`hw/arm/pmb887x/flash-blk.c`): the CFI flash
+    writes dirty pages back from a timer. Only the bottom-half hop above is
+    left. Upstream starts every dirty run at once, where the fork kept one
+    request in flight (each holds a coroutine stack and a pool worker); a
+    KE970 boot issues 219 at once and passes.
+  - D5 (the `dif_v1.c` burst path): already dropped by merge `6e41e38a16`,
+    the row was stale.
+  - D6's `__thread` sink owner/class cache: upstream's `DMASinkCache`.
+  - D10's `fifo.h`: core `Fifo8`/`Fifo32` are inlined and wrap by compare.
+  - P3 (branchless data layout, inline high store): upstream's emitters.
+  - the `PMB887X_TRACE_LOG` / `PMB887X_TRACE_IO` and `PMB887X_SIM*`
+    environment: `-debug-channels` and `-device gsm-sim`.
+

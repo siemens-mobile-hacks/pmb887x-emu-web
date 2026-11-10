@@ -4,7 +4,7 @@
 #   scripts/run-native.sh <fullflash.bin> [extra qemu args...]
 #
 # Mirrors the web page's boot: same -icount, -drive, -serial and PMB887X_*
-# env vars (PMB887X_BOARD / _STARTUP / _SIM / _SIM_OPERATOR / _FLASH0_OTP0/1).
+# env vars (PMB887X_BOARD / _STARTUP / _FLASH0_OTP0/1) and -device gsm-sim.
 #
 # Env overrides:
 #   BOARD=siemens-s75    board config id (default: inferred from filename)
@@ -87,8 +87,6 @@ READONLY="readonly=on"; [ "${RW:-0}" = "1" ] && READONLY=""
 
 export PMB887X_BOARD="$BOARDS/$BOARD.toml"
 export PMB887X_STARTUP="$STARTUP"
-export PMB887X_SIM="$SIM"
-export PMB887X_SIM_OPERATOR="$OPERATOR"
 export PMB887X_FLASH0_OTP0="$OTP0"
 export PMB887X_FLASH0_OTP1="$OTP1"
 if [ -n "${EFA_FILE:-}" ]; then
@@ -100,9 +98,8 @@ echo "fullflash: $FLASH$([ "${RW:-0}" = 1 ] && echo ' (writable)')"
 echo "serial:   $SERIAL   monitor: $MONITOR   display: $DISPLAY_MODE"
 echo
 
-# bsp 85d4f78 and later give the board an empty "iso7816-slot" and the card
-# is a device of its own; older board sets carry the card and configure it
-# from the PMB887X_SIM* variables above
+# the card is a device of its own, plugged into the board's empty
+# "iso7816-slot"; a board without one runs with no SIM
 SIM_ARGS=()
 if [ "$SIM" = virtual ] && grep -rqs '"iso7816-slot"' "$BOARDS"; then
   SIM_ARGS=(-device "gsm-sim,operator=$OPERATOR")

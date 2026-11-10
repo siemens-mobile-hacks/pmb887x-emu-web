@@ -8,7 +8,9 @@
 # Env: SPAN=<v0>,<v1> the guest-time span timed (default 6,12: the EL71
 # burst around the boot chime), ARGS_A/ARGS_B extra chrome args, BFLAGS=1
 # adds the Android bounds checks, OUT (log dir), WARM=1 boots each leg's
-# browser once before the measured boot, PORT (page server, default 8080).
+# browser once before the measured boot, PORT (page server, default 8080),
+# PORT_A/PORT_B (a server per leg, e.g. across a bsp bump whose board configs
+# only one leg's qemu reads: the page always fetches dist/boards.tar).
 # Columns: burst (wall s over SPAN), speed (producer speed of the longest
 # sound), stretchedMs + gapMs = audioMs (ring audio replayed to slow sound
 # down, plus underrun silence: the two trade against each other, so judge
@@ -26,15 +28,15 @@ out=${OUT:-$(mktemp -d "${TMPDIR:-/tmp}/bootab.XXXX")}
 mkdir -p "$out"
 # serve.mjs gzips a dist's wasm on its first request; a dist built moments
 # ago would make its legs wait for that compress while the other side boots
-for d in "$A" "$B"; do
-  curl -s -H "Accept-Encoding: gzip" -o /dev/null "http://127.0.0.1:${PORT:-8080}/$d/qemu-system-arm.wasm"
-done
+pa=${PORT_A:-${PORT:-8080}}; pb=${PORT_B:-${PORT:-8080}}
+curl -s -H "Accept-Encoding: gzip" -o /dev/null "http://127.0.0.1:$pa/$A/qemu-system-arm.wasm"
+curl -s -H "Accept-Encoding: gzip" -o /dev/null "http://127.0.0.1:$pb/$B/qemu-system-arm.wasm"
 for p in $(seq 1 "$n"); do
   ORD=(0 4 2 6); o=${ORD[$((p - 1))]}
   s0=${SETS[$o]}; s1=${SETS[$((o + 1))]}
   if [ $((p % 2)) = 1 ]; then ca=$s0; cb=$s1; else ca=$s1; cb=$s0; fi
-  BOOTBENCH_CHROME_ARGS="$bf ${ARGS_A:-}" taskset -c "$ca" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$A" --runs 1 --after 0 $warm > "$out/a$p.log" 2>&1 &
-  BOOTBENCH_CHROME_ARGS="$bf ${ARGS_B:-}" taskset -c "$cb" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$B" --runs 1 --after 0 $warm > "$out/b$p.log" 2>&1 &
+  PORT=$pa BOOTBENCH_CHROME_ARGS="$bf ${ARGS_A:-}" taskset -c "$ca" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$A" --runs 1 --after 0 $warm > "$out/a$p.log" 2>&1 &
+  PORT=$pb BOOTBENCH_CHROME_ARGS="$bf ${ARGS_B:-}" taskset -c "$cb" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$B" --runs 1 --after 0 $warm > "$out/b$p.log" 2>&1 &
   echo "$ca $cb" > "$out/cores$p"
 done
 wait

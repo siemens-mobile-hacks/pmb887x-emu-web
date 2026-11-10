@@ -13,7 +13,7 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 | `?icount=<spec>` | run `-icount <spec>` instead of the default `-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on` (`shift=3,sleep=off` = the deterministic, unpaced model the lockstep tools use; `none` = plain realtime clock). A `?qargs=` that carries its own `-accel` also drops the default |
 | `?bank=<s>` | `vcpu-timers-bank`: for the guest's first `<s>` seconds of its own clock (default 30, the boot) time lost to a slow host is caught up — whenever the guest idles — instead of dropped; `0` = upstream (lag over 100 ms is dropped). The clock never runs ahead of wall time. While banked the pill's `slow` warning stays off (see below) |
 | `?idlelead=<us>` | `vcpu-timers-idle-lead`: while the guest waits for an interrupt, its virtual timers run in batches up to `<us>` ahead of wall time, so the vCPU thread sleeps once per batch instead of once per timer (the DSP sync timer fires every 100 us). Default 2000; `0` = the idle clock follows wall time exactly. A build older than the option needs `?qargs=` with its own `-accel` |
-| `?trace=<channels>` | `PMB887X_TRACE_IO/LOG` (e.g. `trace=dsp,scu`); channels: dsp, scu, gptu, tpu, vic, capcom, usart, rtc, … |
+| `?trace=<channels>` | `-debug-channels log=<channels>,io=<channels>` (e.g. `trace=dsp,scu`): log lines and register accesses of the matching devices. A channel is a pattern matched against device ids, QOM types and their parents, and subchannels (`dsp.*`); the flash is `cfi-flash`. qemu exits on a pattern that matches nothing (`qemu/qemu-options.hx`) |
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
 | `?debug=1` | print every stderr line to console (no dedup) |
 | `?qargs=<args>` | append raw qemu arguments (e.g. `qargs=-d exec -D /exec.log`) |
@@ -80,13 +80,8 @@ the submodule):
 |---|---|
 | `W64_LOCKSTEP`, `W64_LOCKSTEP_*` | the page's built-in guest-state fold; set by `?lockstep=1` + `ls-*` and driven by `tools/lockstep-wasm.mjs`, not set by hand |
 | `QEMU_COSTACK=1` | coroutine-stack audit (see the Asyncify work in lessons.md) |
-| `PMB887X_TRACE_IO`, `PMB887X_TRACE_LOG`, `PMB887X_TRACE_ALL` | device trace channels; `?trace=` sets the first two |
 | `PMB887X_BOARD`, `PMB887X_STARTUP`, `PMB887X_FLASH0_OTP0/1`, `PMB887X_FLASH0_EFA_FILE` | set by the page (and `run-native.sh`) from the Firmware panel and the EFA sidecar |
 | `PMB887X_MEMORY_TIMING=1`, `PMB887X_WAIT_FOR_SERIAL=1` | upstream board options (`hw/arm/pmb887x/board.c`) |
-
-The page also still sets `PMB887X_SIM` / `PMB887X_SIM_OPERATOR` for board
-sets older than bsp 85d4f78; the merged qemu ignores them and takes the
-card as `-device gsm-sim` instead.
 
 ## Exports on `window.__qemu` (the emscripten module)
 
@@ -196,7 +191,7 @@ Probes and traces:
 | `smoke.mjs`, `verify-boot.mjs`, `wshot.mjs`, `screenshot.mjs` | boot once / verify + insn rate / screenshot after the splash |
 | `serialwatch.mjs [s] [query]` | push vclock/serial/fb/insns via console every 10 s — the general-purpose probe |
 | `conlog.mjs` | capture qemu console lines matching a prefix (`MATCH=`, `SAVE_FS=` pulls MEMFS files out) |
-| `iotrace.mjs`, `tracebuf.mjs`, `tracedump.mjs`, `dsplive.mjs` | `PMB887X_TRACE_*` captures (buffered / live-filtered) |
+| `iotrace.mjs`, `tracebuf.mjs`, `tracedump.mjs`, `dsplive.mjs` | `?trace=` (`-debug-channels`) captures (buffered / live-filtered) |
 | `execdump.mjs`, `tracediff.mjs`, `iorec.mjs` | `-d exec` log dump / TB-sequence diff between builds / io_recompile frequency |
 | `w64walk.mjs` | structural walker over a wasm64 backend module |
 | `efa-web.mjs`, `preset-web.mjs` | E2E page tests: LG fullflash + EFA sidecar; preset download → cache → boot |
@@ -207,19 +202,18 @@ Probes and traces:
 ## Native reference runs
 
 ```
-env PMB887X_TRACE_IO=dsp,scu PMB887X_TRACE_LOG=dsp,scu \
-    PMB887X_BOARD=build/bsp/lib/data/board/siemens-s75.toml \
+env PMB887X_BOARD=build/bsp/lib/data/board/siemens-s75.toml \
     PMB887X_STARTUP=ONLINE \
     PMB887X_FLASH0_OTP0=02004AB3C31100000000 PMB887X_FLASH0_OTP1=000094104502237315FF \
   build/qemu-native-build/qemu-system-arm -display none -icount shift=3,sleep=off -machine pmb887x \
     -drive if=pflash,format=raw,file=<fullflash>,readonly=on \
     -device gsm-sim,operator=00101 \
-    -serial file:serial.log -D trace.log
+    -debug-channels log=dsp,scu,io=dsp,scu -serial file:serial.log -D trace.log
 ```
 
 (`scripts/run-native.sh` builds this command line from the fullflash
-name; put the trace variables in its environment. `-device gsm-sim` needs
-a board set from bsp 85d4f78 on, which gives the board an empty
+name; pass `-debug-channels …` after the fullflash, as an extra
+argument. `-device gsm-sim` plugs into the board's empty
 `iso7816-slot`.) A wasm run under `?icount=shift=3,sleep=off` replays the
 same instruction stream: diff the trace sequences (`COM_SET` →
 `DSP_CFR cleared` → `SCU_DSP_INT` → …) between the native build and

@@ -2,7 +2,7 @@
 //   node tracedump.mjs <query> <waitSeconds> <maxLines>
 import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
-const q = process.argv[2] || "trace=dsp,dsp_interrupt&debug=1";
+const q = process.argv[2] || "trace=dsp,dsp.*&debug=1";
 const waitS = Number(process.argv[3] || 60);
 const maxLines = Number(process.argv[4] || 400);
 const browser = await chromium.launch({ headless: true });

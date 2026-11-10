@@ -27,6 +27,8 @@
 // name and invents MISSING entries.  Snapshot the dist before capturing.
 import { readFileSync } from "fs";
 
+const root = new URL("..", import.meta.url).pathname;
+
 const log = process.argv[2];
 const dist = process.argv[3];
 if (!log || !dist) {
@@ -36,12 +38,12 @@ if (!log || !dist) {
 }
 
 const sym = new Map();
-for (const line of readFileSync(`/workspace/site/${dist}/qemu-system-arm.js.symbols`, "utf8").split("\n")) {
+for (const line of readFileSync(`${root}site/${dist}/qemu-system-arm.js.symbols`, "utf8").split("\n")) {
   const i = line.indexOf(":");
   if (i > 0) sym.set(Number(line.slice(0, i)), line.slice(i + 1).trim());
 }
 
-const pats = readFileSync("/workspace/qemu/configs/meson/asyncify-only.txt", "utf8")
+const pats = readFileSync(`${root}qemu/configs/meson/asyncify-only.txt`, "utf8")
   .split("\n").map(s => s.trim()).filter(Boolean);
 const rx = pats.map(p => ({
   pat: p,

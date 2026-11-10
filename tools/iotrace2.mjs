@@ -1,4 +1,4 @@
-// Boot any board with PMB887X_TRACE_IO=<spec> and summarise the trace by
+// Boot any board with ?trace=<spec> (-debug-channels) and summarise the trace by
 // register: which MMIO registers the firmware touches, and how often.
 //
 //   PORT=8080 TRACE=scu,dif,ssc node tools/iotrace2.mjs --board cx70 [--secs 60]

@@ -175,11 +175,9 @@ thread is using them).
   picked or dropped, `.bin` plus an optional `.cfi-efa` for LG) → file
   bytes written into the emscripten MEMFS; Advanced options become
   `PMB887X_*` env vars (`PMB887X_BOARD`, `_STARTUP`, `_FLASH0_OTP0/1` from
-  IMEI/ESN), except the SIM: with a board set whose boards declare an
-  `"iso7816-slot"` (bsp ≥ 85d4f78, which the qemu from the 2026-11-04
-  smh/master merge needs) a virtual SIM is `-device gsm-sim,operator=…`;
-  an older qemu with an older board set reads the `PMB887X_SIM*` vars the
-  page still sets. The panel is `disabled` while a guest runs.
+  IMEI/ESN), except the SIM: a virtual SIM is `-device gsm-sim,operator=…`,
+  plugged into the board's empty `"iso7816-slot"` (a board without one runs
+  with no SIM). The panel is `disabled` while a guest runs.
 - Which phone a fullflash came from (`detectDevice()` in `fullflashes.js`):
   the filename first (`DEVICE_RULES`), then the image itself, so a dump named
   `dump.bin` still selects its board:
