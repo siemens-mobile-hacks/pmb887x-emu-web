@@ -300,8 +300,9 @@ thread is using them).
   connector (qemu's `accessory-connector`, `IO_CONNECTOR` in the board
   config). The dropdown lists the board's profiles, read out of boards.tar
   like the panel size (`readAccessories()`), minus the `unplugged` one;
-  a run boots with the music cable where the board has one and with the
-  board's `default` otherwise (a data cable on the other Siemens boards),
+  a run boots with the music cable where the board has one, with the stereo
+  headset on an SGOLD (`pmb8875`) board, and with the board's `default`
+  otherwise (a data cable on the remaining Siemens boards),
   passed as `-global accessory-connector.accessory=`. The button reads
   Disconnect while the selected profile is the plugged one (it then plugs
   `unplugged`), and Connect otherwise, which swaps whatever is plugged for

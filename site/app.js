@@ -1081,11 +1081,23 @@ function readAccessories(file, depth = 0) {
   return ext ? readAccessories(ext[1], depth + 1) : null;
 }
 
-// What a run boots with: the music cable where the board has one, else the
-// board's own default.
-function bootAccessory(conf) {
+// "pmb8875" (SGOLD) or "pmb8876" (SGOLD2), from the board config
+function readCpuType(file, depth = 0) {
+  const txt = boardText.get(file);
+  if (!txt || depth > 4) return null;
+  const type = txt.match(/^[ \t]*cpu\.type[ \t]*=[ \t]*"([^"]+)"/m);
+  if (type) return type[1];
+  const ext = txt.match(/^[ \t]*extends[ \t]*=[ \t]*"([^"]+)"/m);
+  return ext ? readCpuType(ext[1], depth + 1) : null;
+}
+
+// What a run boots with: the music cable where the board has one, the stereo
+// headset on an SGOLD phone, else the board's own default.
+function bootAccessory(conf, file) {
   if (!conf) return null;
-  return conf.names.includes("music-cable") ? "music-cable" : conf.default;
+  if (conf.names.includes("music-cable")) return "music-cable";
+  if (readCpuType(file) === "pmb8875" && conf.names.includes("headset-stereo")) return "headset-stereo";
+  return conf.default;
 }
 
 async function loadBoards() {
@@ -1685,7 +1697,7 @@ async function boot() {
       : [];
     // what the Accessory control shows, chosen there or not
     const accConf = readAccessories(device + ".toml");
-    const bootAcc = acc?.dev === device ? acc.plugged : bootAccessory(accConf);
+    const bootAcc = acc?.dev === device ? acc.plugged : bootAccessory(accConf, device + ".toml");
     const accArgs = accConf && bootAcc && bootAcc !== accConf.default
       ? ["-global", `accessory-connector.accessory=${bootAcc}`]
       : [];
@@ -1899,7 +1911,7 @@ function renderAccessory() {
   if (acc?.dev !== dev) {
     const conf = dev ? readAccessories(dev + ".toml") : null;
     const names = conf?.names.filter((n) => n !== conf.unplugged) ?? [];
-    acc = { dev, unplugged: conf?.unplugged ?? null, names, plugged: bootAccessory(conf) };
+    acc = { dev, unplugged: conf?.unplugged ?? null, names, plugged: bootAccessory(conf, dev + ".toml") };
     sel.replaceChildren(...(names.length ? names : [""]).map((n) => {
       const opt = document.createElement("option");
       opt.value = n;
