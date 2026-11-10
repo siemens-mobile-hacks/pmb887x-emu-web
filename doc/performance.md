@@ -496,8 +496,11 @@ bash scripts/gate.sh close --dist dist-x           # before the last commit of a
   codegen hits compile_error −2 ("TB too big", for example at 0xDDDE) and
   retries at half size, so its block boundaries and ARM sync points differ.
   The DSP state matches at every common slice point (2026-11-03).
-- **A5 is load-bearing.** Without it, the `LS_QARGS` run diverges (see
-  2026-11-04 deviation cleanup).
+- **The fold counts instructions at TB entry.** The wasm64 prologue adds
+  the whole TB, and an unwind (io_recompile rewind, SMC restart, fault)
+  hands back what did not run (`w64_acct_unwind`). Before `4fc6ac6dc7` it
+  did not, each rewind left the count ahead, and the `LS_QARGS` run diverged
+  wherever rewinds were frequent, which is what A5's barriers prevented.
 
 ### DSP unit tests
 
@@ -803,13 +806,23 @@ that exists.
 - **EL71 display freeze:** the display freezes (framebuffer stops, guest
   idle) after leaving a running stopwatch with the red key. It also happens
   under icount. It is upstream's issue; wait for upstream.
+- **wasm64 `extract`/`sextract`/`deposit` are all but off:**
+  `TCG_TARGET_{extract,sextract,deposit}_valid` in
+  `tcg/wasm64/tcg-target-has.h` test `ofs + len <= type * 8` with the
+  `TCGType` enum (I32 = 0, I64 = 1), so only 64-bit fields within the low
+  byte reach `tgen_extract`/`tgen_sextract`/`tgen_deposit`; everything else
+  is lowered to shifts and masks by `tcg-op.c`. The emitters read correct
+  for every width. Making the test `1` (as TCI does) changes every TB's
+  code, so it needs the gate, lockstep and a whole-candidate A/B; dropping
+  the emitters needs the same. Left as found 2026-11-10.
+- **An evicted batch has only been exercised with a lowered cap:**
+  `W64_LIVE_MAX` 48 boots S75 (2026-11-10), slowly. Nothing in the gate
+  reaches eviction.
 - **S75 OFFLINE/PTEST startup:** the Siemens board includes of bsp `de47d4b`
   define only `[startup.ONLINE]` (x75, elka, r65, sirius). The
   lookup in `hw/arm/pmb887x/board/startup.c` is required, so qemu exits at
   t=0 and the page looks hung. Not fixed.
 - **SL65 native lockstep is nondeterministic** (see Lockstep).
-- **The wasm io_recompile rewind divergence** that A5 hides (see 2026-11-04
-  deviation cleanup). Not fixed.
 - **Unaligned-atomic crash, seen once** (2026-11-03, towerblox boot under
   heavy load): `RuntimeError: operation does not support unaligned accesses`.
   The TB backend emits only `atomic.fence`, so the misaligned atomic is in
@@ -949,6 +962,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-09 | `6b8a64baa5` (`3486f1e2b7`) | 35BE iterations on guest memory itself (`tcg_fast_iterate_35be_flat`, wasm-fast-paths.md P1). Census on EL71: sata 1, product shift 0, r4 in a 26-word ring, r2 back on the same 13 coefficients every iteration, ~36 iterations a call. Native micro-benchmark of that point (a temporary g_test timing the unit test's kernel, 3 s a run): 64 ns per iteration, of which the 26 multiplies 14 ns, the operand copies 11 ns and the walks, pointer lookups and bookkeeping the rest; reading memory directly 48 ns; with every Y read finding its own ring word, in place of a stepped index that chains the multiplies, and a loop of its own for shift 0, 32 ns. Free-run, 4 pairs: stopwatch +6.3 % (se 0.9), midi +6.0 % (se 0.7), bobby +4.3 % (se 1.2), towerblox +3.8 % (se 1.7), video mips +2.1 % (se 0.1); 19 of 20 pairs positive. Native lockstep old binary against new, EL71 and S75 to 1e9: identical. After it (V8 `--prof`, free-run): 643F + 64A9 + 6489, still on the per-instruction runner at ~3.5 ns per cycle, are 12 % of video, 5.7 % of midi, ~4 % of stopwatch and bobby, 2.8 % of towerblox; 35BE is 5.5 % of video plus 2.1 % in `tcg_fast_step_35be` (the slice ends). A hand-written 643F iteration then measured nothing (Remaining levers) |
 | 2026-11-10 | `dcb799b05c` (`6b8a64baa5`) | The firmware's colour-keyed blit loop in C at its back-edge (`HELPER(w64_blit)`, wasm-fast-paths.md R7): stopwatch +7.0 % over 7 pairs (all positive), towerblox +1.0 % over 6 (se 1.8). Stopwatch rows are ~96 pixels, towerblox's ~20. With the host loaded from outside the container, four pairs at once halved every leg and buried the effect; two pairs at a time showed it |
 | 2026-11-10 | `455f756d82`, `9e7d3d4ce5` (`462123cd8d`) | DSP block chaining. The chain helper enters repeat-headed and over-budget blocks itself (P11): towerblox +1.2 %, video +2.5 %, midi +0.9 %. The inline chain test with merged loads (P12): midi +0.8 %, video +0.9 %, bobby +1.0 %. Measured on the way: with no inline links midi loses 11 %, with the helper alone and no inline test 5.4 %, so the inline test is a visible share of DSP time; selecting link slots by the full key lost 0.9 % (eviction churn) and four slots 2.2 % (code size) |
+| 2026-11-10 | `db5ec3b899` (`9e7d3d4ce5`) | Review of everything that differs from smh/master, no fast path removed (the 2026-11-04 round measured those). Bugs of ours fixed: the lockstep and guest instruction counts were not handed back when a TB was unwound mid-way (`w64_acct_unwind`; this was the "divergence" that A5 hid, so A5 is speed only now: a 60M leg takes 16 s without it, 3 s with); `mulu2`/`muluh` and the `qemu_ld`/`qemu_st` address read a 32-bit operand raw from a 64-bit local, so `movs r0, r0, lsl r1; cmp; umull` returned a wrong high word (`w64_get_u32`; two new op-suite cases fail on `9e7d3d4ce5`); an evicted batch left its DSP blocks in the DSP block cache and the next entry aborted ("evicted TB is not known": reproduced with `W64_LIVE_MAX` 48 at 61M instructions on S75, boots with the fix) — a session that outlives 6144 live modules would have hit it; `memory_region_set_readonly(false)` on a region born read-only kept the stale view; the fused MMIO load skipped the read cycles under `PMB887X_MEMORY_TIMING` (1.44M loads / 34M cycles in a 25 s S75 boot); GPTU configuration writes now sync the elided ticks first; the emscripten timed cond wait dropped its last millisecond. Closer to upstream: `arm_rebuild_hflags` after eret back off wasm64, the `tcg_func_start` const-table hunk down to one statement, two DSP call sites and a comment hunk restored, asyncify-only list 196 → 122 names (wasm byte-identical). Whole candidate against `9e7d3d4ce5`, free-run: stopwatch +4.0 % (6 pairs, +2.7 to +5.4), midi +0.1 % (4), video +0.8 % (4), towerblox +1.0 % (4, −2.2 to +3.4); which commit gives stopwatch its gain was not bisected |
 
 ## 2026-11-04 deviation cleanup
 
@@ -982,8 +996,10 @@ percent, negative meaning slower than before the cleanup. An A/A gave
 The wasm io-barrier single-instruction TBs (A5 in
 [wasm-fast-paths.md](wasm-fast-paths.md)) stay: without them, lockstep-wasm
 with `LS_QARGS` diverges at 16.7M insns on S75 and EL71 (wasm internal SRAM
-lags native), a hidden wasm io_recompile rewind divergence that is not fixed.
-The gate's own lockstep does not pin the RTC, so it does not see this.
+lags native). That was not a rewind divergence: the lockstep fold's
+instruction count ran ahead by the instructions each rewind left unrun
+(fixed 2026-11-10, `4fc6ac6dc7`; History). The gate's own lockstep runs one
+instruction per TB, where nothing unwinds mid-TB, so it never saw this.
 
 ## 2026-11-05 audio worklet phase vocoder
 

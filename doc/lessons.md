@@ -45,6 +45,28 @@ Current methods and numbers are in [performance.md](performance.md).
   The PC becomes an io barrier and is retranslated as a single-instruction
   TB (`wasm_add_io_barrier`, A5 in
   [wasm-fast-paths.md](wasm-fast-paths.md)).
+- **Whatever a prologue counts, an unwind has to hand back.** The wasm64
+  prologue adds the TB's instructions to the page's counter and the
+  lockstep fold; only `icount_decr` and the cycle counter were rewound.
+  The fold then sampled early by the unrun instructions of every rewind,
+  which read as a wasm-only divergence in internal SRAM for a week
+  (`w64_acct_unwind`, 2026-11-10).
+- **A 32-bit TCG value has no defined upper half in its host register.**
+  With `TCG_TARGET_HAS_extr_i64_i32` 0, `extrl_i64_i32` is a move and the
+  I32 temp may simply take over the i64 temp's register. A backend
+  emitter that widens an I32 operand must extend it itself
+  (`w64_get_u32`, 2026-11-10).
+- **An op-suite case whose operands are constants tests the optimizer.**
+  Superblocks inline the shim into its caller, and the shift under test
+  folds away; and while NF/ZF still hold copies of a result, later uses
+  read those copies. The case that failed loads its operands from
+  volatile memory and overwrites the flags before the use.
+- **An op-suite shim that is one TB must not straddle a page.** Adding
+  code moved `smc_slot` onto a page boundary and the same-TB SMC canary
+  "failed" on the native JIT (`.balign 16`).
+- **A fallback that "has not been observed to run" has not been tested.**
+  Lowering `W64_LIVE_MAX` to 48 ran batch eviction within seconds and
+  aborted in the DSP at 61M instructions.
 - **A direct-mapped fix-once cache can thrash into a fix-never loop.** The
   barrier set was once 64 slots indexed by `pc >> 2`: two hot MMIO
   instructions shared a slot and evicted each other on every pass (~800
