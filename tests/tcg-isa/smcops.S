@@ -16,6 +16,8 @@ smc_target:
     mov   r0, #0x5A
     bx    lr
 
+/* One TB: its four instructions must not straddle a page. */
+.balign 16
 .global smc_self
 smc_self:
     ldr   r1, =smc_slot

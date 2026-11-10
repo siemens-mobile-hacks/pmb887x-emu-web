@@ -62,7 +62,7 @@ On the wasm page: `make install` then open
 |---|---|---|
 | t_arith.c | adds/subs/rsbs/adcs/sbcs/rscs flag matrices, cmp/cmn, 64-bit adds/subs chains, cmp+conditional mov (all 14 ccs) | add/sub/adc/sbc/setcond, add2/sub2, brcond |
 | t_logic.c | ands/orrs/eors/bics/tst/teq, movs/mvns with C/V-preservation matrices | and/or/xor/andc (N/Z-only flag rules) |
-| t_shift.c | lsl/lsr/asr/ror imm (1..31) + the imm-#32 encodings, register amounts 0/1/31/32/33/64, RRX through both C | shl/shr/sar/rotl/rotr + carry-out |
+| t_shift.c | lsl/lsr/asr/ror imm (1..31) + the imm-#32 encodings, register amounts 0/1/31/32/33/64, RRX through both C; a flag-setting register shift feeding umull and a load/store address (RAM and a device register), 200 times so compiled code runs it too | shl/shr/sar/rotl/rotr + carry-out; a 32-bit value left in a 64-bit host register |
 | t_mul.c | mul/mla, umull/umlal, smull/smlal at boundaries | mul/mulu2/muls2, 64-bit add |
 | t_clz.c | clz | clz |
 | t_psr.c | msr/mrs NZCV round-trips + CPSR mode canary | cpu-context moves |

@@ -130,4 +130,42 @@ void t_shift(void)
             check_vf(nm, v, f, ev, ef, F_NZCV);
         }
     }
+
+    /* The shifted value as a 64-bit multiply operand and as an address
+     * (RAM, and a device register: the load helper's path), often
+     * enough that the block runs as compiled code too. The operands
+     * come from memory so that nothing folds. */
+    {
+        static volatile uint32_t in[5], cell;
+        const uint32_t uart_fr = 0x101f1018u;
+        uint32_t bad_mul = 0, bad_asr = 0, bad_ld = 0, bad_st = 0, bad_io = 0;
+
+        in[0] = 0xC0000001u;
+        in[1] = 2;
+        in[2] = 0x80000000u;
+        in[3] = 4;
+        in[4] = 1;
+        for (unsigned i = 0; i < 200; i++) {
+            uint32_t b = 0x9ABCDEF0u + i;
+            uint32_t addr = (uint32_t)&cell;
+
+            v = op_lsls_umulhi(in[0], in[1], b);
+            bad_mul |= v ^ (uint32_t)(((uint64_t)4u * b) >> 32);
+            v = op_asrs_umulhi(in[2], in[3], b);
+            bad_asr |= v ^ (uint32_t)(((uint64_t)0xF8000000u * b) >> 32);
+
+            cell = b;
+            v = op_lsls_ldr(in[2] | (addr >> 1), in[4]);
+            bad_ld |= v ^ b;
+            op_lsls_str(in[2] | (addr >> 1), in[4], ~b);
+            bad_st |= cell ^ ~b;
+            v = op_lsls_ldr(in[2] | (uart_fr >> 1), in[4]);
+            bad_io |= v ^ op_ldr(uart_fr);
+        }
+        check_v("shift/lsls-reg -> umull hi", bad_mul, 0);
+        check_v("shift/asrs-reg -> umull hi", bad_asr, 0);
+        check_v("shift/lsls-reg -> ldr addr", bad_ld, 0);
+        check_v("shift/lsls-reg -> str addr", bad_st, 0);
+        check_v("shift/lsls-reg -> ldr mmio", bad_io, 0);
+    }
 }

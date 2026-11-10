@@ -253,6 +253,12 @@ static inline uint32_t op_rrx(uint32_t a, uint32_t preset, uint32_t *cpsr)
 uint32_t op_lsr32(uint32_t a, uint32_t *cpsr);
 uint32_t op_asr32(uint32_t a, uint32_t *cpsr);
 
+/* shiftops.S: a flag-setting register shift feeding umull / an address */
+uint32_t op_lsls_umulhi(uint32_t a, uint32_t n, uint32_t b);
+uint32_t op_asrs_umulhi(uint32_t a, uint32_t n, uint32_t b);
+uint32_t op_lsls_ldr(uint32_t a, uint32_t n);
+void op_lsls_str(uint32_t a, uint32_t n, uint32_t v);
+
 /* ---------------- memory (guest view = plain RAM) ---------------- */
 
 static inline __attribute__((always_inline)) uint32_t op_ldr(uint32_t addr)
