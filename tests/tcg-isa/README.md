@@ -72,6 +72,7 @@ On the wasm page: `make install` then open
 | t_sat.c | qadd/qsub/qdadd/qdsub incl. the sticky Q model | saturating helpers |
 | t_interwork.c | Thumb adds/subs/adcs/sbcs/shifts/muls/memory + push/pop, BLX/BX chains, thumb↔ARM calls | second frontend |
 | t_smc.c | cross-TB and same-TB self-modifying code, patch storms | TB invalidation / notdirty path |
+| t_blit.c | the Siemens colour-keyed blit loop, byte for byte (blitops.S), against a C model: every pixel class, scaled/mirrored/zero steps, page crossings, overlapping buffers | the wasm64 `w64_blit` kernel (qemu `target/arm/tcg/w64-fill.c`) |
 | t_memstress.c | LCG-driven mixed-size store storm, full-width load sweep, ldm/stm region copy, FNV hashes | everything under load |
 
 Not covered: guest division (arm926 has none) and floats (no FPU;

@@ -3,7 +3,8 @@
 //
 //   node tools/perf/wasmgrab.mjs <devtools port> [secs 20] [modules 4] [outdir]
 //
-// Start the page with e.g. `videobench --devtools 9333 --hold 200`.  The
+// Start the page with e.g. `SCENEBENCH_DEVTOOLS=9333 node tools/scenebench.mjs
+// video dist-x --runs 1 --measure 200`.  The
 // module bytes come from Debugger.getScriptSource on the same worker the
 // profile ran on, so a profile URL (wasm://wasm/<hash>) and a saved file
 // are the same script by construction.  Writes <outdir>/<hash>.wasm and

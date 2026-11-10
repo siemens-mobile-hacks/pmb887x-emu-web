@@ -13,6 +13,7 @@ void t_sat(void);
 void t_interwork(void);
 void t_smc(void);
 void t_memstress(void);
+void t_blit(void);
 
 int tcgisa_main(void)
 {
@@ -31,6 +32,7 @@ int tcgisa_main(void)
     t_interwork();
     t_smc();
     t_memstress();
+    t_blit();
 
     suite_plan();
     return suite_fail != 0;

@@ -24,7 +24,7 @@ CFLAGS_COMMON = -mcpu=arm926ej-s -mfloat-abi=soft -ffreestanding -fno-builtin \
 TEST_OBJS = harness.o main.o \
             t_arith.o t_logic.o t_shift.o t_mul.o t_clz.o t_psr.o \
             t_ldst.o t_block.o t_swp.o t_sat.o t_interwork.o t_smc.o t_memstress.o \
-            shiftops.o condops.o blockops.o smcops.o thumb.o
+            t_blit.o shiftops.o condops.o blockops.o smcops.o thumb.o blitops.o
 
 all: tcgisa.bin tcgisa-wasm.bin
 
