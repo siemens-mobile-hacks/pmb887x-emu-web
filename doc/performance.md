@@ -742,6 +742,7 @@ unless noted).
 | Cold landing (`W64_INTERP_LANDED` 4: a batch member with fewer than 4 interpreted entries keeps fidx 0 when its batch lands, and is pointed at the thunk later), three attempts | EL71 boot: burst −1.4 to −2.1 %, audioMs −2 %, lagMax −3 to −4 %. Free-run: bobby negative in all six readings (−0.2 to −2.4 %), also in a placement-free A/B with the threshold in a global, and video −0.9 / −0.3 %. Fails the no-loss rule. Census: 82 % of members are still cold when their batch lands and 31 % of those wake later; an interpreted entry costs ~1.5 µs. Neither the interpretation (0.12 % of bobby) nor the extra dispatcher entries (~1 %) explains the loss; the cause was not found. `build/experiments/w64-cold-landing-42bb.diff`, `w64-cold-landing-census.diff` (apply to `42bb89c091`) | 2026-11-05 – 06 |
 | A9 extended to the globals: walk only the globals an op touched since their last reset, at side-effect ops too | Exact (the checker passed on boot and the five scenes), but nothing over A9: EL71 boot timers to 73.7k TBs, liveness 373 / 392 ms against A9's 377 / 383, `tcg_gen_code` 2.31 / 2.40 s against 2.30 / 2.34. A TB has only 24 globals. `build/experiments/w64-la-touched-globals.diff` (applies to `42bb89c091`) | 2026-11-06 |
 | Precise large-page TLB flush: a page flush inside `large_page_addr/mask` drops only the entries whose own block (`lg_page_size`) holds the page, scanning the indices of the aligned largest block, instead of flushing the whole mmu_idx | Census, EL71 boot: ~11k `tlbimva` (each over 22 mmu_idx) and nearly every one forced a full flush, because the range spans `a0000000`–`afffffff` (flash sections). The full flushes threw away 140k live entries, where only 128 belonged to a block holding the page, and their refills were 64 % of the boot's 219k fills. The full dirty-reset walk (all 22 modes, 1775 of 1806 calls) read 11.7M entries. Exact (a checker that rescans the whole TLB after each precise flush passed 21.5k flushes on the boot and 23.5k on stopwatch; the other four scenes never reach the path). Fills 219k → 42k, but EL71 boot, 2 × 4 pairs: burst −0.5 % (se 0.7) / +0.5 % (se 0.8), audioMs −0.3 / +2.0 %. V8 profile, 6–14 s, HEAD / candidate: `tlb_set_page_full` 0.26 / 0.07 %, `tlb_reset_dirty_range_all` 0.44 / 0.29 %, but `tlb_flush_page_by_mmuidx_async_0` 0.32 / 0.49 % (the 256-entry scans, 5.6M entry checks), `mmu_lookup1` 0.07 / 0.20 %, `victim_tlb_hit` 0.07 / 0.12 % and `do_ld4_mmu` 0.47 / 0.76 % (not explained). TLB maintenance comes to ~1.8 % in both. Without full flushes C5 grows the tables to 4096–8192 entries. A bitmap of the blocks present and skipping clean modes could leave ≤ 0.5 %, which bootab does not resolve. `build/experiments/w64-tlb-large-flush.diff` (applies to `af7a5a4bf6`) | 2026-11-06 |
+| Inline return through `pop {..., pc}`, as `w64_inline_return` does for `bx lr` | Census, towerblox: of 53.9M executed pc-loading LDMs only 16.0M (30 %) ran inside an inlined callee with the guard's conditions met; 70 % were at depth 0, the TB having started inside the function. Against ~17M TB entries a second that is under 2 % of them (the `bx lr` form already returns inline 33M times of 69M). Not built | 2026-11-10 |
 | hflags kept in place on AArch32 mode changes (`8203411abf`) | Committed on 2026-11-01, returned to upstream in `b12dea95f2` (neutral) | 2026-11-02 |
 
 ### V8 and toolchain
@@ -871,7 +872,15 @@ where noted):
   for every active device, not only AFE and I2S RX
   (`dsp_bus_get_cycles_until_event`), a flush before writes and before reads
   of time-varying registers, and a checker. Expect ~1.5–2 %, in upstream
-  files.
+  files. Census of the DSP's peripheral accesses on towerblox (2026-11-10,
+  by register and pc, stable over three 4M-access windows): 47 % are one
+  routine at P:040B–0416, the interrupt dispatcher, reading the six
+  interrupt-controller registers DE00/01/04/05/08/09 two cycles apart
+  (each read advances the whole bus by two cycles); 16 % are writes of
+  DEA3 and 12 % a read and a write of DEA8 (the DSP block, from
+  P:00D0/00D8). A rule for the interrupt registers alone (no device event
+  inside the pending window, so the flags cannot have changed) would
+  cover most of the gain.
 - **Tier-up helper worker.** Liftoff TB code plus `WasmLiftoffFrameSetup` and
   `CallIndirectIC` are ~7 % of towerblox ticks; 61 % of the Liftoff ticks are
   in code older than 60 s. A second worker sharing the NativeModule could
