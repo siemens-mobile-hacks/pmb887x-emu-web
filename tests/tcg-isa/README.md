@@ -67,7 +67,7 @@ On the wasm page: `make install` then open
 | t_clz.c | clz | clz |
 | t_psr.c | msr/mrs NZCV round-trips + CPSR mode canary | cpu-context moves |
 | t_ldst.c | ldr/str all widths + sign-extends, scaled/pre/post-index writeback, unaligned words, pc-relative literal | qemu_ld/st MO_* matrix |
-| t_block.c | ldm/stm all four modes ± writeback (4/8 regs), ldrd/strd ± writeback | decomposed loads/stores |
+| t_block.c | ldm/stm all four modes ± writeback (4/8 regs), 8 words at every split across a page boundary, the base in the list, ldrd/strd ± writeback | decomposed loads/stores, one probe per ldm/stm |
 | t_swp.c | swp/swpb exchange chains | atomics (cmpxchg path) |
 | t_sat.c | qadd/qsub/qdadd/qdsub incl. the sticky Q model | saturating helpers |
 | t_interwork.c | Thumb adds/subs/adcs/sbcs/shifts/muls/memory + push/pop, BLX/BX chains, thumb↔ARM calls | second frontend |

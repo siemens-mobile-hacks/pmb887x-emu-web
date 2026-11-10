@@ -123,6 +123,19 @@ blk_ldm8:                            @ r0 = res, r1 = src
     mov   r0, #0
     bx    lr
 
+.global blk_ldm_base
+blk_ldm_base:                        @ r0 = src, r1 = res; the base is loaded
+    ldmia r0, {r0, r2, r3}
+    stmia r1, {r0, r2, r3}
+    mov   r0, #0
+    bx    lr
+
+.global blk_stm_base
+blk_stm_base:                        @ r0 = dst; stores {dst, r1, r2}
+    stmia r0, {r0-r2}
+    mov   r0, #0
+    bx    lr
+
 .global blk_ldrd
 blk_ldrd:                            @ r0 = addr, r1 = res
     ldrd  r2, r3, [r0]

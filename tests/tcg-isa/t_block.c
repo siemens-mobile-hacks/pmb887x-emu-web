@@ -20,6 +20,8 @@ extern void blk_ldm4_da(uint32_t, uint32_t *);
 extern void blk_ldm4_db(uint32_t, uint32_t *);
 extern uint32_t blk_stm8(uint32_t);
 extern void blk_ldm8(uint32_t *res, uint32_t src);
+extern void blk_ldm_base(uint32_t, uint32_t *);
+extern void blk_stm_base(uint32_t, uint32_t, uint32_t);
 extern void blk_ldrd(uint32_t, uint32_t *);
 extern void blk_ldrd_off(uint32_t, uint32_t *);
 extern uint32_t blk_ldrd_wb(uint32_t, uint32_t *);
@@ -183,4 +185,47 @@ void t_block(void)
     check_v(nm, op_ldr(BB + 968), 0xFEEDFACEu);
     nm0(nm, "block/strd_wb_b");
     check_v(nm, nb, BB + 960 + 4);
+
+    /* Eight words against a page boundary: k of them before it, for every
+     * k, often enough to run as compiled code. */
+    for (unsigned k = 0; k <= 8; k++) {
+        uint32_t base = BB + 0x2000 - 4u * k;
+        unsigned bad = 0;
+
+        for (unsigned rep = 0; rep < 40; rep++) {
+            for (unsigned i = 0; i < 8; i++) {
+                op_str(base + 4u * i, rep);
+            }
+            bad += blk_stm8(base) != base + 32;
+            for (unsigned i = 0; i < 8; i++) {
+                bad += op_ldr(base + 4u * i) != 0x10101010u * (i + 1);
+                op_str(base + 4u * i, rep * 16u + i);
+            }
+            blk_ldm8(res, base);
+            bad += res[8] != base + 32;
+            for (unsigned i = 0; i < 8; i++) {
+                bad += res[i] != rep * 16u + i;
+            }
+        }
+        nm1(nm, "block/page_split", k);
+        check_v(nm, bad, 0u);
+    }
+
+    /* the base register in the list, without writeback */
+    {
+        unsigned bad = 0;
+
+        for (unsigned rep = 0; rep < 300; rep++) {
+            uint32_t base = BB + 0x2400 + 16u * (rep & 3);
+
+            blk_stm_base(base, rep, ~rep);
+            bad += op_ldr(base) != base || op_ldr(base + 4) != rep ||
+                   op_ldr(base + 8) != ~rep;
+            op_str(base, rep + 7);
+            blk_ldm_base(base, res);
+            bad += res[0] != rep + 7 || res[1] != rep || res[2] != ~rep;
+        }
+        nm0(nm, "block/base_in_list");
+        check_v(nm, bad, 0u);
+    }
 }
