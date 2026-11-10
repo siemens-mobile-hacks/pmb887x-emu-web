@@ -910,6 +910,11 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 .adv-span label small { display: block; }
 
 /* ---------------- Run panel ---------------- */
+/* the button is as wide as "Disconnect" either way, so toggling it does not
+   resize the dropdown */
+.accessory-row { display: flex; gap: 0.6rem; }
+.accessory-row select { flex: 1; }
+.accessory-row .btn { flex: none; min-width: 7.2rem; }
 .export-row { display: flex; gap: 0.6rem; }
 .export-row .btn { flex: 1; }
 .btn {

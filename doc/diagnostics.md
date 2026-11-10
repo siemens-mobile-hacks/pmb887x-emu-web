@@ -88,7 +88,9 @@ Device tracing and the SIM are qemu options, not environment:
 `_wasm_halts` (vCPU idle entries — the HUD's `halt/s` and the stall
 detector), `_wasm_clock_banked()` (1 while the `vcpu-timers-bank` window
 is open), `_wasm_audio_ring_ptr()` (the ring `audio-worklet.js` reads),
-`_wasm_send_key(lnx, down)`, `_wasm_quit()`, and the runtime's `FS`,
+`_wasm_send_key(lnx, down)`, `_wasm_quit()`, `_wasm_accessory_buf()` +
+`_wasm_accessory_plug()` (write a NUL-terminated profile name such as
+`headset-stereo` or `none` at the buffer, then plug it), and the runtime's `FS`,
 `ENV`, `HEAPU8`, `TTY`, `addFunction`/`removeFunction`. A dist built with
 `tools/perf/freerun.diff` also has `_wasm_free_run`.
 

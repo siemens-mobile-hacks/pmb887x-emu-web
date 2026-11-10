@@ -162,6 +162,10 @@ let startBlocked = false; // a failure Start cannot recover from (isolation)
 // one has an EFA block to hand back.
 let exportsReady = false;
 let ranDevice = null;
+// the Accessory control's board, its profiles and the one plugged in; null
+// makes renderAccessory() read them again from the board config (a run boots
+// with the board's default plugged in)
+let acc = null;
 // The filename the image came in under, so a saved dump is named after it.
 let ranFlashName = null;
 // What Advanced ▸ Siemens keys did to this run's image, for Copy diagnostics.
@@ -809,6 +813,7 @@ function render() {
   $("btn-save-efa").hidden = !exportDev?.startsWith("lg-");
   $("export-caption").textContent = "Available once running";
   $("export-caption").hidden = canExport;
+  renderAccessory();
 
   $("btn-shot").disabled = !live;
   // §1 of the recording criteria: a capture can start as soon as there is
@@ -1046,6 +1051,43 @@ function boardLabel(dev) {
   return BOARD_NAME_FIXUPS[dev] ?? readBoardName(dev + ".toml") ?? dev;
 }
 
+// The phone's system connector is a peripheral of type "accessory-connector":
+// `accessories` is a (multi-line) inline table of profiles, `default` the one
+// plugged in at boot, `unplugged` the one that means nothing is.
+// -> { names: [...profiles], default, unplugged } or null (no connector).
+function readAccessories(file, depth = 0) {
+  const txt = boardText.get(file);
+  if (!txt || depth > 4) return null;
+  for (const sec of txt.matchAll(/(?:^|\n)\[peripheral\.[^\]]+\]([\s\S]*?)(?=\n\[|(?![\s\S]))/g)) {
+    const body = sec[1];
+    if (!/^[ \t]*type[ \t]*=[ \t]*"accessory-connector"/m.test(body)) continue;
+    const key = (k) => body.match(new RegExp(`^[ \\t]*${k}[ \\t]*=[ \\t]*"([^"]+)"`, "m"))?.[1] ?? null;
+    const start = body.search(/^[ \t]*accessories[ \t]*=[ \t]*\{/m);
+    const names = [];
+    if (start >= 0) {
+      // the profile names are the keys one brace deep
+      let level = 0;
+      const tok = /\{|\}|"(?:[^"\\]|\\.)*"|#[^\n]*|([A-Za-z0-9_-]+)[ \t]*=/g;
+      tok.lastIndex = body.indexOf("{", start);
+      for (let m; (m = tok.exec(body));) {
+        if (m[0] === "{") level++;
+        else if (m[0] === "}" && --level === 0) break;
+        else if (m[1] && level === 1) names.push(m[1]);
+      }
+    }
+    return { names, default: key("default"), unplugged: key("unplugged") };
+  }
+  const ext = txt.match(/^[ \t]*extends[ \t]*=[ \t]*"([^"]+)"/m);
+  return ext ? readAccessories(ext[1], depth + 1) : null;
+}
+
+// What a run boots with: the music cable where the board has one, else the
+// board's own default.
+function bootAccessory(conf) {
+  if (!conf) return null;
+  return conf.names.includes("music-cable") ? "music-cable" : conf.default;
+}
+
 async function loadBoards() {
   boardsBuf = await (await fetch("dist/boards.tar")).arrayBuffer();
   const files = [];
@@ -1079,6 +1121,7 @@ async function loadBoards() {
     pendingDevice = null;
     renderOwn();
   }
+  acc = null; // drawn before the configs were here
   render();
   setAspect(); // the panel size (and so the screen box) is known now
 }
@@ -1640,6 +1683,12 @@ async function boot() {
     const simArgs = simSlot && sim === "virtual"
       ? ["-device", `gsm-sim,operator=${operator}`]
       : [];
+    // what the Accessory control shows, chosen there or not
+    const accConf = readAccessories(device + ".toml");
+    const bootAcc = acc?.dev === device ? acc.plugged : bootAccessory(accConf);
+    const accArgs = accConf && bootAcc && bootAcc !== accConf.default
+      ? ["-global", `accessory-connector.accessory=${bootAcc}`]
+      : [];
     const args = [
       "-display", "wasm",
       ...audioArgs,
@@ -1655,6 +1704,7 @@ async function boot() {
       // console, which a cursor timer redraws every 250 ms under the BQL
       "-parallel", "none",
       ...simArgs,
+      ...accArgs,
       // ?trace=dsp,scu: device log lines and register accesses
       ...(trace ? ["-debug-channels", `log=${trace},io=${trace}`] : []),
       ...extraArgs,
@@ -1752,6 +1802,7 @@ async function boot() {
 
 function onGuestExit(code) {
   running = false;
+  acc = null;
   exitCode = code;
   stopPainting();
   stopRecording();          // flushes whatever was captured
@@ -1820,6 +1871,80 @@ $("btn-save-efa").addEventListener("click", () => {
     cap.textContent = "The firmware has not written an EFA block yet.";
     cap.hidden = false;
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* accessory: what is plugged into the phone's system connector         */
+/* ------------------------------------------------------------------ */
+
+// board config profile name -> what the dropdown says; a profile missing
+// here shows its config name
+const ACCESSORY_LABELS = {
+  "data-cable": "Data cable", "usb-cable": "USB cable", "usb-cable-nc": "USB cable (NC)",
+  "boot-box": "Boot box", "desktop-charger": "Desktop charger",
+  "tty": "TTY", "tty-x55": "TTY (x55)",
+  "music-set": "Music set", "music-cable": "Music cable",
+  "headset-mono": "Headset (mono)", "headset-stereo": "Headset (stereo)",
+  "atc-device": "ATC device", "a2i-device": "A2I device",
+};
+
+// The list is the board's (readAccessories), not the emulator's: it is the
+// same boards.tar qemu boots from. The button disconnects when the selected
+// accessory is the one plugged in, and connects it otherwise — which, with
+// another one plugged in, swaps them (the connector inserts the unplug).
+// Before a run it only chooses what the phone starts with.
+function renderAccessory() {
+  const sel = $("acc-select"), btn = $("btn-accessory"), cap = $("acc-caption");
+  const dev = running ? ranDevice : currentDevice();
+  if (acc?.dev !== dev) {
+    const conf = dev ? readAccessories(dev + ".toml") : null;
+    const names = conf?.names.filter((n) => n !== conf.unplugged) ?? [];
+    acc = { dev, unplugged: conf?.unplugged ?? null, names, plugged: bootAccessory(conf) };
+    sel.replaceChildren(...(names.length ? names : [""]).map((n) => {
+      const opt = document.createElement("option");
+      opt.value = n;
+      opt.textContent = n ? ACCESSORY_LABELS[n] ?? n : "None";
+      return opt;
+    }));
+    if (names.includes(acc.plugged)) sel.value = acc.plugged;
+  }
+  const live = emuState === "running" || emuState === "paused";
+  // a dist built before the export existed boots fine, it just cannot plug
+  const canPlug = !!liveModule()?._wasm_accessory_plug;
+  const usable = acc.names.length > 0 && (live ? canPlug : emuState !== "booting");
+  sel.disabled = !usable;
+  btn.disabled = !usable;
+  btn.textContent = sel.value && sel.value === acc.plugged ? "Disconnect" : "Connect";
+  const text = !dev ? ""
+    : !acc.names.length ? "This phone has no accessory connector"
+    : live && !canPlug ? "This emulator build cannot plug accessories"
+    : "";
+  cap.textContent = text;
+  cap.hidden = !text;
+}
+
+$("acc-select").addEventListener("change", renderAccessory);
+
+$("btn-accessory").addEventListener("click", () => {
+  if (!acc) return;
+  const sel = $("acc-select").value;
+  const name = sel === acc.plugged ? acc.unplugged : sel;
+  if (!name || name.length >= 64) return;
+  if (!running) {
+    acc.plugged = name;
+    renderAccessory();
+    return;
+  }
+  const m = liveModule();
+  if (!m?._wasm_accessory_plug) return;
+  // the name goes into the export's 64-byte buffer, NUL-terminated; profile
+  // names are ASCII, and TextEncoder cannot write into the shared heap
+  const at = Number(m._wasm_accessory_buf());
+  for (let i = 0; i < name.length; i++) m.HEAPU8[at + i] = name.charCodeAt(i);
+  m.HEAPU8[at + name.length] = 0;
+  m._wasm_accessory_plug();
+  acc.plugged = name;
+  renderAccessory();
 });
 
 function downloadBlob(blob, name) {

@@ -95,6 +95,9 @@ the authoritative list; in outline:
   - input: `wasm_send_key(linux_keycode, down)` → SPSC ring → bottom half
     on the qemu main loop (safe to call from the browser main thread);
   - `wasm_quit()` → thread-safe `qemu_system_shutdown_request`;
+  - `wasm_accessory_plug()` → the name the page wrote into
+    `wasm_accessory_buf()` is copied and set as the connector's `accessory`
+    QOM property from a one-shot bottom half;
   - the counters the page reads: `wasm_vclock`, `wasm_fb_updates`,
     `wasm_insns`, `wasm_halts`, `wasm_clock_banked`.
 - **`audio/wasmaudio.c`** (`-audio wasm`): a mixeng backend that publishes
@@ -293,6 +296,18 @@ thread is using them).
 - LCD canvas repaints from the staging buffer on `requestAnimationFrame`;
   every phone key is a `<button>` mapped to linux keycodes, plus
   physical-key mapping.
+- The Run panel's **Accessory** row plugs things into the phone's system
+  connector (qemu's `accessory-connector`, `IO_CONNECTOR` in the board
+  config). The dropdown lists the board's profiles, read out of boards.tar
+  like the panel size (`readAccessories()`), minus the `unplugged` one;
+  a run boots with the music cable where the board has one and with the
+  board's `default` otherwise (a data cable on the other Siemens boards),
+  passed as `-global accessory-connector.accessory=`. The button reads
+  Disconnect while the selected profile is the plugged one (it then plugs
+  `unplugged`), and Connect otherwise, which swaps whatever is plugged for
+  the selection. Before a run it chooses what the phone starts with; while
+  one runs it goes through `wasm_accessory_buf/plug`, and stays disabled on
+  a dist without them and on a board without a connector.
 - Serial is a push, not a poll: `tapSerial()` wraps the MEMFS `stream_ops`
   of `/serial.log` in `preRun`, so every write the guest makes surfaces as
   a callback on the page (with pthreads, FS syscalls from the vCPU worker

@@ -306,6 +306,18 @@
   <section class="ctrl-panel post-panel" id="post-panel">
     <div class="panel-card">
       <div class="group">
+        <h2 class="group-title">Accessory</h2>
+        <!-- the profiles of the board's accessory connector; the button reads
+             Disconnect while the selected one is plugged in (app.js) -->
+        <div class="accessory-row">
+          <select id="acc-select" aria-label="Accessory" disabled
+            title="What to plug into the phone's system connector"></select>
+          <button type="button" id="btn-accessory" class="btn" disabled>Connect</button>
+        </div>
+        <p class="caption" id="acc-caption" hidden></p>
+      </div>
+
+      <div class="group">
         <h2 class="group-title">Keyboard</h2>
         <!-- which phone's keypad is drawn, and the letters engraved on it
              (populated + handled in app.js) -->
