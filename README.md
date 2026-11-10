@@ -225,7 +225,6 @@ cover.
                         clock by default)
     ninja-fast.sh       incremental rebuild + deploy (wasm64 →
                         site/dist-jit) — the iteration loop
-    ninja-wasm64.sh     bare incremental ninja in the wasm64 build dir
     iterate.sh          one-command edit→rebuild→browser-verdict loop
     gate.sh             builds the native references, then every
                         correctness gate, run concurrently, one verdict

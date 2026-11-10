@@ -6,7 +6,7 @@
 # (it charges builtins and runtime C++ to a caller frame).
 #
 #   CHROME_ARGS="--no-sandbox --js-flags=--prof,--logfile=$D/v8.log" \
-#     node tools/videobench.mjs --dist dist-x --hold 150
+#     node tools/scenebench.mjs video dist-x --runs 1
 #   tools/perf/v8tick.py $D/isolate-<vcpu>-v8.log site/dist-x/qemu-system-arm.js.symbols [last-secs]
 #
 # The vCPU isolate is the log with the most code-creation records (TB

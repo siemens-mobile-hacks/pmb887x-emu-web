@@ -826,11 +826,6 @@ that exists.
   command line; it kills the shell (exit 144). In zsh, `grep` may be a wrapper
   function that misses matches in binary serial logs (use `command grep -a`),
   and `$VARS` does not word-split.
-- **Stale absolute paths:** `scripts/ninja-wasm64.sh` still uses
-  `/workspace/build/...` from before the repo moved to
-  `/workspace/pmb887x-emu-web`. Use `scripts/ninja-fast.sh`, or fix the paths
-  first. (`tools/asyncify-audit.mjs`, `conlog.mjs` and `iotrace.mjs` were
-  fixed on 2026-11-09.)
 - **MIDI underrun (2026-10-30, not re-checked):** one ~120 ms underrun per
   60 s window on a normal host, unrelated to speed. Cause not found.
 - **Pixel numbers** have not been re-measured since 2026-11-01.

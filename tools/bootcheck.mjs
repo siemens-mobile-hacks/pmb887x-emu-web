@@ -40,7 +40,7 @@ const ONLY = opt("flash", "").split(",").filter(Boolean);
 // between dists / page orders are how timing-sensitive boot failures get
 // pinned down).
 const QUERY = [opt("query", ""), process.env.EXTRA_Q || ""].filter(Boolean).join("&");
-// EXTRA_Q mirrors uibench.mjs/workbench.mjs: env knobs (env=W64_...) reach
+// EXTRA_Q mirrors uibench.mjs: env knobs (env=W64_...) reach
 // the page.  Without it, an EXTRA_Q= boot leg silently runs the default
 // config and the "probe" measures nothing (this cost two bogus rounds).
 

@@ -17,13 +17,4 @@ is.
 | `hostmon.sh` | Samples host memory pressure every 10 s (writes to `$PERF_LOGS`). |
 | `reap.py` | Runs a command as a child subreaper, so the Chromium processes it orphans are reaped instead of staying zombies. |
 
-## September 2026 leftovers
-
-Everything else here dates from the icount-era rounds. The shell drivers
-set `W64_*` knobs, read `wasm_memstat` counters or pass `RT=`, all of which
-qemu no longer has, and they hard-code `/workspace` as the repository root.
-The analysis scripts read leg logs in that era's format. `round35/` and
-`round53/` hold that era's leg logs and unmerged patches, and `xcensus.out`
-one of its counter dumps. None of it is used by the current method.
-
 `logs/` is run output and is gitignored.

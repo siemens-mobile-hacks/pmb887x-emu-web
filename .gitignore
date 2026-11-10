@@ -65,6 +65,5 @@ tools/chrome/
 # python bytecode caches (tools/perf/ analysis scripts)
 __pycache__/
 
-# perf sweep run output ($S / PERF_LOGS — see tools/perf/README.md).  Raw
-# evidence the docs cite is committed under tools/perf/round35/ instead.
+# perf run output ($S / PERF_LOGS — see tools/perf/README.md)
 /tools/perf/logs/

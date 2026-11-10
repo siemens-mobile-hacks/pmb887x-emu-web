@@ -2,8 +2,7 @@
 //
 //   PORT=8080 node tools/uibench.mjs --board el71 [--dist dist-jit]
 //
-// tools/stopwatch.mjs is the pacing gate for the S75 (it navigates one
-// firmware's menus to one J2ME app); idlebench measures boots.  Nothing
+// idlebench measures boots.  Nothing
 // measured the *steady-state* cost of a board's UI, which is what a user
 // calls "slow" — and the 240x320 boards (EL71, KE800) push 3.3x the
 // pixels of the S75's 132x176 through the same per-word DIF/DMAC/LCD
@@ -96,9 +95,7 @@ p.on("console", (m) => {
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// counter indices follow the pre-review wasm-diag.h (see tools/diagall.mjs);
-// since the 2026-09-22 review most exports are gone and read as 0, and
-// bench0..7 are tools/perf/bench-hooks.patch's census slots
+// since the 2026-09-22 review most of these exports are gone and read as 0
 async function snap() {
   return p.evaluate(() => {
     const m = window.__qemu;
