@@ -4,8 +4,8 @@ Where the speed work stands, how to measure and validate a change, and what
 has already been tried. Read this before doing performance work on the
 emulator.
 
-- **State described:** fork `6b8a64baa5`, on smh/master `9e5a6bbfd6`
-  (2026-11-09).
+- **State described:** fork `8fcac1b334`, on smh/master `9e5a6bbfd6`
+  (2026-11-10).
 - **Related:** [wasm-fast-paths.md](wasm-fast-paths.md) lists every fork change
   that exists only for speed, and how to remove one.
   [diagnostics.md](diagnostics.md) lists the page parameters and tools.
@@ -589,6 +589,7 @@ Every share below is as of its date, and later work moved some of them.
 | Stopwatch, free-run + bounds checks (2026-11-02) | TB code 62 %, DSP kernels ~10 %, SVC/eret/mode-switch path ~2.5 % (upstream target/arm), BQL futex waits ~1.2 %, `lcd_handle_cd` lock 0.3 %, JS clock reads ~2.4 % (a free-run artifact: the raw-clock cache applies only when behind real time) |
 | Stopwatch, V8 `--prof` (2026-11-01) | TB TurboFan 46 %, main module 26 %, TB Liftoff 6.4 % + `WasmLiftoffFrameSetup` 2.4 %, libc 16 % (`ATOMICS_WAIT`, i.e. idle) |
 | Towerblox, V8 `--prof`, free-run + bounds checks (2026-11-04, `92f6a90e56`) | TB TurboFan 59 %, main module 31–33 %, TB Liftoff 4–5 % + `WasmLiftoffFrameSetup` 1.5 %. TB code by owner: ARM 40 %, DSP 23 %. Top C: `tcg_fast_run_35be` 4.2–4.7, `dsp_bus_advance` 3.1 (callers: data reads 1.1, the `dsp_sync` timer 1.0, data writes 0.8, `dsp_runtime_advance_cycles` 0.6), chain helper 2.1–2.3, `helper_w64_fill` 1.9–2.1, `dsp_sync` 1.5–1.7, kernels 643f/64a9/6489 ~1.2/1.1/0.7. Nothing else above 0.8 %; from entry 26 down, each is ≤ 0.3 %. The hottest ARM TB (2 %) is the fill loop's own superblock |
+| Towerblox, V8 `--prof`, free-run + bounds checks, TBs named by guest pc (2026-11-10, `8fcac1b334`) | Main module 33.9 %; ARM TBs of the firmware in flash 32.4 % (1.7 of it Liftoff); ARM TBs in RAM, the game's own compiled code, 7.4 % (3.0 Liftoff); DSP blocks 22.4 %; `WasmLiftoffFrameSetup` 0.7 %. DSP-side C is ~19 % (`dsp_bus_advance` 3.6, chain helper 2.8, the four kernels 5.6, `dsp_sync` 1.5, a long tail), so the DSP is ~41 % of the scene and ARM ~45 %. 3799 TB functions have ticks; the top one is 1.4 % (a DSP block). ARM TB code comes to ~1.3 ns per guest instruction: a hot 8-instruction TB is ~70 x64 instructions, of which the entry accounting ~12, a guest access 13–16 and the exit ~6 |
 | Bobby (2026-10-31) | Worker busy time: DSP 61 %, ARM 19 %, display 13 % |
 | Video (2026-11-01/02) | Busy 11.8 s of 20 s = ARM JIT 5.0 s, DSP 4.4 s, ARM-side C 2.1 s. GSM search kernels (35be+643f+6489+64a9) ~30 % of free-run ticks (midi 12 %, bobby 9 %) |
 | MIDI (2026-10-30/11-01) | DSP ~62 % of the vCPU, ~48M DSP cycles/s. Hot blocks: f4ec 27 % of chained cycles, e20d 16 %, f4b8 10 %. DSP-bound: only faster DSP execution helps |
@@ -609,6 +610,7 @@ unless noted).
 | Thumb fill rows (towerblox, 2026-11-05, 60 s real time plus boot) | 36.8M rows finish inside the helper. 98.1 % go straight into the next row; 1.5 % end the rectangle, 0.4 % meet the cycle budget, and ~50 were in TBs still interpreted. A row costs two TB entries (a0a04cc2 head, the b absorbed; a0a04cc6 loop and tail). Done as a C transition per row, it cost ~23 ns, as much as the TB code it replaced |
 | SVC / eret / mode MSR / IRQ (stopwatch) | ~240k / ~245k / ~250k / ~1.9k per s |
 | ARM MMIO accesses | ~50k/s, no polling; `mmu_lookup1` ~18k/s in steady state |
+| ARM guest accesses (towerblox, census 2026-11-10) | 1965M inline probes over the boot and 34 s of the game. 27 % of them were the second to last word of an LDM/STM (3.7 words each), which R8 now serves with one probe; all probes together are a few percent of the vCPU |
 | New ARM TBs in steady state | stopwatch ≈ 0; towerblox ~135–300/s (JIT-compiled Java at fresh addresses, no invalidation churn) |
 | DSP (bobby) | 59M cycles/s, 5.4M blocks/s, 2.86M chain links/s, 109k C-dispatcher entries/s |
 | DSP chain calls | towerblox ~1.7M/s, stopwatch ~191k/s; ~20.6 cycles per block |
@@ -695,6 +697,7 @@ unless noted).
 | EE49 C kernel (S75 MAC loop: 27 % of chained cycles, 3.1 % of the vCPU) | Parked, ~1.5 % on Bobby, S75 only | 2026-11-02 |
 | Biquad routine 0xDDDE (~11 % of towerblox chains) | ~1 % reachable, parked | 2026-11-02 |
 | Lazy DSP flags. Upper bound: `fz fm fn fv fe fc0` dead at every block exit and at the chain helper (inexact, `tcg_remove_dead_flag_stores`) | towerblox −0.6 % ± 0.65 (4 pairs × 30 s). midi −38 %: the DSP reads those flags across blocks, so the inexact build changed its work, and it bounds nothing there. DSP TB code is ~23 % of towerblox, so even cutting a fifth of it is ~4–5 %, before materializing the flags read across blocks | 2026-11-05 |
+| The exit and interrupt request checks after a data-writing DSP instruction only on its slow (helper) arm | Priced, not built: two constant-address loads and two predicted branches per such instruction, under 0.5 % of the scene, and exact only with a translation-time record of the helper calls since the last check | 2026-11-10 |
 
 ### DSP scheduling and threading
 
@@ -750,6 +753,7 @@ unless noted).
 | Forcing Liftoff tier-up by padding TBs | Tier-up budget is charged by machine-code offset at returns and tail calls, so it would take tens of KB per TB. Ceiling: `--wasm-tiering-budget=1300000` gives +3.7 % on towerblox. Closed for good | 2026-11-02 |
 | `--wasm-tiering-budget=300000` at the EL71 boot (ceiling) | Burst −8.2 %, stretchedMs −25 %, gaps unchanged; TB Liftoff ticks 22.5 → 4.1 %. All of it is TB tier-up: main-module Liftoff is ~1 %. V8's default budget is 13M. A page cannot set it | 2026-11-05 |
 | Tier-up spin: a loop in TB code that charges the tiering budget | A back-edge charges ~0.93 × the function's Liftoff size (~2.5 × its wasm body bytes) per iteration, under 1 ns each. A per-TB countdown with overshoot matched the flag's tier-ups, but the loop wrapper alone cost +3–9 %: net burst +0.5 % (se 0.9), gaps worse. A full charge on every TB floods TurboFan: +19.6 %. Closed | 2026-11-05 |
+| Tier-up by calls from outside: the exit-request arm of a TB returns at the end of the function, so a call with the request flag set charges the whole Liftoff size and runs no guest code | Priced, not built. The budget of 13M needs ~3500 such calls for a mean TB (Liftoff ~3.75 KB), ~35 µs on the vCPU thread, about one lazy compile; a TB that would tier up by itself gains at most the same, and one that never would repays it only after thousands of runs. Off the vCPU thread it is the tier-up helper worker (Remaining levers), whose instance has its own budgets | 2026-11-10 |
 | Masking indexes so V8 drops bounds checks | Impossible: V8 drops them only for constant indexes, and the memory size is a hoisted load | 2026-11-03 |
 | wasm SIMD build; extra Binaryen passes | Neutral | 2026-11-01 |
 | Binaryen one-caller inline limit (N=200, or 1000 globally) | 200 is worse (splits `dsp_i2s_advance` out); 1000 is noise | 2026-11-02 |
@@ -878,9 +882,20 @@ where noted):
   loop (0.26 % on the dev host). It matters with a slow main-loop core.
 - **DSP chain tail.** Every DSP block ends with 55–76 TCG ops of gates and
   link checks; four gates are constant per block. Census first.
-- **One check per TLB probe.** A probe does three bounds-checked loads
-  (comparator, addend, data). A mirrored `{cmp32, addend32}` word makes it
-  two. ~1–1.5 %, ~10 hooks in `cputlb.c`.
+- **One check per TLB probe:** done as C8 (2026-11-10), with three hooks.
+
+From the 2026-11-10 round (towerblox profile with named TBs, above):
+
+- **Probes are not what a hot TB's listing suggests.** The hottest ARM TBs
+  of towerblox do about one guest access per instruction (35 instructions,
+  31 probes), yet removing a quarter of all executed probes (R8) is worth
+  ~2 %. Sharing a probe between neighbouring instructions on one base
+  register would need decode look-ahead or a TCG pass for under 1 %.
+- **The scene is two flat halves.** ARM code runs at ~1.3 ns per guest
+  instruction and the DSP at several times that per cycle, on ~41 % of the
+  vCPU. Nothing generic is left on the ARM side; the DSP side is the
+  levers already listed (Teak state in globals, the bus deferral, the
+  chain tail).
 
 From the 2026-11-09 round (hot TB modules by `tools/perf/wasmgrab.mjs` on
 free-run scenes, `6b8a64baa5`; DevTools shares, which overstate):
@@ -963,6 +978,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-10 | `dcb799b05c` (`6b8a64baa5`) | The firmware's colour-keyed blit loop in C at its back-edge (`HELPER(w64_blit)`, wasm-fast-paths.md R7): stopwatch +7.0 % over 7 pairs (all positive), towerblox +1.0 % over 6 (se 1.8). Stopwatch rows are ~96 pixels, towerblox's ~20. With the host loaded from outside the container, four pairs at once halved every leg and buried the effect; two pairs at a time showed it |
 | 2026-11-10 | `455f756d82`, `9e7d3d4ce5` (`462123cd8d`) | DSP block chaining. The chain helper enters repeat-headed and over-budget blocks itself (P11): towerblox +1.2 %, video +2.5 %, midi +0.9 %. The inline chain test with merged loads (P12): midi +0.8 %, video +0.9 %, bobby +1.0 %. Measured on the way: with no inline links midi loses 11 %, with the helper alone and no inline test 5.4 %, so the inline test is a visible share of DSP time; selecting link slots by the full key lost 0.9 % (eviction churn) and four slots 2.2 % (code size) |
 | 2026-11-10 | `db5ec3b899` (`9e7d3d4ce5`) | Review of everything that differs from smh/master, no fast path removed (the 2026-11-04 round measured those). Bugs of ours fixed: the lockstep and guest instruction counts were not handed back when a TB was unwound mid-way (`w64_acct_unwind`; this was the "divergence" that A5 hid, so A5 is speed only now: a 60M leg takes 16 s without it, 3 s with); `mulu2`/`muluh` and the `qemu_ld`/`qemu_st` address read a 32-bit operand raw from a 64-bit local, so `movs r0, r0, lsl r1; cmp; umull` returned a wrong high word (`w64_get_u32`; two new op-suite cases fail on `9e7d3d4ce5`); an evicted batch left its DSP blocks in the DSP block cache and the next entry aborted ("evicted TB is not known": reproduced with `W64_LIVE_MAX` 48 at 61M instructions on S75, boots with the fix) — a session that outlives 6144 live modules would have hit it; `memory_region_set_readonly(false)` on a region born read-only kept the stale view; the fused MMIO load skipped the read cycles under `PMB887X_MEMORY_TIMING` (1.44M loads / 34M cycles in a 25 s S75 boot); GPTU configuration writes now sync the elided ticks first; the emscripten timed cond wait dropped its last millisecond. Closer to upstream: `arm_rebuild_hflags` after eret back off wasm64, the `tcg_func_start` const-table hunk down to one statement, two DSP call sites and a comment hunk restored, asyncify-only list 196 → 122 names (wasm byte-identical). Whole candidate against `9e7d3d4ce5`, free-run: stopwatch +4.0 % (6 pairs, +2.7 to +5.4), midi +0.1 % (4), video +0.8 % (4), towerblox +1.0 % (4, −2.2 to +3.4); which commit gives stopwatch its gain was not bisected |
+| 2026-11-10 | `33855e074b`, `8fcac1b334` (`db5ec3b899`) | Two bounds-checked loads per guest access where there were three (C8: the comparator and the addend in one 64-bit word), and one probe for all the words of an LDM/STM (R8). Free-run, two pairs at a time, host load 4–10. C8: stopwatch +2.4 % (6 pairs), towerblox +1.1 % (14, se 1.0). R8 over C8: towerblox +2.0 % (6), stopwatch +3.6 % (4). Both: towerblox +3.1 % (16 pairs; the last ten +4.2 %, −2.5 to +9.4), stopwatch +4.1 % (6, +0.4 to +7.2), bobby +1.5 %, midi +1.2 %, video mips +0.5 % (4 each, one video pair −1.0 %). Lockstep with `LS_QARGS` clean on S75 and EL71; the op suite gained page-boundary and base-in-list LDM/STM cases (1312 cases, identical on native JIT, TCI and wasm) |
 
 ## 2026-11-04 deviation cleanup
 

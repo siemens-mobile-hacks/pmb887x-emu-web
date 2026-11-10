@@ -339,6 +339,13 @@ The binding method is in performance.md. These are the traps behind it.
   is meaningful. The vCPU worker's index moves between runs; identify it by
   content. Never pipe a profiler through `tail`.
 
+- **A listing shows density, a census shows rate.** Towerblox's hottest
+  ARM TBs do one guest access per instruction, which read as "the probes
+  are the scene". Counted, they were ~30M a second and a few percent of
+  the vCPU: removing a quarter of them (one probe per LDM/STM) gained
+  ~2 %. Count events per second before sizing a lever from a hot
+  function's code.
+
 ## Gates
 
 - **Boot one fullflash per class.** S75 was the only browser boot anyone
