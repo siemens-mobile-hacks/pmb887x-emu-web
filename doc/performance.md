@@ -4,18 +4,13 @@ Where the speed work stands, how to measure and validate a change, and what
 has already been tried. Read this before doing performance work on the
 emulator.
 
-- **State described:** fork `92f6a90e56`, merge of smh/master `d9cf65ef40`
-  on top of the 2026-11-04 deviation cleanup (`1b51f8e577`). Written
-  2026-11-04.
-- **Replaces** `doc/performance-handoff.md`, the September 2026 round log of
-  the icount era (still in this repo's git history).
-  [optimization-playbook.md](optimization-playbook.md) and
-  [lessons.md](lessons.md) come from the same period and keep its methods
-  and conclusions, with the removed knobs and tools pruned. Their figures
-  predate the vcpu-timers model and the DSP LLE.
+- **State described:** fork `6b8a64baa5`, on smh/master `9e5a6bbfd6`
+  (2026-11-09).
 - **Related:** [wasm-fast-paths.md](wasm-fast-paths.md) lists every fork change
   that exists only for speed, and how to remove one.
   [diagnostics.md](diagnostics.md) lists the page parameters and tools.
+  [lessons.md](lessons.md) has the platform facts (emscripten, wasm, V8)
+  and the measuring traps behind the method here.
 - Every number is as of its date. Commit hashes refer to the `qemu/` history
   (fork branch `wasm-browser-port`); "parent" means this repo.
 
@@ -82,7 +77,7 @@ emulator.
 8. **The display freeze after leaving a running stopwatch is upstream's.**
    Wait for upstream to fix it; do not work on it.
 
-### Working rules (still true from the September log)
+### Working rules
 
 - **Measurements and gates are different activities.** A gate asks whether
   the guest reaches a state, so `scripts/gate.sh` runs its jobs concurrently.
@@ -110,7 +105,10 @@ emulator.
 - **Emscripten traps.** wasm-EH longjmp composes with Asyncify only while no
   function on the Asyncify onlylist calls setjmp, `poll()` never sleeps,
   condvar waits are whole milliseconds, and proxied syscalls take ~1 ms.
-  See [lessons.md](lessons.md).
+  See [lessons.md](lessons.md), Emscripten runtime.
+- **Build both legs of an A/B the same way**, from the same build directory
+  and source state apart from the change. Never compare against a dist of
+  unknown origin or yesterday's number.
 
 ### Landing a change
 
@@ -157,15 +155,6 @@ Cost facts:
 - **`-accel tcg,thread=multi` without vcpu-timers** (wall-clock virtual time)
   is unusable with the DSP LLE: stopwatch reports "guest never went idle"
   (2026-11-02).
-- **Removed (do not look for these):**
-  - The icount real-time cap (`?rt=`, rtcap, idlebench `RT=ship`).
-  - Soft icount timers (`QEMU_TIMER_ATTR_SOFT`).
-  - The wasm `main_loop_wait` timeout override in `util/main-loop.c`. It
-    re-added virtual deadlines without icount, so the main loop woke on every
-    100 µs DSP sync and fought the vCPU for the BQL. Removing it took the vt
-    boot from 28.4 to 26.2 s.
-
-  All three went on 2026-10-29.
 
 ## Benchmarks
 
@@ -340,8 +329,6 @@ always revert with `git apply -R`.
   another BSP must be served from a second site root
   (`WEB_SITE_DIR=<root> PORT=8081 node serve.mjs`, then
   `PORT_B=8081 tools/perf/swab.sh ...`).
-- **`tools/videobench.mjs` is broken** on current builds (boot detection, no
-  `wasm_rtcap_set`). The `video` scene replaces it.
 
 **Normal absolute values on a quiet host** (free-run, bounds checks,
 2026-11-04). Anything far off means the host is busy or the build is wrong.
@@ -525,20 +512,13 @@ ninja -C build/qemu-native-build test-pmb887x-dsp-tcg && build/qemu-native-build
 - **Gaps:** the tests do not check flags after mov/ALB (mutants pass them).
   A mutant that skips the successor match in the chain cache passes both the
   unit tests and lockstep (2026-11-02). Mutation-check every new test.
-- **Removed debug switches, as a recipe:** the 2026-10-30 cleanup
-  (`90f3562467`) removed `TEAK_TCG_FAST`, `TEAK_TCG_MAX_BLOCK` and
-  `TEAK_TCG_CHECK_LEVEL_FREE`. When you change a kernel, restore
-  `tcg_fast_check` and `tcg_verify_level_free` from
-  `git -C qemu show fefdb61f9d:hw/arm/pmb887x/dsp/tcg.c`, and pass the
-  switches with the page's `?env=NAME=VALUE`:
-  - `TEAK_TCG_FAST=2 TEAK_TCG_MAX_BLOCK=1` re-runs every fast run through the
-    translator and aborts on a mismatch.
-  - `TEAK_TCG_FAST=0` turns the fast loops off.
-  - `TEAK_TCG_CHECK_LEVEL_FREE=1` re-decodes every level-free hit.
-
-  The replay is too slow to reach SL65 MIDI playback. `a2fc4f3414` used a
-  per-call differential instead: iterate vs `tcg_fast_run` and memcmp the
-  state and data.
+- **Checking a kernel change in the browser:** the tree has no runtime
+  switch for the fast loops. Build a per-call differential as a temporary
+  patch: run the kernel and the translator on copies and memcmp the state
+  and data (`a2fc4f3414` did this for 35BE). The replay checker that
+  `git -C qemu show fefdb61f9d:hw/arm/pmb887x/dsp/tcg.c` still has
+  (`tcg_fast_check`, `tcg_verify_level_free`) re-ran every fast run through
+  the translator, and was too slow to reach SL65 MIDI playback.
 
 ### In-situ checkers
 
@@ -595,7 +575,7 @@ on it.
   (`a2fc4f3414`).
 
 Count hits and refusal reasons with a temporary counter before pricing the
-path (lessons.md § "Count the fast path, or it may never have run").
+path ([lessons.md](lessons.md), Measuring).
 
 ## Where the time goes
 
@@ -605,16 +585,12 @@ Every share below is as of its date, and later work moved some of them.
 |---|---|
 | Stopwatch, free-run + bounds checks (2026-11-02) | TB code 62 %, DSP kernels ~10 %, SVC/eret/mode-switch path ~2.5 % (upstream target/arm), BQL futex waits ~1.2 %, `lcd_handle_cd` lock 0.3 %, JS clock reads ~2.4 % (a free-run artifact: the raw-clock cache applies only when behind real time) |
 | Stopwatch, V8 `--prof` (2026-11-01) | TB TurboFan 46 %, main module 26 %, TB Liftoff 6.4 % + `WasmLiftoffFrameSetup` 2.4 %, libc 16 % (`ATOMICS_WAIT`, i.e. idle) |
-| Towerblox (2026-11-02) | ARM TBs 47 %, DSP TBs 19 %, rest 33 %. The fill loop at a0a04cc6 was ~35 % of guest insns in ~6.5 % of the time before `3116fa62be`. Liftoff-tier TB code ~9 % + frame setup 1.5 % |
 | Towerblox, V8 `--prof`, free-run + bounds checks (2026-11-04, `92f6a90e56`) | TB TurboFan 59 %, main module 31–33 %, TB Liftoff 4–5 % + `WasmLiftoffFrameSetup` 1.5 %. TB code by owner: ARM 40 %, DSP 23 %. Top C: `tcg_fast_run_35be` 4.2–4.7, `dsp_bus_advance` 3.1 (callers: data reads 1.1, the `dsp_sync` timer 1.0, data writes 0.8, `dsp_runtime_advance_cycles` 0.6), chain helper 2.1–2.3, `helper_w64_fill` 1.9–2.1, `dsp_sync` 1.5–1.7, kernels 643f/64a9/6489 ~1.2/1.1/0.7. Nothing else above 0.8 %; from entry 26 down, each is ≤ 0.3 %. The hottest ARM TB (2 %) is the fill loop's own superblock |
-| Towerblox fill, V8 `--prof`, free-run + bounds checks, named TBs (2026-11-05, `a357f7ab05`) | Before rectangles: loop TB a0a04cc6 1.45 %, head TB a0a04cc2 0.44 %, `helper_w64_fill` 1.68 %, 3.57 % in all. Row-at-a-time rectangles: loop TB 0.26 %, `w64_fill_row` 1.75 % + helper 1.67 %, no gain. Fused rectangles: loop TB 0.20 %, helper 1.75 % (every store included), ~2.0 % in all |
 | Bobby (2026-10-31) | Worker busy time: DSP 61 %, ARM 19 %, display 13 % |
 | Video (2026-11-01/02) | Busy 11.8 s of 20 s = ARM JIT 5.0 s, DSP 4.4 s, ARM-side C 2.1 s. GSM search kernels (35be+643f+6489+64a9) ~30 % of free-run ticks (midi 12 %, bobby 9 %) |
 | MIDI (2026-10-30/11-01) | DSP ~62 % of the vCPU, ~48M DSP cycles/s. Hot blocks: f4ec 27 % of chained cycles, e20d 16 %, f4b8 10 %. DSP-bound: only faster DSP execution helps |
 | Music AAC (2026-10-30) | 10 s of vCPU: DSP 4.7 s (JIT code 2.4, chain helper 0.6, 35BE kernel 0.44, bus/sync 0.35), ARM 1.4 s, idle 3 s |
 | S75 boot, vt + bank (2026-10-29) | Busy ~15 s = ARM 8.4 s (interpreter tier 2.0, TB code 4.7, helpers 0.75), DSP 3.3 s, translation 1.7 s, loop overhead 0.9 s |
-| EL71 boot window, guest 7–13.5 s (2026-11-02) | ARM translation 23 %, TB Liftoff 17 %, lazy compile 14 %, TurboFan 11 %; 30k of 73k TBs run once |
-| EL71 boot burst, guest 6–12 s, V8 `--prof` (2026-11-05, `172f58552d`) | TB Liftoff 22.5 % of ticks (4.1 % under `--wasm-tiering-budget=300000`), main-module Liftoff ~1 %. The inline pcc probe of every goto_ptr exit: emitting it costs ~8–10 % of the burst (translation and Liftoff compile), its hits save ~3.6 % (Closed ideas, ARM translator). Since `434be28741` it is emitted only at promoted exits, and since `36e3b3cc4c` not at all: TBs call their batch module's probe function |
 | EL71 boot, `434be28741`, Chrome trace and V8 `--prof` (2026-11-05) | ~900 batch modules and ~43k lazy compiles per boot. A lazy compile takes 43 µs on the vCPU thread: Liftoff ~19 ns per wasm byte plus ~13 µs fixed, of which ~11 µs is publishing (AddCompiledCode, PublishCode, two icache flushes); the mean TB body is 1.5 KB. Module decode, validation and instantiation are ~0.5 ms per module. TurboFan takes 1.6 ms per TB on the background threads, 45 % of it register allocation. Busy window, guest ~7–16 s: main-module wasm 35 %, TB Liftoff 19.6 %, TB TurboFan 17 %, Chrome C++ (the Liftoff compiler) 15 %, builtins 5 % (`WasmLiftoffFrameSetup` 3.3 %, which runs on every Liftoff entry while wasm inlining is on; `CallIndirectIC` 1.1 %, on every Liftoff `call_indirect` including the chains' tail calls). Top C: `tcg_gen_code` 6.3 % self (the register allocator and the inlined wasm64 emitters), `liveness_pass_1` 3.1 %, `helper_lookup_tb_ptr_lc` 1.2 % |
 | TB bytes by TCG op, EL71 boot census (2026-11-05) | `qemu_ld`/`qemu_st` ~44 % of the body bytes at ~100 bytes each, ~42 of them the slow arm (helper call and the `$tmask`/`$ttab` reload, which a helper's TLB resize forces). Moving the arm out of line would save ~1.5 % of the burst at most; the reload has to stay in the TB |
 | `tcg_gen_code` phases, EL71 boot to 73.7k TBs, `emscripten_get_now` timers (2026-11-06, `42bb89c091`) | 2.63 s in all: `liveness_pass_1` 0.54 s, register allocation and emission 1.10 s, the rest (`tcg_optimize`, the smaller passes, the batch modules' assembly) ~1.0 s. Per TB: 115 ops and 76 temps, 24 of them globals; ~26 block ends, branches and call-clobbering ops at which liveness reset or crossed every temp, and the allocator walked every temp at each block end. After A9 (wasm-fast-paths.md): 2.30 s, liveness 0.38 s, allocation and emission 0.95 s. The constant temps' `GHashTable`, emptied by `tcg_func_start` for every TB, was ~1 % of the burst in the 2026-11-05 profile (`tcg_constant_i32` 1.0 % inclusive; inserts, lookups and resizes 0.4–0.7 % each), 2–3M lookups per boot; A10 replaced it |
@@ -625,9 +601,8 @@ unless noted).
 
 | Event | Rate |
 |---|---|
-| ARM TB entries | 16.5–19M/s; ~50 % indirect (goto_ptr): per-TB slot hit 83 %, inline hash 17 % |
+| ARM TB entries | 16.5–19M/s; ~50 % indirect (goto_ptr): the per-TB slot answers 83 % of those, the pc cache 17 % (2026-11-02) |
 | ARM ns per guest insn | stopwatch ~1.7, towerblox ~3.5 (its fill loop ~0.75) |
-| Thumb fill helper (towerblox, 2026-11-04) | all 16-bit stores; ~16 passes per call on average, and 3 of 4 calls run fewer than 16 passes, so the per-call cost dominates (23M calls, 373M passes over a 30 s real-time window plus boot) |
 | Thumb fill rows (towerblox, 2026-11-05, 60 s real time plus boot) | 36.8M rows finish inside the helper. 98.1 % go straight into the next row; 1.5 % end the rectangle, 0.4 % meet the cycle budget, and ~50 were in TBs still interpreted. A row costs two TB entries (a0a04cc2 head, the b absorbed; a0a04cc6 loop and tail). Done as a C transition per row, it cost ~23 ns, as much as the TB code it replaced |
 | SVC / eret / mode MSR / IRQ (stopwatch) | ~240k / ~245k / ~250k / ~1.9k per s |
 | ARM MMIO accesses | ~50k/s, no polling; `mmu_lookup1` ~18k/s in steady state |
@@ -639,7 +614,7 @@ unless noted).
 | `dsp_sync` / `dsp_bus_advance` | ~15k/s / 145k/s (video) to ~600k/s (towerblox) |
 | Chain helper | ~22 ns per link (2026-10-31, before `3488724de2`); ~150 x64 instructions on the hit path |
 | Cross-instance wasm call | ~2.7 ns microbenchmark, 5–7 ns in situ |
-| DSP kernels (2026-11-02, free-run) | 35be 2.6 ns/cycle, 643f 3.7, 6489 3.6, 64a9 3.4; calls run 600–2000 cycles. JIT ~5.3 ns/cycle (2026-11-01) |
+| DSP kernels | 643f 3.7, 6489 3.6, 64a9 3.4 ns/cycle on the per-instruction runner; calls run 600–2000 cycles (2026-11-02). 35BE whole iterations ~0.8 ns/cycle natively since `6b8a64baa5`. JIT ~5.3 ns/cycle (2026-11-01) |
 | `tlb_reset_dirty` full walk | ~100 µs |
 
 **Facts that bound the levers:**
@@ -697,7 +672,6 @@ unless noted).
 | TCG store-to-load forwarding; a combined exit/interrupt request check | Neutral | 2026-10-31 |
 | Cached `dynamic_cycles` flag in the block cache entry, alone | Neutral. The 2026-11-02 version with successor heads and epochs is `3488724de2` | 2026-10-31 |
 | Inline high-region data reads; inline Y-RAM read for all spaces | Neutral. The helper's direct path is already cheap; the helper fell 0.75 → 0.3 % but the TB code grew | 2026-10-31, 11-02 |
-| Inline `ALB_REGISTER`, alone | Neutral. Together with inline mov writes to accumulator halves (`6a18783ada`) it gained +3–3.8 % on Bobby | 2026-10-31 |
 | Inline DSP chain linking (per-TB successor memo) | +1.8 % worse, then neutral at 38 % fast-path hits: the inline checks on misses and the bigger TBs eat the saving. Upstream later added its own inline links; disabling them on wasm was neutral | 2026-10-31, 11-04 |
 | Runtime branch for "modulo disabled → plain add" | Neutral. An unconditional plain add breaks the guest (modulo is used) | 2026-11-01 |
 | Merging blocks across the library call loop (ED2A / F6BC) | Not done: blocks are assumed address-linear (`tcg_block_overlaps`, invalidation by pc range) | 2026-11-01 |
@@ -710,11 +684,8 @@ unless noted).
 | More register helpers inline (towerblox: ~500k calls/s over codes 8/10/14/15/24/31) | ≤ 0.5 %, left | 2026-11-02 |
 | Removing the fast loops (35BE/643F/6489/64A9) | They pay: midi 0.566 vs 0.632 cores, AAC 0.610 vs 0.682 | 2026-10-30 |
 | Removing 643F/6489/64A9 again (35BE kept), re-priced after the JIT got mode specialisation and dead flag stores | They still pay: midi −5.4 % (sd 0.18), video −7.7 %; towerblox neutral (+0.3 % over 12 pairs) | 2026-11-05 |
-| 35BE kernel rewrite for ~2 % | Rejected by the owner (divergence for a small gain) | 2026-10-31 |
-| 35BE MAC chain in registers | Saved 9 of 171–180 ns per iteration; reverted. `8fe212e31d` later did it on locals, with a volatile function pointer against Binaryen inlining (video kernel share 24.4 → 18.9 %) | 2026-10-31 |
 | Plain (non-sata) 35BE mode | 643f −1 %, 64a9 worse | 2026-11-01 |
 | Per-iteration exit check; inlining `walk_reads` | Neutral | 2026-11-01 |
-| 35BE direct span reads instead of x/r4 copies | Share unchanged, or 4.94 → 4.54 % of stopwatch, which is below what can be verified | 2026-11-02 |
 | Generic "plain" block-repeat iterations with one exit check per iteration | Mixed (643f −10 %, 6489 −7 %, 64a9 +4 %) | 2026-11-02 |
 | `teak_update_modulo_steps` (upstream) | 0.6 % on midi, left | 2026-11-01 |
 | Envelope state-machine kernel (midi F6BC / bobby ED2A loop) | Too big (~10 new instruction types) | 2026-11-01 |
@@ -741,13 +712,13 @@ unless noted).
 |---|---|---|
 | Removing the wasm64 superblock code under vt (`3bd45ab9d0`) | Reverted by `2ff4e374c3`: superblocks with exact CF_COUNT_CYCLES accounting took stopwatch vratio 0.58 → 0.87 (parbench, under contention) | 2026-10-30, 11-01 |
 | ARM self-loop back-edge via `translator_loop_begin/back`, separate from superblocks | Correct, but loop passes were 4.7 % of video insns; neutral everywhere | 2026-10-31 |
-| `W64_INTERP_THRESH` 16 / 256 | Neutral | 2026-10-31 |
+| `W64_INTERP_THRESH` 16 / 32 / 256 | Neutral in steady state and at the EL71 boot | 2026-10-31, 11-05 |
 | `W64_FT_MAX` 12, absorb limit 512 | No better than `W64_FT_MAX` 6 (`3132d80df8`) | 2026-11-01 |
 | `W64_INL_DEPTH` 8 | Neutral / −1 % on Bobby | 2026-11-01 |
-| TLB memo: one probe per same-page access cluster (F1m) | −0.7 / −4.2 % | 2026-10-31 |
+| Anything in front of the inline TLB probe: a per-TB page memo in locals (59 % of memops served, flat; later −0.7 / −4.2 %), a per-site entry cache (4.4–5.0 % slower at a 94.7 % hit rate), `env + fast_ofs` hoisted into a local (+3–10 % slower) | The probe's loads hit L1 and run in parallel with the address arithmetic. A check before it adds a dependent branch to every memop. Only a scheme that replaces the probe could collect its ~5 % | 2026-09-13 – 10-31 |
 | TLB page cache in locals (reuse a probe for a same-page ld/st) | towerblox −3 to −7 % with bounds checks. `build/experiments/w64-tlb-pagec.diff` | 2026-11-03 |
 | `movcond` as `select` (M1) | +1.4 / 0 % | 2026-10-31 |
-| Typed chain table (T1) | Not repaired: it no longer decodes against the batch encoder (expected 0.5–0.8 %) | 2026-10-31 |
+| Typed funcref chain table; `return_call_ref` | A typed non-nullable table is −6.5 % of the indirect call itself (~0.6 % of wall, September probe) and needs typed funcrefs in every browser; the patch no longer decodes against the batch encoder. `return_call_ref` is 45 % slower than `return_call_indirect` | 2026-09-16, 10-31 |
 | Lazy global sync at `qemu_ld/st` (`TCG_TARGET_LDST_SLOW_SYNC`) | The correct version is neutral: V8 env stores are cheap, and exit-time stores remain. The first version leaked register mappings past labels (lockstep diverged at 16M) | 2026-11-01 |
 | Dropping the TB-start exit-request check under CF_COUNT_CYCLES | The guest never runs: exits are needed beyond IRQs | 2026-11-01 |
 | Removing or moving the per-TB `wasm_guest_insns` RMW | Removing it breaks scenebench's progress detection. The counter costs ≤ ~2 %, and deriving it from cycle_count was neutral. Env-relative accounting won only with bounds checks (`305999f747`) | 2026-11-01 – 11-02 |
@@ -758,19 +729,11 @@ unless noted).
 | Constant `w64_tb_tp` for the return-address store before helper calls | Neutral / −1 % | 2026-11-02 |
 | Inline ARM chain linking across wasm instances | Too large a change for ~1–2 % (a cross-instance call is ~5–7 ns) | 2026-11-02 |
 | TB lookup path | After `5c8cf5bc65`/`1cffcb62a0`: per-TB slot 83 %, inline hash 17 %, helper ~0. Not a lever | 2026-11-02 |
-| Code-page gate in `tb_jmp_cache_clear_page` + lean goto_ptr exits (EL71 boot) | Boot window −6 %, but steady towerblox −1.7 % (the inline pcc probe's hits, see the 2026-11-05 rows). `cross-page-links=on` was chosen instead | 2026-11-02 – 03 |
-| `W64_INTERP_THRESH` 32 / 256 at the EL71 boot | Neutral: +2.8 / +1.9 % burst, measured before the bootab.sh gzip fix that removed a ~2 % penalty on B | 2026-11-05 |
-| No inline pcc probe (EL71 boot, `bootab.sh`, page default `cross-page-links=on`) | Burst −4.3 % (se 0.6) / −7.0 % (se 2.5), audioMs −5 / −10 %, lagMax −8 / −11 %. Emitted but skipped at run time: +3.6 % (se 0.4). Emitting it costs ~8–10 % of the burst, and its hits save ~3.6 %. Steady state loses towerblox (row above) | 2026-11-05 |
-| The pc cache probed from the lookup helpers instead of inline (`w64_pcc_get` of `3de1546af5^` restored) | Boot burst −6.6 % (se 0.7) / −11.0 % (se 3.7), audioMs −9.9 / −20.5 %, lagMax −12 / −20 %. Steady towerblox −0.9 % (se 0.7) / −2.7 % (se 0.5), A/A +1.9 % (se 1.9), as with no pcc at all: behind a helper call, a hit on towerblox's dispatch exits saves nothing over the jump cache. The slimmer inline probe (own hash, no `cpu_index` compare) landed instead | 2026-11-05 |
+| Code-page gate on the key-generation bump in `tb_jmp_cache_clear_page` | Neutral at the boot and in steady state | 2026-11-02 – 03 |
 | Upstream goto_ptr exits at the EL71 boot (no slot, no probe: the ceiling of any out-of-line exit), against `d4380167b9` | Burst −2.1 % (se 1.2) / −2.4 % (se 1.0), but audioMs +6.2 / +5.0 %: the slot's hits matter where the sound plays | 2026-11-05 |
-| The probe in the helpers only, on every scene (free-run, 4 pairs each, against `d4380167b9`) | Video −5.0 % (se 0.6) / −3.0 % (se 2.2), towerblox +0.3 / −3.3 %, midi −2.0 / +0.8 %, stopwatch +1.9 %, bobby +0.7 %. Exits promoted to the inline probe by their hits landed instead (History) | 2026-11-05 |
-| Promotion at 256 or 4096 pc-cache hits in C per TB | Boot burst +2.4 % (se 2.2) / −1.0 % (se 0.5), audioMs +8.9 / +4.2 %: a promotion costs ~3 ms at the boot (retranslation, interpreter tier, a new batch module, a generation bump). 65535 landed | 2026-11-05 |
-| Promotion at 1024 hits (free-run, 4 pairs, against `434be28741`) | Video −2.1 %, towerblox −4.2 % (se 0.8): the retranslations themselves cost the steady state. Promotion was replaced by the module's probe function | 2026-11-05 |
-| Promotion counting only the slot's exit | Video −2.3 / −2.2 %, towerblox −0.2 %: a TB's second goto_ptr exit (keyed differently from the slot) went through `helper_lookup_tb_ptr`, whose ~280k pc-cache hits/s on video never counted | 2026-11-05 |
+| No TB-side pc-cache probe: the lookup helpers probe it instead (free-run, 4 pairs each, against `d4380167b9`) | Video −5.0 % (se 0.6) / −3.0 % (se 2.2), towerblox +0.3 / −3.3 %, midi −2.0 / +0.8 %, stopwatch +1.9 %, bobby +0.7 %. Behind a helper call a hit saves nothing over the jump cache. The module's probe function (A2) keeps both the boot and the steady state | 2026-11-05 |
 | Selective batch landing (interpret ≥ 16 times before a module) | +2 % slower | 2026-11-02 |
-| Cold landing again, on top of the module probe (`W64_INTERP_LANDED` 4: a member with fewer than 4 interpreted entries keeps fidx 0 and its record when its batch lands, and `w64_batch_wake` points it at the thunk later; plus a hits reset in `w64_irec_put` and a TLB fast path in the interpreter) | EL71 boot, 20 pairs pooled against `36e3b3cc4c`: burst −2.1 % (se 1.3), audioMs −2.1 % (se 3.4), lagMax −4.4 % (se 2.5). Free-run, candidate against parent, one run of 4 pairs in each order: towerblox +0.6 %, stopwatch +4.1 %, midi ≈ 0, but video −0.9 / −0.3 % and bobby −0.8 / −2.3 %. Fails the no-loss rule. Probably the cold members, which cannot be chained to while fidx is 0; not censused. `build/experiments/w64-cold-landing.diff` (applies to `36e3b3cc4c`) | 2026-11-05 |
-| Cold landing census (ported to `4903acdf72` without the interpreter TLB fast path, counters in the interpreter and dispatcher, EL71 boot, 2 boots against 2 with `W64_INTERP_LANDED` 0) | An interpreted entry costs ~1.5 µs either way (~110 ops, ~7 guest memory ops through `helper_*_mmu`, 0.4 helper calls); ~260k entries take ~390 ms over a boot. 82 % of members are still cold when their batch lands (51.4k of 62.8k); 31 % of those wake later (18.8k of 59.8k by 27 s). By ~11 s cold landing adds ~57 ms of interpretation and ~5 % more dispatcher entries, far short of the 2.8 → 10.3 % dispatcher share the profile showed, so that rise is not the interpreter. At a region boundary `tb_gen_code` retranslates the crossing TB 6–32 times (each try moves its TB struct 256 B on), once per boot: too rare to matter. The census found the DSP region flush (History, 2026-11-06), which also inflated some earlier baselines. `build/experiments/w64-cold-landing-census.diff` (applies to `42bb89c091`; cold landing plus the counters and region/flush logging) | 2026-11-06 |
-| Cold landing a third time, on `42bb89c091` (no counters, no interpreter TLB path) | EL71 boot, 2 × 4 pairs: burst −1.4 / −1.8 %, audioMs −2.2 % (se 3.5) / −2.5 % (se 1.0), lagMax −2.9 / −3.0 %. Free-run, 4 pairs each order: bobby −0.7 / −0.2 %, video −0.9 / +0.9 %. A placement-free A/B, with the threshold in a global that is 4 in one build and 0 in the other (same function order and sizes, `.js.symbols` identical): bobby −2.4 % (se 1.5) / −0.7 % (se 1.5) swapped. That is six bobby readings, all negative, so it is the behaviour and not placement. The census in free-run bobby: it still lands ~120 members/s in its steady state, ~73 % of them cold, with ~50 wakes/s; interpretation is 0.12 % of the time, and the bound on extra dispatcher entries (≤ 4 per cold member) is ~1 % of 36k/s. Neither explains ~1 %, and the cause was not found. `build/experiments/w64-cold-landing-42bb.diff` | 2026-11-06 |
+| Cold landing (`W64_INTERP_LANDED` 4: a batch member with fewer than 4 interpreted entries keeps fidx 0 when its batch lands, and is pointed at the thunk later), three attempts | EL71 boot: burst −1.4 to −2.1 %, audioMs −2 %, lagMax −3 to −4 %. Free-run: bobby negative in all six readings (−0.2 to −2.4 %), also in a placement-free A/B with the threshold in a global, and video −0.9 / −0.3 %. Fails the no-loss rule. Census: 82 % of members are still cold when their batch lands and 31 % of those wake later; an interpreted entry costs ~1.5 µs. Neither the interpretation (0.12 % of bobby) nor the extra dispatcher entries (~1 %) explains the loss; the cause was not found. `build/experiments/w64-cold-landing-42bb.diff`, `w64-cold-landing-census.diff` (apply to `42bb89c091`) | 2026-11-05 – 06 |
 | A9 extended to the globals: walk only the globals an op touched since their last reset, at side-effect ops too | Exact (the checker passed on boot and the five scenes), but nothing over A9: EL71 boot timers to 73.7k TBs, liveness 373 / 392 ms against A9's 377 / 383, `tcg_gen_code` 2.31 / 2.40 s against 2.30 / 2.34. A TB has only 24 globals. `build/experiments/w64-la-touched-globals.diff` (applies to `42bb89c091`) | 2026-11-06 |
 | Precise large-page TLB flush: a page flush inside `large_page_addr/mask` drops only the entries whose own block (`lg_page_size`) holds the page, scanning the indices of the aligned largest block, instead of flushing the whole mmu_idx | Census, EL71 boot: ~11k `tlbimva` (each over 22 mmu_idx) and nearly every one forced a full flush, because the range spans `a0000000`–`afffffff` (flash sections). The full flushes threw away 140k live entries, where only 128 belonged to a block holding the page, and their refills were 64 % of the boot's 219k fills. The full dirty-reset walk (all 22 modes, 1775 of 1806 calls) read 11.7M entries. Exact (a checker that rescans the whole TLB after each precise flush passed 21.5k flushes on the boot and 23.5k on stopwatch; the other four scenes never reach the path). Fills 219k → 42k, but EL71 boot, 2 × 4 pairs: burst −0.5 % (se 0.7) / +0.5 % (se 0.8), audioMs −0.3 / +2.0 %. V8 profile, 6–14 s, HEAD / candidate: `tlb_set_page_full` 0.26 / 0.07 %, `tlb_reset_dirty_range_all` 0.44 / 0.29 %, but `tlb_flush_page_by_mmuidx_async_0` 0.32 / 0.49 % (the 256-entry scans, 5.6M entry checks), `mmu_lookup1` 0.07 / 0.20 %, `victim_tlb_hit` 0.07 / 0.12 % and `do_ld4_mmu` 0.47 / 0.76 % (not explained). TLB maintenance comes to ~1.8 % in both. Without full flushes C5 grows the tables to 4096–8192 entries. A bitmap of the blocks present and skipping clean modes could leave ≤ 0.5 %, which bootab does not resolve. `build/experiments/w64-tlb-large-flush.diff` (applies to `af7a5a4bf6`) | 2026-11-06 |
 | hflags kept in place on AArch32 mode changes (`8203411abf`) | Committed on 2026-11-01, returned to upstream in `b12dea95f2` (neutral) | 2026-11-02 |
@@ -788,39 +751,50 @@ unless noted).
 | wasm SIMD build; extra Binaryen passes | Neutral | 2026-11-01 |
 | Binaryen one-caller inline limit (N=200, or 1000 globally) | 200 is worse (splits `dsp_i2s_advance` out); 1000 is noise | 2026-11-02 |
 | ThinLTO main module | Noise. The wasm grew 12.3 → 16.2 MB, and ~30 Asyncify onlylist names went missing | 2026-11-03 |
-| wasm SjLj instead of the JS invoke trampoline around `cpu_exec` | `invoke_ijj` is ~1 % of midi and 0.2 % of video: not worth the Asyncify risk. **Reopened and landed 2026-11-05** (History): the onlylist instruments no setjmp caller, and the trampolines also wrap three calls per translated TB | 2026-11-01 |
-| Main-module code cache. Since the prefetch (`67e2d0e`, 2026-09-20) `startEngine()` compiled a `new Response(tee)`, which has no URL, so Chrome never cached the code, despite `deploy/nginx`'s `no-cache` + ETag set up for it. Fixed: compile the fetched response, count bytes on a clone | Landed. The profile's wasm code cache now holds ~7.8 MB after one boot (72 bytes before). Free-run S75 boot, warm vs cold: +17 % guest insns in the first 3 s, ~+20M insns by 20 s; the committed page was cold on every load. Bigger where tier-up is slow (the phone) | 2026-11-05 |
 | Fewer declared TB locals (the baseline tier zeroes them at every entry), re-priced now that Liftoff TB code is ~6.6 % of towerblox | A pad of 16 extra i64 locals per TB: +1.0 / +0.1 % (4 pairs in each order), noise. Not a lever | 2026-11-05 |
 
 ### Devices, display, timers, clock
 
 | Idea | Result | Date |
 |---|---|---|
-| Soft icount timers (`QEMU_TIMER_ATTR_SOFT`, `4d7343564d`) | Helped icount only; reverted with the move to vt (the budget is checked at TB start) | 2026-10-29 |
 | Display lazy batching with framebuffer dirty tracking | Judged not exact on 2026-10-31. Done differently in `0c3c3c8c9b`: lazy wakes, catching up on DIF/DMAC access and on stores to source pages through `tlb_set_ram_write_guard` | 2026-10-31, 11-01 |
 | Batching dif_v1 words | Not exact: the guest runs ≥ 64 cycles (`CPU_CLOCK_BUDGET_MIN`) between words | 2026-10-31 |
 | timer2 O(1) closed form; DMAC+ALB+timer2 combination | Neutral | 2026-10-31 |
-| Lazy DIF mux rebuild | Neutral on Bobby; later committed for stopwatch (`6c8f08898c`) | 2026-10-31 |
 | Widening the `cpu_clock_owner_raw` cache | 89 % hits, video neutral: the profiler overstates JS clock reads | 2026-10-31 |
 | Skipping `cpu_clock_owner_shorten_budget` while the budget renewal (now `tcg_vcpu_timers_next_budget`) runs timers; 64-bit `muldiv64` fast path in the budget | Safe, but no gain / ~0.2 % | 2026-10-31 |
-| Stepped indices in `baseband_publish_words` (stopwatch, Bobby) | ~0.1 % there. The video case (3.2 %) was committed as `ce4d3f684a` | 2026-11-01 |
 | LCD writer-thread wake thresholds 16K/32K, a 4 ms poll | No better than the 1 ms poll of `43c24bb03d` | 2026-11-01 |
 | Inline LCD drain at the CD edge (0.40 %) | Needs the LCD commands on the writer thread | 2026-11-01 |
 | DIF bus bytes (~7 MB/s on stopwatch, ~3 ns per byte) | Left alone | 2026-11-01 |
-| BQL waits in `cpu_exec_loop` (~1 %), QOM casts (~0.1 %), slow-path ld/st (~1 %, the direct MMIO path) | Real work, not levers. 2026-11-05: part of the BQL hold was the hidden text console below | 2026-11-01 |
-| Hidden text console. Without `-parallel none`, qemu backs the default parallel port with a `vc` (`parallel0: filename=vc`), and its cursor timer redraws all 80x24 glyphs every 250 ms on the main loop under the BQL (`cursor_timer_cb` 0.50 % of ticks, ~1.2 ms per redraw on the dev host; the vCPU's BQL futex waits were 0.85 %) | Landed as a page argument. Dev host +0.2 % over 8 pairs (noise); the hold grows with a slow main-loop core | 2026-11-05 |
+| BQL waits in `cpu_exec_loop` (~1 %), QOM casts (~0.1 %), slow-path ld/st (~1 %, the direct MMIO path) | Real work, not levers | 2026-11-01 |
 | Syscall proxying to the main thread | A few `fd_pwrite`s per minute, no vCPU stalls | 2026-11-02 |
-| `-accel tcg,thread=multi` without vcpu-timers | Unusable with the DSP LLE | 2026-11-02 |
 
-### Removing fork code (2026-11-02 bundles)
+### September 2026, under icount (before the DSP LLE and vcpu-timers)
 
-| Removal | Result |
+Measured on boot milestones and J2ME windows of that build, with knobs and
+counters that the 2026-09-22 review removed. Each row still concerns code
+that exists.
+
+| Idea | Result |
 |---|---|
-| dif_v2 shift mux / closed-form plan / clock cache, baseband ranges | Cost stopwatch 3–7 %: kept |
-| tpu.c word path, dsp/tcg.c shift-by-value and dead state stores | Cost bobby/towerblox ~2 %: kept |
-| `gen_set_psr` back to upstream `gen_lookup_tb_after_cpsr_write` (an inline interrupt check per TB-ending CPSR write, ~250k/s) | Loss: kept |
-| ssi / s1d13716 checked casts (per-byte S75 LCD path), `fifo.h` `%` | Kept as port code. Returning the casts alone in the 2026-11-04 cleanup showed in profiles (midi `object_dynamic_cast_assert` 0.33 → 0.41 %), so they stay |
-| Bundle X (`3de1546af5`), bundle Y (`b12dea95f2`: hflags in place, WFI longjmp, EXITTB fast path, lean BQL pair), icount clock window + mod.c (`092f67eff7`), timer notify + RTC guard (`e227c7e9a3`) | Neutral: removed |
+| Branch hints on the cold labels besides the TLB probe's (exit request, inline-return and `msr` misses, unlinked `goto_tb`/`goto_ptr`) | −1.35 % ± 1.89 on video: not resolvable. Those arms end in a plain return with almost nothing live, so only block layout changes |
+| Memoising `arm_rebuild_hflags` (16 entries by CPSR mode; and across the SVC round trip) | Hit 100 % of 5.9k calls/Mi, verified exact, and did not move the meter. The pre-v6 short path (R5) is 12.3 ± 1.6 ns a call, ≤ 2.6 % of video |
+| Guessing an indirect branch's target from `env` at translation time | 9.4 % hit rate: hot code outlives the phase that translated it. Coverage capped it at ~2 % anyway |
+| A 64 KB guest page | Boot regression: the code granule (`code_mask`) scales with the page and each page's TB list grows 16x. 8 and 16 KB were inconclusive |
+| One helper call for a whole ldm/stm | −11.7 %, then −6.3 % with the obvious fix. A helper call inside a TB costs ~14.5 ns (spilled locals, globals reloaded) and saves 3.6 probes of ~1.2 ns |
+| Cheaper TB-boundary mechanisms: a module's TBs merged into one `br_table` function, a driver loop instead of the tail call, same-instance tail calls | All tie, and the merge is a regression: TB chaining is predictable per site, where every mechanism costs the same (lessons.md, wasm and V8) |
+| Shrinking the set of live dispatch targets (dispatch locality) | ≤ ~2 % with no mechanism to collect it: `return_call_indirect` has a ~6 ns floor even with 8 targets |
+| Turning off TCG's optimizer for wasm64 | No effect over an 8-leg sweep |
+| A second way for the per-TB lookup slot (`w64_lc`) | Helper calls −39 % as predicted, wall 0.0 / −0.2 %: the second compare chain on every remaining miss and 20 % more exit code cost what the calls saved |
+| Lookup cache keyed on an hflags generation; comparing every key word inline | hflags change 88k times a second, so the generation retired every slot. A dozen loads and six branches inline were +2–4 % slower than the helper. What landed compares 2–3 words and stamps the rest statically |
+| Widening the TB jump-cache entry so a hit never dereferences the TB | Flat on pristine builds of both revisions: the hot TB set stays resident |
+| A dense arena for `goto_tb` chain slots | A wash over six pairs. The slot address is a compile-time constant, so the load is not on the critical path |
+| An inlinable fast path for `bql_lock_mmio()` | ~1 ns a call, ≈ 0.06 % of wall; not built |
+| MMIO dispatch fast path at access time in `memory.c` | 0.1–0.7 s worse per boot window: the condition chain costs what it saves. The fill-time resolution (C1) landed instead |
+| TPU event RAM as its own MemoryRegion | S75 idle −2.3 %: the extra flatview section costs more than the range compare it removes |
+| `dacr_write` value guard (skip the TLB flush on an unchanged value) | No effect: this firmware does not rewrite DACR with the same value |
+| Lazy flash romd restore (back to array mode on the first array read) | 7.4x fewer topology flips but 32 % slower in the flash-heavy window: array reads and fetches become MMIO dispatches meanwhile |
+| A cheap corner in `new WebAssembly.Module` (size threshold, imports, exports) | None: cost is linear in function count plus a per-call intercept; 64 imports add 0.09 µs each, exports are free. Only fewer modules pay |
+| Persisting compiled TB modules across boots (AOT cache) | Dead on the platform: neither V8 nor SpiderMonkey stores a `WebAssembly.Module` in IndexedDB, restoring bytes costs more than compiling them fresh, and synthetic responses get no code-cache hit |
 
 ## Known open issues and remaining levers
 
@@ -829,8 +803,8 @@ unless noted).
 - **EL71 display freeze:** the display freezes (framebuffer stops, guest
   idle) after leaving a running stopwatch with the red key. It also happens
   under icount. It is upstream's issue; wait for upstream.
-- **S75 OFFLINE/PTEST startup:** the board includes in both bsp `e90ceb3` and
-  `a5a992e` define only `[startup.ONLINE]` (x75, elka, r65, sirius). The
+- **S75 OFFLINE/PTEST startup:** the Siemens board includes of bsp `de47d4b`
+  define only `[startup.ONLINE]` (x75, elka, r65, sirius). The
   lookup in `hw/arm/pmb887x/board/startup.c` is required, so qemu exits at
   t=0 and the page looks hung. Not fixed.
 - **SL65 native lockstep is nondeterministic** (see Lockstep).
@@ -867,20 +841,15 @@ unless noted).
   semantic cost. It is a large, upstream-divergent rewrite.
 - **Direct DSP block linking** (≤ 3 %).
 - **Kernels:** EE49 (~1.5 % on Bobby, S75 only) and DDDE (~1 % on towerblox).
-- **EL71 boot window:** A9 took the liveness and register-allocation temp
-  loops and A10 the constant temps' `GHashTable` (History, 2026-11-06).
-  What is left of `tcg_gen_code` is per op (Where the time goes).
-  ~1.35k TB invalidations per boot each bump a global key, which is cheap:
-  ~36 stale-slot lookups per bump (census, 2026-11-05). Every goto_ptr exit
-  is emitted with its own slot test, helper call and `goto_ptr` tails. The
-  pc-cache probe, ~8–10 % of the burst when every exit had it, is one
-  function per batch module since the module-probe commit (History). The
-  remaining exit code has a small ceiling: with none at all (upstream
-  `lookup_and_goto_ptr`), the burst was only −2.1 / −2.4 % faster than
-  `d4380167b9` (se 1.2 / 1.0), and audioMs got worse, +6.2 / +5.0 %. The
-  same trick, a function the module defines instead of an import, suits any
-  per-TB code that TurboFan should inline but Liftoff should not have to
-  compile at every site.
+- **EL71 boot window:** what is left of `tcg_gen_code` is per op (Where the
+  time goes). ~1.35k TB invalidations per boot each bump a global key, which
+  is cheap: ~36 stale-slot lookups per bump (census, 2026-11-05). The
+  goto_ptr exit code has a small ceiling: with upstream's
+  `lookup_and_goto_ptr` (no slot, no probe) the burst was only −2.1 / −2.4 %
+  faster and audioMs got worse (Closed ideas). The module-probe trick, a
+  function the batch module defines instead of an import, suits any per-TB
+  code that TurboFan should inline but Liftoff should not have to compile at
+  every site.
 
 From the 2026-11-05 brainstorm (towerblox profile `92f6a90e56`; priced only
 where noted):
@@ -943,8 +912,8 @@ free-run scenes, `6b8a64baa5`; DevTools shares, which overstate):
 
 ## History
 
-Everything through `f45db9a125` is on `wasm-browser-port`; later commits are
-on the merge branches. Parent commits are listed where they exist. Numbers
+Every qemu commit is on `wasm-browser-port`. Parent commits are listed where
+they exist. Numbers
 come from the setup of their date (lone scenebench, parbench under
 contention, free-run) and do not compare across rows.
 
@@ -963,6 +932,8 @@ contention, free-run) and do not compare across rows.
 | 2026-11-04 | `6e41e38a16`, `36e4130ef8`, `f8612575ce` | smh/master `326ab1b4d5` + chain caches kept across DSP bank switches: vs `f45db9a125` stopwatch +2.4 %, towerblox +2.1 %, midi +0.7 %, video mips +11 % (free-run) |
 | 2026-11-04 | `6cd424cdb5` | smh/master `a05a9df1da`: SIM rewrite (`hw/smartcard`) fixes PPS, revert dropped; needs bsp ≥ `85d4f78` and `-device gsm-sim`. Lockstep references stamped; swab.sh + freerun.diff; deviation cleanup (below) |
 | 2026-11-04 | `92f6a90e56` | smh/master `d9cf65ef40`: DSP chain exits with two links (program context and mode checked inline), chain and batch exits only for deliverable interrupts, one running cycle count per slice. Free-run A/B vs `1b51f8e577`, 4 pairs: bobby +4.4 % (4/4), midi +1.4 % (4/4), video mips +0.7 % (4/4), towerblox +3.6 %, stopwatch +1.9 % (3/4 each) |
+| 2026-11-05 | — (parent `8e0322a`) | `-parallel none` among the page's qemu arguments. Without it qemu backs the default parallel port with a hidden `vc` text console, whose cursor timer redraws 80x24 glyphs every 250 ms on the main loop under the BQL (`cursor_timer_cb` 0.50 % of ticks; the vCPU's BQL futex waits were 0.85 %). Dev host +0.2 % over 8 pairs (noise); the hold grows with a slow main-loop core |
+| 2026-11-05 | — (parent `54be137`) | Main-module code cache: `startEngine()` compiles the fetched response itself and counts bytes on a clone. It used to compile a `new Response(tee)`, which has no URL, so Chrome never cached the code. The profile's wasm code cache holds ~7.8 MB after one boot (72 bytes before). Free-run S75 boot, warm vs cold: +17 % guest insns in the first 3 s, ~+20M insns by 20 s |
 | 2026-11-05 | `d4380167b9` (`172f58552d`) | Shorter pc-cache probe at goto_ptr exits (own 3-op hash, no `cpu_index` compare on one CPU). EL71 boot (bootab.sh, 2 × 4 pairs): burst −1.5 % (se 0.9) / −4.7 % (se 3.4), median −1.7 %, audioMs −3.3 / −9.8 %. Free-run: towerblox +0.9 %, bobby +1.2 %, video +0.8 % (8 pairs), stopwatch +1.0 %, midi +0.4 % (4 pairs) |
 | 2026-11-05 | `434be28741` (`d4380167b9`) | The lookup helpers probe the pc cache; the inline probe is emitted only at goto_ptr exits whose pc-cache hits in C reach 65535 (the TB is retranslated). EL71 boot (bootab.sh, 2 × 4 pairs) vs `d4380167b9`: burst −7.0 % (se 0.9) / −5.4 % (se 0.8), audioMs −10.7 / −9.0 %, lagMax −13.7 / −10.6 %. Free-run, 4 pairs each: video −1.6 / −1.4 %, towerblox −0.7 / −1.3 %, bobby −1.4 %, midi −0.8 %, stopwatch −0.3 %, taken by the owner's one-time exception (rule 5). Census, paced video: ~35k slot misses/s and ~11k second-exit lookups/s answered in C, ~0.4 promotions/s, which at tens of ns each does not explain the ~1 % |
 | 2026-11-05 | `36e3b3cc4c` (`434be28741`) | The goto_ptr exits call `w64_pcc_probe`, a function each batch module carries, in place of the helper import: TurboFan inlines it into hot TBs, a cold TB's exit stays a 5-byte call, and a miss calls the helper. Promotion, its counters and `helper_lookup_tb_ptr_cnt` are gone. EL71 boot (bootab.sh, 4 pairs) vs `d4380167b9`: burst −6.5 % (se 0.7), audioMs −10.2 % (se 1.6), lagMax −10.3 % (se 1.4); vs `434be28741`, 3 × 4 pairs: +6.6 % (se 4.1, two outlier pairs) / −0.1 % / −0.7 %. Free-run vs `d4380167b9`, 4 pairs each: video +2.3 / −0.1 %, towerblox −0.4 / +1.0 %, bobby +0.2 %, midi +0.2 %, stopwatch −0.4 %, which recovers the steady state that `434be28741` gave up |
@@ -977,14 +948,14 @@ contention, free-run) and do not compare across rows.
 ## 2026-11-04 deviation cleanup
 
 The owner asked to return every fork deviation that neither speed nor
-correctness needs, and not to lose anything on any scene (rule 5). The base
-was merge `6cd424cdb5`, built with `tools/perf/freerun.diff` as `dist-fn1`.
-What went back to upstream is listed in
-[wasm-fast-paths.md](wasm-fast-paths.md) under "Removed since"; the rest of
-the tables is what stayed.
+correctness needs, without losing anything on any scene (rule 5). The base
+was merge `6cd424cdb5`. What went back to upstream is listed in
+[wasm-fast-paths.md](wasm-fast-paths.md) under "Returned to upstream"; the
+rows there give the cost of removing each path that was tried and kept.
 
-Whole-candidate A/Bs against `dist-fn1`, 4 pairs × 20 s per run, with
-negative meaning slower than before the cleanup. An A/A gave +0.3 / +0.1 %.
+Whole-candidate free-run A/Bs against the base, 4 pairs × 20 s per run, in
+percent, negative meaning slower than before the cleanup. An A/A gave
++0.3 / +0.1 %.
 
 | Candidate | stopwatch | towerblox | bobby | midi | video (mips) |
 |---|---|---|---|---|---|
@@ -994,28 +965,14 @@ negative meaning slower than before the cleanup. An A/A gave +0.3 / +0.1 %.
 | cand4: + R4 | −0.2 over 20 pairs (see below) | +2.2 | +1.4 | −1.2 | +0.2 |
 | cand5 (final): + D9's plain casts | — | — | — | −0.1, −0.3 | — |
 
-- **cand3's stopwatch loss** was 8 of 8 pairs negative. A paired V8
-  profile against `dist-fn1` showed one difference: `helper_shr_cc` at
-  0.17 % of the ticks, the flag-setting register shift that R4 inlines (each
-  call also syncs the TB's globals). The mutex pair, `qemu_ram_block_from_host`
-  (C4's fallback, 0.02 %), the load/store helpers and the checked casts
-  (+0.05 %) did not stand out.
-- **cand4** differs from cand3 only in R4, which removes helper calls from
-  TB code. Its paired profiles against `dist-fn1`, on stopwatch and on midi,
-  match within sampling noise: no function moved more than 0.3 %. The
-  stopwatch A/B ran while outside load came and went (host 3–12 % busy,
-  absolute vratio 0.72–0.94 instead of ~1.05). Its round means were +0.15,
-  −1.30, +3.79, −4.40 and +0.81 %, so the A/B cannot resolve 1 % here.
-- **cand5:** midi leaned negative in all three rounds so far (cand3 −0.47
-  and −0.14, cand4 −1.16 %). The only removal that the midi profile showed
-  was the checked casts (`object_dynamic_cast_assert` 0.33 → 0.41 %; 0.04
-  → 0.09 % on stopwatch), so they came back. cand5 is cand4 plus the casts:
-  midi −0.09 / −0.27 % (8 pairs, se ~0.5). The other scenes keep cand4's
-  numbers, since the casts can only make them faster.
-- **Validation of cand5** (built without freerun.diff): `gate.sh keep`
-  green (13/13). lockstep-wasm with `LS_QARGS` clean: S75 to 2.5G insns
-  (179 internal-SRAM digests, serial and 20 register epochs identical),
-  EL71 to 1.5G (107 digests, 16 epochs). DSP unit tests pass.
+- **Groups that were each near neutral summed to −5.7 %** on stopwatch,
+  which is why rule 5 asks for a whole-candidate A/B.
+- **cand4's stopwatch rounds** ran under outside load (+0.15, −1.30, +3.79,
+  −4.40, +0.81 %); its paired V8 profiles against the base matched within
+  0.3 % per function.
+- **Validation of cand5:** `gate.sh keep` green; lockstep-wasm with
+  `LS_QARGS` clean on S75 to 2.5G insns and on EL71 to 1.5G; DSP unit tests
+  pass.
 
 The wasm io-barrier single-instruction TBs (A5 in
 [wasm-fast-paths.md](wasm-fast-paths.md)) stay: without them, lockstep-wasm

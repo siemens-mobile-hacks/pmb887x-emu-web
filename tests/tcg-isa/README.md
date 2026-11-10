@@ -1,6 +1,6 @@
-# tcg-isa — guest op-suite (phase 0a)
+# tcg-isa — guest op-suite
 
-The bare-metal ARM926EJ-S test image of phase 0a: it exercises the
+A bare-metal ARM926EJ-S test image: it exercises the
 guest instruction classes that map onto the
 TCG ops the wasm64 backend implements, asserts
 oracle-computed `(value, NZCV)` pairs and *dumps* every computed value —
@@ -35,7 +35,7 @@ build/qemu-native-build/qemu-system-arm -M versatilepb \
 
 On the wasm page: `make install` then open
 `http://127.0.0.1:8080/?suite=dist/tcgisa.bin` (or
-`node tools/tcgisa.mjs 8080 out.log` headlessly).
+`node tools/tcgisa.mjs 8080 dist-jit out.log` headlessly).
 
 ## Machine & conventions
 

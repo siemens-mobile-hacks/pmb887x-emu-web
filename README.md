@@ -6,10 +6,8 @@ splash draws, keypad/serial/sound work, every board reaches its idle
 screen (the timing model below gives the firmware its full timing budgets
 however slow the host is — a slow host merely boots slower). The engine is
 the wasm64 TCG JIT backend (`site/dist-jit/`, every board — guest TBs
-compiled to wasm at runtime, ~12 MB wasm, ~4 MB gzip'd; the former TCI
-interpreter build was ~7.4× slower on compute and has been removed). See
-[doc/lessons.md](doc/lessons.md) +
-[doc/performance.md](doc/performance.md).
+compiled to wasm at runtime, ~12 MB wasm, ~4 MB gzip'd). The documentation
+index is [doc/README.md](doc/README.md).
 
 The page's **Firmware** panel is a two-way switch: **Preset** picks from a
 dropdown of predefined fullflashes (inventory: `site/fullflashes.js`;
@@ -70,9 +68,8 @@ Everything runs client-side: the picked fullflash is written into the
 emscripten MEMFS, board configs are unpacked from `site/dist/boards.tar`
 (always fetched from `dist/`, whatever `?dist=` selects), and qemu boots
 with a small `-display wasm` backend (see below). It is built from the
-`qemu/` submodule. The wasm64 backend stays well behind native — the remaining time is translation/module-compile of cold
-code in the first ~0.75 G instructions, and after that the guest's own
-timeline (see [doc/performance.md](doc/performance.md)).
+`qemu/` submodule. The wasm64 backend stays well behind native (see
+[doc/performance.md](doc/performance.md)).
 
 **Timing model (upstream TCG vcpu-timers,
 `-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on`):** the
@@ -98,15 +95,13 @@ realtime clock. Why not the plain realtime clock:
 screen is ~23.7 s of wall against ~23 s of the guest's own boot timeline:
 the first ~11 s (translation of cold code, the DSP's cell search, ARM
 execution) run below real time, and the bank repays that in the idle
-stretches after it. On a slower host the compute-bound part grows. Full analysis: [doc/](doc/) — in particular
-[doc/optimization-playbook.md](doc/optimization-playbook.md) (the
-measurement method + what landed/rejected),
-[doc/performance.md](doc/performance.md) (the A/B method, where the
-time goes, closed ideas and open levers) and [doc/lessons.md](doc/lessons.md)
-(the conclusions behind the timing model, the io-recompile accounting,
-the emscripten runtime traps and the measurement rules). The build
-really is multi-threaded in the browser (5 pthread workers; one vCPU
-thread executing guest code, the rest parked in futex waits; no spin).
+stretches after it. On a slower host the compute-bound part grows. Full
+analysis: [doc/performance.md](doc/performance.md) (the A/B method, where
+the time goes, closed ideas and open levers) and
+[doc/lessons.md](doc/lessons.md) (the reasons behind the timing model, the
+emscripten runtime traps and the measuring rules). The build is
+multi-threaded in the browser: one vCPU thread executes guest code, and the
+other pthread workers park in futex waits.
 
 ## Siemens keys
 
@@ -169,12 +164,12 @@ lands in `/tmp/pmb887x-serial.log`.
 wasm builds compile — and writes `qemu-source.txt` (HEAD plus a hash of
 any uncommitted diff, `scripts/qemu-source-id.sh`) next to the binary;
 `tools/lockstep-wasm.mjs` refuses a native reference whose stamp does not
-match the dist's. So the native build carries the whole fork series too. Almost all of it is
-`__EMSCRIPTEN__`-gated or wasm64-only and inert natively; the generic parts
-(romd FlatView variants, fill-time MMIO dispatch, fill-time TLB growth,
-the range-flush summary, the CPSR hflags skip, the per-board RTC seed)
-are semantics-preserving and are what the native suite (`tests/run.mjs`)
-and the lockstep gate cover.
+match the dist's. So the native build carries the whole fork series too.
+Much of it is `__EMSCRIPTEN__`-gated or wasm64-only and inert natively; the
+parts compiled into every build (marked **all** in
+[doc/wasm-fast-paths.md](doc/wasm-fast-paths.md)) are semantics-preserving
+and are what the native suite (`tests/run.mjs`) and the lockstep gate
+cover.
 
 ## Layout
 
@@ -267,9 +262,8 @@ and the lockstep gate cover.
 
 ## The wasm UI backend
 
-The first commit of the series (`ui: add wasm display/input backend for
-emscripten builds`) adds `ui/wasm.c` (compiled only for `host_os ==
-'emscripten'`) plus small qapi/meson wiring:
+`ui/wasm.c` (compiled only for `host_os == 'emscripten'`, plus small
+qapi/meson wiring) is:
 
 - a `DisplayChangeListener` that blits the console surface into an
   XRGB8888 staging buffer exported to JS (dirty-flag guarded),
@@ -306,14 +300,14 @@ voices carry it: the AFE DAC ring (PMB8876 boards: S75, EL71, C81, CX70, LG)
 and the I2S2 link to the PASIC codec in the d1094xx PMIC (PMB8875 boards such
 as SL65, whose mask ROM renders melodies there).
 
-Nothing back-pressures the guest any more — the DSP produces samples at the
+Nothing back-pressures the guest — the DSP produces samples at the
 speed of the guest's virtual clock, and during a Siemens boot that is ~0.25×
 real time in the browser. Three pieces keep that from coming out as stutter:
 
-- `hw/arm/pmb887x/audio/buffer.c` (upstream) holds a voice back until
-  60 ms of samples are queued, then plays until the queue runs dry; a
-  mid-stream underrun stays a gap and waits for the next 60 ms instead of
-  being padded with silence.
+- upstream's PCM output (`hw/audio/pcm-out.c`, `SPEAKER_PREFILL_MS` in
+  `hw/audio/speaker.c`) holds a voice back until 60 ms of samples are
+  queued, then plays until the queue runs dry; a mid-stream underrun stays
+  a gap and waits for the next 60 ms instead of being padded with silence.
 - `wasmaudio.c` paces its writes on the host clock, so a guest that runs
   ahead of real time cannot fill the ring ahead of it (≈70 ms queued at
   steady state). It also publishes `streaming` in the ring header, which
@@ -370,9 +364,7 @@ ffprobe/ffmpeg (`--unmuted` for the other case).
 
 Boot chimes in the browser (ring peak, matching a native `-audio wav`
 capture): C81 23317, EL71 13059, SL65 6841, KE800 13262, KE970 8571. S75
-v40 has no boot chime, only a short blip. The LG chimes are about half the
-level the old HLE path produced (27844 / 28937): that is the DSP's own
-output now, not a loss on the way. Native captures: `node` + `-audio wav,path=…` on
+v40 has no boot chime, only a short blip. Native captures: `node` + `-audio wav,path=…` on
 `scripts/run-native.sh`.
 
 ## Pins
@@ -382,47 +374,25 @@ its comments record every bump and why. In outline:
 
 - qemu-pmb887x (`QEMU_PMB887X_REV`, branch `wasm-browser-port`) — the fork
   series on top of siemens-mobile-hacks/qemu-pmb887x master, which is
-  merged in regularly (last: `9e5a6bbfd6` on 2026-11-09, which brought
-  `-debug-channels`, the CFI flash's own writeback and audio routing
-  through audio lines). The 2026-11-04 merge of `a05a9df1da` moved the SIM
-  into a device of its own (`hw/smartcard/gsm-sim`, `-device gsm-sim`, PPS
-  working), and the fork deviations that neither speed nor correctness
-  needs went back to upstream's form after it
-  ([doc/wasm-fast-paths.md](doc/wasm-fast-paths.md) lists what stays).
-  Upstream also carries the DSP LLE, merged here from its `dsp-lle` branch
-  on 2026-10-29: the Teak mask ROM and the downloaded code run through a
-  TCG JIT synchronously on the vCPU thread, which gives the Siemens boards
-  sound and replaced the HLE DSP and the "hacky AFE (LLE+HLE)" fix this
-  branch used to carry. That merge also reworked
-  capcom/dif/dmac/flash/vic/lcd, dropped icount2 / `precise-clocks` (the
-  wasm64 backend, cputlb, qemu-timer and translate.c lost their icount2
-  paths with it) and brought `-accel tcg,thread=multi,vcpu-timers=on`.
-  Because the DSP JIT runs nested inside an ARM MMIO access,
-  `tcg_qemu_tb_exec` on wasm64 is re-entrant (a frame per nesting depth;
-  interpreter records freed only once no run is using them). The fixes
-  made on top of it (the SL65 DSP's `mov [Rn], cfgj`, the LG USIF TX DMA,
-  the DIF v2 TX FIFO, the AFE voice reinit, unpadded PPM screendumps) are
-  described in `versions.env`.
+  merged in regularly (last: `9e5a6bbfd6` on 2026-11-09). Upstream carries
+  the DSP LLE (the Teak mask ROM and the downloaded code run through a TCG
+  JIT synchronously on the vCPU thread), the `vcpu-timers` clock,
+  `-debug-channels`, the SIM as `-device gsm-sim` and the CFI flash with
+  its own writeback. What the fork adds is outlined in
+  [doc/architecture.md](doc/architecture.md), and every speed-only change
+  is listed in [doc/wasm-fast-paths.md](doc/wasm-fast-paths.md).
 - bsp (pmb887x-dev, `PMB887X_BSP_REV`) — a bsp master revision; a plain
-  checkout of the pin is the whole tree, with no `bsp-patches/` to apply.
-  Each board declares an empty `iso7816-slot` for the card (bsp 85d4f78
-  on): the page and `run-native.sh` add `-device gsm-sim,operator=…` when
-  the board set has that slot.
-  qemu's generated `gen/` tables (pad names) must match the bsp
-  (regenerate with bsp's `tools/qemu.sh` and compare). Older history:
-  `63b56fa` brought the KE970 jog dial
-  (`[peripheral.SCROLL] type = "ke970-scroll"`), `e79169f` the M65, M75,
-  ME75, SK65 and SL65 boards, and perk11's LG `[rtc] format = "calendar"`
-  (PR#6) landed as `e8d490e`.
+  checkout of the pin is the whole tree. Each board declares an empty
+  `iso7816-slot` for the card: the page and `run-native.sh` add
+  `-device gsm-sim,operator=…` when the board set has that slot. qemu's
+  generated `gen/` tables (pad names) must match the bsp (regenerate with
+  bsp's `tools/qemu.sh` and compare).
 - pmb887x-emu `91a9b14` — master. Not built from (qemu comes from the root
   submodule); it is the source of the siemensfw library (`src/siemens`)
   that `scripts/build-recalc-wasm.sh` compiles for the page's Siemens-key
-  and device-detection module. The 2026-10-29 bump (eb53c78..91a9b14) adds
-  unit-test runners, a `--headless` option and moves its submodule
-  pointers — `src/siemens` is unchanged. Its own runner still passes
-  `-icount precise-clocks=on`, which upstream qemu no longer has, and
-  configures the SIM through `PMB887X_SIM*` variables, which qemu no
-  longer reads, instead of `-device gsm-sim`.
+  and device-detection module. Its own runner still passes
+  `-icount precise-clocks=on` and `PMB887X_SIM*` variables, which qemu no
+  longer has.
 - emsdk, glib, pixman, zlib and libffi versions mirror qemu's
   `emsdk-wasm64-cross.docker`.
 
@@ -431,52 +401,25 @@ the pin); `tests/run.mjs` is the A/B harness — it boots
 s75/el71/c81/ke800/ke970 natively and benchmarks before/after, and
 `bash scripts/gate.sh keep` is the browser-side gate.
 
-## Performance work (see doc/performance.md + doc/optimization-playbook.md)
+## Performance work
 
-The wasm64 TCG backend landed as 0017 (tail-call chaining,
-regs-as-locals, batched modules), then the
-qemu-core device path (0018), the module economy (0019–0022), the halt
-path (0023–0030), the Asyncify onlylist + a real-time cap (0031/0032;
-the cap was removed again on 2026-10-29),
-the RTC seed layout (0033), the EL71/KE800 fixes that made every board
-boot on the JIT (0034–0038), the display path + TLB growth (0039–0041)
-and the TB-lookup / hflags / range-flush work (0042–0045); since then
-the device access path, the wake cost, wasm atomics and the BQL, the
-SGOLD boards, the flat-view variant cache and the module pipeline, the
-interpreter tier and the superblock translator (deferred branches, call
-inlining, absorbed jumps), the 2026-09-22 review that removed speculative
-translation, compaction and the runtime tuning knobs, the vcpu-timers clock that came with
-the DSP LLE, and the 2026-11-04 upstream merge and deviation cleanup.
-Per-patch numbers are in the commit messages on the `qemu/` branch; the
-open items are in [doc/performance.md](doc/performance.md).
+[doc/performance.md](doc/performance.md) is the entry point: the owner's
+rules, the measuring method, the cost model, closed ideas and history.
 
-- `site/dist-jit/` — the wasm64 TCG backend build, what the page runs
-  for every board (`scripts/build-qemu-wasm64.sh`). Boots in Firefox
-  too; `tools/ffboot.mjs` is the cross-browser smoke.  The oracle for
-  JIT-only failures is the native build (lockstep), not a second wasm
-  engine.
-- Fast iteration: `scripts/ninja-fast.sh` (incremental, correct env,
-  atomic deploy, ~8 s) + `tools/perf/swab.sh <scene> <distA> <distB>`
-  (paired free-run A/B of two builds on pinned cores — the keep/revert
-  meter; both dists need `tools/perf/freerun.diff` applied) or
-  `tools/parbench.sh` (concurrent single-run scenebenches);
-  `node tools/idlebench.mjs` is the end-to-end boot number and
-  `node tools/tcgbench.mjs` the device-path mirror.
+- Fast iteration: `scripts/ninja-fast.sh` (incremental build and atomic
+  deploy to `site/dist-jit` or `$WEB_DIST`), then
+  `tools/perf/swab.sh <scene> <distA> <distB>` (paired free-run A/B of two
+  builds on pinned cores; both dists need `tools/perf/freerun.diff`) or
+  `tools/perf/bootab.sh` for the boot.
+- `node tools/scenebench.mjs <scene>` runs the scenarios (`stopwatch`,
+  `music`, `idle` on the EL71, `midi` and `video` on the SL65, `bobby` and
+  `towerblox` on the S75) and measures sound as well: dropouts and
+  silenced time while the guest plays.
 - Gates: **`bash scripts/gate.sh keep`** builds the native references and
-  then runs every gate at once — a gate never reads a wall clock as a
-  result, so unlike the benchmarks it is safe to parallelise, and the
-  tier is bounded by the 150 s board boots it overlaps with.
-  `gate.sh close` adds the ordered boot of all five boards in one browser,
-  the native lockstep, the 2.5e9 lockstep, Firefox, device detection, the
-  EFA page test and the UI checks (20 jobs, 904 s when last timed);
-  `node tools/stopwatch.mjs` is the in-guest pacing meter — it boots
-  S75v40lg1, walks the keypad to Extras → Stopwatch and prints `vratio`,
-  virtual seconds per wall second while a J2ME app redraws (1.0 = real
-  time); `node tools/scenebench.mjs <scene>` runs the scenarios
-  (`stopwatch`, `music`, `idle` on the EL71, `midi` and `video` on the
-  SL65, `bobby` and `towerblox` on the S75) and measures sound as well:
-  dropouts and silenced time while the guest plays (`tools/slowhost.sh` in
-  front of it for a slow machine);
-  profiling: `tools/wprof2.mjs` (per-worker CDP CPU profiles, `PROF_ATTACH=`
-  to profile a page another tool drove), `tools/profcat.mjs` /
-  `tools/profjit.mjs` (cost-class split, JIT-time concentration).
+  then runs every gate at once. A gate never reads a wall clock as a
+  result, so unlike the benchmarks it is safe to parallelise. `gate.sh
+  close` adds the ordered boot of all five boards in one browser, the
+  native lockstep, the 2.5e9 lockstep, Firefox, device detection, the EFA
+  page test and the UI checks.
+- Profiling: V8 `--prof` with `tools/perf/v8tick.py`, or
+  `tools/wprof2.mjs` (per-worker CDP profiles).

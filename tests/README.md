@@ -1,10 +1,11 @@
 # Test suite
 
 Boot + benchmark tests for the pmb887x emulator (native build), run over
-the fullflashes that currently work: **s75, el71, c81, ke800**
-(`fullflashes/`). The LG ke800 flash carries its EEPROM in the NOR flash
-EFA block — its `KE800-v11b.bin.cfi-efa` sidecar must sit next to the
-fullflash (the emulator picks it up automatically).
+the fullflashes that currently work: **s75, el71, c81, ke800, ke970**
+(`fullflashes/`). The LG flashes carry their EEPROM in the NOR flash EFA
+block — the `.cfi-efa` sidecar (`KE800-v11b.bin.cfi-efa`,
+`KE970v10d.bin.cfi-efa`) must sit next to the fullflash (the launcher picks
+it up automatically).
 
 Sibling suites in this directory (each with its own README): `tcg-isa/`
 (the guest op-suite, gate `scripts/run-tcg-isa.sh`) and `tcgbench/` (the
@@ -28,7 +29,7 @@ Useful options:
 | `--label NAME` | `run` | labels results JSON + tmp dirs |
 | `--timeout SECS` | 180 | per-flash hard deadline |
 | `--bench-secs SECS` | 45 | benchmark window (see below) |
-| `--flash a,b` | all | subset of `s75,el71,c81,ke800` |
+| `--flash a,b` | all | subset of `s75,el71,c81,ke800,ke970` |
 | `--keep` | – | keep per-run dirs under `/tmp` for inspection |
 
 Env overrides `QEMU_BIN` / `BOARDS_DIR` select the emulator binary and
@@ -42,8 +43,7 @@ is non-zero if any test fails.
 ## What is tested
 
 Every fullflash boots **in parallel** with the exact `run-native.sh`
-recipe (`-icount shift=3,sleep=off` — omitted for LG boards — OTP
-words derived from IMEI/ESN,
+recipe (`-icount shift=3,sleep=off`, OTP words derived from IMEI/ESN,
 virtual SIM, ONLINE startup). The harness drives the HMP monitor
 (screendump, `info registers`) and reads the serial log + the
 instruction-count plugin.
@@ -68,21 +68,19 @@ instruction-count plugin.
   independent of guest-visible milestones).
 - **milestone timings** — seconds to first serial byte / LCD lit / LCD
   content. Boot is deterministic under `-icount shift=3,sleep=off`, so
-  these track emulation speed too (the native build has no real-time
-  cap, so idle warps are free; the instruction window is the pure-CPU
-  measure).
+  these track emulation speed too (icount is unpaced, so idle time is
+  skipped; the instruction window is the pure-CPU measure).
 
 The suite stops each instance ~10 s after the benchmark window once all
 verdicts are in (fast path); the `--timeout` deadline is the worst case.
 
-## Lockstep (phase 0b — cross-backend value equality)
+## Lockstep (cross-backend value equality)
 
 Whole-boot, value-level comparison of guest state between two TCG
-backends — the containment net the wasm64 backend was built under;
-`tools/lockstep-wasm.mjs` runs the same comparison against the wasm page.
-Caveat learned on 2026-09-12: the gate forces `one-insn-per-tb`, so it
-cannot see multi-insn-TB bugs (0034 slipped through it) —
-`tools/bootcheck.mjs` covers those.
+backends; `tools/lockstep-wasm.mjs` runs the same comparison against the
+wasm page. The gate forces `one-insn-per-tb`, so it cannot see
+multi-instruction-TB bugs: `tools/bootcheck.mjs` and the `LS_QARGS` run of
+`lockstep-wasm.mjs` cover those (doc/performance.md, Lockstep).
 
 ```bash
 scripts/build-native.sh          # a-side: reference JIT
@@ -112,24 +110,19 @@ node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
   `-b.png`/`-b-lcd.png`). On divergence it
   re-runs both sides with a dense per-insn dump window over the
   divergent epoch and reports the exact first differing insn + register
-  vector — hand that to the phase-0a suite (`tests/tcg-isa`) to bisect
-  by op.
+  vector — hand that to the op-suite (`tests/tcg-isa`) to bisect by op.
 - **Positive control**: `--corrupt N` flips one bit of r0 at insn N on
   the b-side only; the gate must flag the containing epoch and the
-  dense rerun must pinpoint insn N (verified 2026-09-10).
+  dense rerun must pinpoint insn N.
 
-Gate (2026-09-10, JIT vs TCI, S75, 3 × 2.5G guest insns ≈ full boot
-through idle): **0 divergences** — 2385+ register-digest epochs and 298
-SRAM+SDRAM digests identical per run, serial byte-identical, ~6 min
-wall for all three runs in parallel. el71 smoke + `--self` clean too.
-Note: lockstep requires the icount timing model (boards where
-`run-native.sh` omits `-icount` — LG — run on the host realtime clock
-and are not guest-deterministic enough for digest comparison).
+The gate is JIT vs TCI on S75, 3 × 2.5G guest insns (a full boot through
+idle), run in parallel. Lockstep requires the icount timing model. SL65
+is not deterministic enough for it even against itself
+(doc/performance.md, Lockstep).
 
 ## Notes
 
-- The four instances run in parallel on a ≥ 4-core host; ~35 cores are
-  plenty. Under heavy contention a phone may miss a firmware deadline
+- The instances run in parallel, one per fullflash. Under heavy contention a phone may miss a firmware deadline
   (`>>EXIT<<`) — rerun or reduce parallelism if a flake is suspected.
 - `lit` = non-black pixels of the qemu console screendump (240×320 frame
   containing the phone LCD); `col` = saturated-pixel count.

@@ -4,9 +4,9 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
 
 ```
 .
-  qemu/                                     submodule: Azq2/qemu-pmb887x @ the pinned rev on the
-                                            series branch (wasm-browser-port = origin/wasm-patches):
-                                            the one qemu source tree, wasm and native builds alike
+  qemu/                                     submodule: Azq2/qemu-pmb887x @ the pinned rev on
+                                            branch wasm-browser-port: the one qemu source tree,
+                                            wasm and native builds alike
   pmb887x-emu/                              submodule: the meta-repo @ master (reference; also the
                                             source of the siemensfw library the page compiles)
   build.sh, versions.env, scripts/          build pipeline (WASM + native modes)
@@ -14,10 +14,9 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
                                             (src/siemens) → site/dist/siemens-recalc.wasm
                                             (Advanced ▸ Siemens keys + device detection)
   site/                                     served web root (index.html / app.js / keyboards.js /
-                                            fullflashes.js / siemensfw.js); dist-jit/ = wasm64
-                                            backend build, dist/ = boards.tar + key module +
-                                            suite images, dist-*/ = A/B snapshots
-                                            (all gitignored)
+                                            fullflashes.js / siemensfw.js); dist-jit/ = the wasm
+                                            build, dist/ = boards.tar + key module + suite
+                                            images, dist-*/ = A/B snapshots (all gitignored)
   tests/                                    native boot suite (run.mjs), tcg-isa op-suite,
                                             lockstep plugin, tcgbench perf bench
   tools/                                    headless-browser test/probe/bench scripts
@@ -26,24 +25,20 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
 
 ## WASM (client-side)
 
-Everything runs in the browser: `qemu-system-arm` (arm-softmmu) is compiled
-to WebAssembly (wasm64, pthreads, Asyncify) and driven from a page. One
-engine is served, plus the files every run needs:
+`qemu-system-arm` (arm-softmmu) is compiled to WebAssembly (wasm64 with
+`-sMEMORY64=2`, pthreads, Asyncify) and driven from a page.
 
-- `site/dist-jit/` — the **wasm64 TCG backend** (0017 + its follow-ups):
-  a new TB runs in an interpreter tier for its first 64 entries
-  (`tcg/wasm64/w64-interp.c`), then the batch of TBs staged so far is
-  compiled into one wasm module; TBs chain via tail calls through a
-  shared funcref table, with an inline TLB probe and inline TB
-  accounting. On wasm64 the ARM translator builds superblocks (a TB
-  carries on past conditional branches, loops back to its own start,
-  absorbs short forward branches and inlines direct calls — see
-  [wasm-fast-paths.md](wasm-fast-paths.md)). The page engine for every
-  board (LG included since 0034–0038). ~12 MB wasm, ~4 MB gzip'd
-  (Asyncify onlylist, 0031).  A TCI interpreter build used to ship next
-  to it (`?dist=dist`, ~7.4× slower on compute); it was removed in the
-  2026-09-22 review, and the oracle for JIT-only failures is the native
-  build (lockstep).
+- `site/dist-jit/` — the engine, built around the **wasm64 TCG backend**
+  (`tcg/wasm64/`). A new TB runs in an interpreter tier for its first 64
+  entries (`tcg/wasm64/w64-interp.c`), then the batch of TBs staged so far
+  is compiled into one wasm module. TBs chain by tail calls through a
+  shared funcref table, with an inline TLB probe and inline TB accounting.
+  The ARM translator builds superblocks on wasm64: a TB carries on past
+  conditional branches, loops back to its own start, absorbs short forward
+  branches and inlines direct calls
+  ([wasm-fast-paths.md](wasm-fast-paths.md), A3). ~12 MB wasm, ~4 MB
+  gzip'd. There is no second wasm engine: the oracle for JIT-only failures
+  is the native build (lockstep).
 - `site/dist/` — where `boards.tar`, the Siemens key module and the
   suite images (`tcgisa.bin`, `tcgbench.bin`) are served from, whatever
   `?dist=` selects.
@@ -63,15 +58,14 @@ engine is served, plus the files every run needs:
    (`scripts/build-recalc-wasm.sh`), then runs
    `scripts/build-qemu-wasm64.sh`: configure like qemu's CI wasm64
    job (`--static --cpu=wasm64 --target-list=arm-softmmu
-   --with-coroutine=wasm`, no `--enable-tcg-interpreter`) in
-   `build/qemu-wasm64`, link with the Asyncify onlylist
-   (`configs/meson/asyncify-only.txt`) and `qom_cast_debug=false`, and
-   deploy atomically (tmp+rename) to `site/dist-jit/`, symbol map
-   included, plus `qemu-source.txt`: the identity of the qemu source the
-   dist was built from (`scripts/qemu-source-id.sh`: HEAD, plus a hash of
-   the uncommitted diff when there is one), which the lockstep driver
-   matches against the native reference. `--enable-tcg-interpreter` is
-   refused for a wasm host.
+   --with-coroutine=wasm`) in `build/qemu-wasm64`, link at `-O3` with the
+   Asyncify onlylist (`configs/meson/asyncify-only.txt`) and
+   `qom_cast_debug=false`, and deploy atomically (tmp+rename) to
+   `site/dist-jit/`, symbol map included, plus `qemu-source.txt`: the
+   identity of the qemu source the dist was built from
+   (`scripts/qemu-source-id.sh`: HEAD, plus a hash of the uncommitted diff
+   when there is one), which the lockstep driver matches against the
+   native reference.
 3. `serve.mjs` serves `site/` — static page files edited in place, build
    artifacts in `site/dist*/` — with the COOP/COEP headers pthreads need
    (SharedArrayBuffer), a gzip sidecar + ETag revalidation for the wasm,
@@ -81,86 +75,52 @@ Incremental iteration: `scripts/ninja-fast.sh` (wasm64 → `site/dist-jit`;
 rebuild + atomic deploy + `qemu-source.txt` + boards.tar refresh, no tree
 reset). One-shot: `./build.sh`.
 
-### The series
+### What the fork adds
 
-All qemu changes are commits on the submodule branch (`versions.env`
-pins the tip; the structural ones are listed below with scope).
+All qemu changes are commits on the submodule branch, on top of upstream
+`smh/master` (siemens-mobile-hacks/qemu-pmb887x), which is merged in
+regularly. `versions.env` pins the tip. `git -C qemu diff <upstream>` is
+the authoritative list; in outline:
 
-`0001 ui: add wasm display/input backend`
-- `ui/wasm.c`, compiled only for `host_os == 'emscripten'`; select with
-  `-display wasm`.
-  - DisplayChangeListener that blits the console surface into an XRGB8888
-    staging buffer exported to JS (`wasm_fb_ptr/width/height/stride`,
-    dirty-flag protocol `wasm_fb_take_dirty`).
-  - Adaptive `dpy_refresh` (16..500 ms): the pmb887x LCD only repaints when
-    `GraphicHwOps.gfx_update` is polled.
-  - Input: `wasm_send_key(linux_keycode, down)` → SPSC ring → bottom half on
-    the qemu main loop → `qemu_input_event_send_key_linux` (thread-safe from
-    the browser main thread).
-  - `wasm_quit()` → thread-safe `qemu_system_shutdown_request`.
-  - Diagnostics: `wasm_vclock`, `wasm_fb_updates`, `wasm_insns`,
-    `wasm_halts`, `wasm_clock_banked` (the tool-only `wasm_tbs`,
-    `wasm_reg/pc/peek`, `wasm_irq_pending` and `wasm_memstat` went in the
-    2026-09-22 review).
-- qapi/ui.json: `DisplayType` gains `wasm` (CONFIG_WASM_UI); ui/meson.build
-  compiles the backend; the link settings in the cross file that
-  `scripts/build-qemu-wasm64.sh` generates (they replace upstream
-  `configs/meson/emscripten.txt`'s) add the exports the page needs (`ENV`,
-  `HEAPU8`, `EXIT_RUNTIME`).
+- **The wasm64 TCG backend** (`tcg/wasm64/` plus its hooks in `tcg/` and
+  `accel/tcg/`): batched modules, the interpreter tier, tail-call
+  chaining, eviction. `--enable-tcg-interpreter` is not used.
+- **`ui/wasm.c`** (`-display wasm`, compiled only for
+  `host_os == 'emscripten'`):
+  - a DisplayChangeListener that blits the console surface into an
+    XRGB8888 staging buffer exported to JS (`wasm_fb_ptr/width/height/stride`,
+    dirty flag `wasm_fb_take_dirty`), with adaptive `dpy_refresh` polling
+    (the pmb887x LCD only repaints when `GraphicHwOps.gfx_update` is
+    polled);
+  - input: `wasm_send_key(linux_keycode, down)` → SPSC ring → bottom half
+    on the qemu main loop (safe to call from the browser main thread);
+  - `wasm_quit()` → thread-safe `qemu_system_shutdown_request`;
+  - the counters the page reads: `wasm_vclock`, `wasm_fb_updates`,
+    `wasm_insns`, `wasm_halts`, `wasm_clock_banked`.
+- **`audio/wasmaudio.c`** (`-audio wasm`): a mixeng backend that publishes
+  frames into a ring in the shared heap (README, Sound).
+- **Emscripten threading:** futex-based `QemuCond`/`QemuEvent`
+  (`include/qemu/futex.h`, `util/qemu-thread-posix.c`), the main loop's
+  futex wait (`util/main-loop.c`), event notifiers without eventfd
+  syscalls, `util/coroutine-wasm.c` with the vCPU thread barred from
+  coroutine switches, and the bottom half that starts the CFI flash
+  writeback. Why each exists: [lessons.md](lessons.md), Emscripten
+  runtime.
+- **io barriers:** a PC that needed an io_recompile is retranslated as a
+  single-instruction TB ([lessons.md](lessons.md), Mid-TB MMIO).
+- **Clock options:** the default clock is upstream's TCG `vcpu-timers`.
+  The fork adds `vcpu-timers-bank` (lag caught up during the boot, page
+  `?bank=`) and `vcpu-timers-idle-lead` (an idle guest's timers run in
+  batches ahead of wall time, page `?idlelead=`). `cross-page-links` is
+  upstream's option, on in the page's default accel
+  ([performance.md](performance.md), Timing model).
+- **Speed-only changes** in accel/tcg, cputlb, memory, the ARM translator,
+  the pmb887x devices, the DSP translator and the timers: every one is
+  listed in [wasm-fast-paths.md](wasm-fast-paths.md).
+- **The lockstep fold** (`W64_LOCKSTEP*`), the b-side of
+  `tools/lockstep-wasm.mjs`.
 
-`0002 wasm: Asyncify-safe futex/condvar`
-- `include/qemu/futex.h`: emscripten futex wrappers (`emscripten_futex_*`);
-  `HAVE_FUTEX` becomes defined on emscripten, switching QemuEvent/LockCnt to
-  their futex fast paths.
-- `util/qemu-thread-posix.c` + `include/qemu/thread-posix.h`: futex/seq
-  based `QemuCond` for emscripten (pthread_cond everywhere else); 0021
-  fixed the untimed wait (it passed a 0 ms timeout = immediate return).
-- Its icount2 parts (no per-insn icount2 helper, a 1 kHz frequency floor)
-  went with icount2 itself in the 2026-10-29 dsp-lle merge.
-
-`0003` (TCI inline TLB probe + direct helper dispatch) and the TCI-only
-half of `0007–0016` (immediate forms, inline ldst fast path,
-size-specialized memory ops) left with the TCI browser build in the
-2026-09-22 review: `tcg/tci.c` is upstream's again. `0004` keeps the
-stock io-recompile rewind for ROM-device (flash command) accesses and
-accounts mid-TB MMIO at the io boundary on emscripten (design + dead
-ends: [lessons.md](lessons.md) § Mid-TB MMIO; `0010` extends
-the skip to the stock-icount model; `0014`/`0036` keep barrier insns in
-single-insn TBs so the rewind stops recurring).
-
-What remains of `0007–0016` is backend-independent: main-loop futex
-wait, io-recompile skip, SVC inline exception exit, io barriers, romd
-FlatView variants. Numbers in the commit messages on the `qemu/` branch.
-
-`0017` is the wasm64 TCG backend (`tcg/wasm64/` + small hooks); 0019,
-0020, 0022, 0026, 0029, 0030, 0034, 0038 are its follow-ups
-(speculative batching, successor hints, goto_ptr handoff/tail call, no
-icount2 prologue, explored flag, retaddr fix, narrowed speculation).
-Speculative successor translation itself went in the 2026-09-22 review,
-once the interpreter tier had made it stop paying.
-
-Generic qemu-core commits (help every backend including native): `0016`
-(romd FlatView variants + range-scoped flush), `0018` (fill-time MMIO
-dispatch resolution + flag-masked victim-TLB compare), `0040` (fill-time
-TLB growth), `0043` (physical-address summary for the range flush),
-`0045` (skip `arm_rebuild_hflags` on CPSR writes that cannot change it).
-
-Timing/halt path: the default clock is upstream's TCG `vcpu-timers`; the
-fork adds `vcpu-timers-bank` (lag caught up during the boot, page
-`?bank=`), `vcpu-timers-idle-lead` (an idle guest's timers run in batches
-ahead of wall time, page `?idlelead=`), a host-clock reading reused while
-the guest is behind real time, and spent budgets renewed inside
-`cpu_exec()` (`tcg_vcpu_timers_next_budget`) instead of a loop exit per
-timer. It also adds `cross-page-links` (TBs chained directly across guest
-pages, unlinked on every TLB flush), on in the page's default accel. The
-icount-era patches (`0023` idle warp on the vCPU thread, `0024` pmb887x
-completion timers on the virtual clock, `0032` real-time cap,
-`0035`/`0037` virtual timers without icount) are gone. `0033` selects
-the RTC `CNT` layout from the board config (`[rtc] format`: Siemens
-linear Unix seconds, LG packed calendar).
-
-DSP: since the 2026-10-29 dsp-lle merge (now part of upstream
-`smh/master`) the Teak DSP is emulated low-level — the mask ROM and the
+DSP: the Teak DSP is emulated low-level by upstream. The mask ROM and the
 code the ARM downloads run through the DSP's own TCG front end
 (`hw/arm/pmb887x/dsp/tcg.c`) on the wasm64 backend, synchronously on the
 vCPU thread, from inside the ARM device access that needs them. That
@@ -203,9 +163,9 @@ thread is using them).
     a bounded window. How far in the string sits is the phone's business —
     ~4.2 MiB on a KE800 dump, ~32.1 MiB on a KE970 one — so the window is
     40 MiB, read in 1 MiB slices and only for an image the library could
-    not place. There is no bootcore-block reading any more — if the library
-    cannot place the image, walking the boot area in JS would only re-guess
-    what upstream decided not to read.
+    not place. The page does not read the bootcore block itself: if the
+    library cannot place the image, walking the boot area in JS would only
+    re-guess what upstream decided not to read.
   - `MODEL_VARIANTS` maps a model with no board of its own onto the board that
     emulates it. Sourced, never guessed — a wrong row boots someone's phone as
     the wrong hardware, so a model that cannot be placed is left to the user.
@@ -219,10 +179,7 @@ thread is using them).
     the configs carry per-model `HW_DET_MOB_TYPE` strap bits (S65 `01100`,
     C65 `10010`) that firmware can read. Deliberately not mapped: `CL61A` is a
     different part from CL61 (flash `0x880D` vs `0x8819`), and `C70` has no
-    source putting it on the same silicon as a board here. (`M75` and `ME75`
-    left that table for `DEVICE_RULES` when bsp `e79169f` added boards of
-    their own — the 2026-09-20 round that also brought `M65`, `SK65` and
-    `SL65`.)
+    source putting it on the same silicon as a board here.
 - Advanced ▸ Siemens keys (`site/recalc.js`, `site/recalc-worker.js`): for a
   `siemens-*` device in Own file mode only — the presets are published
   already recalculated — the three ways pmb887x-emu reconciles a fullflash
@@ -263,8 +220,8 @@ thread is using them).
     widest keypad that still fits, whichever is smaller, between 30px and
     72px); `--pad-h` is `7 × --key-h + 6 × --kgap`, because the keypad is
     always exactly seven key rows whatever board is in it — the rows divide
-    that height rather than setting it, which is what used to make the screen
-    box depend on which phone was selected. `--box-h` is then what the column
+    that height rather than setting it, so the screen box does not depend on
+    which phone is selected. `--box-h` is then what the column
     has left, `--box-w` that at the board's ratio, `--tab-w` what a
     ratio-locked box could not use (14px to 44px, and no more than 13% of the
     box), and `--asm-w` the whole assembly, which the control row matches.
@@ -328,7 +285,7 @@ thread is using them).
   -audio wasm,… -accel
   tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on
   -machine pmb887x -drive if=pflash… -serial file:/serial.log -monitor
-  none [-device gsm-sim,…]`, every board alike; `?bank=`/`?idlelead=` set
+  none -parallel none [-device gsm-sim,…]`, every board alike; `?bank=`/`?idlelead=` set
   those two values, `?icount=` swaps the accel for `-icount`, a `?qargs=`
   with its own `-accel` drops it). The native launcher uses the same
   drive/serial/env/SIM set but boots under `-icount shift=3,sleep=off`
@@ -342,7 +299,7 @@ thread is using them).
   are proxied to the page's thread, which is why this works at all). The
   guest's thread is blocked inside that syscall, so the tap only copies
   the bytes — the pane redraw and the EXIT scan run off a timeout. A build
-  whose FS internals moved falls back to the old 1 Hz read of the file.
+  whose FS internals moved falls back to a 1 Hz read of the file.
 - **Siemens EXIT**: a panicking firmware prints a crash dump on the trace
   USART, framed `FF FE <len> <len^1> <text>` per message — `>>EXIT<<` plus
   labelled fields on x75/x85, `EXIT: <code>` with the values as separate
@@ -357,15 +314,6 @@ thread is using them).
   `?idlelead=`/`?trace=`/`?qargs=`/`?sound=off` override the boot recipe,
   `?lockstep=1` turns on the built-in guest-state fold.
 
-### Engine history
-
-- **wasm64 TCG backend (0017) — landed 2026-09-10/11**, compute 7.4× TCI,
-  every gate green (op-suite ×3 byte-identical, full 2.5e9 lockstep,
-  native suite ×4); the module economy, halt path, Asyncify onlylist and
-  the EL71/KE800 fixes followed (0019–0038), making it the default for
-  every board on 2026-09-12. Current status, methods and cost model:
-  [performance.md](performance.md).
-
 ## Native (Linux) reference builds
 
 - `scripts/build-native.sh` → `build/qemu-native-build/` (real TCG JIT,
@@ -376,8 +324,6 @@ thread is using them).
   to the binary, and `tools/lockstep-wasm.mjs` refuses a reference whose
   stamp is missing or differs from the dist's (`--no-ref-check` for a
   deliberate cross-version comparison, `--a-bin` for another build).
-  It used to build a worktree at the `versions.env` pin, which nothing
-  kept in step with the submodule.
 - `scripts/build-native-tci.sh` → native TCI with plugins force-enabled
   (the lockstep b-side), from the same source.
 - `scripts/run-native.sh` — launcher mirroring the web boot recipe's
@@ -401,19 +347,17 @@ a quiet host.
 | native boot suite | s75/el71/c81/ke800/ke970 boot-init/progress/no-exit | `node tests/run.mjs` |
 | browser boot gate | s75/el71/ke800/ke970/cx70 boot on a wasm dist (progress in executed insns) | `node tools/bootcheck.mjs --dist dist-jit` |
 | early key | a key delivered before the machine exists does not kill the module | `node tools/earlykey.mjs --board <b>` |
-| guest op-suite | 1156 (value, NZCV) cases byte-identical across every backend built (the wasm64 page leg is one of them since 0090 fixed its Asyncify hole) | `scripts/run-tcg-isa.sh` |
+| guest op-suite | (value, NZCV) cases byte-identical across every backend built, the wasm64 page leg included | `scripts/run-tcg-isa.sh` |
 | lockstep | whole-boot cross-backend value equality (regs + SRAM/SDRAM digests) against a native reference built from the dist's own source (`qemu-source.txt`); full 2.5e9-insn gate | `scripts/run-lockstep.sh`, `tools/lockstep-wasm.mjs` |
 | Firefox smoke | the module budget, by its effect: no page errors, and the guest is still executing after 120 s (`progress=ok`) | `BROWSER=firefox node tools/ffboot.mjs` |
+| page checks (`close` tier) | device detection, the LG EFA flow, the layout | `tools/detect-check.mjs`, `tools/efa-web.mjs`, `tools/ui-acceptance.mjs` |
 
 | benchmark | what it measures | driver |
 |---|---|---|
 | scenebench | EL71 scenarios: stopwatch redraw speed, music playback dropouts, idle host CPU; SL65 MIDI and video; S75 J2ME games (Bobby Carrot, Tower Bloxx) with sound | `tools/scenebench.mjs` |
-| parbench | scenebench A/B with every run of every dist started at once | `tools/parbench.sh` |
 | free-run A/B | paired A/B on pinned cores with the guest clock running free (both dists built with `tools/perf/freerun.diff`) | `tools/perf/swab.sh` |
-| uibench | per-board steady state (MIPS, v/wall, fps) | `tools/uibench.mjs` |
-| tcgbench | fast-iteration per-phase A/B + the device/icount-tax mirrors | `tools/tcgbench.mjs` |
-| idlebench | boot-to-idle wall time + guest-work milestones (the human metric) | `tools/idlebench.mjs` |
-| stopwatch | in-guest pacing while a J2ME app redraws (`vratio`) | `tools/stopwatch.mjs` |
+| boot A/B | paired boots of two dists, paced as on the page: burst wall time, stretched and silent audio, lag | `tools/perf/bootab.sh` (`tools/bootbench.mjs`) |
+| parbench | scenebench A/B with every run of every dist started at once | `tools/parbench.sh` |
+| tcgbench | per-phase backend bench on versatilepb, with the device-tax mirrors | `tools/tcgbench.mjs` |
 
-Working method, cost model and history: [performance.md](performance.md)
-and [optimization-playbook.md](optimization-playbook.md).
+Method, cost model and history: [performance.md](performance.md).
