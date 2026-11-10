@@ -220,10 +220,15 @@ ok("2.3 screen placeholder", (await text("#ov-msg")) === "Ready to boot");
 
 /* ---------------- §3 Run panel ---------------- */
 ok("3.1 groups", await page.evaluate(() =>
-  [...document.querySelectorAll("#post-panel .group-title")].map((e) => e.textContent).join() === "Keyboard,Export"));
+  [...document.querySelectorAll("#post-panel .group-title")].map((e) => e.textContent).join() === "Accessory,Keyboard,Export"));
 ok("3.1 no Run legend", !(await has("#post-panel legend")));
-ok("3.1 keyboard group contents", await page.evaluate(() => {
+ok("3.1 accessory group contents", await page.evaluate(() => {
   const g = document.querySelectorAll("#post-panel .group")[0];
+  return !!g.querySelector("select#acc-select") && g.querySelectorAll("button").length === 1
+    && /^(Connect|Disconnect)$/.test(g.querySelector("#btn-accessory").textContent.trim());
+}));
+ok("3.1 keyboard group contents", await page.evaluate(() => {
+  const g = document.querySelectorAll("#post-panel .group")[1];
   return !!g.querySelector("#kbd-keyboard") && !!g.querySelector("#kbd-variant")
     && !!g.querySelector("#kbd-hints") && !!g.querySelector("#opt-hud");
 }));
@@ -615,7 +620,7 @@ ok("5.4 pill follows the sheet", (await text("#status-text")).startsWith("EL71v4
 await page.click("#btn-settings");
 await page.waitForTimeout(300);
 ok("5.4 settings sheet body", await page.evaluate(() =>
-  [...document.querySelectorAll("#sheet-settings .group-title")].map((e) => e.textContent).join() === "Keyboard,Export"));
+  [...document.querySelectorAll("#sheet-settings .group-title")].map((e) => e.textContent).join() === "Accessory,Keyboard,Export"));
 // v4 §4 said the toggle had no effect on a phone and hid it there; both
 // layouts honour it now, so the sheet is where a phone reaches it
 ok("v4.4 the HUD toggle is in the mobile settings sheet", await page.evaluate(() => {

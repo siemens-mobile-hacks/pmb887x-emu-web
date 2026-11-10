@@ -891,6 +891,16 @@ free-run scenes, `6b8a64baa5`; DevTools shares, which overstate):
   a C kernel (R7). Towerblox also spends 1.5 % in a DSP
   `rep` of one `mov a0l, (rN)+` (P:E9E8, 160 passes), each pass reloading
   the accumulator and redoing the page lookup.
+- **The C side is a long tail** (V8 `--prof`, free-run, 2026-11-10):
+  main-module C is 31–42 % of the vCPU and no function is above 5 %.
+  `dsp_bus_advance` is 3–5 % on S75 scenes: ~0.5 M calls per guest second
+  on bobby, 70 % from cycle-sensitive register accesses with the I2S and
+  timer 2 active, each asking eleven devices whether they are active
+  (`baseband_is_active` reads the virtual clock). Reducing it means
+  restructuring upstream's peripheral bus. The four correlator kernels are
+  7–11 %; the 26-tap loop of 35BE is a third of its iteration and would
+  vectorise by hand (wasm SIMD is not enabled in the build; as a global
+  flag it measured neutral).
 - **Idle.** An idle EL71 keeps the vCPU busy 14 % of the time at 3.9 MIPS
   (0.20 cores for the whole page, 0.17 the vCPU worker). Of the busy ticks
   ~29 % were the four correlator kernels (35BE 15 %, before `6b8a64baa5`),
@@ -938,6 +948,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-09 | `d7fab9092f`, `3486f1e2b7` (`af7a5a4bf6`) | smh/master `9e5a6bbfd6`: debug channels, the CFI flash's own writeback (flash-blk gone), core Fifo, `hw/dma` sink cache, chips moved out of `hw/arm/pmb887x`, audio through audio lines and PCMOut; bsp `de47d4b`. The merge alone lost, free-run, 4 pairs: towerblox −4.2 % (se 1.5), stopwatch −2.5 %, bobby −2.2 %, midi −1.4 % (se 0.3, 4/4), video −0.1 %. Paired V8 profiles: `audio_line_write` looks the sink's interface class up by name per sample frame (`object_class_dynamic_cast` + `g_hash_table_lookup`, ~0.3 % of towerblox, ~0.6 % of midi), and the new chain AFE/I2S → router → line → speaker → PCMOut is ~0.5 % of towerblox where the old direct sink was 0.09 %. With D11 (wasm-fast-paths.md), 8 pairs: towerblox 0.0 % (se 1.1), midi 0.0 % (se 0.4), stopwatch −0.3 % (se 1.1), bobby +0.6 % (se 0.7), video −0.1 % (se 0.2). EL71 boot (bootab.sh, 4 pairs): burst −1.1 % (se 0.3), audioMs −1.8 %, lagMax −2.6 %. The legs need a page server each (`PORT_A`/`PORT_B`): the page always loads `dist/boards.tar`, and the two qemus read different bsp boards. Under `--prof` the merge leg read 5 % slow with identical time shares: boot-time writeback leaves six more idle pool threads, and the sampler signals every thread; per-thread CPU without the profiler was equal |
 | 2026-11-09 | `6b8a64baa5` (`3486f1e2b7`) | 35BE iterations on guest memory itself (`tcg_fast_iterate_35be_flat`, wasm-fast-paths.md P1). Census on EL71: sata 1, product shift 0, r4 in a 26-word ring, r2 back on the same 13 coefficients every iteration, ~36 iterations a call. Native micro-benchmark of that point (a temporary g_test timing the unit test's kernel, 3 s a run): 64 ns per iteration, of which the 26 multiplies 14 ns, the operand copies 11 ns and the walks, pointer lookups and bookkeeping the rest; reading memory directly 48 ns; with every Y read finding its own ring word, in place of a stepped index that chains the multiplies, and a loop of its own for shift 0, 32 ns. Free-run, 4 pairs: stopwatch +6.3 % (se 0.9), midi +6.0 % (se 0.7), bobby +4.3 % (se 1.2), towerblox +3.8 % (se 1.7), video mips +2.1 % (se 0.1); 19 of 20 pairs positive. Native lockstep old binary against new, EL71 and S75 to 1e9: identical. After it (V8 `--prof`, free-run): 643F + 64A9 + 6489, still on the per-instruction runner at ~3.5 ns per cycle, are 12 % of video, 5.7 % of midi, ~4 % of stopwatch and bobby, 2.8 % of towerblox; 35BE is 5.5 % of video plus 2.1 % in `tcg_fast_step_35be` (the slice ends). A hand-written 643F iteration then measured nothing (Remaining levers) |
 | 2026-11-10 | `dcb799b05c` (`6b8a64baa5`) | The firmware's colour-keyed blit loop in C at its back-edge (`HELPER(w64_blit)`, wasm-fast-paths.md R7): stopwatch +7.0 % over 7 pairs (all positive), towerblox +1.0 % over 6 (se 1.8). Stopwatch rows are ~96 pixels, towerblox's ~20. With the host loaded from outside the container, four pairs at once halved every leg and buried the effect; two pairs at a time showed it |
+| 2026-11-10 | `455f756d82`, `9e7d3d4ce5` (`462123cd8d`) | DSP block chaining. The chain helper enters repeat-headed and over-budget blocks itself (P11): towerblox +1.2 %, video +2.5 %, midi +0.9 %. The inline chain test with merged loads (P12): midi +0.8 %, video +0.9 %, bobby +1.0 %. Measured on the way: with no inline links midi loses 11 %, with the helper alone and no inline test 5.4 %, so the inline test is a visible share of DSP time; selecting link slots by the full key lost 0.9 % (eviction churn) and four slots 2.2 % (code size) |
 
 ## 2026-11-04 deviation cleanup
 
