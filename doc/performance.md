@@ -429,6 +429,21 @@ and wait for its "measuring" line. Then run
   `tcg/wasm64/wasm64.c` names each TB function `tb_<pc>_<icount>_<flags>`, so
   profiles show which guest code the time goes to.
 
+### Native micro-benchmarks
+
+A fork-owned C kernel can be timed natively in seconds, where a browser
+A/B takes minutes and resolves ~1 %: add a temporary `g_test` to
+`hw/arm/pmb887x/dsp/tests/tcg.c` that sets the unit test's core to the real
+operating point (take it from a census) and times a few million iterations
+with `g_get_monotonic_time()`, then
+`ninja -C build/qemu-native-build test-pmb887x-dsp-tcg` and run it with
+`-p <test path>` on one pinned core. Knocking out a part (results invalid,
+timing only) prices it. The 2026-11-09 35BE work went 64 -> 32 ns this way
+before its first browser run, and the browser confirmed it (History). Check
+that the benchmark takes the path it means to time: with the unit test's
+`stepi` of 0, r2 walked into Y space and half the iterations fell back to
+the per-instruction runner.
+
 ### Counters and censuses
 
 - **The port carries no counters or knobs.** A census is a temporary patch:
@@ -890,6 +905,42 @@ where noted):
   (comparator, addend, data). A mirrored `{cmp32, addend32}` word makes it
   two. ~1–1.5 %, ~10 hooks in `cputlb.c`.
 
+From the 2026-11-09 round (hot TB modules by `tools/perf/wasmgrab.mjs` on
+free-run scenes, `6b8a64baa5`; DevTools shares, which overstate):
+
+- **The other three kernels are not the 35BE case.** 643F + 64A9 + 6489
+  are 12 % of video and ~4–6 % elsewhere, on the per-instruction runner
+  (~2.8 ns per cycle natively, where 35BE's iterations take ~0.8). A
+  hand-written 643F iteration (six direct reads, two stores, only the last
+  add's flags and the sticky ones; a unit test of 13 modes against the
+  translator, every observable mutant caught) measured video −0.4 %
+  (se 0.3), midi −0.2 % (se 1.0), stopwatch +1.3 % (se 1.4), 4 pairs each:
+  nothing. The runner's unrolled, constant-folded instructions already are
+  such an iteration; 35BE paid because it dropped walks and copies, which
+  these loops do not have. Validating the accesses up front and leaving
+  the rest to the compiler was slower natively (25.4 → 28.5 ns).
+  `build/experiments/dsp-643f-flat.diff` (applies to `6b8a64baa5`).
+- **Time is concentrated in a few guest loops.** One DSP block function is
+  7.1 % of midi's vCPU and another 4.4 % (seven are ~20 %); one is 6.1 % of
+  bobby; one ARM TB is 6.8 % of stopwatch and the same routine ~2.4 % of
+  towerblox: the firmware's colour-keyed 16-bit blit, ~17 instructions and
+  four memory accesses a pixel (`ldrh; cmp; ldr =key; cmp; ...; strh; ldr
+  [sp]; adds; adds; subs; bne`). A kernel for it would be R6 again (about
+  as much code, lockstep-blind). Towerblox also spends 1.5 % in a DSP
+  `rep` of one `mov a0l, (rN)+` (P:E9E8, 160 passes), each pass reloading
+  the accumulator and redoing the page lookup.
+- **Idle.** An idle EL71 keeps the vCPU busy 14 % of the time at 3.9 MIPS
+  (0.20 cores for the whole page, 0.17 the vCPU worker). Of the busy ticks
+  ~29 % were the four correlator kernels (35BE 15 %, before `6b8a64baa5`),
+  25 % TB code, 15 % Chrome C++.
+- **What the TB code looked like** (read as WAT, towerblox and stopwatch):
+  every guest register and the four flag words go through env at each
+  sync point, a `cmp` stores all four flags even when a branch follows, a
+  literal-pool `ldr` takes a full TLB probe every pass, and each TB entry
+  and back-edge pays the instruction counter, the exit check and the
+  budget. All of it is TCG's design or closed above; nothing cheap is left
+  there.
+
 ## History
 
 Everything through `f45db9a125` is on `wasm-browser-port`; later commits are
@@ -921,6 +972,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-06 | `328087aa34` (`42bb89c091`) | Liveness and the register allocator's block-end walk visit only the globals, the TEMP_TB temps and the EBB/const temps touched since the last reset (wasm-fast-paths.md A9). EL71 boot to 73.7k TBs: `liveness_pass_1` −30 %, register allocation and emission −14 %, `tcg_gen_code` 2.63 → 2.30 s. EL71 boot (bootab.sh, 2 × 4 pairs): burst −1.5 % (se 1.2) / −1.5 % (se 1.1), audioMs −2.1 / −2.8 %, lagMax −2.9 / −4.9 %. Free-run, 4 pairs each: stopwatch +5.9 % (se 0.9, 4/4), midi −0.1 %, bobby +0.3 %, towerblox −0.4 % (one −4.2 % pair) and +2.8 % swapped (4/4), video −0.3 % over 12 pairs (median −0.1 %) |
 | 2026-11-06 | `af7a5a4bf6` (`328087aa34`) | A TB's constant temps in a per-thread open-addressed table per type, emptied by a generation bump, in place of the `GHashTable` that `tcg_func_start` emptied for every TB (wasm-fast-paths.md A10). EL71 boot (bootab.sh, 2 × 4 pairs): burst −1.0 % (se 1.2) / −2.1 % (se 0.5, 4/4), audioMs −0.9 / −5.3 %, lagMax −2.8 / −4.5 %. Free-run: stopwatch +1.3 %, towerblox +1.1 % (4 pairs each), midi −0.1 % (8), bobby 0.0 % (12), video −0.2 % (16, median −0.2 %; per-pair sd 2–5 % that hour) |
 | 2026-11-09 | `d7fab9092f`, `3486f1e2b7` (`af7a5a4bf6`) | smh/master `9e5a6bbfd6`: debug channels, the CFI flash's own writeback (flash-blk gone), core Fifo, `hw/dma` sink cache, chips moved out of `hw/arm/pmb887x`, audio through audio lines and PCMOut; bsp `de47d4b`. The merge alone lost, free-run, 4 pairs: towerblox −4.2 % (se 1.5), stopwatch −2.5 %, bobby −2.2 %, midi −1.4 % (se 0.3, 4/4), video −0.1 %. Paired V8 profiles: `audio_line_write` looks the sink's interface class up by name per sample frame (`object_class_dynamic_cast` + `g_hash_table_lookup`, ~0.3 % of towerblox, ~0.6 % of midi), and the new chain AFE/I2S → router → line → speaker → PCMOut is ~0.5 % of towerblox where the old direct sink was 0.09 %. With D11 (wasm-fast-paths.md), 8 pairs: towerblox 0.0 % (se 1.1), midi 0.0 % (se 0.4), stopwatch −0.3 % (se 1.1), bobby +0.6 % (se 0.7), video −0.1 % (se 0.2). EL71 boot (bootab.sh, 4 pairs): burst −1.1 % (se 0.3), audioMs −1.8 %, lagMax −2.6 %. The legs need a page server each (`PORT_A`/`PORT_B`): the page always loads `dist/boards.tar`, and the two qemus read different bsp boards. Under `--prof` the merge leg read 5 % slow with identical time shares: boot-time writeback leaves six more idle pool threads, and the sampler signals every thread; per-thread CPU without the profiler was equal |
+| 2026-11-09 | `6b8a64baa5` (`3486f1e2b7`) | 35BE iterations on guest memory itself (`tcg_fast_iterate_35be_flat`, wasm-fast-paths.md P1). Census on EL71: sata 1, product shift 0, r4 in a 26-word ring, r2 back on the same 13 coefficients every iteration, ~36 iterations a call. Native micro-benchmark of that point (a temporary g_test timing the unit test's kernel, 3 s a run): 64 ns per iteration, of which the 26 multiplies 14 ns, the operand copies 11 ns and the walks, pointer lookups and bookkeeping the rest; reading memory directly 48 ns; with every Y read finding its own ring word, in place of a stepped index that chains the multiplies, and a loop of its own for shift 0, 32 ns. Free-run, 4 pairs: stopwatch +6.3 % (se 0.9), midi +6.0 % (se 0.7), bobby +4.3 % (se 1.2), towerblox +3.8 % (se 1.7), video mips +2.1 % (se 0.1); 19 of 20 pairs positive. Native lockstep old binary against new, EL71 and S75 to 1e9: identical. After it (V8 `--prof`, free-run): 643F + 64A9 + 6489, still on the per-instruction runner at ~3.5 ns per cycle, are 12 % of video, 5.7 % of midi, ~4 % of stopwatch and bobby, 2.8 % of towerblox; 35BE is 5.5 % of video plus 2.1 % in `tcg_fast_step_35be` (the slice ends). A hand-written 643F iteration then measured nothing (Remaining levers) |
 
 ## 2026-11-04 deviation cleanup
 
