@@ -960,13 +960,19 @@ that exists.
   bobby; two more checks and the epoch compare nothing (Closed ideas,
   DSP execution). What is left of the transition is not a lever at the
   phone's resolution short of fewer transitions (DSP chain tail, below).
-- **The DSP's share on the phone** (towerblox, the profile of 2026-11-10
-  split by the C call chain above each sample): DSP blocks 22.8 % of the
-  vCPU thread and the C code under the DSP's slice functions 13.3 %, so
-  36 % in all; ARM TBs 48.7 % and the rest of the C module 15.1 %. A DSP
-  thread that never waited would bound at 1/(1 − 0.36) = 1.56x there
-  (rule 1; the exact design of 2026-11-02 was measured on a desktop that
-  already ran at real time).
+- **The DSP's share on the phone** (towerblox, 60 s profiles split by the
+  call chain above each sample, `tools/perf/profsplit.py`): at
+  `cc1c25a551` DSP blocks are 22.5 % of the vCPU thread and the C code
+  under the DSP's functions 15.3 %, 38 % in all; ARM TBs 48.9 % and the
+  rest of the C module 13.2 % (2026-11-10, before A11: 22.8 + 13.3,
+  48.7, 15.1). A DSP thread that never waited would bound at
+  1/(1 − 0.38) = 1.6x there (rule 1; the exact design of 2026-11-02 was
+  measured on a desktop that already ran at real time).
+- **The BQL on the phone** (the same profile): the vCPU thread waits
+  1.5 % of its time to take the BQL back after `cpu_exec`, at x0.33 of
+  real time. The main loop works 1.4 % of its thread (`gui_update` 0.30,
+  timers 0.22, bottom halves 0.08, the rest the loop itself) and waits
+  0.9 % for the lock: the cost is the hand-off, not the hold.
 
 **Remaining levers** (not done; prices as of their dates):
 
@@ -1005,7 +1011,9 @@ where noted):
   tiering-budget row gives +3.7 %). It needs a second 2 GB memory and a new
   worker: the owner's call.
 - **Display refresh off the BQL.** `gui_update` holds the BQL on the main
-  loop (0.26 % on the dev host). It matters with a slow main-loop core.
+  loop (0.26 % on the dev host, 0.30 % of the main loop's thread on the
+  phone). All the vCPU's BQL waits together are 1.5 % on the phone
+  (above), over several causes in core code: under 1 % each.
 - **DSP chain tail.** Every DSP block ends with 55–76 TCG ops of gates and
   link checks; four gates are constant per block. Census (2026-11-10, tail
   executions by the block's instruction count): towerblox 4.7 instructions
