@@ -146,7 +146,7 @@ Current methods and numbers are in [performance.md](performance.md).
   works in Chrome and eats Firefox's budget. Only the Firefox gate sees it.
 - **V8's arm64 code is not its x64 code, and only an ARM host shows it.**
   For the same hot TB functions TurboFan emits 1.36x the instructions on
-  arm64 (2026-11-10, V8 15.6/Node 22, bounds checks on). Measured on a
+  arm64 (2026-11-10, Node 22's V8 12.4, bounds checks on). Measured on a
   phone (Snapdragon 750G, Chrome 156), towerblox:
   - **A constant address costs by its size.** A load or store at a
     constant address below 16380 (4-byte access; 32760 for 8 bytes, 8190
@@ -158,7 +158,15 @@ Current methods and numbers are in [performance.md](performance.md).
     wasm-fast-paths.md A11).
   - **Explicit bounds checks cost 19 %** there (`--no-wasm-bounds-checks`:
     x0.285 → x0.338), against ~8 % on x64. Each is a `cmp` + `b.hs` per
-    access with a dynamic index (TLB entry, guest RAM).
+    access with a dynamic index (TLB entry, guest RAM), often with a `sub`
+    of its own for the limit.
+  - **An index is constant for V8 only if the wasm says `i32.const`.** The
+    check is dropped while the graph is built (`BoundsCheckMem`, no
+    machine-level folding yet), so `i32.wrap_i64 (local.get $r)` keeps its
+    check even when `$r` was set from an `i64.const` two instructions
+    earlier; the address is folded afterwards and the check stays, as
+    `cmp x13, #264; b.ls`. The backend tracks registers a movi loaded for
+    this (`w64_const_base`; towerblox +4.7 %, bobby +7.3 % on the phone).
   - **Tiering is the same as on the desktop:** a 10x lower
     `--wasm-tiering-budget` gives +4 %. The optimizing tier is not behind:
     53 lazy baseline compiles a second on the vCPU thread at 156 us each
@@ -169,11 +177,14 @@ Current methods and numbers are in [performance.md](performance.md).
     28.8 % the main module (x64: ~65 / 34).
   - **Reading arm64 code without a phone:** an arm64 Node under qemu-user
     prints TurboFan's code for a grabbed TB module in seconds
-    (`qemu-aarch64 -L build/android-emu/linux-arm64/root <node-arm64>
-    --no-liftoff --no-wasm-lazy-compilation --wasm-enforce-bounds-checks
-    --print-wasm-code -e 'new WebAssembly.Module(...)'`, the modules from
+    (`tools/perf/a64code.sh <module.wasm>`, the modules from
     `tools/perf/wasmgrab.mjs`; `scripts/setup-android-emu.sh linux-install`
-    installs qemu-user and the arm64 libraries).
+    installs qemu-user and the arm64 libraries). Take the Node whose V8 is
+    the phone's Chrome's: Node 22 (V8 12.4) spills a TB's three parameters
+    at entry and calls the pc-cache probe, V8 15.6 does neither. Weight
+    the listing by the functions' self time (`hot.json` next to the grabbed
+    modules) before reading it: the tail of a function is cold code and
+    trap stubs, a `bl` per bounds check.
   - **V8 flags on a phone that is not rooted:**
     `adb shell am set-debug-app --persistent com.android.chrome`, then
     `echo 'chrome --js-flags=...' > /data/local/tmp/chrome-command-line`

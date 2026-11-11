@@ -252,6 +252,7 @@ through the debug-app command line (lessons.md).
 |---|---|---|
 | Motorola One 5G Ace (Snapdragon 750G: 2 × A77 2.2 GHz + 6 × A55, 3.5 GB, Android 11, Chrome 156) | paced, `472c44c938` (2026-11-10) | towerblox x0.29 (40 MIPS, 52 fps; S75 idle after 60 s), stopwatch x0.40 (55 MIPS), bobby x0.64 |
 | the same | paced, `0dcee227d0` (A11) | towerblox x0.327 (+12.8 %, S75 idle after 55 s), stopwatch x0.428 (+6.2 %), bobby x0.65 (+1.6 %, fps +13 %) |
+| the same | paced, `59a4bd78f9` (2026-11-11), against `f77b282b9f` in alternating runs | towerblox x0.325 (+4.7 %), bobby x0.745 (+7.3 %), stopwatch x0.445 (+4.3 %) |
 | the same, towerblox with V8 flags, `472c44c938` | `--wasm-tiering-budget=1300000` | x0.297 (+4 %) |
 | | `--no-wasm-bounds-checks` | x0.338 (+19 %) |
 
@@ -714,10 +715,13 @@ unless noted).
   (9–11 % of busy time including frame setup). Tier-up budget is charged by
   machine-code size, and a page cannot change it.
 - **Bounds checks:** V8 drops a check only for a constant index within the
-  minimum memory size (memory is 32768 pages, min = max). env is already
-  addressed as constants when the TB's env is fixed (`w64_tb_env`,
-  `w64_abs_base`). What stays dynamic is inherent: frame slots, TLB entries
-  and guest RAM.
+  minimum memory size (memory is 32768 pages, min = max), and the index
+  has to be a constant when V8 builds its graph: an `i32.const`, not
+  `i32.wrap_i64` of a local that holds one, which it folds only later.
+  env is addressed as constants when the TB's env is fixed (`w64_tb_env`,
+  `w64_abs_base`), and so is anything behind a register a movi loaded
+  (`w64_const_base`). What stays dynamic is inherent: TLB entries, guest
+  RAM, the DSP's data pages.
 
 ## Closed ideas (grep here before trying)
 
@@ -792,7 +796,7 @@ unless noted).
 | Folding literal-pool loads (`ldr Rt,[pc,#imm]`, 3.2 % of stopwatch insns) to constants | Noise: TB code is not load-latency bound | 2026-11-02 |
 | TB code size: a 1 KB cold pad per TB; one shared `return_call_indirect` tail per TB | Only inline *unhinted* cold code costs, and hot TBs already hint their cold paths. The shared tail was neutral | 2026-11-02 |
 | Same-batch direct `return_call` for goto_tb chains | +0.2–0.65 %: noise. `return_call_indirect` cost is not a lever | 2026-11-02 |
-| Backend known-constant registers (`i32.const` addresses) | Noise: TurboFan folds `wrap(local const)` | 2026-11-02 |
+| Backend known-constant registers (`i32.const` addresses) | Noise on x64 with the trap handler: TurboFan folds `wrap(local const)`. It folds it after it has decided about the bounds check, so with explicit checks this is a lever: shipped as `59a4bd78f9` (History, 2026-11-11) | 2026-11-02, 11-11 |
 | Constant `w64_tb_tp` for the return-address store before helper calls | Neutral / −1 % | 2026-11-02 |
 | Inline ARM chain linking across wasm instances | Too large a change for ~1–2 % (a cross-instance call is ~5–7 ns) | 2026-11-02 |
 | TB lookup path | After `5c8cf5bc65`/`1cffcb62a0`: per-TB slot 83 %, inline hash 17 %, helper ~0. Not a lever | 2026-11-02 |
@@ -923,7 +927,16 @@ that exists.
   addresses are per TB or per block; one `movz` for `can_do_io`, a byte
   above 4095; the explicit bounds checks, 19 % of towerblox there, a `cmp`
   + `b.hs` per TLB word and per guest access; V8's own stack check, frame
-  and memory-base reloads.
+  and memory-base reloads. The first thing priced after that list was not
+  on it: bounds checks on constant addresses in the DSP's chain test
+  (`59a4bd78f9`, +4.7 %).
+- **A DSP block transition is the dearest single thing on a phone**
+  (2026-11-11). Towerblox makes ~11M of them per guest second (the chain
+  helper's 1.7M are 15 %), against ~17M ARM TB entries, and each is ~160
+  arm64 instructions before `59a4bd78f9`: the chain test's gates and link
+  compares ~100, V8's indirect tail call 21 (seven loads, since the
+  code-pointer table) and the next block's frame and stack check ~10.
+  Taking 27 instructions out of it was worth 4.7 % of the scene there.
 
 **Remaining levers** (not done; prices as of their dates):
 
@@ -1077,6 +1090,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-10 | `58cb97caff` (`8fcac1b334`) | The DSP peripheral bus adds cycles up until a device has something to do (D12), under the owner's rule of that day for changes in upstream's files. Free-run, two pairs at a time: bobby +2.2 % (6 pairs), towerblox +1.2 % (12, −4.4 to +7.2), midi +0.6 % (6, all positive), stopwatch +0.1 % (8), video mips −0.3 % (6). V8 `--prof` on towerblox: `dsp_bus_advance` 3.05 % → 2.4 % with its callees. A digest of every bus event with its cycle count (`tools/perf/busdigest.py`) is identical to the undeferred bus over 35M events of the S75 and EL71 boots, and both it and the new unit test catch a horizon late by 50 cycles; upstream's own unit tests did not. The rest of the round priced what is left and found nothing above 1 %: see Closed ideas (DSP scheduling) and Remaining levers (DSP chain tail) |
 | 2026-11-10 | `bed67ff185`, `472c44c938` (`58cb97caff`) | Firefox. SpiderMonkey never re-points a table slot when a function tiers up, so every chained TB was entered through its baseline code; each Firefox batch now carries a rebinder (`table.init` from a passive segment) that the dispatcher runs once a second for the live batches, 2–3 ms a pass. Free-run in Firefox 155, two pairs each: towerblox +11.9 %, stopwatch +11.6 %, bobby +7.7 %, midi +6.4 %, video +24.7 %; towerblox x0.96 → x1.30 over an 80 s window (the ceiling with tier-up at the first call is x1.35, Chromium with bounds checks x1.72). Chrome modules are unchanged (+2.0 %, se 1.6). Closed on the way: tiering up sooner from the page by wrapping TB bodies in loops (the gap between x1.15 at 20 s and x1.30 is warm-up only, and Ion emits an interrupt check at every loop header). Testing eviction with rebinders found an abort of older date: a batch landing in the middle of a DSP slice evicted a block the slice then ran (`bed67ff185`, lessons.md) |
 | 2026-11-10 | `0dcee227d0` (`472c44c938`) | The first measurements on a phone, and the first lever only an ARM host shows (A11). A phone's profile has the desktop's shape with TB code ~1.3x slower relative to the C module; tiering, thread placement and compile backlog were ruled out (lessons.md). V8's arm64 code builds every constant address above 64 KiB with `movz` + `movk`, 19–22 % of all TB instructions, so the CPU object, the DSP runtime and two counters moved below 16 KiB of linear memory, where the address is the load's immediate (`CPUTLB.d` became a pointer to make room in front of env). Motorola One 5G Ace, alternating runs: towerblox +12.8 % (x0.320, x0.334 against x0.289, x0.291), stopwatch +6.2 %, bobby +1.6 % (fps +13 %), S75 boot −8 %. Desktop x64: stopwatch +0.9 %, bobby +1.1 %, towerblox +0.6 % (2 pairs each, noise). Tools: `tools/perf/adbtun.mjs`, `SCENEBENCH_CDP`, `tools/perf/wasmtrace.mjs`. On top, `f77b282b9f`: an access at env + offset is one constant address, because V8's arm64 backend adds a memarg offset to the memory base before a store at a constant address; towerblox +1.1 % on the phone (x0.314, x0.326 against x0.313, x0.320) |
+| 2026-11-11 | `59a4bd78f9` (`f77b282b9f`) | A constant address for every access through a register a movi loaded. V8 decides about a bounds check while it builds its graph, where `wrap(local)` is not a constant yet even if the local holds one, so the DSP chain test's eight to ten link fields each kept a `sub`, `cmp` and branch on Android. Found by weighting the arm64 instruction mix of the hot TB functions by their self time (`tools/perf/a64code.sh`, an arm64 Node with Chrome 156's V8). Hot DSP block functions: 41.3 → 24.4 bounds checks, 827 → 750 instructions. Motorola One 5G Ace, alternating runs, two pairs each: towerblox +4.7 %, bobby +7.3 %, stopwatch +4.3 %. Desktop x64 with forced checks, 4 pairs each: towerblox +2.0 %, bobby +1.7 %, video +1.7 %, stopwatch +0.4 %, midi +0.4 % |
 
 ## 2026-11-04 deviation cleanup
 
