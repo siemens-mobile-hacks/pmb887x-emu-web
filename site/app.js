@@ -2395,6 +2395,9 @@ const ctx = canvas.getContext("2d");
 
 function startPainting() {
   cancelAnimationFrame(rafHandle);
+  // one ImageData for every frame of a size: this runs at the display's
+  // rate on the main thread, next to the canvas upload it feeds
+  let img = null, dst = null;
   const step = () => {
     rafHandle = requestAnimationFrame(step);
     const m = liveModule();
@@ -2406,21 +2409,21 @@ function startPainting() {
       canvas.width = w; canvas.height = h;
       setAspect(); // the guest's panel ratio is the real one
     }
-    const addr = m._wasm_fb_ptr();
     const tPaint = performance.now();
-    // staging is XRGB8888; wasm64 HEAPU8 offsets can exceed 32 bits, so go
-    // through BigUint64Array addressing via DataView on the shared heap.
-    const img = ctx.createImageData(w, h);
-    const dst = new Uint32Array(img.data.buffer);
-    const srcBytes = m.HEAPU8;
-    const dv = new DataView(srcBytes.buffer);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const px = dv.getUint32(Number(addr) + y * stride + x * 4, true);
+    if (img?.width !== w || img.height !== h) {
+      img = ctx.createImageData(w, h);
+      dst = new Uint32Array(img.data.buffer);
+    }
+    // staging is XRGB8888 words on the shared heap, rows stride bytes apart
+    const rowWords = stride >> 2;
+    const src = new Uint32Array(m.HEAPU8.buffer, Number(m._wasm_fb_ptr()), rowWords * h);
+    for (let y = 0, i = 0; y < h; y++) {
+      for (let o = y * rowWords, end = o + w; o < end; o++) {
+        const px = src[o];
         // XRGB8888 (LE u32 0x00RRGGBB) -> canvas RGBA (LE u32 0xffBBGGRR):
         // swap R and B, then set alpha.
-        dst[y * w + x] = 0xff000000 | ((px & 0x000000ff) << 16)
-                       | (px & 0x0000ff00) | ((px >>> 16) & 0x000000ff);
+        dst[i++] = 0xff000000 | ((px & 0x000000ff) << 16)
+                 | (px & 0x0000ff00) | ((px >>> 16) & 0x000000ff);
       }
     }
     ctx.putImageData(img, 0, 0);

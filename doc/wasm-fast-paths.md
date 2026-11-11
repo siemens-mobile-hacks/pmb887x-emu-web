@@ -11,11 +11,12 @@ upstream, or when deleting an optimization to bring a file back towards upstream
   below was grepped in that tree; the 2026-11-10 review round
   (`db5ec3b899`) changed the A5, C2 and R2 rows and the list of correctness
   fixes, `8fcac1b334` added C8 and R8, `58cb97caff` D12 and `0dcee227d0`
-  A11 (the fork is at `cc1c25a551`). The other commits since (`bed67ff185`,
-  `472c44c938`, `f77b282b9f`, `59a4bd78f9`, `cc1c25a551`) are in the
-  backend and its DSP glue (evicted DSP blocks dropped in the middle of a
-  slice, a rebinder for Firefox's tiers, constant addresses for V8's
-  bounds-check elimination, a typed chain table), which are not itemized.
+  A11, `91ad8b0c21` T6 (the fork is at `91ad8b0c21`). The other commits
+  since (`bed67ff185`, `472c44c938`, `f77b282b9f`, `59a4bd78f9`,
+  `cc1c25a551`) are in the backend and its DSP glue (evicted DSP blocks
+  dropped in the middle of a slice, a rebinder for Firefox's tiers,
+  constant addresses for V8's bounds-check elimination, a typed chain
+  table), which are not itemized.
 - **Numbers** are quoted from the commit messages
   (`git -C qemu log -1 <sha>`) and from the A/Bs of their date; September
   figures were measured under icount. "Not measured" means no source gives
@@ -206,6 +207,7 @@ vcpu-timers.
 | T3 | `cpu-timers.c` `cpu_clock_owner_idle` (`cpu_clock_owner_idle_raw`) | Re-reads the host clock in owner idle only when the thread would sleep | Bobby 0.928 → 0.817 cores (afe23d9974) | Delete the cache | all |
 | T4 | `cpu-timers.c` `cpu_clock_owner_shorten_budget_at` | A newly armed timer shortens the budget without a host read | `timer_mod_ns` 1.03 → 0.32 s per 20 s (11699de202) | Return to the host-reading path | all |
 | T5 | `include/qemu/timer.h` `QEMU_TIMER_ATTR_LAZY`; `qemu-timer.c` `timer_first_eager`, `timer_others_expire_time_ns` | Timers that neither cap the clock nor end the budget | Mechanism of D1 (0c3c3c8c9b) | Only with D1 | all |
+| T6 | `ui/wasm.c` `wasm_refresh_vcpu`, `wasm_refresh_timer`, `wasm_vcpu_dcl_ops` (marked) | The display refresh as a timer of the virtual clock, on the vCPU thread, in place of the console's realtime timer on the main loop: the vCPU no longer waits out every refresh behind the BQL, and the refresh follows guest time | Pixel 8 Pro: vCPU BQL wait 3.29 → 0.27 %, towerblox +5 to +24 % in the throttled state; desktop free-run +0.6 to +3.0 % (91ad8b0c21) | Delete the timer and `wasm_vcpu_dcl_ops`; `wasm_dcl_ops` serves alone | wasm (the file is the port's) |
 | B1 | `meson.build`: `-ftrivial-auto-var-init=zero` left out on emscripten | Avoids zeroing every uninitialized local | Video 4.19 % ± 2.88, J2ME 1.45 % ± 1.18 (0a3e5f2ce3) | Move the flag back into `hardening_flags` unconditionally | wasm (meson condition) |
 
 ## Dependencies between entries

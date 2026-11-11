@@ -115,6 +115,24 @@ Current methods and numbers are in [performance.md](performance.md).
   Deleting 38k useless wakes/s was worth +37 % MIPS on the S75
   (September), which no self-time profile predicted. Size such a fix by the
   wake count.
+- **Work under the BQL costs the vCPU what it takes on the slowest core.**
+  The vCPU thread takes the BQL thousands of times a second, so it meets
+  every hold of another thread and waits it out. A phone's scheduler puts
+  a thread that is nearly idle, the main loop, on a little core, where a
+  display refresh takes several times longer: 0.85 % of the vCPU on the
+  desktop, 1.5 % on a Motorola One 5G Ace, 3.3 % on a Pixel 8 Pro, for
+  the same 61 refreshes a second. The cure was not a shorter hold but no
+  second thread: the refresh became a timer of the vCPU thread
+  (`91ad8b0c21`). The sign was not in any profile: the vCPU worker was
+  92.8 % busy with the guest at half of real time
+  (`tools/perf/phonethreads.sh`).
+- **On a phone that throttles, heat is a lever.** A Pixel 8 Pro caps its
+  big core from 2.9 to 1.9 GHz after two minutes of a game and to 1.2
+  later, so whatever the page spends anywhere, on any core or in the GPU
+  process, comes back as vCPU frequency. Polling the LCD in guest time
+  halved the display pipeline's work for a guest at half speed, and the
+  build held x0.56 where the one before sank to x0.46; the 3 % of lock
+  waiting it removed explains a fraction of that.
 - **Proxied syscalls take ~1 ms**, and realtime clock reads are JS imports
   (~1.5–3 µs). Neither belongs on a per-timer or per-budget path.
 - **Asyncify instrumentation is an allowlist**

@@ -262,6 +262,27 @@ all (lessons.md). V8 flags work through the debug-app command line
   pairs read −3.8 to +1.1 % for a change that was +0.3 % over ten.
 - Start a batch in the background and chain the next one behind it: a
   towerblox run is ~5 minutes, a pair more than a command's timeout.
+- **A phone that throttles measures its heat.** A Pixel 8 Pro (Tensor G3)
+  runs towerblox at x0.81 only when it has been idle for hours. Under the
+  load the SoC sensor (`soc_therm` in `dumpsys thermalservice`) climbs
+  ~13 °C in three minutes; at 47–48 °C the big core's
+  `scaling_max_freq` (`/sys/devices/system/cpu/cpufreq/policy8`) steps
+  down from 2914 MHz to 1885 within a minute and to 1164 over the
+  following runs, and the same build reads x0.60, then x0.46. Cooling
+  back to 35 °C takes 3–6 minutes and still ends throttled inside one
+  run. So alternate the dists back to back in the hot state, which is
+  also the state a player gets, log the cap with every run, and read a
+  run against its two neighbours: the series drifts down as the body
+  warms. The Motorola (Snapdragon 750G) did not throttle in a night.
+- **Look at the threads, not only the profile.**
+  `tools/perf/phonethreads.sh` reads per-thread CPU of the renderer from
+  `/proc` (Android's `top` hides app threads from the shell); `dumpsys
+  cpuinfo` gives the other processes. A vCPU worker under 100 % while
+  the guest is behind real time is waiting for something: 92.8 % on the
+  Pixel before `91ad8b0c21`, 96 % after. On the owner's own phone do not
+  restart Chrome between runs; bring it to the foreground
+  (`am start -n com.android.chrome/com.google.android.apps.chrome.Main`)
+  and let scenebench open its tab.
 
 | Phone | Scene (date, fork) | Result |
 |---|---|---|
@@ -269,6 +290,8 @@ all (lessons.md). V8 flags work through the debug-app command line
 | the same | paced, `0dcee227d0` (A11) | towerblox x0.327 (+12.8 %, S75 idle after 55 s), stopwatch x0.428 (+6.2 %), bobby x0.65 (+1.6 %, fps +13 %) |
 | the same | paced, `59a4bd78f9` (2026-11-11), against `f77b282b9f` in alternating runs | towerblox x0.325 (+4.7 %), bobby x0.745 (+7.3 %), stopwatch x0.445 (+4.3 %) |
 | the same | paced, `cc1c25a551` (2026-11-11), against `59a4bd78f9`, both warm | towerblox x0.338 (+0.7 %, 4 pairs; `59a4bd78f9` warm x0.336), bobby x0.759 (+2.6 %, 2 pairs), stopwatch x0.439 (+0.3 %, 10 pairs) |
+| Pixel 8 Pro (Tensor G3: 1 × X3 2.9 GHz + 4 × A715 + 4 × A510, Android 17, Chrome 157, 120 Hz) | paced, `cc1c25a551` (2026-11-11) | towerblox x0.81 from an idle phone (x0.77 on a dist's first run), x0.52–0.60 once throttled; stopwatch x0.93, bobby x1.00 from a cool phone |
+| the same, hot state, back to back | `91ad8b0c21` against `cc1c25a551` | towerblox x0.583, x0.564, x0.564 against x0.541, x0.538, x0.489, x0.456; stopwatch x0.882, x0.769 against x0.754, x0.779; bobby x0.93 |
 | the same, towerblox with V8 flags, `472c44c938` | `--wasm-tiering-budget=1300000` | x0.297 (+4 %) |
 | | `--no-wasm-bounds-checks` | x0.338 (+19 %) |
 
@@ -849,6 +872,9 @@ unless noted).
 
 | Idea | Result | Date |
 |---|---|---|
+| The page asks for an animation frame only when the LCD's dirty flag is set (polled from an 8 ms timer), in place of a `requestAnimationFrame` loop that re-arms itself and so makes Chrome produce a main frame at the display's 120 Hz | Pixel 8 Pro, towerblox, one run each: main thread 16.1 → 14.7 % of a core, compositor 10.6 → 9.3 %. Empty frames are cheap; not kept, for up to 8 ms of latency | 2026-11-11 |
+| The LCD polled 30 times a guest second while it changes (`WASM_REFRESH_INTERVAL_MIN` 33) | Not built: it would halve the display pipeline's work again (GPU process, SurfaceFlinger and compositor were ~80 % of a core at 57 updates a second on the Pixel), but the screen would visibly update half as often. The owner's call | 2026-11-11 |
+| The R/B swap of the staging buffer in C (pixman `x8b8g8r8`) so that the page copies bytes | Not built: it would lengthen the refresh, which ran under the BQL then. The page's loop was the waste: see History, 2026-11-11 | 2026-11-11 |
 | Display lazy batching with framebuffer dirty tracking | Judged not exact on 2026-10-31. Done differently in `0c3c3c8c9b`: lazy wakes, catching up on DIF/DMAC access and on stores to source pages through `tlb_set_ram_write_guard` | 2026-10-31, 11-01 |
 | Batching dif_v1 words | Not exact: the guest runs ≥ 64 cycles (`CPU_CLOCK_BUDGET_MIN`) between words | 2026-10-31 |
 | timer2 O(1) closed form; DMAC+ALB+timer2 combination | Neutral | 2026-10-31 |
@@ -968,11 +994,26 @@ that exists.
   48.7, 15.1). A DSP thread that never waited would bound at
   1/(1 − 0.38) = 1.6x there (rule 1; the exact design of 2026-11-02 was
   measured on a desktop that already ran at real time).
-- **The BQL on the phone** (the same profile): the vCPU thread waits
-  1.5 % of its time to take the BQL back after `cpu_exec`, at x0.33 of
-  real time. The main loop works 1.4 % of its thread (`gui_update` 0.30,
-  timers 0.22, bottom halves 0.08, the rest the loop itself) and waits
-  0.9 % for the lock: the cost is the hand-off, not the hold.
+- **The BQL on a phone** (profiles of 2026-11-11). At `cc1c25a551` the
+  vCPU thread waited to take the BQL back after `cpu_exec` for 1.5 % of
+  its time on the Motorola and 3.3 % on the Pixel 8 Pro, where the
+  scheduler keeps the main loop on a little core. Census on the Pixel,
+  towerblox at x0.5, per second: the main loop went round 160 times, 61
+  of them for the console's refresh timer and 61 for the notify its
+  re-arm queues; the vCPU thread left `cpu_exec` ~900 times and took the
+  BQL 8–10 thousand times, so it met every hold of the main loop. With
+  the refresh on the vCPU thread (`91ad8b0c21`, T6) the wait is 0.27 %
+  and the main loop works 0.7 % of its thread, not 4.4 %. What the vCPU
+  still waits for there: 0.9 % in all, the largest the BQL (0.27), the
+  LCD queue's lock in the refresh (0.12) and MMIO (0.12).
+- **Where a phone's CPU goes besides the vCPU** (Pixel 8 Pro, towerblox,
+  % of a core each, `tools/perf/phonethreads.sh` and `dumpsys cpuinfo`):
+  the page's main thread 15–19, the audio worklet 17–22 (the phase
+  vocoder, always on for a guest behind real time), V8's compile pool
+  11–15, the compositor 9–13, the LCD writer thread 13–15 of a little
+  core; outside the renderer the GPU process 36, SurfaceFlinger 25 and
+  the display composer 7 at 57 screen updates a second. None is on the
+  big core, but all of it is heat on a phone that throttles.
 
 **Remaining levers** (not done; prices as of their dates):
 
@@ -1010,10 +1051,8 @@ where noted):
   call hot TBs until TurboFan publishes them. Ceiling ~4.5 % (the closed
   tiering-budget row gives +3.7 %). It needs a second 2 GB memory and a new
   worker: the owner's call.
-- **Display refresh off the BQL.** `gui_update` holds the BQL on the main
-  loop (0.26 % on the dev host, 0.30 % of the main loop's thread on the
-  phone). All the vCPU's BQL waits together are 1.5 % on the phone
-  (above), over several causes in core code: under 1 % each.
+- **Display refresh off the BQL:** done as T6 (`91ad8b0c21`, 2026-11-11),
+  by moving it to the vCPU thread.
 - **DSP chain tail.** Every DSP block ends with 55–76 TCG ops of gates and
   link checks; four gates are constant per block. Census (2026-11-10, tail
   executions by the block's instruction count): towerblox 4.7 instructions
@@ -1130,6 +1169,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-10 | `0dcee227d0` (`472c44c938`) | The first measurements on a phone, and the first lever only an ARM host shows (A11). A phone's profile has the desktop's shape with TB code ~1.3x slower relative to the C module; tiering, thread placement and compile backlog were ruled out (lessons.md). V8's arm64 code builds every constant address above 64 KiB with `movz` + `movk`, 19–22 % of all TB instructions, so the CPU object, the DSP runtime and two counters moved below 16 KiB of linear memory, where the address is the load's immediate (`CPUTLB.d` became a pointer to make room in front of env). Motorola One 5G Ace, alternating runs: towerblox +12.8 % (x0.320, x0.334 against x0.289, x0.291), stopwatch +6.2 %, bobby +1.6 % (fps +13 %), S75 boot −8 %. Desktop x64: stopwatch +0.9 %, bobby +1.1 %, towerblox +0.6 % (2 pairs each, noise). Tools: `tools/perf/adbtun.mjs`, `SCENEBENCH_CDP`, `tools/perf/wasmtrace.mjs`. On top, `f77b282b9f`: an access at env + offset is one constant address, because V8's arm64 backend adds a memarg offset to the memory base before a store at a constant address; towerblox +1.1 % on the phone (x0.314, x0.326 against x0.313, x0.320) |
 | 2026-11-11 | `59a4bd78f9` (`f77b282b9f`) | A constant address for every access through a register a movi loaded. V8 decides about a bounds check while it builds its graph, where `wrap(local)` is not a constant yet even if the local holds one, so the DSP chain test's eight to ten link fields each kept a `sub`, `cmp` and branch on Android. Found by weighting the arm64 instruction mix of the hot TB functions by their self time (`tools/perf/a64code.sh`, an arm64 Node with Chrome 156's V8). Hot DSP block functions: 41.3 → 24.4 bounds checks, 827 → 750 instructions. Motorola One 5G Ace, alternating runs, two pairs each: towerblox +4.7 %, bobby +7.3 %, stopwatch +4.3 %. Desktop x64 with forced checks, 4 pairs each: towerblox +2.0 %, bobby +1.7 %, video +1.7 %, stopwatch +0.4 %, midi +0.4 % |
 | 2026-11-11 | `cc1c25a551` (`59a4bd78f9`) | The chain table holds `(ref $tb)`, non-null references to the TB signature, defined by the thunk's module (JS cannot create a typed table); a slot no TB owns holds a function that traps. V8's `return_call_indirect` drops the signature compare, which was also its null test: 21 → 16 arm64 instructions per chained transition, ARM and DSP. Motorola One 5G Ace, alternating runs, both builds warm: bobby +2.9 % and +2.4 %, towerblox +0.7 % over 4 pairs (−1.2 to +3.0), stopwatch +0.3 % over 10 pairs (single runs of either build x0.41–0.45; the first six pairs alone read −1.5 %). Desktop x64 with forced checks: towerblox +2.6 % (4 pairs), bobby +1.0 % (16), stopwatch +0.8 % (16), midi +0.6 % (4). Eviction with the trap function in the slots: lockstep to 1e9 with `W64_LIVE_MAX` 256. Found on the way: a dist the phone has not run reads ~3 % slow, so the phone A/Bs before this one understate (On a phone) |
+| 2026-11-11 | `91ad8b0c21` (`cc1c25a551`) | The first measurements on the Pixel 8 Pro, which throttles: x0.81 on towerblox from an idle phone, x0.46–0.60 after two minutes (On a phone). Its vCPU thread was 92.8 % busy with the guest at half speed: it waited out every display refresh, which the main loop ran under the BQL from a little core (Where the time goes, the BQL on a phone). The refresh is now a virtual-clock timer on the vCPU thread (T6); it follows guest time, so a guest at x0.55 shows ~32 screen updates a second where it showed 57. Pixel, hot state, back to back: towerblox x0.583, x0.564, x0.564 against x0.541, x0.538, x0.489, x0.456 (+5 to +24 % against the neighbouring runs), stopwatch x0.882, x0.769 against x0.754, x0.779; vCPU BQL wait 3.29 → 0.27 %. Desktop free-run, 6 pairs each under host load 10–12: towerblox +2.5 %, stopwatch +2.4 %, bobby +3.0 % (6/6), video +2.6 % (se 2.6), midi +0.6 %. In the page (parent only): the LCD paint step converts through typed-array views into one reused `ImageData`, where it made an `ImageData` per frame and read every pixel through `DataView` with a BigInt conversion: 0.29 → 0.05 ms a frame at 132×176 on the Pixel, 1.07 → 0.16 ms at 240×320 (`tools/perf/paintbench.mjs`); the main thread's `step` was 13.7 % of its thread on the Motorola and is 0.4 % on the Pixel |
 
 ## 2026-11-04 deviation cleanup
 
