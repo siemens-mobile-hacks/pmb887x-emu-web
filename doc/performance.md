@@ -4,7 +4,7 @@ Where the speed work stands, how to measure and validate a change, and what
 has already been tried. Read this before doing performance work on the
 emulator.
 
-- **State described:** fork `8fcac1b334`, on smh/master `9e5a6bbfd6`
+- **State described:** fork `58cb97caff`, on smh/master `9e5a6bbfd6`
   (2026-11-10).
 - **Related:** [wasm-fast-paths.md](wasm-fast-paths.md) lists every fork change
   that exists only for speed, and how to remove one.
@@ -54,7 +54,11 @@ emulator.
    `WASM PORT FAST PATH (removable)` comment (wasm-fast-paths.md § Marking).
    Small gains that add upstream divergence are unwanted: a 35BE kernel
    rewrite for ~2 % was rejected (2026-10-31). A larger rewrite is acceptable
-   if it gives a significant boost and stays isolated.
+   if it gives a significant boost and stays isolated. Since 2026-11-10 a
+   speed change may touch upstream's files when it is clearly reversible
+   later or upstreamable, as long as the fork does not deviate too much
+   (the owner, on the levers that were waiting for a decision). The bus
+   deferral (D12) went in under this.
 5. **Stay as close to upstream as possible without losing performance.** When
    removing fork deviations, A/B the whole cleaned-up candidate against the
    pre-cleanup build on every scene, with an A/A to check the method. It must
@@ -711,6 +715,10 @@ unless noted).
 | The batching bound again, on towerblox (~600k calls/s, 4x video): advances batched to 512 cycles, flushed at every slice end (inexact) | +3.1 % (+4.1 / +2.1 %, 4 pairs in each order). The deferral above was never measured on towerblox; see Remaining levers | 2026-11-05 |
 | I2S rate memo, I2S rate cache, skipping the i2s divide | Neutral every time (≤ 0.23 %); re-tried twice by mistake | 2026-10-31, 11-02 |
 | `dsp_bus_advance` i2s 64-bit div/mod (~70 ns per call on Bobby) | ~0.3 % reachable, in an upstream file, left | 2026-11-01 |
+| No bus synchronisation in front of the interrupt-controller registers (DE00–DE1F; inexact bound, a two-line return in `tcg_synchronize_data_access`). They are 47 % of the DSP's register accesses on towerblox | towerblox +0.1 % over 6 pairs (−2.5 to +4.7): nothing. The helper call is not the cost; the device walk behind it is | 2026-11-10 |
+| Exact bus deferral, measured on towerblox at last | Shipped as D12 (`58cb97caff`): bobby +2.2 %, towerblox +1.2 %, midi +0.6 %. Less than the +3.1 % of the batching bound, because half of `dsp_bus_advance` was the I2S frames themselves: towerblox runs an I2S port in both directions, a frame every ~16 advances and a receive interrupt every 2.4 frames | 2026-11-10 |
+| Going further with the deferral: no flush for I2S reads, or for writes of RXINTADDR / TXINTADDR (253k accesses per 4M advances on towerblox, each a walk now and a second one at the next advance) | Not built. It would take the walks from 18 % of the calls to ~8 %, for ~0.3–0.5 %, and needs per-register knowledge in the bus. Recomputing the horizon lazily after a flush instead of walking would delay `i2s_tx_configure` past the next advance, which the codec model could see | 2026-11-10 |
+| 35BE's 26 multiplies with wasm SIMD | Not built: the kernel is 1.5 % of towerblox since the flat iteration (`6b8a64baa5`), the multiplies a third of it | 2026-11-10 |
 
 ### ARM translator and wasm64 backend
 
@@ -867,20 +875,17 @@ that exists.
 From the 2026-11-05 brainstorm (towerblox profile `92f6a90e56`; priced only
 where noted):
 
-- **Exact DSP bus deferral on towerblox.** The inexact bound is +3.1 %
-  (Closed ideas, DSP scheduling). An exact version needs a no-event horizon
-  for every active device, not only AFE and I2S RX
-  (`dsp_bus_get_cycles_until_event`), a flush before writes and before reads
-  of time-varying registers, and a checker. Expect ~1.5–2 %, in upstream
-  files. Census of the DSP's peripheral accesses on towerblox (2026-11-10,
-  by register and pc, stable over three 4M-access windows): 47 % are one
-  routine at P:040B–0416, the interrupt dispatcher, reading the six
-  interrupt-controller registers DE00/01/04/05/08/09 two cycles apart
-  (each read advances the whole bus by two cycles); 16 % are writes of
-  DEA3 and 12 % a read and a write of DEA8 (the DSP block, from
-  P:00D0/00D8). A rule for the interrupt registers alone (no device event
-  inside the pending window, so the flags cannot have changed) would
-  cover most of the gain.
+- **Exact DSP bus deferral on towerblox:** done as D12 (2026-11-10), for
+  +1.2 % there and +2.2 % on bobby. Census of the DSP's peripheral accesses
+  on towerblox (2026-11-10, by register and pc, stable over three
+  4M-access windows): 47 % are one routine at P:040B–0416, the interrupt
+  dispatcher, reading the six interrupt-controller registers
+  DE00/01/04/05/08/09 two cycles apart; 16 % are writes of DEA3 and 12 % a
+  read and a write of DEA8 (the DSP block, from P:00D0/00D8). The rest is
+  mostly the I2S interrupt handler reading and rewriting DEE8 / DEEA
+  (RXINTADDR, TXINTADDR) and the baseband's DE81. Of 4M advances, 3.44M
+  now return after the add, 246k reach the horizon (I2S frames), and 306k
+  walk because an access to the I2S flushed just before.
 - **Tier-up helper worker.** Liftoff TB code plus `WasmLiftoffFrameSetup` and
   `CallIndirectIC` are ~7 % of towerblox ticks; 61 % of the Liftoff ticks are
   in code older than 60 s. A second worker sharing the NativeModule could
@@ -890,7 +895,16 @@ where noted):
 - **Display refresh off the BQL.** `gui_update` holds the BQL on the main
   loop (0.26 % on the dev host). It matters with a slow main-loop core.
 - **DSP chain tail.** Every DSP block ends with 55–76 TCG ops of gates and
-  link checks; four gates are constant per block. Census first.
+  link checks; four gates are constant per block. Census (2026-11-10, tail
+  executions by the block's instruction count): towerblox 4.7 instructions
+  per block, 45 % of the blocks two instructions or fewer and 78 % five or
+  fewer; midi 4.5, 56 % and 92 % within eight. A `rep` and a batched loop
+  body count as one short block but run many cycles. The chain helper takes
+  15 % of the transitions on towerblox and 10 % on midi. The hot tail is
+  ~22 loads, 12 compare-branches and 3 stores before the indirect tail
+  call, perhaps 4 % of towerblox. Superblocks across fallthroughs would
+  save part of that for a large change to upstream's translator: not
+  started.
 - **One check per TLB probe:** done as C8 (2026-11-10), with three hooks.
 
 From the 2026-11-10 round (towerblox profile with named TBs, above):
@@ -930,11 +944,14 @@ free-run scenes, `6b8a64baa5`; DevTools shares, which overstate):
   the accumulator and redoing the page lookup.
 - **The C side is a long tail** (V8 `--prof`, free-run, 2026-11-10):
   main-module C is 31–42 % of the vCPU and no function is above 5 %.
-  `dsp_bus_advance` is 3–5 % on S75 scenes: ~0.5 M calls per guest second
-  on bobby, 70 % from cycle-sensitive register accesses with the I2S and
-  timer 2 active, each asking eleven devices whether they are active
-  (`baseband_is_active` reads the virtual clock). Reducing it means
-  restructuring upstream's peripheral bus. The four correlator kernels are
+  `dsp_bus_advance` was 3–5 % on S75 scenes before D12: ~0.5 M calls per
+  guest second on bobby, 70 % from cycle-sensitive register accesses with
+  the I2S and timer 2 active, each asking eleven devices whether they are
+  active (`baseband_is_active` reads the virtual clock). On towerblox the
+  only active devices are one I2S port and timer 2 (the baseband on 0.05 % of the
+  calls), 48 % of the advances are for two cycles or less, and upstream's
+  own horizon (`dsp_bus_get_cycles_until_event`: AFE and I2S receive
+  interrupts) is far away on 96 % of them. The four correlator kernels are
   7–11 %; the 26-tap loop of 35BE is a third of its iteration and would
   vectorise by hand (wasm SIMD is not enabled in the build; as a global
   flag it measured neutral).
@@ -988,6 +1005,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-10 | `455f756d82`, `9e7d3d4ce5` (`462123cd8d`) | DSP block chaining. The chain helper enters repeat-headed and over-budget blocks itself (P11): towerblox +1.2 %, video +2.5 %, midi +0.9 %. The inline chain test with merged loads (P12): midi +0.8 %, video +0.9 %, bobby +1.0 %. Measured on the way: with no inline links midi loses 11 %, with the helper alone and no inline test 5.4 %, so the inline test is a visible share of DSP time; selecting link slots by the full key lost 0.9 % (eviction churn) and four slots 2.2 % (code size) |
 | 2026-11-10 | `db5ec3b899` (`9e7d3d4ce5`) | Review of everything that differs from smh/master, no fast path removed (the 2026-11-04 round measured those). Bugs of ours fixed: the lockstep and guest instruction counts were not handed back when a TB was unwound mid-way (`w64_acct_unwind`; this was the "divergence" that A5 hid, so A5 is speed only now: a 60M leg takes 16 s without it, 3 s with); `mulu2`/`muluh` and the `qemu_ld`/`qemu_st` address read a 32-bit operand raw from a 64-bit local, so `movs r0, r0, lsl r1; cmp; umull` returned a wrong high word (`w64_get_u32`; two new op-suite cases fail on `9e7d3d4ce5`); an evicted batch left its DSP blocks in the DSP block cache and the next entry aborted ("evicted TB is not known": reproduced with `W64_LIVE_MAX` 48 at 61M instructions on S75, boots with the fix) — a session that outlives 6144 live modules would have hit it; `memory_region_set_readonly(false)` on a region born read-only kept the stale view; the fused MMIO load skipped the read cycles under `PMB887X_MEMORY_TIMING` (1.44M loads / 34M cycles in a 25 s S75 boot); GPTU configuration writes now sync the elided ticks first; the emscripten timed cond wait dropped its last millisecond. Closer to upstream: `arm_rebuild_hflags` after eret back off wasm64, the `tcg_func_start` const-table hunk down to one statement, two DSP call sites and a comment hunk restored, asyncify-only list 196 → 122 names (wasm byte-identical). Whole candidate against `9e7d3d4ce5`, free-run: stopwatch +4.0 % (6 pairs, +2.7 to +5.4), midi +0.1 % (4), video +0.8 % (4), towerblox +1.0 % (4, −2.2 to +3.4); which commit gives stopwatch its gain was not bisected |
 | 2026-11-10 | `33855e074b`, `8fcac1b334` (`db5ec3b899`) | Two bounds-checked loads per guest access where there were three (C8: the comparator and the addend in one 64-bit word), and one probe for all the words of an LDM/STM (R8). Free-run, two pairs at a time, host load 4–10. C8: stopwatch +2.4 % (6 pairs), towerblox +1.1 % (14, se 1.0). R8 over C8: towerblox +2.0 % (6), stopwatch +3.6 % (4). Both: towerblox +3.1 % (16 pairs; the last ten +4.2 %, −2.5 to +9.4), stopwatch +4.1 % (6, +0.4 to +7.2), bobby +1.5 %, midi +1.2 %, video mips +0.5 % (4 each, one video pair −1.0 %). Lockstep with `LS_QARGS` clean on S75 and EL71; the op suite gained page-boundary and base-in-list LDM/STM cases (1312 cases, identical on native JIT, TCI and wasm) |
+| 2026-11-10 | `58cb97caff` (`8fcac1b334`) | The DSP peripheral bus adds cycles up until a device has something to do (D12), under the owner's rule of that day for changes in upstream's files. Free-run, two pairs at a time: bobby +2.2 % (6 pairs), towerblox +1.2 % (12, −4.4 to +7.2), midi +0.6 % (6, all positive), stopwatch +0.1 % (8), video mips −0.3 % (6). V8 `--prof` on towerblox: `dsp_bus_advance` 3.05 % → 2.4 % with its callees. A digest of every bus event with its cycle count (`tools/perf/busdigest.py`) is identical to the undeferred bus over 35M events of the S75 and EL71 boots, and both it and the new unit test catch a horizon late by 50 cycles; upstream's own unit tests did not. The rest of the round priced what is left and found nothing above 1 %: see Closed ideas (DSP scheduling) and Remaining levers (DSP chain tail) |
 
 ## 2026-11-04 deviation cleanup
 

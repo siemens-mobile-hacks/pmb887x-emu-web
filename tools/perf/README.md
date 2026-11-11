@@ -16,5 +16,6 @@ is.
 | `wasm-bhint.mjs` | Adds a branch-hint section to a captured module, to test a codegen hypothesis offline before building it. |
 | `hostmon.sh` | Samples host memory pressure every 10 s (writes to `$PERF_LOGS`). |
 | `reap.py` | Runs a command as a child subreaper, so the Chromium processes it orphans are reaped instead of staying zombies. |
+| `busdigest.py` | Patches a temporary digest of the DSP peripheral bus into a qemu tree: every register access, interrupt flag and I2S word, hashed with the bus cycle count and printed as `BUSHASH` lines. Two native builds with the same bus timing print the same lines on a deterministic boot. The check for the bus deferral (wasm-fast-paths.md D12); usage in the file's header. |
 
 `logs/` is run output and is gitignored.
