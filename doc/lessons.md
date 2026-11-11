@@ -200,15 +200,18 @@ Current methods and numbers are in [performance.md](performance.md).
     and one candidate "lost" 4 % in its first pair and led by 0.7 % over
     the next four. Warm runs vary by ±1 %; three in a row within 0.5 %
     (x0.283, x0.284, x0.287) was luck taken for the method's resolution.
-  - **What paid there was bounds checks, more than instructions.** Nine
-    checks out of a DSP block transition (27 instructions of ~160, ~11M
-    transitions a guest second) were worth 4.7 % of towerblox and 7.3 %
-    of bobby. Five plain instructions out of every chained transition,
-    ARM and DSP (~28M a second; the typed chain table below), half as
-    many instructions executed, were worth +0.7 % (inside the noise) and
-    +2.6 %. A check is a compare and a branch the next load waits behind;
-    a load beside it is absorbed. An instruction count from a listing
-    sizes a lever only within one kind of instruction.
+  - **A listing does not price a lever there, even within one kind of
+    instruction.** Nine bounds checks out of a DSP block transition (27
+    instructions of ~160, ~11M transitions a guest second) were worth
+    4.7 % of towerblox and 7.3 % of bobby. Five plain instructions out of
+    every chained transition, ARM and DSP (~28M a second; the typed chain
+    table below), half as many instructions executed, were worth +0.7 %
+    (inside the noise) and +2.6 %. Two more checks out of the DSP
+    transition, priced from the first nine at ~1.5 % of bobby, read
+    −4.1 % in one build and +0.5 % in the next build that contained them
+    (performance.md, Closed ideas, DSP execution). Under ~2 % the phone
+    tells builds apart, not mechanisms: measure every candidate build
+    warm, over three rounds or more, and ship nothing from a count.
   - **Stopwatch is the noisy scene on a phone:** single runs of one build
     spread from x0.41 to x0.45 (ten runs each of two builds, 2026-11-11),
     towerblox and bobby within ±1 %. Two pairs there say nothing; ten

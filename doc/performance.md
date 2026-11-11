@@ -775,6 +775,7 @@ unless noted).
 | Biquad routine 0xDDDE (~11 % of towerblox chains) | ~1 % reachable, parked | 2026-11-02 |
 | Lazy DSP flags. Upper bound: `fz fm fn fv fe fc0` dead at every block exit and at the chain helper (inexact, `tcg_remove_dead_flag_stores`) | towerblox −0.6 % ± 0.65 (4 pairs × 30 s). midi −38 %: the DSP reads those flags across blocks, so the inexact build changed its work, and it bounds nothing there. DSP TB code is ~23 % of towerblox, so even cutting a fifth of it is ~4–5 %, before materializing the flags read across blocks | 2026-11-05 |
 | The exit and interrupt request checks after a data-writing DSP instruction only on its slow (helper) arm | Priced, not built: two constant-address loads and two predicted branches per such instruction, under 0.5 % of the scene, and exact only with a translation-time record of the helper calls since the last check | 2026-11-10 |
+| The chain test's tail after `59a4bd78f9`. (a) Each link's arm reads the link's `instruction_count` and `code` through `tcg_constant_ptr`: behind the `linked` label the `link` temp is a variable again, so those two loads keep their bounds checks (hot DSP block functions 24.4 → 17.9 checks with it). (b) One generation word for both invalidations: the DSP's cache generation becomes a low word that a batch eviction bumps as well, and the links' eviction epoch and its compare go | Motorola One 5G Ace, bobby, three builds rotated four times, all warm: (a) −4.1 % (x0.716 against x0.747; each of its six runs below every baseline run, cause not found), (a) + (b) +0.5 % (x0.751). (b) alone before that: bobby +1.1 / +2.0 %, towerblox −2.4 / +1.5 %. Desktop x64 with forced checks, 4 pairs a round: (a) bobby +3.3 / −1.4 %, towerblox +1.1 / −2.5 %; (b) over (a) bobby +3.1 / +0.8 %, towerblox 0.0 / +1.0 %, midi +0.8 %. Two checks fewer per transition were expected to give ~1.5 % on bobby and did not; nothing here pays for a change in upstream's file. `build/experiments/dsp-chain-link-generation-early-reads.diff` (applies to `cc1c25a551`) | 2026-11-11 |
 
 ### DSP scheduling and threading
 
@@ -956,7 +957,9 @@ that exists.
   checks (27 instructions) out of it was worth 4.7 % of the scene there;
   the five instructions of the tail call's signature test (`cc1c25a551`,
   on ARM transitions as well) +0.7 %, inside the noise, and +2.6 % on
-  bobby. A check costs more than its instructions (lessons.md).
+  bobby; two more checks and the epoch compare nothing (Closed ideas,
+  DSP execution). What is left of the transition is not a lever at the
+  phone's resolution short of fewer transitions (DSP chain tail, below).
 - **The DSP's share on the phone** (towerblox, the profile of 2026-11-10
   split by the C call chain above each sample): DSP blocks 22.8 % of the
   vCPU thread and the C code under the DSP's slice functions 13.3 %, so
