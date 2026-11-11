@@ -69,8 +69,8 @@ assignment, a LAPDm frame) are taken at that moment. It has no thread, no
 timer, no lock, no allocation on that path and, without `gsmtap=` and
 `netdev=`, no system call. A cell nobody listens to costs nothing.
 
-Measured on EL71 (Chromium, this host, a dist from the same upstream
-revision, 23d7df3200, on the `bts-emulator` branch):
+Measured on EL71 (Chromium, this host, a dist of the same upstream
+revision, 23d7df3200):
 
 - **Per-thread CPU profile** (every worker, 100 µs sampling, 90 s starting
   14 s after Start, so cell search, registration and camping are inside). The
@@ -147,14 +147,14 @@ So the built-in cell stays where upstream runs it.
   means that moving the bsp pin past 15157fe ("enable RF transceiver on
   ELKA") makes EL71 hang with the page's default music cable, GSM or not.
 
-## A network on a server (not in main)
+## A network on a server (dropped)
 
 Before upstream had the built-in cell, the option was built against
 [bts-emulator](https://github.com/siemens-mobile-hacks/bts-emulator), a stack
 of native Osmocom daemons that has to run on a server: a WebSocket bridge in
 `serve.mjs` to its TRX multiplexer and a qemu object with a link thread of its
-own (`gsm-trxmux-ws`). With it EL71 and KE800 registered and received SMS.
-It is kept on the `bts-emulator` branches of this repository and of the qemu
-fork, with its own version of this document, and is not merged: it adds fork
-code to `hw/gsm` and needs a server, and the built-in cell is enough for a
-phone that shows a network.
+own. With it EL71 and KE800 registered and received SMS. A port of those
+daemons to WebAssembly was started too (all five built and linked, none
+ran). Both were deleted on 2026-11-11 without being merged: the built-in
+cell is enough for a phone that shows a network, and neither is in the
+history of this repository or of the qemu fork.
