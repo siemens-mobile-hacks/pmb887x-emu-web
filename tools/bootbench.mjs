@@ -102,6 +102,12 @@ async function boot(p, spec, measured) {
   const q = distQuery(spec);
   await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(spec)}${q ? "&" + q : ""}`,
     { waitUntil: "domcontentloaded", timeout: 120000 });
+  // boots are timed without the GSM network, as scenebench.mjs measures
+  await p.evaluate(() => {
+    const gsm = document.querySelector("#gsm");
+    gsm.checked = false;
+    for (const type of ["input", "change"]) gsm.dispatchEvent(new Event(type, { bubbles: true }));
+  });
   await p.selectOption("#startup", "ONLINE");
   await p.click("#ff-mode-own");
   await p.setInputFiles("#fullflash", [flash]);

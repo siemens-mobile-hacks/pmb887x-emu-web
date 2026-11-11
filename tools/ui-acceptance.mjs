@@ -175,7 +175,9 @@ ok("keys default is recalculate",
   (await page.$eval('input[name="siemens-mode"]:checked', (e) => e.value)) === "recalc");
 ok("keys block sits above IMEI/ESN", await page.$eval(".adv-grid", (g) =>
   [...g.children].map((c) => c.id || c.querySelector("input,select")?.id).join(",")
-    === "sim,operator,startup,siemens-keys-block,imei,esn"));
+    === "sim,operator,startup,gsm,siemens-keys-block,imei,esn"));
+ok("GSM network is a checkbox, ticked by default",
+  await page.$eval("#gsm", (e) => e.type === "checkbox" && e.checked));
 ok("IMEI/ESN editable in recalc mode",
   !(await page.$eval("#imei", (e) => e.disabled)) && !(await page.$eval("#esn", (e) => e.disabled)));
 

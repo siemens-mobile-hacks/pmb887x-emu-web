@@ -70,6 +70,19 @@
               </select>
             </label>
 
+            <!-- qemu's own cell (gsm-bts), with nothing outside the page
+                 (doc/gsm-network.md). Does something only on a board whose
+                 config has a radio. -->
+            <div class="adv-span">
+              <label class="checkbox-label">
+                <input type="checkbox" id="gsm" checked>
+                <span>GSM network
+                  <small>The phone finds a cell and shows signal. EL71 and the
+                    LG phones; the other boards have no radio yet and run
+                    without it.</small></span>
+              </label>
+            </div>
+
             <!-- Siemens only: the firmware refuses to boot unless the keys
                  stored in the fullflash match the ESN it is handed. app.js
                  attaches this block only for a siemens-* device in Own file

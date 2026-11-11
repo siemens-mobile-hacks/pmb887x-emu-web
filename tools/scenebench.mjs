@@ -289,6 +289,13 @@ async function runOnce(spec, run) {
     const q = distQuery(spec);
     await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(spec)}${q ? "&" + q : ""}`,
       { waitUntil: "domcontentloaded", timeout: 120000 });
+    // the scenes are measured without the GSM network the page gives EL71
+    // by default, as the numbers before it were
+    await p.evaluate(() => {
+      const gsm = document.querySelector("#gsm");
+      gsm.checked = false;
+      for (const type of ["input", "change"]) gsm.dispatchEvent(new Event(type, { bubbles: true }));
+    });
     if (cdp) {
       // a phone's layout keeps both in closed sheets, out of a pointer's reach
       await p.evaluate(() => {

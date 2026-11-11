@@ -359,6 +359,12 @@ async function runOne(dist, hashes, r) {
 
     try {
       await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(dist)}${distQuery(dist) ? "&" + distQuery(dist) : ""}${bankQuery}${extraQ ? "&" + extraQ : ""}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+      // measured without the GSM network, as scenebench.mjs measures
+      await p.evaluate(() => {
+        const gsm = document.querySelector("#gsm");
+        gsm.checked = false;
+        for (const type of ["input", "change"]) gsm.dispatchEvent(new Event(type, { bubbles: true }));
+      });
       await p.selectOption("#startup", "ONLINE");
       await p.click("#ff-mode-own");
       await p.setInputFiles("#fullflash", [FLASH, ...SIDECARS]);

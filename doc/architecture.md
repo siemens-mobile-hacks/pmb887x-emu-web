@@ -288,7 +288,10 @@ thread is using them).
   -audio wasm,… -accel
   tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on
   -machine pmb887x -drive if=pflash… -serial file:/serial.log -monitor
-  none -parallel none [-device gsm-sim,…]`, every board alike; `?bank=`/`?idlelead=` set
+  none -parallel none [-device gsm-sim,…]`, every board alike; on a board
+  with a radio the GSM option adds `-object gsm-bts,id=gsm0` and
+  `gsm-network=gsm0` on the machine, see
+  [gsm-network.md](gsm-network.md); `?bank=`/`?idlelead=` set
   those two values, `?icount=` swaps the accel for `-icount`, a `?qargs=`
   with its own `-accel` drops it). The native launcher uses the same
   drive/serial/env/SIM set but boots under `-icount shift=3,sleep=off`

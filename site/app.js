@@ -420,7 +420,7 @@ SK.clear.addEventListener("click", () => {
 // so naming it here would put a change on the summary that the next flash
 // does not have.
 const ADV_FIELDS = [["imei", "IMEI"], ["esn", "ESN"], ["sim", "SIM"],
-  ["operator", "operator"], ["startup", "startup"]];
+  ["operator", "operator"], ["startup", "startup"], ["gsm", "GSM"]];
 const advDefaults = new Map(
   ADV_FIELDS.map(([id]) => [id, $(id).type === "checkbox" ? $(id).checked : $(id).value]));
 
@@ -1091,10 +1091,56 @@ function readCpuType(file, depth = 0) {
   return ext ? readCpuType(ext[1], depth + 1) : null;
 }
 
+/* ---- GSM network ---- */
+
+// Board includes whose radio the pinned bsp revision still ships commented
+// out, and upstream has since enabled (bsp 15157fe, "enable RF transceiver
+// on ELKA"). Only a GSM run gets it: with a radio the firmware finds a cell,
+// and the run without the option has to stay what it was.
+const GSM_RADIO_INCLUDES = ["include/siemens-sg2-elka.toml"];
+const RADIO_TYPE_RE = /^[ \t]*type[ \t]*=[ \t]*"(?:hd155153np|pmb6272)"/m;
+
+// The board's config files, the board itself first.
+function boardChain(file, depth = 0) {
+  const txt = boardText.get(file);
+  if (!txt || depth > 4) return [];
+  const ext = txt.match(/^[ \t]*extends[ \t]*=[ \t]*"([^"]+)"/m);
+  return [[file, txt], ...(ext ? boardChain(ext[1], depth + 1) : [])];
+}
+
+// A board config that extends `device` with the radio its include carries
+// commented out, or null when there is nothing to add.
+function gsmBoardOverlay(device) {
+  for (const [file, txt] of boardChain(device + ".toml")) {
+    if (!GSM_RADIO_INCLUDES.includes(file)) continue;
+    const block = txt.match(/^#\[peripheral\.RF\]\n(?:#.*\n)+/m);
+    if (!block) return null;
+    return `[board]\nextends = "${device}.toml"\n\n${block[0].replace(/^#/gm, "")}`;
+  }
+  return null;
+}
+
+// Does a GSM run of this board have a transceiver to receive with?
+function gsmBoardHasRadio(device) {
+  return !!gsmBoardOverlay(device) ||
+    boardChain(device + ".toml").some(([, txt]) => RADIO_TYPE_RE.test(txt));
+}
+
+// Does a run of this board get the GSM network, qemu's built-in cell
+// (gsm-bts)? Advanced ▸ GSM network, on unless unticked, and only a board
+// whose config has a transceiver: on the others the option does nothing.
+function gsmFor(device) {
+  return $("gsm").checked && !!device && gsmBoardHasRadio(device);
+}
+
 // What a run boots with: the music cable where the board has one, the stereo
-// headset on an SGOLD phone, else the board's own default.
+// headset on an SGOLD phone, else the board's own default. A GSM run takes
+// the default, which is the data cable: with anything else the firmware of a
+// phone that camps on a cell goes into deep sleep, and the SCCU model does
+// not bring it back (doc/gsm-network.md).
 function bootAccessory(conf, file) {
   if (!conf) return null;
+  if (gsmFor(file.replace(/\.toml$/, ""))) return conf.default;
   if (conf.names.includes("music-cable")) return "music-cable";
   if (readCpuType(file) === "pmb8875" && conf.names.includes("headset-stereo")) return "headset-stereo";
   return conf.default;
@@ -1695,9 +1741,15 @@ async function boot() {
     const simArgs = simSlot && sim === "virtual"
       ? ["-device", `gsm-sim,operator=${operator}`]
       : [];
+    // GSM network (doc/gsm-network.md): on a board that has a radio, qemu
+    // gets its built-in cell. Without the option, and on any other board,
+    // the machine has no network object at all.
+    const gsm = gsmFor(device);
+    const gsmArgs = gsm ? ["-object", "gsm-bts,id=gsm0"] : [];
     // what the Accessory control shows, chosen there or not
     const accConf = readAccessories(device + ".toml");
-    const bootAcc = acc?.dev === device ? acc.plugged : bootAccessory(accConf, device + ".toml");
+    const bootAcc = acc?.dev === device && acc.gsm === gsm
+      ? acc.plugged : bootAccessory(accConf, device + ".toml");
     const accArgs = accConf && bootAcc && bootAcc !== accConf.default
       ? ["-global", `accessory-connector.accessory=${bootAcc}`]
       : [];
@@ -1705,7 +1757,8 @@ async function boot() {
       "-display", "wasm",
       ...audioArgs,
       ...timingArgs,
-      "-machine", "pmb887x",
+      "-machine", gsm ? "pmb887x,gsm-network=gsm0" : "pmb887x",
+      ...gsmArgs,
       // always writable: the image lives in MEMFS, so the firmware's writes
       // only ever touch this run's copy — and "Export flash" hands that
       // copy back
@@ -1758,7 +1811,11 @@ async function boot() {
         mod.FS.writeFile(FULLFLASH_PATH, flashBytes);
         for (const [suffix, bytes] of sidecarBytes)
           mod.FS.writeFile(FULLFLASH_PATH + suffix, bytes);
-        mod.ENV.PMB887X_BOARD = `/boards/${device}.toml`;
+        // a GSM run of a board whose radio the pinned config leaves out
+        // boots an overlay of that board instead
+        const gsmBoard = gsm ? gsmBoardOverlay(device) : null;
+        if (gsmBoard) mod.FS.writeFile(`/boards/${device}-gsm.toml`, gsmBoard);
+        mod.ENV.PMB887X_BOARD = `/boards/${device}${gsmBoard ? "-gsm" : ""}.toml`;
         mod.ENV.PMB887X_STARTUP = startup;
         mod.ENV.PMB887X_FLASH0_OTP0 = otp0;
         mod.ENV.PMB887X_FLASH0_OTP1 = otp1;
@@ -1908,10 +1965,11 @@ const ACCESSORY_LABELS = {
 function renderAccessory() {
   const sel = $("acc-select"), btn = $("btn-accessory"), cap = $("acc-caption");
   const dev = running ? ranDevice : currentDevice();
-  if (acc?.dev !== dev) {
+  const gsm = running ? acc?.gsm : gsmFor(dev);
+  if (acc?.dev !== dev || acc.gsm !== gsm) {
     const conf = dev ? readAccessories(dev + ".toml") : null;
     const names = conf?.names.filter((n) => n !== conf.unplugged) ?? [];
-    acc = { dev, unplugged: conf?.unplugged ?? null, names, plugged: bootAccessory(conf, dev + ".toml") };
+    acc = { dev, gsm, unplugged: conf?.unplugged ?? null, names, plugged: bootAccessory(conf, dev + ".toml") };
     sel.replaceChildren(...(names.length ? names : [""]).map((n) => {
       const opt = document.createElement("option");
       opt.value = n;
@@ -1936,6 +1994,8 @@ function renderAccessory() {
 }
 
 $("acc-select").addEventListener("change", renderAccessory);
+// the GSM option changes what a run boots with
+$("gsm").addEventListener("change", renderAccessory);
 
 $("btn-accessory").addEventListener("click", () => {
   if (!acc) return;
