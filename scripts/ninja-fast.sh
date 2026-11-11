@@ -46,6 +46,13 @@ check_link_args() {
          "run scripts/build-qemu-wasm64.sh to reapply them" >&2
     exit 1
   fi
+  # a link without it works, with the CPU state in the heap: slower on arm64 only
+  if ! awk '/^build qemu-system-arm.js: /{f=1} f&&/LINK_ARGS/{print; exit}' build.ninja |
+       grep -q -- "-sGLOBAL_BASE="; then
+    echo "ninja-fast: build.ninja has no -sGLOBAL_BASE link arg (qemu/w64-low.h);" \
+         "run scripts/build-qemu-wasm64.sh to apply it" >&2
+    exit 1
+  fi
 }
 check_link_args
 

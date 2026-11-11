@@ -4,7 +4,7 @@ Where the speed work stands, how to measure and validate a change, and what
 has already been tried. Read this before doing performance work on the
 emulator.
 
-- **State described:** fork `472c44c938`, on smh/master `9e5a6bbfd6`
+- **State described:** fork `f77b282b9f`, on smh/master `9e5a6bbfd6`
   (2026-11-10).
 - **Related:** [wasm-fast-paths.md](wasm-fast-paths.md) lists every fork change
   that exists only for speed, and how to remove one.
@@ -32,7 +32,10 @@ emulator.
   `--js-flags=--wasm-enforce-bounds-checks` (`tools/perf/swab.sh` sets it by
   default). With constant env addresses in place (`4dc162bbf6`), the flag
   still costs ~8 % on towerblox and ~9 % on stopwatch. x86 without the flag
-  hides env-addressing effects, so re-test those ideas with it.
+  hides env-addressing effects, so re-test those ideas with it. On a phone
+  the checks cost 19 % (2026-11-10), and V8's arm64 code has other costs
+  that x64 does not show at all: measure ARM ideas on a phone ("On a
+  phone" below).
 - **The work is one thread.** On Bobby the vCPU worker used 0.605 of the
   browser's 0.73 cores; the main thread used 0.02 and GPU/compositor 0.03
   (2026-10-31). JS-side changes cannot win anything. The DSP runs on the vCPU
@@ -232,12 +235,25 @@ SCENEBENCH_CDP=http://127.0.0.1:9222 node tools/scenebench.mjs stopwatch dist-ji
 `127.0.0.1:8080` on the phone is a secure context, so the page is
 cross-origin isolated without TLS. scenebench opens a tab of its own, hands
 the flash to the page through DevTools and closes the tab; `cpu` reads 0.
-`--keyscale` stretches the key waits for a slow guest. The tunnel also
-serves `PROF_ATTACH=9222` (`tools/wprof2.mjs`).
+The walk waits in guest time there (an idle guest keeps real time, a busy
+one gets what it needs), so a towerblox run is ~5 minutes on a phone that
+emulates at a third of real time. The tunnel also serves `PROF_ATTACH=9222`
+(`tools/wprof2.mjs`) and `tools/perf/wasmtrace.mjs` (V8's wasm compile
+events: counts, durations and threads per tier).
+
+**A/B on the phone:** alternate the two dists, one run each, Chrome
+restarted in between; a guest behind real time is in free-run by itself, so
+the ordinary dists do. Towerblox repeats within 0.5 % (x0.283, x0.284,
+x0.287), which is better than the desktop's paired A/B, and an x64 host
+cannot see what V8's arm64 code costs at all (lessons.md). V8 flags work
+through the debug-app command line (lessons.md).
 
 | Phone | Scene (date, fork) | Result |
 |---|---|---|
-| Motorola One 5G Ace (Snapdragon 750G: 2 × A77 2.2 GHz + 6 × A55, 3.5 GB, Android 11, Chrome 156) | stopwatch, paced (2026-11-10, `472c44c938`) | x0.40, 54 MIPS, 61 fps; EL71 idle after 56 s |
+| Motorola One 5G Ace (Snapdragon 750G: 2 × A77 2.2 GHz + 6 × A55, 3.5 GB, Android 11, Chrome 156) | paced, `472c44c938` (2026-11-10) | towerblox x0.29 (40 MIPS, 52 fps; S75 idle after 60 s), stopwatch x0.40 (55 MIPS), bobby x0.64 |
+| the same | paced, `0dcee227d0` (A11) | towerblox x0.327 (+12.8 %, S75 idle after 55 s), stopwatch x0.428 (+6.2 %), bobby x0.65 (+1.6 %, fps +13 %) |
+| the same, towerblox with V8 flags, `472c44c938` | `--wasm-tiering-budget=1300000` | x0.297 (+4 %) |
+| | `--no-wasm-bounds-checks` | x0.338 (+19 %) |
 
 ### Boot A/B (`tools/perf/bootab.sh`)
 
@@ -897,7 +913,17 @@ that exists.
   and `$VARS` does not word-split.
 - **MIDI underrun (2026-10-30, not re-checked):** one ~120 ms underrun per
   60 s window on a normal host, unrelated to speed. Cause not found.
-- **Pixel numbers** have not been re-measured since 2026-11-01.
+- **Pixel numbers** have not been re-measured since 2026-11-01 (the owner's
+  figure for towerblox before `8fcac1b334` is ~x0.67). The phone that is
+  measured is the Motorola in "On a phone".
+- **What V8's arm64 TB code still pays over x64, after A11** (2026-11-10,
+  read from the code an arm64 Node prints; nothing here is priced on a
+  phone yet): the `movz` + `movk` pairs that are left, ~6 % of the
+  instructions, are `goto_tb` slots and the DSP's chain-link fields, whose
+  addresses are per TB or per block; one `movz` for `can_do_io`, a byte
+  above 4095; the explicit bounds checks, 19 % of towerblox there, a `cmp`
+  + `b.hs` per TLB word and per guest access; V8's own stack check, frame
+  and memory-base reloads.
 
 **Remaining levers** (not done; prices as of their dates):
 
@@ -1050,6 +1076,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-10 | `33855e074b`, `8fcac1b334` (`db5ec3b899`) | Two bounds-checked loads per guest access where there were three (C8: the comparator and the addend in one 64-bit word), and one probe for all the words of an LDM/STM (R8). Free-run, two pairs at a time, host load 4–10. C8: stopwatch +2.4 % (6 pairs), towerblox +1.1 % (14, se 1.0). R8 over C8: towerblox +2.0 % (6), stopwatch +3.6 % (4). Both: towerblox +3.1 % (16 pairs; the last ten +4.2 %, −2.5 to +9.4), stopwatch +4.1 % (6, +0.4 to +7.2), bobby +1.5 %, midi +1.2 %, video mips +0.5 % (4 each, one video pair −1.0 %). Lockstep with `LS_QARGS` clean on S75 and EL71; the op suite gained page-boundary and base-in-list LDM/STM cases (1312 cases, identical on native JIT, TCI and wasm) |
 | 2026-11-10 | `58cb97caff` (`8fcac1b334`) | The DSP peripheral bus adds cycles up until a device has something to do (D12), under the owner's rule of that day for changes in upstream's files. Free-run, two pairs at a time: bobby +2.2 % (6 pairs), towerblox +1.2 % (12, −4.4 to +7.2), midi +0.6 % (6, all positive), stopwatch +0.1 % (8), video mips −0.3 % (6). V8 `--prof` on towerblox: `dsp_bus_advance` 3.05 % → 2.4 % with its callees. A digest of every bus event with its cycle count (`tools/perf/busdigest.py`) is identical to the undeferred bus over 35M events of the S75 and EL71 boots, and both it and the new unit test catch a horizon late by 50 cycles; upstream's own unit tests did not. The rest of the round priced what is left and found nothing above 1 %: see Closed ideas (DSP scheduling) and Remaining levers (DSP chain tail) |
 | 2026-11-10 | `bed67ff185`, `472c44c938` (`58cb97caff`) | Firefox. SpiderMonkey never re-points a table slot when a function tiers up, so every chained TB was entered through its baseline code; each Firefox batch now carries a rebinder (`table.init` from a passive segment) that the dispatcher runs once a second for the live batches, 2–3 ms a pass. Free-run in Firefox 155, two pairs each: towerblox +11.9 %, stopwatch +11.6 %, bobby +7.7 %, midi +6.4 %, video +24.7 %; towerblox x0.96 → x1.30 over an 80 s window (the ceiling with tier-up at the first call is x1.35, Chromium with bounds checks x1.72). Chrome modules are unchanged (+2.0 %, se 1.6). Closed on the way: tiering up sooner from the page by wrapping TB bodies in loops (the gap between x1.15 at 20 s and x1.30 is warm-up only, and Ion emits an interrupt check at every loop header). Testing eviction with rebinders found an abort of older date: a batch landing in the middle of a DSP slice evicted a block the slice then ran (`bed67ff185`, lessons.md) |
+| 2026-11-10 | `0dcee227d0` (`472c44c938`) | The first measurements on a phone, and the first lever only an ARM host shows (A11). A phone's profile has the desktop's shape with TB code ~1.3x slower relative to the C module; tiering, thread placement and compile backlog were ruled out (lessons.md). V8's arm64 code builds every constant address above 64 KiB with `movz` + `movk`, 19–22 % of all TB instructions, so the CPU object, the DSP runtime and two counters moved below 16 KiB of linear memory, where the address is the load's immediate (`CPUTLB.d` became a pointer to make room in front of env). Motorola One 5G Ace, alternating runs: towerblox +12.8 % (x0.320, x0.334 against x0.289, x0.291), stopwatch +6.2 %, bobby +1.6 % (fps +13 %), S75 boot −8 %. Desktop x64: stopwatch +0.9 %, bobby +1.1 %, towerblox +0.6 % (2 pairs each, noise). Tools: `tools/perf/adbtun.mjs`, `SCENEBENCH_CDP`, `tools/perf/wasmtrace.mjs`. On top, `f77b282b9f`: an access at env + offset is one constant address, because V8's arm64 backend adds a memarg offset to the memory base before a store at a constant address; towerblox +1.1 % on the phone (x0.314, x0.326 against x0.313, x0.320) |
 
 ## 2026-11-04 deviation cleanup
 

@@ -83,8 +83,12 @@ fi
 # Asyncify state check after every call) and no Binaryen pass over the
 # linked module.  -O2 took 28 -> 11 MB wasm, video -3 %, J2ME -5 %;
 # -O3 over -O2 is another -1.8 % on video (J2ME a tie).
+# -sGLOBAL_BASE: static data starts at 256 KiB, and what is below holds the
+# CPU and DSP state TB code addresses as constants, which arm64 reaches for
+# nothing down there (qemu/include/qemu/w64-low.h).  A build linked without
+# it runs, with that state in the heap.
 ONLY="$ROOT/qemu/configs/meson/asyncify-only.txt"
-LA="['-O3','-pthread','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8','-sEXIT_RUNTIME=1']"
+LA="['-O3','-pthread','-sGLOBAL_BASE=262144','--emit-symbol-map','-sASYNCIFY=1','-sPROXY_TO_PTHREAD=1','-sFORCE_FILESYSTEM','-sALLOW_TABLE_GROWTH','-sTOTAL_MEMORY=2GB','-sWASM_BIGINT','-sEXPORT_ES6=1','-sASYNCIFY_IMPORTS=ffi_call_js','-sASYNCIFY_ONLY=@$ONLY','-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS,ENV,HEAPU8','-sEXIT_RUNTIME=1']"
 # qom_cast_debug: OBJECT_CHECK() casts assert the QOM type on every call —
 # the display path (lcd_transfer, the LCD/SSI pin handlers) does that per
 # FIFO word (~1.6 % of the vCPU in a redrawing J2ME app); a release build

@@ -10,10 +10,10 @@ upstream, or when deleting an optimization to bring a file back towards upstream
 - **State described:** fork `6b8a64baa5` (2026-11-09). Every identifier
   below was grepped in that tree; the 2026-11-10 review round
   (`db5ec3b899`) changed the A5, C2 and R2 rows and the list of correctness
-  fixes, `8fcac1b334` added C8 and R8, and `58cb97caff` D12. The fork is at
-  `472c44c938`: the two commits after D12 are in the backend and its DSP
-  glue (a rebinder for Firefox's tiers, and evicted DSP blocks dropped in
-  the middle of a slice), which are not itemized here.
+  fixes, `8fcac1b334` added C8 and R8, `58cb97caff` D12 and `0dcee227d0`
+  A11 (the fork is at `f77b282b9f`). The two commits between those (`bed67ff185`, `472c44c938`) are in
+  the backend and its DSP glue (evicted DSP blocks dropped in the middle
+  of a slice, a rebinder for Firefox's tiers), which are not itemized.
 - **Numbers** are quoted from the commit messages
   (`git -C qemu log -1 <sha>`) and from the A/Bs of their date; September
   figures were measured under icount. "Not measured" means no source gives
@@ -80,7 +80,7 @@ Each entry's **Mark** column says how isolated the fast path is:
 | **wasm** | Inline in an upstream file, unmarked, under `#ifdef CONFIG_TCG_WASM64` or `__EMSCRIPTEN__`. Native builds are unaffected |
 | **all** | Inline in shared code, unmarked, and compiled into native builds too. Native lockstep and reference runs execute it |
 
-Today R6, A9 and A10 carry the comment: each has its own file, plus MARK
+Today R6, A9, A10 and A11 carry the comment: each has its own file, plus MARK
 comments on its hooks. D6's `dma_sink_write_block_mr`, D9's hunks in
 `hw/lcd/lcd.c` and `hw/gpu/s1d13716/s1d13716.c`, and D11 are marked too.
 Everything else is unmarked and inline. New fast paths should follow R6's
@@ -125,6 +125,7 @@ before relying on it.
 | A8 | `configure`, the wasm64 `CPU_CFLAGS` (`-sSUPPORT_LONGJMP=wasm`, and `-sWASM_LEGACY_EXCEPTIONS=0 -mllvm -wasm-use-legacy-eh=0` for the standard exnref instructions); the guards in `scripts/ninja-fast.sh` and `scripts/build-qemu-wasm64.sh` | setjmp/longjmp as wasm exception handling instead of emscripten's JS mode, which routes every call a setjmp caller makes through a JS `invoke_*` trampoline (`cpu_exec` once per entry, `setjmp_gen_code` three times per translated TB). 15 trampolines → 0. It composes with ASYNCIFY only while no function on `configs/meson/asyncify-only.txt` calls setjmp (lessons.md, Emscripten runtime) | EL71 boot burst −4.4 / −7.6 % (bootab.sh, 2 × 4 pairs, against `36e3b3cc4c`). Free-run, 4 pairs each: towerblox +4.9 %, video +3.6 %, bobby +1.2 %, midi +1.2 %, stopwatch −0.4 % (se 1.8) and +1.1 to +3.2 % swapped | Drop the flags from `CPU_CFLAGS` (upstream's line is `-m64 -sMEMORY64=…`) and the two guards, then rebuild from a fresh build dir (configure fixes the compiler's argv when the dir is made) | Firefox boot (`close` tier) | wasm |
 | A9 | `tcg/la-touched.c.inc`; its hooks in `tcg.c`: the `#include` after `la_cross_call`, six `if (LA_W64)` branches and three `la_w64_touch` calls in `liveness_pass_1`, the `LA_W64_RA` branches in `tcg_reg_alloc_bb_end` and `tcg_reg_alloc_cbranch` | Liveness walks only the globals, the TEMP_TB temps and the EBB/const temps an op read since the last reset, instead of every temp, at each block end, conditional branch and call-clobbering op. The register allocator saves only the TEMP_TB temps at a block end and skips the conditional branch's assert loop (non-debug builds). States, preferences and the generated code are as before | EL71 boot, 74k TBs: `liveness_pass_1` 543 → 377 ms (−30 %), register allocation and emission −14 %, `tcg_gen_code` 2.63 → 2.30 s (−12.5 %). Boot (bootab.sh, 2 × 4 pairs, against `42bb89c091`): burst −1.5 / −1.5 %, audioMs −2.1 / −2.8 %, lagMax −2.9 / −4.9 %. Free-run, 4 pairs each: stopwatch +5.9 % (4/4), towerblox −0.4 % and +2.8 % swapped (4/4), bobby +0.3 %, midi −0.1 %, video −0.3 % over 12 pairs (median −0.1 %) | Delete the file and its `#include`, keep the `else` arms of the `LA_W64` and `LA_W64_RA` branches, and drop the `la_w64_touch` calls | `#define LA_W64_CHECK` at the top of the file: every walk aborts if an EBB/const temp off the touched list is not dead with no preference (boot and the five scenes passed, 2026-11-06) | FILE |
 | A10 | `tcg/const-table.c.inc`; its hooks in `tcg.c`: the `#include` before `tcg_func_start`, the `W64_CONSTS` branches in `tcg_func_start` and `tcg_constant_internal` | A TB's constant temps go in a per-thread open-addressed table per type (2 × `TCG_MAX_TEMPS` slots), emptied by a generation bump, in place of the per-type `GHashTable` that `tcg_func_start` empties for every TB (two indirect calls per lookup, and a grow and shrink per TB). Same temps in the same order | EL71 boot (bootab.sh, 2 × 4 pairs, against `328087aa34`): burst −1.0 % (se 1.2) / −2.1 % (se 0.5, 4/4), audioMs −0.9 / −5.3 %, lagMax −2.8 / −4.5 %. Free-run: stopwatch +1.3 %, towerblox +1.1 % (4 pairs each), midi −0.1 % (8), bobby 0.0 % (12), video −0.2 % (16, median −0.2 %) | Delete the file and its `#include`, and keep the `else` arm in `tcg_func_start` and the code after the branch in `tcg_constant_internal` | `#define W64C_CHECK` at the top of the file: the `GHashTable`s are kept as well, and every lookup aborts unless both give the same temp (boot and the five scenes passed, 2026-11-06) | FILE |
+| A11 | `include/qemu/w64-low.h` (`W64_LOW_*`, `w64_low_place`, `w64_low_release` in `tcg/wasm64/wasm64.c`); hooks: `hw/arm/pmb887x/board.c` (the CPU object), `dsp/runtime.c` `dsp_runtime_create` / `dsp_runtime_destroy`, `cpu-timers.h` + `ui/wasm.c` (`wasm_guest_insns`), `translation-block.h` (`w64_evict_epoch`), `hw/core/cpu.h` `CPUTLB.d` as a pointer with its allocation in `cputlb.c` `tlb_init` / `tlb_destroy`; the link flag `-sGLOBAL_BASE=262144` in `scripts/build-qemu-wasm64.sh` and its guard in `scripts/ninja-fast.sh` | The state A6 addresses as constants sits below 16 KiB of linear memory: the DSP runtime at 0x400, the CPU object at 0x2800 (env at ~13.5 KiB, which needs the 22 `CPUTLBDesc` out of the object's head), two counters at 0x100. V8's arm64 code takes such an address as the load's immediate offset; in the heap each access cost a `movz` + `movk` first, 19–22 % of all TB instructions. x64 folds any constant address, so nothing changes there | Phone (Snapdragon 750G, Chrome 156), towerblox: +12.8 % (x0.320, x0.334 against x0.289, x0.291), S75 boot −8 %; the CPU object and counter alone +8 %. Desktop x64: noise (0dcee227d0) | Delete `w64-low.h` and its users (grep `W64_LOW` and `w64_low_`), restore `CPUTLBDesc d[NB_MMU_MODES]`, drop the link flag and the ninja-fast guard. Each hook already falls back to the normal allocation, so dropping the link flag alone turns it off | An arm64 host: `SCENEBENCH_CDP` on a phone (performance.md, "On a phone"); the constant census of a grabbed module under an arm64 Node (lessons.md) | FILE |
 
 ## 2. cputlb, memory, physmem
 
@@ -207,6 +208,8 @@ vcpu-timers.
 
 ## Dependencies between entries
 
+- A11 needs A6: without constant env addresses nothing reads the low
+  places.
 - R6 and R7 need A3 (`w64_back_edge`; R7 also its joins). Its rectangles also need A3's deferred
   exits and the absorbed `b`, the backend's `goto_tb` slots (`jmp_dest`, and
   the table index a chained slot holds), and the interpreter tier's

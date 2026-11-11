@@ -339,14 +339,30 @@ async function runOnce(spec, run) {
       }
       return (100 * diff) / n;
     };
+    // Attached to a phone, the walk waits in guest time: an idle guest keeps
+    // real time, a busy one that cannot gets the time it needs and no more.
+    const vclockMs = () => p.evaluate(() => Number(window.__qemu._wasm_vclock()) / 1e6);
+    const wait = async (ms) => {
+      if (!cdp) return sleep(ms);
+      const v0 = await vclockMs(), t0 = Date.now();
+      do await sleep(Math.min(ms, 100));
+      while ((await vclockMs()) - v0 < ms && Date.now() - t0 < ms * 30);
+    };
+    // a hold: an instant down/up is missed by the firmware's keypad scan
+    const press = async (k) => {
+      if (!cdp) return p.click(`[data-key="${k}"]`, { delay: 80 });
+      await p.hover(`[data-key="${k}"]`);
+      await p.mouse.down();
+      await wait(80);
+      await p.mouse.up();
+    };
     const s = {
-      // a hold: an instant down/up is missed by the firmware's keypad scan
-      key: async (k, waitMs) => { await p.click(`[data-key="${k}"]`, { delay: 80 }); await sleep(waitMs * keyScale); },
-      // the same hold, but the wait is not stretched by --keyscale
-      tap: async (k, waitMs) => { await p.click(`[data-key="${k}"]`, { delay: 80 }); await sleep(waitMs); },
+      key: async (k, waitMs) => { await press(k); await wait(waitMs * keyScale); },
+      // the same hold, but the wait is wall time and not stretched by --keyscale
+      tap: async (k, waitMs) => { await press(k); await sleep(waitMs); },
       moving: async (rows, waitMs = 1500) => {
         const a = await grab();
-        await sleep(waitMs * keyScale);
+        await wait(waitMs * keyScale);
         return (await diffPct(a, rows)) > 0.2;
       },
     };
@@ -364,7 +380,7 @@ async function runOnce(spec, run) {
       if ((Date.now() - t0) / 1000 >= 15 && quiet >= 4 && c.insns >= sc.bootInsns) break;
     }
     result.tIdle = +((Date.now() - t0) / 1000 - 4).toFixed(1);
-    await sleep(10000);   // the network search banner and first redraws settle
+    await wait(10000);   // the network search banner and first redraws settle
 
     // The idle screen's soft-key row tells it apart from any menu and the
     // dialer; captured once the first presses have cleared any popup.
@@ -389,7 +405,7 @@ async function runOnce(spec, run) {
       for (const [k, ms] of sc.path) await s.key(k, ms);
       for (let i = 0; i < 5 && !there; i++) {
         there = (await diffPct(sc.ref, sc.title)) <= 2;
-        if (!there) await sleep(1000);
+        if (!there) await wait(1000);
       }
       if (!there) console.log(`[scenebench] ${tag}: attempt ${attempt} missed the app, retrying`);
       if (serialExit || pageErr) fail("navigation");
@@ -397,7 +413,7 @@ async function runOnce(spec, run) {
     if (!there) fail("could not reach the app");
     if (sc.start && !(await sc.start(s))) fail("app did not start");
     await shoot("start");
-    if (devtools) console.log(`[scenebench] ${tag}: measuring`);
+    if (devtools || cdp) console.log(`[scenebench] ${tag}: measuring`);
     if (process.env.SCENEBENCH_AT_MEASURE) await p.evaluate(process.env.SCENEBENCH_AT_MEASURE);
 
     await sleep(3000);

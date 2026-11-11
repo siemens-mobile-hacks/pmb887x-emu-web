@@ -144,6 +144,45 @@ Current methods and numbers are in [performance.md](performance.md).
   collecting dropped modules. Every translated TB must be staged in an
   open batch (`w64_batch_begin_tb`): a TB run from a module of its own
   works in Chrome and eats Firefox's budget. Only the Firefox gate sees it.
+- **V8's arm64 code is not its x64 code, and only an ARM host shows it.**
+  For the same hot TB functions TurboFan emits 1.36x the instructions on
+  arm64 (2026-11-10, V8 15.6/Node 22, bounds checks on). Measured on a
+  phone (Snapdragon 750G, Chrome 156), towerblox:
+  - **A constant address costs by its size.** A load or store at a
+    constant address below 16380 (4-byte access; 32760 for 8 bytes, 8190
+    for 2, 4095 for one byte) takes it as an immediate offset
+    (`ldr w2, [x1, #4356]`); below 64 KiB it is one `movz` first; above,
+    `movz` + `movk`. With the CPU state in the heap those pairs were 19–22 %
+    of all TB instructions. x64 folds any constant into the access. This
+    is why the state sits at the bottom of memory (`qemu/w64-low.h`,
+    wasm-fast-paths.md A11).
+  - **Explicit bounds checks cost 19 %** there (`--no-wasm-bounds-checks`:
+    x0.285 → x0.338), against ~8 % on x64. Each is a `cmp` + `b.hs` per
+    access with a dynamic index (TLB entry, guest RAM).
+  - **Tiering is the same as on the desktop:** a 10x lower
+    `--wasm-tiering-budget` gives +4 %. The optimizing tier is not behind:
+    53 lazy baseline compiles a second on the vCPU thread at 156 us each
+    (0.8 % of it), 10 TurboFan compiles a second in the background at
+    6.9 ms each (`tools/perf/wasmtrace.mjs`).
+  - **The thread is where it should be:** the vCPU worker runs on a big
+    core at its top frequency, 98.5 % busy; 72.6 % of it is TB code and
+    28.8 % the main module (x64: ~65 / 34).
+  - **Reading arm64 code without a phone:** an arm64 Node under qemu-user
+    prints TurboFan's code for a grabbed TB module in seconds
+    (`qemu-aarch64 -L build/android-emu/linux-arm64/root <node-arm64>
+    --no-liftoff --no-wasm-lazy-compilation --wasm-enforce-bounds-checks
+    --print-wasm-code -e 'new WebAssembly.Module(...)'`, the modules from
+    `tools/perf/wasmgrab.mjs`; `scripts/setup-android-emu.sh linux-install`
+    installs qemu-user and the arm64 libraries).
+  - **V8 flags on a phone that is not rooted:**
+    `adb shell am set-debug-app --persistent com.android.chrome`, then
+    `echo 'chrome --js-flags=...' > /data/local/tmp/chrome-command-line`
+    and `am force-stop com.android.chrome`; `chrome://version` shows the
+    command line. Undo with `am clear-debug-app` and removing the file.
+  - **The phone measures better than the desktop:** towerblox repeats
+    within 0.5 % (x0.283, x0.284, x0.287). A guest that is behind real
+    time is in free-run by itself, so no bench build is needed; alternate
+    the two dists, one run each, ~5 minutes a run.
 - **SpiderMonkey never patches a table slot when a function tiers up**
   (Firefox 155 source, 2026-11-10). A slot written by an active element
   segment or `Table.set` keeps the code pointer of that moment, the baseline
