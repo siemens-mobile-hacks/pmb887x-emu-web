@@ -85,7 +85,12 @@ const EL71 = {
   // boot done once the guest has run this many instructions and gone quiet
   bootInsns: 1e9,
 };
-const SL65 = { image: "SL65v49lg1_TIM.bin", title: [0, 12], bootInsns: 5e8 };
+// startAt: guest seconds before which the scene's keys do not begin. The
+// SL65 firmware goes on searching for a network after its idle screen is up,
+// and what that costs changes for minutes; 63 s is where the scenes began
+// while the boot took 53 s (before qemu d5421c70af, which boots it in 23 s),
+// so a build that boots faster is measured over the same stretch.
+const SL65 = { image: "SL65v49lg1_TIM.bin", title: [0, 12], bootInsns: 5e8, startAt: 63 };
 const S75 = { image: "s75_working20060710172101.bin", bootInsns: 1e9 };
 
 const scenarios = {
@@ -388,6 +393,7 @@ async function runOnce(spec, run) {
     }
     result.tIdle = +((Date.now() - t0) / 1000 - 4).toFixed(1);
     await wait(10000);   // the network search banner and first redraws settle
+    while (sc.startAt && (await p.evaluate(SNAP)).v / 1e9 < sc.startAt) await sleep(1000);
 
     // The idle screen's soft-key row tells it apart from any menu and the
     // dialer; captured once the first presses have cleared any popup.

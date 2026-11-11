@@ -400,6 +400,15 @@ Current methods and numbers are in [performance.md](performance.md).
 
 The binding method is in performance.md. These are the traps behind it.
 
+- **A build that boots faster is measured earlier in the phone's life.**
+  scenebench walks into a scene as soon as the idle screen is up. The merge
+  of smh/master `23d7df3200` brought SL65's boot from 53 s to 23 s, and its
+  two scenes read −10.7 % and −4.7 % in the free-run A/B, 6 of 6 pairs each
+  with a spread under 1 % on midi: as clean as a real loss. The firmware
+  was 30 s deeper in its network search after boot. Signs: `tIdle` differs
+  between the legs; delaying the faster leg by the difference removes the
+  gap; the paced scene costs the same CPU on both. The SL65 scenes now
+  start at a fixed guest time (`startAt`).
 - **A counter on the slow path is not a hit rate.** Work that TCG emits
   into the TB is invisible to every C-side counter, so a cache's successes
   are absent events. Size a cache by switching it off and watching the
