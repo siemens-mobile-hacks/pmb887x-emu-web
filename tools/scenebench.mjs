@@ -228,7 +228,12 @@ function treeCpuS() {
 }
 const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
 // SCENEBENCH_BROWSER=firefox runs Playwright's Firefox instead of Chromium;
-// SCENEBENCH_FF_PREFS='{"pref": value}' adds user prefs to it
+// SCENEBENCH_FF_PREFS='{"pref": value}' adds user prefs to it.
+// SCENEBENCH_CDP=http://127.0.0.1:9222 attaches to a running Chromium
+// instead (a phone's Chrome through tools/perf/adbtun.mjs, with the page
+// port reversed to it): the run opens a tab of its own and closes it, the
+// flash goes to the page through DevTools, and cpu is not measured.
+const cdp = process.env.SCENEBENCH_CDP;
 const browserName = process.env.SCENEBENCH_BROWSER || "chromium";
 const outBase = path.join(here, `../tests/results/scenebench-${scenarioName}-` +
   `${browserName === "chromium" ? "" : browserName + "-"}${stamp}`);
@@ -256,7 +261,7 @@ const SNAP = `(() => {
 
 async function runOnce(spec, run) {
   const devtools = process.env.SCENEBENCH_DEVTOOLS;
-  const browser = browserName === "firefox"
+  const browser = cdp ? await chromium.connectOverCDP(cdp) : browserName === "firefox"
     ? await firefox.launch({ headless: true, firefoxUserPrefs: {
       "media.autoplay.default": 0,
       "media.autoplay.block-webaudio": false,
@@ -266,7 +271,8 @@ async function runOnce(spec, run) {
     : await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required",
       ...(devtools ? [`--remote-debugging-port=${devtools}`] : []),
       ...(process.env.SCENEBENCH_CHROME_ARGS ? process.env.SCENEBENCH_CHROME_ARGS.split(" ") : [])] });
-  const p = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const p = cdp ? await browser.contexts()[0].newPage()
+    : await browser.newPage({ viewport: { width: 1280, height: 900 } });
   let pageErr = null, serialExit = false;
   p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });
   const conMatch = process.env.SCENEBENCH_CONSOLE;
@@ -283,9 +289,35 @@ async function runOnce(spec, run) {
     const q = distQuery(spec);
     await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(spec)}${q ? "&" + q : ""}`,
       { waitUntil: "domcontentloaded", timeout: 120000 });
-    await p.selectOption("#startup", "ONLINE");
-    await p.click("#ff-mode-own");
-    await p.setInputFiles("#fullflash", [flash]);
+    if (cdp) {
+      // a phone's layout keeps both in closed sheets, out of a pointer's reach
+      await p.evaluate(() => {
+        const st = document.querySelector("#startup");
+        st.value = "ONLINE";
+        st.dispatchEvent(new Event("change", { bubbles: true }));
+        document.querySelector("#ff-mode-own").click();
+      });
+      // the browser cannot open a path of this machine
+      const bytes = readFileSync(flash), step = 3 << 20;
+      await p.evaluate(() => { window.__sbFlash = []; });
+      for (let o = 0; o < bytes.length; o += step) {
+        await p.evaluate((b64) => {
+          window.__sbFlash.push(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+        }, bytes.subarray(o, o + step).toString("base64"));
+      }
+      await p.evaluate((name) => {
+        const dt = new DataTransfer();
+        dt.items.add(new File(window.__sbFlash, name));
+        delete window.__sbFlash;
+        const el = document.querySelector("#fullflash");
+        el.files = dt.files;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }, path.basename(flash));
+    } else {
+      await p.selectOption("#startup", "ONLINE");
+      await p.click("#ff-mode-own");
+      await p.setInputFiles("#fullflash", [flash]);
+    }
     const t0 = Date.now();
     await p.click("#btn-start");
     await p.waitForFunction(() => !!window.__qemu?._wasm_insns, null, { timeout: 240000 });
@@ -427,6 +459,7 @@ async function runOnce(spec, run) {
     result.error = String(e.message || e).slice(0, 300);
     await shoot("fail");
   }
+  if (cdp) await p.close().catch(() => {});
   await browser.close();
   return result;
 }

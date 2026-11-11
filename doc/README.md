@@ -12,6 +12,7 @@ speed. Everything else is reference.
 | [wasm-fast-paths.md](wasm-fast-paths.md) | Every fork change in `qemu/` that exists only for speed: where it is, what it buys, how to remove it, and what was returned to upstream |
 | [lessons.md](lessons.md) | Platform facts and traps: the timing model's reasons, the io-recompile rewind, the emscripten runtime, wasm and V8, backend and device design, measuring, gates, shell traps |
 | [diagnostics.md](diagnostics.md) | **The tooling**: page URL params, the environment variables qemu reads, wasm exports, which script does what, native trace runs |
+| [android-emulator.md](android-emulator.md) | An arm64 Android emulator and an arm64 Linux Chromium under qemu-user, both inside the container: what works, and why they were too slow for profiling (2026-11-10). A phone over adb is used instead ([performance.md](performance.md), "On a phone") |
 | [architecture.md](architecture.md) | How the browser emulator works: the wasm engine, the build pipeline from the `qemu/` submodule, what the fork adds, the page, native reference builds, the testing ladder |
 
 ## Scripts worth knowing

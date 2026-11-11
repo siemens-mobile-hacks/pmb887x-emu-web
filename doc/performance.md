@@ -206,6 +206,39 @@ repo; `--flash` overrides that. Results go to
   the SpiderMonkey facts), and reaches x1.3 with it once its tiers settle,
   which takes about a minute: measure Firefox over 80 s, not 20.
 
+### On a phone
+
+The container has no USB, so the phone hangs off the Docker host's adb
+server, and the container talks to that server (set up 2026-11-10).
+
+- **Phone:** Developer options, USB debugging on; Chrome open and in the
+  foreground (Android freezes it in the background and DevTools stops
+  answering).
+- **Host:** `adb devices` must list it, then
+  `socat TCP-LISTEN:5037,bind=172.17.0.1,fork,reuseaddr TCP:127.0.0.1:5037`
+  (the bridge address only, so the LAN cannot reach the phone through it).
+- **Container:**
+
+```bash
+export ADB_SERVER_SOCKET=tcp:172.17.0.1:5037
+adb=build/android-emu/sdk/platform-tools/adb     # any adb 1.0.41
+$adb shell svc power stayon usb                   # undo: svc power stayon false
+node tools/perf/adbtun.mjs raw "reverse:forward:tcp:8080;tcp:$(hostname -i):8080"
+node tools/perf/adbtun.mjs listen 9222 localabstract:chrome_devtools_remote &
+SCENEBENCH_CDP=http://127.0.0.1:9222 node tools/scenebench.mjs stopwatch dist-jit \
+  --runs 1 --measure 30 --keyscale 3
+```
+
+`127.0.0.1:8080` on the phone is a secure context, so the page is
+cross-origin isolated without TLS. scenebench opens a tab of its own, hands
+the flash to the page through DevTools and closes the tab; `cpu` reads 0.
+`--keyscale` stretches the key waits for a slow guest. The tunnel also
+serves `PROF_ATTACH=9222` (`tools/wprof2.mjs`).
+
+| Phone | Scene (date, fork) | Result |
+|---|---|---|
+| Motorola One 5G Ace (Snapdragon 750G: 2 × A77 2.2 GHz + 6 × A55, 3.5 GB, Android 11, Chrome 156) | stopwatch, paced (2026-11-10, `472c44c938`) | x0.40, 54 MIPS, 61 fps; EL71 idle after 56 s |
+
 ### Boot A/B (`tools/perf/bootab.sh`)
 
 `tools/bootbench.mjs` follows one boot from the Start click to the idle
