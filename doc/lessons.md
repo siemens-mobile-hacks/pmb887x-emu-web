@@ -190,10 +190,43 @@ Current methods and numbers are in [performance.md](performance.md).
     `echo 'chrome --js-flags=...' > /data/local/tmp/chrome-command-line`
     and `am force-stop com.android.chrome`; `chrome://version` shows the
     command line. Undo with `am clear-debug-app` and removing the file.
-  - **The phone measures better than the desktop:** towerblox repeats
-    within 0.5 % (x0.283, x0.284, x0.287). A guest that is behind real
-    time is in free-run by itself, so no bench build is needed; alternate
-    the two dists, one run each, ~5 minutes a run.
+  - **A dist the phone has not run yet reads ~3 % slow.** A guest that is
+    behind real time is in free-run by itself, so no bench build is
+    needed: alternate the two dists, one run each, ~5 minutes a run. But
+    Chrome keeps the main module's optimized code per URL, and the first
+    run of a new dist has none (x0.318, then x0.331, then x0.334–0.341).
+    A candidate just built against a baseline measured for hours loses
+    3 % before it starts: the first phone A/Bs understated their levers,
+    and one candidate "lost" 4 % in its first pair and led by 0.7 % over
+    the next four. Warm runs vary by ±1 %; three in a row within 0.5 %
+    (x0.283, x0.284, x0.287) was luck taken for the method's resolution.
+  - **What paid there was bounds checks, more than instructions.** Nine
+    checks out of a DSP block transition (27 instructions of ~160, ~11M
+    transitions a guest second) were worth 4.7 % of towerblox and 7.3 %
+    of bobby. Five plain instructions out of every chained transition,
+    ARM and DSP (~28M a second; the typed chain table below), half as
+    many instructions executed, were worth +0.7 % (inside the noise) and
+    +2.6 %. A check is a compare and a branch the next load waits behind;
+    a load beside it is absorbed. An instruction count from a listing
+    sizes a lever only within one kind of instruction.
+  - **Stopwatch is the noisy scene on a phone:** single runs of one build
+    spread from x0.41 to x0.45 (ten runs each of two builds, 2026-11-11),
+    towerblox and bobby within ±1 %. Two pairs there say nothing; ten
+    said +0.3 %.
+  - **An indirect call through a `funcref` table is 21 instructions**
+    (V8 15.6, `return_call_indirect`): the table and its length from the
+    instance, the bounds check, the entry's signature against a literal,
+    the entry's code-pointer handle and instance, the frame teardown, the
+    code pointer out of the code pointer table and `br`. Through a table
+    of `(ref $sig)`, non-null references to the call's own type, there is
+    no signature compare and no null test: 16. A nullable `(ref null
+    $sig)` still loads the signature word for the null test; a table with
+    min = max makes the length a constant (15). JS cannot create such a
+    table: a module has to define and export it, with an initializer
+    expression; the element segments take the expression form (flags 5
+    and 6, `ref.func`; V8 fills them through the same lazy placeholders
+    as function indices), and `Table.grow`/`set` need a function where
+    they took `null` (`cc1c25a551`).
 - **SpiderMonkey never patches a table slot when a function tiers up**
   (Firefox 155 source, 2026-11-10). A slot written by an active element
   segment or `Table.set` keeps the code pointer of that moment, the baseline

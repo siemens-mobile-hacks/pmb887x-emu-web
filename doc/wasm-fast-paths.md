@@ -11,11 +11,11 @@ upstream, or when deleting an optimization to bring a file back towards upstream
   below was grepped in that tree; the 2026-11-10 review round
   (`db5ec3b899`) changed the A5, C2 and R2 rows and the list of correctness
   fixes, `8fcac1b334` added C8 and R8, `58cb97caff` D12 and `0dcee227d0`
-  A11 (the fork is at `59a4bd78f9`). The other commits since (`bed67ff185`,
-  `472c44c938`, `f77b282b9f`, `59a4bd78f9`) are in the backend and its DSP
-  glue (evicted DSP blocks dropped in the middle of a slice, a rebinder
-  for Firefox's tiers, constant addresses for V8's bounds-check
-  elimination), which are not itemized.
+  A11 (the fork is at `cc1c25a551`). The other commits since (`bed67ff185`,
+  `472c44c938`, `f77b282b9f`, `59a4bd78f9`, `cc1c25a551`) are in the
+  backend and its DSP glue (evicted DSP blocks dropped in the middle of a
+  slice, a rebinder for Firefox's tiers, constant addresses for V8's
+  bounds-check elimination, a typed chain table), which are not itemized.
 - **Numbers** are quoted from the commit messages
   (`git -C qemu log -1 <sha>`) and from the A/Bs of their date; September
   figures were measured under icount. "Not measured" means no source gives

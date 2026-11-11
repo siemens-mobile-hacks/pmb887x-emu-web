@@ -243,16 +243,32 @@ events: counts, durations and threads per tier).
 
 **A/B on the phone:** alternate the two dists, one run each, Chrome
 restarted in between; a guest behind real time is in free-run by itself, so
-the ordinary dists do. Towerblox repeats within 0.5 % (x0.283, x0.284,
-x0.287), which is better than the desktop's paired A/B, and an x64 host
-cannot see what V8's arm64 code costs at all (lessons.md). V8 flags work
-through the debug-app command line (lessons.md).
+the ordinary dists do. An x64 host cannot see what V8's arm64 code costs at
+all (lessons.md). V8 flags work through the debug-app command line
+(lessons.md).
+
+- **A new dist starts cold.** Chrome caches the main module's optimized
+  code by URL, so the first run of a dist that was just built reads ~3 %
+  low and the second ~1 % (one build on 2026-11-11: x0.318, x0.331, then
+  x0.334–0.341 over five more runs; three other builds the same). Give a
+  new dist two throwaway runs, or rotate the dists three times and drop
+  the first round. The first phone A/Bs (A11, `59a4bd78f9`) did not, with
+  the candidate cold and the baseline warm: they understate.
+- **What it resolves.** Warm runs of one dist vary by about ±1 % on
+  towerblox and bobby (2026-11-11, an overnight series; three consecutive
+  runs agreed within 0.5 % once). A 1 % effect takes three rounds or
+  more; bobby shows a DSP change about 1.5x larger than towerblox.
+  Stopwatch spreads from x0.41 to x0.45 for one build: its first six
+  pairs read −3.8 to +1.1 % for a change that was +0.3 % over ten.
+- Start a batch in the background and chain the next one behind it: a
+  towerblox run is ~5 minutes, a pair more than a command's timeout.
 
 | Phone | Scene (date, fork) | Result |
 |---|---|---|
 | Motorola One 5G Ace (Snapdragon 750G: 2 × A77 2.2 GHz + 6 × A55, 3.5 GB, Android 11, Chrome 156) | paced, `472c44c938` (2026-11-10) | towerblox x0.29 (40 MIPS, 52 fps; S75 idle after 60 s), stopwatch x0.40 (55 MIPS), bobby x0.64 |
 | the same | paced, `0dcee227d0` (A11) | towerblox x0.327 (+12.8 %, S75 idle after 55 s), stopwatch x0.428 (+6.2 %), bobby x0.65 (+1.6 %, fps +13 %) |
 | the same | paced, `59a4bd78f9` (2026-11-11), against `f77b282b9f` in alternating runs | towerblox x0.325 (+4.7 %), bobby x0.745 (+7.3 %), stopwatch x0.445 (+4.3 %) |
+| the same | paced, `cc1c25a551` (2026-11-11), against `59a4bd78f9`, both warm | towerblox x0.338 (+0.7 %, 4 pairs; `59a4bd78f9` warm x0.336), bobby x0.759 (+2.6 %, 2 pairs), stopwatch x0.439 (+0.3 %, 10 pairs) |
 | the same, towerblox with V8 flags, `472c44c938` | `--wasm-tiering-budget=1300000` | x0.297 (+4 %) |
 | | `--no-wasm-bounds-checks` | x0.338 (+19 %) |
 
@@ -789,7 +805,8 @@ unless noted).
 | Anything in front of the inline TLB probe: a per-TB page memo in locals (59 % of memops served, flat; later −0.7 / −4.2 %), a per-site entry cache (4.4–5.0 % slower at a 94.7 % hit rate), `env + fast_ofs` hoisted into a local (+3–10 % slower) | The probe's loads hit L1 and run in parallel with the address arithmetic. A check before it adds a dependent branch to every memop. Only a scheme that replaces the probe could collect its ~5 % | 2026-09-13 – 10-31 |
 | TLB page cache in locals (reuse a probe for a same-page ld/st) | towerblox −3 to −7 % with bounds checks. `build/experiments/w64-tlb-pagec.diff` | 2026-11-03 |
 | `movcond` as `select` (M1) | +1.4 / 0 % | 2026-10-31 |
-| Typed funcref chain table; `return_call_ref` | A typed non-nullable table is −6.5 % of the indirect call itself (~0.6 % of wall, September probe) and needs typed funcrefs in every browser; the patch no longer decodes against the batch encoder. `return_call_ref` is 45 % slower than `return_call_indirect` | 2026-09-16, 10-31 |
+| Typed funcref chain table; `return_call_ref` | A typed non-nullable table is −6.5 % of the indirect call itself (~0.6 % of wall, September probe) and needs typed funcrefs in every browser; the patch no longer decodes against the batch encoder. `return_call_ref` is 45 % slower than `return_call_indirect`. The table was done again on 2026-11-11 and shipped as `cc1c25a551` (History): the exnref floor already includes typed funcrefs, and on arm64 the signature test is 5 of the call's 21 instructions | 2026-09-16, 10-31, 11-11 |
+| A chain table of fixed size (min = max), on top of the typed one | Not built: V8 then takes the table's length as a constant, one load of the 16 instructions left. It needs the table's final size up front or a flush when it is full | 2026-11-11 |
 | Lazy global sync at `qemu_ld/st` (`TCG_TARGET_LDST_SLOW_SYNC`) | The correct version is neutral: V8 env stores are cheap, and exit-time stores remain. The first version leaked register mappings past labels (lockstep diverged at 16M) | 2026-11-01 |
 | Dropping the TB-start exit-request check under CF_COUNT_CYCLES | The guest never runs: exits are needed beyond IRQs | 2026-11-01 |
 | Removing or moving the per-TB `wasm_guest_insns` RMW | Removing it breaks scenebench's progress detection. The counter costs ≤ ~2 %, and deriving it from cycle_count was neutral. Env-relative accounting won only with bounds checks (`305999f747`) | 2026-11-01 – 11-02 |
@@ -930,13 +947,23 @@ that exists.
   and memory-base reloads. The first thing priced after that list was not
   on it: bounds checks on constant addresses in the DSP's chain test
   (`59a4bd78f9`, +4.7 %).
-- **A DSP block transition is the dearest single thing on a phone**
-  (2026-11-11). Towerblox makes ~11M of them per guest second (the chain
-  helper's 1.7M are 15 %), against ~17M ARM TB entries, and each is ~160
-  arm64 instructions before `59a4bd78f9`: the chain test's gates and link
-  compares ~100, V8's indirect tail call 21 (seven loads, since the
-  code-pointer table) and the next block's frame and stack check ~10.
-  Taking 27 instructions out of it was worth 4.7 % of the scene there.
+- **A DSP block transition on a phone** (2026-11-11). Towerblox makes
+  ~11M of them per guest second (the chain helper's 1.7M are 15 %),
+  against ~17M ARM TB entries, and each was ~160 arm64 instructions
+  before `59a4bd78f9`: the chain test's gates and link compares ~100,
+  V8's indirect tail call 21 (seven loads, since the code-pointer table)
+  and the next block's frame and stack check ~10. Taking nine bounds
+  checks (27 instructions) out of it was worth 4.7 % of the scene there;
+  the five instructions of the tail call's signature test (`cc1c25a551`,
+  on ARM transitions as well) +0.7 %, inside the noise, and +2.6 % on
+  bobby. A check costs more than its instructions (lessons.md).
+- **The DSP's share on the phone** (towerblox, the profile of 2026-11-10
+  split by the C call chain above each sample): DSP blocks 22.8 % of the
+  vCPU thread and the C code under the DSP's slice functions 13.3 %, so
+  36 % in all; ARM TBs 48.7 % and the rest of the C module 15.1 %. A DSP
+  thread that never waited would bound at 1/(1 − 0.36) = 1.56x there
+  (rule 1; the exact design of 2026-11-02 was measured on a desktop that
+  already ran at real time).
 
 **Remaining levers** (not done; prices as of their dates):
 
@@ -1091,6 +1118,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-10 | `bed67ff185`, `472c44c938` (`58cb97caff`) | Firefox. SpiderMonkey never re-points a table slot when a function tiers up, so every chained TB was entered through its baseline code; each Firefox batch now carries a rebinder (`table.init` from a passive segment) that the dispatcher runs once a second for the live batches, 2–3 ms a pass. Free-run in Firefox 155, two pairs each: towerblox +11.9 %, stopwatch +11.6 %, bobby +7.7 %, midi +6.4 %, video +24.7 %; towerblox x0.96 → x1.30 over an 80 s window (the ceiling with tier-up at the first call is x1.35, Chromium with bounds checks x1.72). Chrome modules are unchanged (+2.0 %, se 1.6). Closed on the way: tiering up sooner from the page by wrapping TB bodies in loops (the gap between x1.15 at 20 s and x1.30 is warm-up only, and Ion emits an interrupt check at every loop header). Testing eviction with rebinders found an abort of older date: a batch landing in the middle of a DSP slice evicted a block the slice then ran (`bed67ff185`, lessons.md) |
 | 2026-11-10 | `0dcee227d0` (`472c44c938`) | The first measurements on a phone, and the first lever only an ARM host shows (A11). A phone's profile has the desktop's shape with TB code ~1.3x slower relative to the C module; tiering, thread placement and compile backlog were ruled out (lessons.md). V8's arm64 code builds every constant address above 64 KiB with `movz` + `movk`, 19–22 % of all TB instructions, so the CPU object, the DSP runtime and two counters moved below 16 KiB of linear memory, where the address is the load's immediate (`CPUTLB.d` became a pointer to make room in front of env). Motorola One 5G Ace, alternating runs: towerblox +12.8 % (x0.320, x0.334 against x0.289, x0.291), stopwatch +6.2 %, bobby +1.6 % (fps +13 %), S75 boot −8 %. Desktop x64: stopwatch +0.9 %, bobby +1.1 %, towerblox +0.6 % (2 pairs each, noise). Tools: `tools/perf/adbtun.mjs`, `SCENEBENCH_CDP`, `tools/perf/wasmtrace.mjs`. On top, `f77b282b9f`: an access at env + offset is one constant address, because V8's arm64 backend adds a memarg offset to the memory base before a store at a constant address; towerblox +1.1 % on the phone (x0.314, x0.326 against x0.313, x0.320) |
 | 2026-11-11 | `59a4bd78f9` (`f77b282b9f`) | A constant address for every access through a register a movi loaded. V8 decides about a bounds check while it builds its graph, where `wrap(local)` is not a constant yet even if the local holds one, so the DSP chain test's eight to ten link fields each kept a `sub`, `cmp` and branch on Android. Found by weighting the arm64 instruction mix of the hot TB functions by their self time (`tools/perf/a64code.sh`, an arm64 Node with Chrome 156's V8). Hot DSP block functions: 41.3 → 24.4 bounds checks, 827 → 750 instructions. Motorola One 5G Ace, alternating runs, two pairs each: towerblox +4.7 %, bobby +7.3 %, stopwatch +4.3 %. Desktop x64 with forced checks, 4 pairs each: towerblox +2.0 %, bobby +1.7 %, video +1.7 %, stopwatch +0.4 %, midi +0.4 % |
+| 2026-11-11 | `cc1c25a551` (`59a4bd78f9`) | The chain table holds `(ref $tb)`, non-null references to the TB signature, defined by the thunk's module (JS cannot create a typed table); a slot no TB owns holds a function that traps. V8's `return_call_indirect` drops the signature compare, which was also its null test: 21 → 16 arm64 instructions per chained transition, ARM and DSP. Motorola One 5G Ace, alternating runs, both builds warm: bobby +2.9 % and +2.4 %, towerblox +0.7 % over 4 pairs (−1.2 to +3.0), stopwatch +0.3 % over 10 pairs (single runs of either build x0.41–0.45; the first six pairs alone read −1.5 %). Desktop x64 with forced checks: towerblox +2.6 % (4 pairs), bobby +1.0 % (16), stopwatch +0.8 % (16), midi +0.6 % (4). Eviction with the trap function in the slots: lockstep to 1e9 with `W64_LIVE_MAX` 256. Found on the way: a dist the phone has not run reads ~3 % slow, so the phone A/Bs before this one understate (On a phone) |
 
 ## 2026-11-04 deviation cleanup
 
