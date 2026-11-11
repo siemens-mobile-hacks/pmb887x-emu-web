@@ -10,7 +10,10 @@ upstream, or when deleting an optimization to bring a file back towards upstream
 - **State described:** fork `6b8a64baa5` (2026-11-09). Every identifier
   below was grepped in that tree; the 2026-11-10 review round
   (`db5ec3b899`) changed the A5, C2 and R2 rows and the list of correctness
-  fixes, `8fcac1b334` added C8 and R8, and `58cb97caff` D12.
+  fixes, `8fcac1b334` added C8 and R8, and `58cb97caff` D12. The fork is at
+  `472c44c938`: the two commits after D12 are in the backend and its DSP
+  glue (a rebinder for Firefox's tiers, and evicted DSP blocks dropped in
+  the middle of a slice), which are not itemized here.
 - **Numbers** are quoted from the commit messages
   (`git -C qemu log -1 <sha>`) and from the A/Bs of their date; September
   figures were measured under icount. "Not measured" means no source gives

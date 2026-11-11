@@ -66,7 +66,17 @@ Current methods and numbers are in [performance.md](performance.md).
   "failed" on the native JIT (`.balign 16`).
 - **A fallback that "has not been observed to run" has not been tested.**
   Lowering `W64_LIVE_MAX` to 48 ran batch eviction within seconds and
-  aborted in the DSP at 61M instructions.
+  aborted in the DSP at 61M instructions. The fix of that day dropped the
+  evicted DSP blocks when a slice starts, and a second case stayed: a batch
+  that lands in the middle of a slice (the dispatcher closes the open
+  batch when a staged block first runs) evicts a block the same slice then
+  runs, and DSP blocks are not in TCG's TB tree, so the dispatcher cannot
+  retire them (`w64: evicted TB … is not known`; a Firefox boot at a cap of
+  128 showed it, 2026-11-10). A boot uses ~450–900 of the 6144 batches,
+  but Tower Bloxx adds two or three a second, so a long game gets there.
+  Test eviction with a temporary cap of 256 under
+  `tools/lockstep-wasm.mjs --insns 1e9`; below ~512 a scene cannot be
+  walked, the guest thrashes and drops the keys.
 - **A direct-mapped fix-once cache can thrash into a fix-never loop.** The
   barrier set was once 64 slots indexed by `pc >> 2`: two hot MMIO
   instructions shared a slot and evicted each other on every pass (~800
@@ -134,6 +144,32 @@ Current methods and numbers are in [performance.md](performance.md).
   collecting dropped modules. Every translated TB must be staged in an
   open batch (`w64_batch_begin_tb`): a TB run from a module of its own
   works in Chrome and eats Firefox's budget. Only the Firefox gate sees it.
+- **SpiderMonkey never patches a table slot when a function tiers up**
+  (Firefox 155 source, 2026-11-10). A slot written by an active element
+  segment or `Table.set` keeps the code pointer of that moment, the baseline
+  entry, and every later call through it runs the baseline prologue and hops
+  through a jump table to the Ion code. Chained TBs enter each other only
+  through the chain table, so that was every TB transition: towerblox ran
+  at x0.96 where Ion-only (a pref) gave x1.31, and tiering up sooner (the
+  `wasm_lazy_tiering_level` pref, even synchronous) gave nothing.
+  `table.init` from a passive segment binds a slot to the best tier of that
+  moment and can be repeated, so each Firefox batch carries a rebinder
+  (`w64_rebind_live`). Import bindings and exported `JSFunction`s cache the
+  pointer the same way and a page cannot refresh those. More facts:
+  - Lazy tiering is always on; a page cannot ask for Ion-only compilation.
+  - A function asks for Ion after ~20000 entries and loop headers at the
+    default level: the baseline code counts down by `size / 20` (1–127) at
+    each of them from `(30000 + 4000 × size) / 4`, a third of that in a
+    module whose code section is under 150 kB. One Ion compile runs at a
+    time, so a scene takes about a minute to settle
+    (towerblox: x1.15 over the first 20 s, x1.30 over 80 s, x1.35 with
+    tier-up at the first call).
+  - The Gecko profiler works headless from the environment:
+    `MOZ_PROFILER_STARTUP=1 MOZ_PROFILER_SHUTDOWN=<file>
+    MOZ_PROFILER_STARTUP_FEATURES=js,leaf,cpu
+    MOZ_PROFILER_STARTUP_FILTERS="DOM Worker,GeckoMain"`. On towerblox
+    98.8 % of the vCPU thread was JIT code, so nothing but the tier is
+    Firefox's own cost.
 - **A build flag in `--extra-cflags` is not on a compile line.** meson gets
   two cross files, and the checked-in `configs/meson/emscripten.txt`
   replaces the generated one's `c_args`, so the C files compile at meson's

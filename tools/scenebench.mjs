@@ -227,7 +227,8 @@ function treeCpuS() {
   return total;
 }
 const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
-// SCENEBENCH_BROWSER=firefox runs Playwright's Firefox instead of Chromium
+// SCENEBENCH_BROWSER=firefox runs Playwright's Firefox instead of Chromium;
+// SCENEBENCH_FF_PREFS='{"pref": value}' adds user prefs to it
 const browserName = process.env.SCENEBENCH_BROWSER || "chromium";
 const outBase = path.join(here, `../tests/results/scenebench-${scenarioName}-` +
   `${browserName === "chromium" ? "" : browserName + "-"}${stamp}`);
@@ -260,6 +261,7 @@ async function runOnce(spec, run) {
       "media.autoplay.default": 0,
       "media.autoplay.block-webaudio": false,
       "media.autoplay.blocking_policy": 0,
+      ...JSON.parse(process.env.SCENEBENCH_FF_PREFS || "{}"),
     } })
     : await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required",
       ...(devtools ? [`--remote-debugging-port=${devtools}`] : []),

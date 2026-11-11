@@ -4,7 +4,7 @@ Where the speed work stands, how to measure and validate a change, and what
 has already been tried. Read this before doing performance work on the
 emulator.
 
-- **State described:** fork `58cb97caff`, on smh/master `9e5a6bbfd6`
+- **State described:** fork `472c44c938`, on smh/master `9e5a6bbfd6`
   (2026-11-10).
 - **Related:** [wasm-fast-paths.md](wasm-fast-paths.md) lists every fork change
   that exists only for speed, and how to remove one.
@@ -199,8 +199,12 @@ repo; `--flash` overrides that. Results go to
 - `SCENEBENCH_CHROME_ARGS` (split on spaces), `SCENEBENCH_AT_MEASURE` (JS
   evaluated when the window starts), `SCENEBENCH_DEVTOOLS=<port>`,
   `SCENEBENCH_CONSOLE=<substring>`, `SCENEBENCH_SAVEREF=<png>` and
-  `SCENEBENCH_BROWSER=firefox`. Headless Firefox needs PulseAudio, and it runs
-  ~1.6x less efficiently than Chromium on towerblox.
+  `SCENEBENCH_BROWSER=firefox` (`tools/perf/swab.sh` pairs it too), with
+  `SCENEBENCH_FF_PREFS='{"pref": value}'` for user prefs. Headless Firefox
+  needs PulseAudio. It ran towerblox at x0.96–1.12 against Chromium's x1.72
+  with bounds checks until the rebinder (History, 2026-11-10; lessons.md has
+  the SpiderMonkey facts), and reaches x1.3 with it once its tiers settle,
+  which takes about a minute: measure Firefox over 80 s, not 20.
 
 ### Boot A/B (`tools/perf/bootab.sh`)
 
@@ -768,6 +772,7 @@ unless noted).
 | Binaryen one-caller inline limit (N=200, or 1000 globally) | 200 is worse (splits `dsp_i2s_advance` out); 1000 is noise | 2026-11-02 |
 | ThinLTO main module | Noise. The wasm grew 12.3 → 16.2 MB, and ~30 Asyncify onlylist names went missing | 2026-11-03 |
 | Fewer declared TB locals (the baseline tier zeroes them at every entry), re-priced now that Liftoff TB code is ~6.6 % of towerblox | A pad of 16 extra i64 locals per TB: +1.0 / +0.1 % (4 pairs in each order), noise. Not a lever | 2026-11-05 |
+| Firefox: make TB functions tier up sooner from the page (SpiderMonkey's baseline counts down at every loop header, so N loops without a back-edge around a TB body would multiply the countdown) | Not built. With the rebinder (History, `472c44c938`) the default prefs reach x1.30 on towerblox over 80 s and x1.35 with tier-up at the first call (`javascript.options.wasm_lazy_tiering_level` 9): the gap is the first minute only, and Ion's `emitLoop` adds an interrupt check per loop header to the optimized code. Without the rebinder, levels 6–9 gave nothing at all (x0.98–1.03) | 2026-11-10 |
 
 ### Devices, display, timers, clock
 
@@ -829,8 +834,13 @@ that exists.
   code, so it needs the gate, lockstep and a whole-candidate A/B; dropping
   the emitters needs the same. Left as found 2026-11-10.
 - **An evicted batch has only been exercised with a lowered cap:**
-  `W64_LIVE_MAX` 48 boots S75 (2026-11-10), slowly. Nothing in the gate
-  reaches eviction.
+  `W64_LIVE_MAX` 48 boots S75 (2026-11-10), slowly, and at 256 a wasm
+  lockstep of 1e9 instructions is clean (`bed67ff185`, which fixed an
+  abort in the DSP at the first eviction in the middle of a slice).
+  Nothing in the gate reaches eviction; Tower Bloxx would after about half
+  an hour (two or three batches a second against a cap of 6144), unless
+  the code buffer fills and flushes first. Nobody has played that long
+  under a counter.
 - **S75 OFFLINE/PTEST startup:** the Siemens board includes of bsp `de47d4b`
   define only `[startup.ONLINE]` (x75, elka, r65, sirius). The
   lookup in `hw/arm/pmb887x/board/startup.c` is required, so qemu exits at
@@ -1006,6 +1016,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-10 | `db5ec3b899` (`9e7d3d4ce5`) | Review of everything that differs from smh/master, no fast path removed (the 2026-11-04 round measured those). Bugs of ours fixed: the lockstep and guest instruction counts were not handed back when a TB was unwound mid-way (`w64_acct_unwind`; this was the "divergence" that A5 hid, so A5 is speed only now: a 60M leg takes 16 s without it, 3 s with); `mulu2`/`muluh` and the `qemu_ld`/`qemu_st` address read a 32-bit operand raw from a 64-bit local, so `movs r0, r0, lsl r1; cmp; umull` returned a wrong high word (`w64_get_u32`; two new op-suite cases fail on `9e7d3d4ce5`); an evicted batch left its DSP blocks in the DSP block cache and the next entry aborted ("evicted TB is not known": reproduced with `W64_LIVE_MAX` 48 at 61M instructions on S75, boots with the fix) — a session that outlives 6144 live modules would have hit it; `memory_region_set_readonly(false)` on a region born read-only kept the stale view; the fused MMIO load skipped the read cycles under `PMB887X_MEMORY_TIMING` (1.44M loads / 34M cycles in a 25 s S75 boot); GPTU configuration writes now sync the elided ticks first; the emscripten timed cond wait dropped its last millisecond. Closer to upstream: `arm_rebuild_hflags` after eret back off wasm64, the `tcg_func_start` const-table hunk down to one statement, two DSP call sites and a comment hunk restored, asyncify-only list 196 → 122 names (wasm byte-identical). Whole candidate against `9e7d3d4ce5`, free-run: stopwatch +4.0 % (6 pairs, +2.7 to +5.4), midi +0.1 % (4), video +0.8 % (4), towerblox +1.0 % (4, −2.2 to +3.4); which commit gives stopwatch its gain was not bisected |
 | 2026-11-10 | `33855e074b`, `8fcac1b334` (`db5ec3b899`) | Two bounds-checked loads per guest access where there were three (C8: the comparator and the addend in one 64-bit word), and one probe for all the words of an LDM/STM (R8). Free-run, two pairs at a time, host load 4–10. C8: stopwatch +2.4 % (6 pairs), towerblox +1.1 % (14, se 1.0). R8 over C8: towerblox +2.0 % (6), stopwatch +3.6 % (4). Both: towerblox +3.1 % (16 pairs; the last ten +4.2 %, −2.5 to +9.4), stopwatch +4.1 % (6, +0.4 to +7.2), bobby +1.5 %, midi +1.2 %, video mips +0.5 % (4 each, one video pair −1.0 %). Lockstep with `LS_QARGS` clean on S75 and EL71; the op suite gained page-boundary and base-in-list LDM/STM cases (1312 cases, identical on native JIT, TCI and wasm) |
 | 2026-11-10 | `58cb97caff` (`8fcac1b334`) | The DSP peripheral bus adds cycles up until a device has something to do (D12), under the owner's rule of that day for changes in upstream's files. Free-run, two pairs at a time: bobby +2.2 % (6 pairs), towerblox +1.2 % (12, −4.4 to +7.2), midi +0.6 % (6, all positive), stopwatch +0.1 % (8), video mips −0.3 % (6). V8 `--prof` on towerblox: `dsp_bus_advance` 3.05 % → 2.4 % with its callees. A digest of every bus event with its cycle count (`tools/perf/busdigest.py`) is identical to the undeferred bus over 35M events of the S75 and EL71 boots, and both it and the new unit test catch a horizon late by 50 cycles; upstream's own unit tests did not. The rest of the round priced what is left and found nothing above 1 %: see Closed ideas (DSP scheduling) and Remaining levers (DSP chain tail) |
+| 2026-11-10 | `bed67ff185`, `472c44c938` (`58cb97caff`) | Firefox. SpiderMonkey never re-points a table slot when a function tiers up, so every chained TB was entered through its baseline code; each Firefox batch now carries a rebinder (`table.init` from a passive segment) that the dispatcher runs once a second for the live batches, 2–3 ms a pass. Free-run in Firefox 155, two pairs each: towerblox +11.9 %, stopwatch +11.6 %, bobby +7.7 %, midi +6.4 %, video +24.7 %; towerblox x0.96 → x1.30 over an 80 s window (the ceiling with tier-up at the first call is x1.35, Chromium with bounds checks x1.72). Chrome modules are unchanged (+2.0 %, se 1.6). Closed on the way: tiering up sooner from the page by wrapping TB bodies in loops (the gap between x1.15 at 20 s and x1.30 is warm-up only, and Ion emits an interrupt check at every loop header). Testing eviction with rebinders found an abort of older date: a batch landing in the middle of a DSP slice evicted a block the slice then ran (`bed67ff185`, lessons.md) |
 
 ## 2026-11-04 deviation cleanup
 
