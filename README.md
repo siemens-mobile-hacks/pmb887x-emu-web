@@ -373,7 +373,7 @@ its comments record every bump and why. In outline:
 
 - qemu-pmb887x (`QEMU_PMB887X_REV`, branch `wasm-browser-port`) — the fork
   series on top of siemens-mobile-hacks/qemu-pmb887x master, which is
-  merged in regularly (last: `9e5a6bbfd6` on 2026-11-09). Upstream carries
+  merged in regularly (last: `23d7df3200` on 2026-11-11). Upstream carries
   the DSP LLE (the Teak mask ROM and the downloaded code run through a TCG
   JIT synchronously on the vCPU thread), the `vcpu-timers` clock,
   `-debug-channels`, the SIM as `-device gsm-sim` and the CFI flash with

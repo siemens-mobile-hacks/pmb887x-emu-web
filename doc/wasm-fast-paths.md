@@ -5,13 +5,15 @@ upstream only to make the emulator faster. Use it when rebasing onto a newer
 upstream, or when deleting an optimization to bring a file back towards upstream.
 
 - **Upstream reference:** `smh/master` (siemens-mobile-hacks/qemu-pmb887x),
-  merged up to `9e5a6bbfd6` by merge `d7fab9092f` (2026-11-09). To see a
-  file's divergence, run `git -C qemu diff 9e5a6bbfd6 -- <file>`.
+  merged up to `23d7df3200` by merge `d5421c70af` (2026-11-11). To see a
+  file's divergence, run `git -C qemu diff 23d7df3200 -- <file>`.
 - **State described:** fork `6b8a64baa5` (2026-11-09). Every identifier
   below was grepped in that tree; the 2026-11-10 review round
   (`db5ec3b899`) changed the A5, C2 and R2 rows and the list of correctness
   fixes, `8fcac1b334` added C8 and R8, `58cb97caff` D12 and `0dcee227d0`
-  A11, `91ad8b0c21` T6 (the fork is at `91ad8b0c21`). The other commits
+  A11, `91ad8b0c21` T6, and `d5421c70af` merged smh/master `23d7df3200`
+  (the fork is at `d5421c70af`; the merge changed no row, `hw/gsm` is
+  upstream's). The other commits
   since (`bed67ff185`, `472c44c938`, `f77b282b9f`, `59a4bd78f9`,
   `cc1c25a551`) are in the backend and its DSP glue (evicted DSP blocks
   dropped in the middle of a slice, a rebinder for Firefox's tiers,
@@ -93,7 +95,7 @@ file the comment.
 ## Removing one
 
 1. Delete what the **Remove** column names. Afterwards,
-   `git -C qemu diff 9e5a6bbfd6 -- <file>` should have lost exactly those hunks.
+   `git -C qemu diff 23d7df3200 -- <file>` should have lost exactly those hunks.
 2. Rebuild with `scripts/ninja-fast.sh`, then run `scripts/gate.sh keep` and
    lockstep on S75 and EL71 (`tools/lockstep-wasm.mjs`, and the native
    `scripts/run-lockstep.sh`). Run `tools/lockstep-wasm.mjs` once more with
