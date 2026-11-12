@@ -9,7 +9,9 @@
 // what the gateway's close codes mean to the user
 const CLOSED = {
   4001: "Two phones from this address are online already",
+  4002: "The GPRS gateway is full, try again later",
   4003: "This address is banned from the GPRS gateway",
+  4029: "Too many GPRS connections from this address, try again in a minute",
   4004: "Today's GPRS traffic for this address is used up",
   4008: "GPRS disconnected after a long idle time",
   4009: "This page may not use the GPRS gateway",
