@@ -16,7 +16,7 @@ scripts/bundle-dist.sh          # → dist/ (see -- usage header for flags)
 
 Ships exactly what the page loads (`site/app.js` knows the list):
 `index.html`, `app.js`, `style.css`, `keyboards.js`, `fullflashes.js`,
-`siemensfw.js`, `recalc.js`, `recalc-worker.js`, `audio-worklet.js`
+`siemensfw.js`, `recalc.js`, `recalc-worker.js`, `gprs-net.js`, `audio-worklet.js`
 (drained by the AudioWorklet — leave it out and the page is silent),
 `dist/boards.tar` and the Siemens key module (always fetched from `dist/`),
 the engine (`dist-jit/`), each with a `.gz` sidecar (the ~12 MB wasm ships

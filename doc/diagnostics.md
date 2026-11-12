@@ -90,7 +90,10 @@ detector), `_wasm_clock_banked()` (1 while the `vcpu-timers-bank` window
 is open), `_wasm_audio_ring_ptr()` (the ring `audio-worklet.js` reads),
 `_wasm_send_key(lnx, down)`, `_wasm_quit()`, `_wasm_accessory_buf()` +
 `_wasm_accessory_plug()` (write a NUL-terminated profile name such as
-`headset-stereo` or `none` at the buffer, then plug it), and the runtime's `FS`,
+`headset-stereo` or `none` at the buffer, then plug it), `_wasm_net_attach()`,
+`_wasm_net_buf()`, `_wasm_net_take()`, `_wasm_net_put(len)` (the GSM cell's
+IP side; the page's end is `window.__gprsNet`, with `frames`, `conns` and
+`requests`), and the runtime's `FS`,
 `ENV`, `HEAPU8`, `TTY`, `addFunction`/`removeFunction`. A dist built with
 `tools/perf/freerun.diff` also has `_wasm_free_run`.
 
@@ -160,7 +163,7 @@ knowing only for reproducing one failure:
 | `tcgisa.mjs` | drives the guest op-suite on one page leg: `node tcgisa.mjs [port] [dist] [out] [ENV=VAL…]`. `scripts/run-tcg-isa.sh` is the gate and compares each built dist against the native JIT serial log |
 | `lockstep.mjs`, `lockstep-wasm.mjs` | cross-backend value-equality drivers — native JIT vs native TCI (plugin) / native JIT vs the wasm page (built-in fold); `scripts/run-lockstep.sh` is the native gate. `lockstep-wasm.mjs` refuses a reference whose `qemu-source.txt` is missing or names other qemu sources than the dist's (`--no-ref-check` skips that, `--a-bin` picks another native build) |
 | `ffboot.mjs` | boot a dist in Playwright's Firefox (`BROWSER=chromium` too) — `errors=0` and `progress=ok` (guest clock ≥ 20 s, the screen drew, insns still rising over the last 20 s) |
-| `gprscheck.mjs` | native, EL71: boot with the built-in cell on a slirp network, open a page served on the host (`gprs-host.mjs`) in the phone's browser, and check that the host gets the GET and the page shows on the LCD; needs qemu with slirp ([gsm-network.md](gsm-network.md)) |
+| `gprscheck.mjs` | EL71: boot with the built-in cell, open a page from the host in the phone's browser, and check that the host gets the GET and the page shows on the LCD. Native: a slirp network and `gprs-host.mjs` (needs qemu with slirp); `--web`: the page's own network (`site/gprs-net.js`), the page served from its origin ([gsm-network.md](gsm-network.md)) |
 | `gsmcheck.mjs` | boot a phone with the GSM option and check that it registers on the built-in cell (status icons against a reference picture; EL71), that the page opened no socket and that keys are answered a minute later; `--gsm 0` unticks the option, the negative control ([gsm-network.md](gsm-network.md)) |
 | `tests/run.mjs` | the native suite: five fullflashes (s75/el71/c81/ke800/ke970) booted with `run-native.sh`'s recipe, plus an insncount MIPS benchmark. Blind to every wasm-only path, which is why the browser gates exist |
 | `detect-check.mjs`, `detect-web.mjs`, `efa-web.mjs`, `preset-web.mjs`, `ui-acceptance.mjs` | page tests: device detection (headless and through the page), LG fullflash + EFA sidecar, preset download → cache → boot, the layout |

@@ -38,9 +38,34 @@ What the cell does is upstream's model, unchanged: BCCH (system information
 1-4 and 13), FCCH/SCH, random access and immediate assignment of an SDCCH,
 LAPDm, Location Updating Accept, and GPRS on timeslot 7 (attach, routing area
 update, PDP context). It rejects CM service requests, so there are **no calls
-and no SMS**, and its IP side needs a qemu netdev, which the browser build
-does not have, so there a PDP context carries no traffic. The native build
-does carry it (next section).
+and no SMS**. Its IP side needs a qemu netdev: natively that is slirp, in
+the browser the page's own network (both below).
+
+### The phone's Internet in the browser
+
+A browser gives slirp no sockets, so the page is the network. It boots the
+cell on a hub (`-netdev hubport,id=net0,hubid=0 -object
+gsm-bts,id=gsm0,netdev=net0`), and once the guest runs, `site/gprs-net.js`
+adds itself as the hub's other port (`ui/wasm.c`, `wasm_net_*`, marked
+`WASM PORT (removable)`) and plays slirp's part with the same addresses: the
+phone is 10.0.2.15, the gateway and the page's server 10.0.2.2, DNS 10.0.2.3.
+It answers DNS (every name gets an address it can map back), ping, and
+ends TCP itself; an HTTP request becomes a `fetch()`:
+
+- `10.0.2.2`, or the page's own host name, is the page's origin: the phone
+  can open anything served next to the emulator (`http://10.0.2.2/x.xhtml`
+  fetches `<origin>/x.xhtml`).
+- Any other host is fetched as `https://<host><path>`, which works only where
+  that site sends CORS headers (the page is cross-origin isolated, and an
+  https page may not fetch plain http). The constructor's `relay` option is
+  the hook for a server-side relay that would open the rest of the web; there
+  is none yet.
+
+One request per connection (`Connection: close`), no TLS, no IP fragments.
+Retransmissions run on the guest clock, so a slow host does not resend
+early. `node tools/gprscheck.mjs --web` checks it end to end (the phone
+fetches an 8 KB page; about 2 min 15 s), with the same profile change as the
+native check below.
 
 ### GPRS data (native build)
 
@@ -163,8 +188,11 @@ So the built-in cell stays where upstream runs it.
 - **Boards without a radio in their config** (S75 and the other x75, CX70,
   SL65, …): the option does nothing, the run is an ordinary one. The
   allow-list for the overlay is `GSM_RADIO_INCLUDES` in `site/app.js`.
-- **No SMS, no calls; no IP in the browser** (above). The browser build has
-  no netdev for the cell's IP side.
+- **No SMS, no calls** (above).
+- **The firmware's own browser profile does not work in the browser
+  build**: it goes through the operator's WAP gateway (WSP over UDP), which
+  the page does not speak. Choose the connection "MTS Internet-GPRS" for the
+  WAP browser (above). Only the page's origin and CORS sites are reachable.
 - **`-icount shift=3`.** Natively with the cell and the scripts' default
   clock (`-icount shift=3,sleep=on`), EL71 stopped at the boot logo with a
   firmware `>>EXIT<<` from `l1bbcsg` (layer 1); with the page's clock

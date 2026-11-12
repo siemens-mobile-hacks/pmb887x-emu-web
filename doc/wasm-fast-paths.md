@@ -15,7 +15,8 @@ upstream, or when deleting an optimization to bring a file back towards upstream
   (the merge changed no row), `9bf917bb6e` fixed the cell's uplink LLC
   buffer in `hw/gsm/gsm-bts-gprs.c`, and `47d1ff26aa` merged smh/master
   `0539060008` (the HD15515X transceivers, the modulator per DSP version,
-  gprscu reads); no row either (the fork is at `47d1ff26aa`). The other commits
+  gprscu reads), and `9de7811900` gave `ui/wasm.c` a network port for the page
+  (`wasm_net_*`, marked); no row either (the fork is at `9de7811900`). The other commits
   since (`bed67ff185`, `472c44c938`, `f77b282b9f`, `59a4bd78f9`,
   `cc1c25a551`) are in the backend and its DSP glue (evicted DSP blocks
   dropped in the middle of a slice, a rebinder for Firefox's tiers,

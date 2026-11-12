@@ -98,6 +98,12 @@ the authoritative list; in outline:
   - `wasm_accessory_plug()` → the name the page wrote into
     `wasm_accessory_buf()` is copied and set as the connector's `accessory`
     QOM property from a one-shot bottom half;
+  - the GSM cell's IP side: `wasm_net_attach()` adds the page as a port of
+    hub 0 (the page boots the cell on `-netdev hubport,id=net0,hubid=0`);
+    frames go out through `wasm_net_take()` and in through `wasm_net_put()`,
+    both via `wasm_net_buf()` and SPSC rings, the inbound one drained by a
+    bottom half. `site/gprs-net.js` is the network on the page's side
+    ([gsm-network.md](gsm-network.md));
   - the counters the page reads: `wasm_vclock`, `wasm_fb_updates`,
     `wasm_insns`, `wasm_halts`, `wasm_clock_banked`.
 - **`audio/wasmaudio.c`** (`-audio wasm`): a mixeng backend that publishes

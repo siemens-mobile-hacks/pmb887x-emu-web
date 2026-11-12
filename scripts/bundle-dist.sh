@@ -36,7 +36,7 @@ if [ "${BUNDLE_SYMBOLS:-0}" = 1 ]; then note "including .symbols maps"; fi
 # --------------------------------------------------------------- contents --
 
 # The editable page (site/ top level; index.html pulls in the rest).
-page="index.html app.js style.css keyboards.js fullflashes.js siemensfw.js recalc.js recalc-worker.js audio-worklet.js"
+page="index.html app.js style.css keyboards.js fullflashes.js siemensfw.js recalc.js recalc-worker.js audio-worklet.js gprs-net.js"
 # page images (style.css references them by relative path)
 images="img/ke970-wheel.webp"
 

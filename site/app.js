@@ -19,6 +19,7 @@ import {
   readIdentity, recalc, recoverEsn, cachedEsnCount, clearEsnCache, workerCount,
 } from "./recalc.js";
 import { loadSiemensFW } from "./siemensfw.js";
+import { GprsNet } from "./gprs-net.js";
 
 /* ------------------------------------------------------------------ */
 /* phone key tables (mirrors pmb887x-emu-mcp/src/keys.ts + otp.ts)      */
@@ -127,6 +128,7 @@ function untar(buf, writeFn) {
 const $ = (id) => document.getElementById(id);
 let qemuModule = null;   // current emscripten module instance
 let running = false;     // a guest is live (the module object outlives it)
+let gprsNet = null;      // the GSM cell's IP side (gprs-net.js) while it runs
 // The module object outlives the guest, but its wasm exports do not:
 // emscripten replaces them with stubs that abort ("called after runtime
 // exit") once main() has returned, and the stale module of a finished run is
@@ -1568,6 +1570,7 @@ async function boot() {
 
   // [[".cfi-efa", bytes], ...] — filled below, checked again after the boot
   let sidecarBytes = [];
+  let gsm = false;
 
   try {
     // Boot source: the preset read back from the browser cache, or the
@@ -1743,9 +1746,12 @@ async function boot() {
       : [];
     // GSM network (doc/gsm-network.md): on a board that has a radio, qemu
     // gets its built-in cell. Without the option, and on any other board,
-    // the machine has no network object at all.
-    const gsm = gsmFor(device);
-    const gsmArgs = gsm ? ["-object", "gsm-bts,id=gsm0"] : [];
+    // the machine has no network object at all. The cell's IP side is a hub
+    // whose other port is the page (gprs-net.js).
+    gsm = gsmFor(device);
+    const gsmArgs = gsm
+      ? ["-netdev", "hubport,id=net0,hubid=0", "-object", "gsm-bts,id=gsm0,netdev=net0"]
+      : [];
     // what the Accessory control shows, chosen there or not
     const accConf = readAccessories(device + ".toml");
     const bootAcc = acc?.dev === device && acc.gsm === gsm
@@ -1867,11 +1873,19 @@ async function boot() {
   noEfaWarning = noEfa;
   setEmuState("running");
   attachAudio();   // needs liveModule(); the worklet loads on its own time
+  // a dist built before the export existed runs without the phone's Internet
+  if (gsm && qemuModule._wasm_net_attach) {
+    gprsNet = new GprsNet(qemuModule, { log: debug ? (s) => console.log(`[gprs] ${s}`) : null });
+    window.__gprsNet = gprsNet; // debugging and tools/gprscheck-web.mjs
+    gprsNet.start();
+  }
 }
 
 function onGuestExit(code) {
   running = false;
   acc = null;
+  gprsNet?.stop();
+  gprsNet = null;
   exitCode = code;
   stopPainting();
   stopRecording();          // flushes whatever was captured
