@@ -39,13 +39,44 @@ What the cell does is upstream's model, unchanged: BCCH (system information
 LAPDm, Location Updating Accept, and GPRS on timeslot 7 (attach, routing area
 update, PDP context). It rejects CM service requests, so there are **no calls
 and no SMS**, and its IP side needs a qemu netdev, which the browser build
-does not have, so a PDP context carries no traffic.
+does not have, so there a PDP context carries no traffic. The native build
+does carry it (next section).
+
+### GPRS data (native build)
+
+With `-object gsm-bts,id=gsm0,netdev=net0` and a slirp netdev
+(`-netdev user,id=net0`), the cell hands the phone's IP packets to qemu's
+network: the phone gets 10.0.2.15, DNS 10.0.2.3, and reaches the host at
+10.0.2.2. `tools/gprscheck.mjs` checks it end to end on EL71: it serves a
+page on the host (`tools/gprs-host.mjs`), points the browser's online
+profile at the bare GPRS connection, opens `http://10.0.2.2:<port>` from
+Internet ▸ Enter URL, answers "Go online", and passes when the host gets the
+browser's GET and the page shows on the LCD (about 2 min 15 s). It needs a
+native qemu with slirp (`scripts/build-native.sh` enables it; package
+`libslirp-dev`).
+
+Two things the check had to get past:
+
+- **The firmware's profile goes through a WAP gateway.** The active online
+  profile (MTS) sends the browser to the "MTS WAP" proxy, 192.168.192.168
+  port 9201 (WSP over UDP), which slirp forwards to the real address. The
+  check selects the connection "MTS Internet-GPRS" in the WAP browser's
+  connection list instead (Settings ▸ Connectivity ▸ Online settings ▸ MTS ▸
+  Edit ▸ Applications ▸ WAP browser), so the browser speaks plain HTTP. It
+  boots a writable copy of the flash for that.
+- **Upstream lost every uplink packet over about 240 bytes** (fixed in the
+  fork, `9bf917bb6e`): the uplink reassembled LLC frames in a 251-byte buffer,
+  and the cell accepts the N201-U the phone proposes in XID (EL71: 1520), so
+  every SNDCP segment of a 1500-byte packet was dropped. SYN and ACK went
+  through; the browser's GET, sent as 1460 + 116 bytes, never arrived. To be
+  offered upstream.
 
 ### How it is wired
 
 - **qemu.** The page adds `-object gsm-bts,id=gsm0` and
   `-machine pmb887x,gsm-network=gsm0`. The fork's qemu has no GSM code of
-  its own: `hw/gsm` is upstream's, unchanged.
+  its own: `hw/gsm` is upstream's with one fix, the uplink LLC buffer (GPRS
+  data, above).
 - **The board.** The pinned bsp revision ships the ELKA radio
   (`include/siemens-sg2-elka.toml`, `[peripheral.RF]`) commented out; upstream
   bsp enabled it later. A GSM run of such a board boots an overlay config the
@@ -132,7 +163,12 @@ So the built-in cell stays where upstream runs it.
 - **Boards without a radio in their config** (S75 and the other x75, CX70,
   SL65, …): the option does nothing, the run is an ordinary one. The
   allow-list for the overlay is `GSM_RADIO_INCLUDES` in `site/app.js`.
-- **No SMS, no calls, no IP** (above).
+- **No SMS, no calls; no IP in the browser** (above). The browser build has
+  no netdev for the cell's IP side.
+- **`-icount shift=3`.** Natively with the cell and the scripts' default
+  clock (`-icount shift=3,sleep=on`), EL71 stopped at the boot logo with a
+  firmware `>>EXIT<<` from `l1bbcsg` (layer 1); with the page's clock
+  (`ICOUNT=vt`) it registers. Seen once on `d5421c70af`, not looked into.
 - **LG boards**: KE800 and KE970 stay on "No network", native build
   included.
 - **Deep sleep.** With the radio enabled and an accessory that lets the

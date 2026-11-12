@@ -27,9 +27,16 @@ fi
 
 mkdir -p "$BUILD"
 cd "$BUILD"
+# slirp (libslirp-dev) is the network behind the GSM cell's GPRS that
+# tools/gprscheck.mjs uses
 [ -f Makefile ] || "$SRC/configure" \
   --target-list=arm-softmmu \
-  --disable-docs --disable-werror
+  --disable-docs --disable-werror --enable-slirp
+if ! grep -q '^#define CONFIG_SLIRP' config-host.h; then
+  MESON="$BUILD/pyvenv/bin/meson"
+  [ -x "$MESON" ] || MESON=meson
+  "$MESON" configure -Dslirp=enabled
+fi
 
 # taken before the build, so an edit made while it runs cannot be claimed
 ID="$(bash "$ROOT/scripts/qemu-source-id.sh" "$SRC")"

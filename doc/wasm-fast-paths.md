@@ -12,8 +12,9 @@ upstream, or when deleting an optimization to bring a file back towards upstream
   (`db5ec3b899`) changed the A5, C2 and R2 rows and the list of correctness
   fixes, `8fcac1b334` added C8 and R8, `58cb97caff` D12 and `0dcee227d0`
   A11, `91ad8b0c21` T6, and `d5421c70af` merged smh/master `23d7df3200`
-  (the fork is at `d5421c70af`; the merge changed no row, `hw/gsm` is
-  upstream's). The other commits
+  (the merge changed no row), and `9bf917bb6e` fixed the cell's uplink LLC
+  buffer in `hw/gsm/gsm-bts-gprs.c`, no row either (the fork is at
+  `9bf917bb6e`). The other commits
   since (`bed67ff185`, `472c44c938`, `f77b282b9f`, `59a4bd78f9`,
   `cc1c25a551`) are in the backend and its DSP glue (evicted DSP blocks
   dropped in the middle of a slice, a rebinder for Firefox's tiers,
