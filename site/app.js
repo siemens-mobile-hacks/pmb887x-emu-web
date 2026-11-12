@@ -1098,7 +1098,7 @@ function readCpuType(file, depth = 0) {
 // on ELKA"). Only a GSM run gets it: with a radio the firmware finds a cell,
 // and the run without the option has to stay what it was.
 const GSM_RADIO_INCLUDES = ["include/siemens-sg2-elka.toml"];
-const RADIO_TYPE_RE = /^[ \t]*type[ \t]*=[ \t]*"(?:hd155153np|pmb6272)"/m;
+const RADIO_TYPE_RE = /^[ \t]*type[ \t]*=[ \t]*"(?:hd155153np|hd155155npeb|pmb6272)"/m;
 
 // The board's config files, the board itself first.
 function boardChain(file, depth = 0) {
