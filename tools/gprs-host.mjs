@@ -13,10 +13,13 @@ import { pathToFileURL } from "node:url";
 export const HOST_PAGE_MARKER = "GPRS-HOST-PAGE-7311";
 export const HOST_PAGE_TITLE = "GPRS OK";
 
-const PAGE = Buffer.from(
+// padding: bytes of comment the phone does not show, to make the page span
+// several TCP segments
+const page = (padding) => Buffer.from(
   '<?xml version="1.0" encoding="UTF-8"?>\n' +
     '<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">\n' +
     `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>${HOST_PAGE_TITLE}</title></head>\n` +
+    (padding ? `<!-- ${"x".repeat(padding)} -->\n` : "") +
     `<body><p>${HOST_PAGE_MARKER}</p></body></html>\n`,
   "utf8",
 );
@@ -33,7 +36,8 @@ const isPageRequest = (r) => {
   return p === "/" || p === "/index.html";
 };
 
-export async function startHostPage({ port = 0, host = "127.0.0.1", onRequest } = {}) {
+export async function startHostPage({ port = 0, host = "127.0.0.1", padding = 0, onRequest } = {}) {
+  const PAGE = page(padding);
   const requests = [];
   const waiters = new Set();
   const sockets = new Set();

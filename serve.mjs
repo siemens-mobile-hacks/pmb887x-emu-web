@@ -7,6 +7,7 @@
 // the LAN) — non-loopback http requests are redirected there.
 import http from "node:http";
 import https from "node:https";
+import net from "node:net";
 import { execFileSync } from "node:child_process";
 import {
   createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync,
@@ -189,14 +190,32 @@ const redirectNonLoopbackToHttps = (req, res) => {
 
 const cert = httpsEnabled ? ensureCert() : null;
 
+// The phone's GPRS goes to a GPRS gateway (bts-emulator's gprs-gw) over a
+// WebSocket at /gprs, as nginx passes it in the deployment.
+const [gwHost, gwPort] = (process.env.GPRS_GW || "127.0.0.1:5751").split(":");
+const proxyGprs = (req, socket, head) => {
+  if (new URL(req.url, "http://x").pathname !== "/gprs") return socket.destroy();
+  const gw = net.connect(Number(gwPort), gwHost, () => {
+    const headers = { ...req.headers, "x-forwarded-for": req.socket.remoteAddress };
+    gw.write(`GET /gprs HTTP/1.1\r\n` +
+      Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join("") + "\r\n");
+    gw.write(head);
+    socket.pipe(gw).pipe(socket);
+  });
+  gw.on("error", () => socket.destroy());
+  socket.on("error", () => gw.destroy());
+};
+
 const httpServer = http.createServer((req, res) => {
   if (httpsEnabled && redirectNonLoopbackToHttps(req, res)) return;
   handler(req, res);
 });
+httpServer.on("upgrade", proxyGprs);
 httpServer.listen(port, "0.0.0.0");
 
 if (httpsEnabled) {
   const httpsServer = https.createServer({ key: cert.key, cert: cert.cert }, handler);
+  httpsServer.on("upgrade", proxyGprs);
   httpsServer.listen(httpsPort, "0.0.0.0");
 }
 

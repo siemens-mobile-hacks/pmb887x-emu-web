@@ -53,6 +53,15 @@ LETSENCRYPT_EMAIL=you@example.org \
 terminated at the front; http→https redirects appear automatically once
 the cert is issued.
 
+### The phone's Internet
+
+The page relays the phone's GPRS to `wss://<host>/gprs`. That path belongs to
+bts-emulator's GPRS gateway (its `gprs-gw` service), not to this container:
+run bts-emulator with its `compose.web.yaml` and the same host name, and the
+front routes `/gprs` there (`VIRTUAL_PATH`). In bts-emulator's `.env`, set
+`GPRS_GW_ORIGINS=https://emu.example.org` and `GPRS_GW_TRUSTED_PROXIES=1`.
+Without it the emulator runs as before, only without Internet on the phone.
+
 ## 3. Standalone (no proxy mesh)
 
 ```bash

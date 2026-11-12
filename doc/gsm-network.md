@@ -31,41 +31,52 @@ Nothing to start: press Start. About 23 s later (EL71,
 this host) the idle screen shows "CC 001 NC 01", the signal bars and the GPRS
 icon. `tools/gsmcheck.mjs` boots a phone with the option and checks that it
 registers (the status icons against `tools/test_targets/el71v41_gsm_idle.png`),
-that the page opened no socket, and that the phone still answers keys a
-minute later.
+that the page opened no socket but its GPRS relay, and that the phone still
+answers keys a minute later.
 
 What the cell does is upstream's model, unchanged: BCCH (system information
 1-4 and 13), FCCH/SCH, random access and immediate assignment of an SDCCH,
 LAPDm, Location Updating Accept, and GPRS on timeslot 7 (attach, routing area
 update, PDP context). It rejects CM service requests, so there are **no calls
 and no SMS**. Its IP side needs a qemu netdev: natively that is slirp, in
-the browser the page's own network (both below).
+the browser a slirp on a server the page relays to (both below).
 
 ### The phone's Internet in the browser
 
-A browser gives slirp no sockets, so the page is the network. It boots the
-cell on a hub (`-netdev hubport,id=net0,hubid=0 -object
-gsm-bts,id=gsm0,netdev=net0`), and once the guest runs, `site/gprs-net.js`
-adds itself as the hub's other port (`ui/wasm.c`, `wasm_net_*`, marked
-`WASM PORT (removable)`) and plays slirp's part with the same addresses: the
-phone is 10.0.2.15, the gateway and the page's server 10.0.2.2, DNS 10.0.2.3.
-It answers DNS (every name gets an address it can map back), ping, and
-ends TCP itself; an HTTP request becomes a `fetch()`:
+A browser gives slirp no sockets, and a page cannot fetch the web on the
+phone's behalf (CORS), so the network is on a server: bts-emulator's GPRS
+gateway, `gprs-gw` (branch `gprs-gw` of
+[bts-emulator](https://github.com/siemens-mobile-hacks/bts-emulator)).
 
-- `10.0.2.2`, or the page's own host name, is the page's origin: the phone
-  can open anything served next to the emulator (`http://10.0.2.2/x.xhtml`
-  fetches `<origin>/x.xhtml`).
-- Any other host is fetched as `https://<host><path>`, which works only where
-  that site sends CORS headers (the page is cross-origin isolated, and an
-  https page may not fetch plain http). The constructor's `relay` option is
-  the hook for a server-side relay that would open the rest of the web; there
-  is none yet.
+- **qemu.** The page boots the cell on a hub (`-netdev hubport,id=net0,hubid=0
+  -object gsm-bts,id=gsm0,netdev=net0`); once the guest runs, the page adds
+  itself as the hub's other port (`ui/wasm.c`, `wasm_net_*`, marked
+  `WASM PORT (removable)`).
+- **The page.** `site/gprs-net.js` relays the cell's Ethernet frames over a
+  WebSocket to the page's own `/gprs`, one frame a message, both ways. It
+  looks at none of them. Under Advanced ▸ GSM network a caption says why
+  there is no Internet when the gateway refuses or cannot be reached.
+- **The gateway.** Every connection gets a slirp of its own
+  (`gprs-gw/slirp-pipe.c`, libslirp), QEMU's `-netdev user`: the phone is
+  10.0.2.15, its DNS 10.0.2.3. It runs in bts-emulator's network namespace,
+  where nftables sends its DNS, WAP (UDP 9200/9201), operator proxy and MMSC
+  traffic to the same dnsmasq, Kannel, squid and MMSC the Osmocom phones use,
+  so the firmware's own operator profiles work, and refuses every other
+  private destination and mail port. Limits per client address: 2
+  connections, 50 MB a day, 10 KB/s downlink. An emulator's GPRS sends about
+  1 KB/s (one CS-1 timeslot); an uplink above 20 KB/s or 300 frames/s over
+  10 s bans the address for 182 days (five times the GPRS figures, room for
+  EDGE).
+- **Hosting.** In the deployment nginx-proxy routes `/gprs` of the page's
+  host to the gateway (bts-emulator's `compose.web.yaml`). `serve.mjs`
+  passes `/gprs` to `GPRS_GW` (default 127.0.0.1:5751).
 
-One request per connection (`Connection: close`), no TLS, no IP fragments.
-Retransmissions run on the guest clock, so a slow host does not resend
-early. `node tools/gprscheck.mjs --web` checks it end to end (the phone
-fetches an 8 KB page; about 2 min 15 s), with the same profile change as the
-native check below.
+`node tools/gprscheck.mjs --web` checks it end to end: it builds the helper
+and starts the gateway from a bts-emulator checkout next to this repository
+(`--gateway`), lets that one slirp reach this host's loopback, which the
+real gateway never does, and the phone fetches an 8 KB page from
+`tools/gprs-host.mjs` (about 2 min 30 s), with the same profile change as
+the native check below.
 
 ### GPRS data (native build)
 
@@ -189,10 +200,12 @@ So the built-in cell stays where upstream runs it.
   SL65, …): the option does nothing, the run is an ordinary one. The
   allow-list for the overlay is `GSM_RADIO_INCLUDES` in `site/app.js`.
 - **No SMS, no calls** (above).
-- **The firmware's own browser profile does not work in the browser
-  build**: it goes through the operator's WAP gateway (WSP over UDP), which
-  the page does not speak. Choose the connection "MTS Internet-GPRS" for the
-  WAP browser (above). Only the page's origin and CORS sites are reachable.
+- **Without a GPRS gateway** the browser build has no Internet: the phone
+  attaches and gets an address, and nothing answers.
+- **The operator profiles through the gateway are unverified.** The nftables
+  rules that send WAP, proxy and MMSC traffic to bts-emulator's services
+  could not be loaded in the container this was written in (no
+  `NET_ADMIN`); the checks here use the MTS Internet-GPRS connection.
 - **`-icount shift=3`.** Natively with the cell and the scripts' default
   clock (`-icount shift=3,sleep=on`), EL71 stopped at the boot logo with a
   firmware `>>EXIT<<` from `l1bbcsg` (layer 1); with the page's clock
@@ -221,4 +234,5 @@ own. With it EL71 and KE800 registered and received SMS. A port of those
 daemons to WebAssembly was started too (all five built and linked, none
 ran). Both were deleted on 2026-11-11 without being merged: the built-in
 cell is enough for a phone that shows a network, and neither is in the
-history of this repository or of the qemu fork.
+history of this repository or of the qemu fork. The GPRS gateway above is
+not that: the cell stays in the page, only the phone's IP goes to a server.

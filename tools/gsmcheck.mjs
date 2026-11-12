@@ -20,7 +20,8 @@
 // --hold seconds after the registration the "1" key still brings up the
 // dialler. A firmware that went to deep sleep and did not come back
 // (doc/gsm-network.md) fails here.
-// PASS = all of the above that could be read, no socket opened by the page,
+// PASS = all of the above that could be read, no socket opened by the page
+// but its GPRS relay to its own /gprs,
 // no firmware ">>EXIT<<" and no page error. The LCD is saved to
 // tests/results/gsmcheck-<dist>-<flash>.png.
 import { chromium } from "playwright-core";
@@ -78,11 +79,14 @@ page.on("console", (m) => {
   const t = m.text();
   if (/Aborted\(|Assertion failed|RuntimeError/.test(t)) errors.push(t.slice(0, 200));
 });
-// The network is all inside the page: no WebSocket may appear.
+// The cell is inside the page; the only WebSocket is the GPRS relay to the
+// page's own /gprs.
 const cdp = await page.context().newCDPSession(page);
 await cdp.send("Network.enable");
 const sockets = [];
-cdp.on("Network.webSocketCreated", (e) => sockets.push(e.url));
+cdp.on("Network.webSocketCreated", (e) => {
+  if (new URL(e.url).pathname !== "/gprs" || new URL(e.url).host !== `127.0.0.1:${PORT}`) sockets.push(e.url);
+});
 
 const q = `dist=${DIST}${QUERY ? "&" + QUERY : ""}`;
 await page.goto(`http://127.0.0.1:${PORT}/?${q}`, { waitUntil: "domcontentloaded" });
@@ -177,7 +181,7 @@ await browser.close();
 const checks = [
   ["no firmware exit", !last.exit, last.exit.replace(/[\x00-\x1f\xfe\xff]/g, " ")],
   ["no page error", !errors.length, errors[0] ?? ""],
-  ["no socket", !sockets.length, `${sockets.length} opened`],
+  ["no socket but the GPRS relay", !sockets.length, `${sockets.length} other opened`],
 ];
 if (ref) checks.push(["registered (status icons match the reference)", registered != null,
   registered != null ? `at ${registered} s` : path.basename(refFile)]);

@@ -2,17 +2,19 @@
 // the phone's browser, and watch it arrive (doc/gsm-network.md).
 //
 //   node tools/gprscheck.mjs --flash <EL71v41lg91.bin> [--secs 300] [--keep] [--trace]
-//   PORT=8080 node tools/gprscheck.mjs --web [--dist dist-jit] --flash <EL71v41lg91.bin> ...
+//   PORT=8080 node tools/gprscheck.mjs --web [--dist dist-jit] [--gateway <dir>] --flash ...
 //
-// Native (default): qemu with a slirp netdev; the page is served by
-// tools/gprs-host.mjs and the phone opens http://10.0.2.2:<port>. Needs a
-// native qemu with slirp (scripts/build-native.sh, libslirp-dev); QEMU_BIN
-// and BOARDS_DIR override the binary and board configs as for
-// scripts/run-native.sh. The flash is copied and the copy booted writable.
-// --web: the page on PORT boots the flash with its GSM option, and the
-// phone's IP goes to the page's own stack (site/gprs-net.js); the phone
-// opens http://10.0.2.2/, which the page fetches from its own origin,
-// where this tool answers it (a Playwright route).
+// The phone opens http://10.0.2.2:<port>, an 8 KB page tools/gprs-host.mjs
+// serves on this host's loopback.
+// Native (default): qemu with a slirp netdev. Needs a native qemu with slirp
+// (scripts/build-native.sh, libslirp-dev); QEMU_BIN and BOARDS_DIR override
+// the binary and board configs as for scripts/run-native.sh. The flash is
+// copied and the copy booted writable.
+// --web: the page on PORT (serve.mjs) boots the flash with its GSM option and
+// relays the phone's GPRS to /gprs, which serve.mjs passes to 127.0.0.1:5751.
+// There the tool runs bts-emulator's GPRS gateway from --gateway (default
+// ../bts-emulator/gprs-gw next to this repository), with its slirp allowed
+// onto this host's loopback, which the real gateway never is.
 //
 // The phone's browser profile goes through the operator's WAP gateway, so
 // the check first points the WAP browser at the connection "MTS
@@ -31,7 +33,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOST_PAGE_MARKER, HOST_PAGE_TITLE, startHostPage } from "./gprs-host.mjs";
+import { startHostPage } from "./gprs-host.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -42,6 +44,7 @@ const opt = (n, d) => {
 };
 
 const WEB = argv.includes("--web");
+const GATEWAY = path.resolve(opt("gateway", path.join(ROOT, "..", "bts-emulator", "gprs-gw")));
 const FLASH = opt("flash", "");
 const SECS = Number(opt("secs", 300));
 const TRACE = argv.includes("--trace");
@@ -86,7 +89,7 @@ async function nativeBackend() {
 
   const flash = path.join(run, "flash.bin");
   fs.copyFileSync(FLASH, flash);
-  const host = await startHostPage();
+  const host = await startHostPage({ padding: 8192 });
   const monitor = path.join(run, "monitor.sock");
   const qemu = spawn("bash", [path.join(ROOT, "scripts", "run-native.sh"), flash,
     "-netdev", "user,id=net0",
@@ -144,23 +147,29 @@ async function webBackend() {
   const KEYCODE = { ret: 28, f1: 59, f2: 60, up: 103, down: 108, right: 106, kp_divide: 98,
     0: 11, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8, 8: 9, 9: 10 };
 
+  // the gateway serve.mjs passes /gprs to, on loopback; its slirp may reach
+  // this host's loopback, where the page waits
+  const helper = path.join(run, "slirp-pipe");
+  const cc = spawnSync("sh", ["-c", `cc -O2 -o "$1" "$2" $(pkg-config --cflags --libs slirp)`, "sh",
+    helper, path.join(GATEWAY, "slirp-pipe.c")], { stdio: "inherit" });
+  if (cc.status !== 0) throw new Error("cannot build slirp-pipe (gcc and libslirp-dev needed)");
+  const gwLog = path.join(run, "gateway.log");
+  const gw = spawn(process.execPath, [path.join(GATEWAY, "server.mjs")], {
+    env: { ...process.env, NODE_PATH: path.join(ROOT, "tools", "node_modules"),
+      GPRS_GW_LISTEN: "127.0.0.1:5751", GPRS_GW_HELPER: helper,
+      GPRS_GW_STATE: path.join(run, "gateway-state.json"), SLIRP_HOST_LOOPBACK: "1" },
+    stdio: ["ignore", fs.openSync(gwLog, "w"), fs.openSync(gwLog, "a")],
+  });
+  while (!fs.readFileSync(gwLog, "utf8").includes("listening") && gw.exitCode == null) await sleep(100);
+  if (gw.exitCode != null) throw new Error(`the gateway exited: ${fs.readFileSync(gwLog, "utf8")}`);
+  const host = await startHostPage({ padding: 8192 });
+
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
   page.on("crash", () => errors.push("page crashed"));
-  // what the page fetched on the phone's behalf
-  const fetched = [];
-  // 8 KB of comment: the response takes several TCP segments and windows
-  const body = `<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">` +
-    `<head><title>${HOST_PAGE_TITLE}</title></head>\n<!-- ${"0123456789abcdef".repeat(512)} -->\n` +
-    `<body><p>${HOST_PAGE_MARKER}</p></body></html>\n`;
   await page.goto(`http://127.0.0.1:${PORT}/?dist=${DIST}`, { waitUntil: "domcontentloaded" });
-  // the page itself is loaded: from now on "/" is the phone's
-  await page.route((u) => u.pathname === "/", (route) => {
-    fetched.push(route.request().url());
-    route.fulfill({ status: 200, contentType: "application/xhtml+xml; charset=utf-8", body });
-  });
   if (!(await page.evaluate(() => document.querySelector("#gsm")?.checked)))
     throw new Error("the page's GSM option is not ticked");
   await page.selectOption("#startup", "ONLINE");
@@ -175,7 +184,7 @@ async function webBackend() {
     try { return new TextDecoder("latin1").decode(window.__qemu.FS.readFile("/serial.log")); } catch { return ""; }
   });
   return {
-    url: "10.0.2.2",
+    url: `10.0.2.2:${host.port}`,
     press: (name, hold) => page.evaluate(async ([code, ms]) => {
       window.__qemu._wasm_send_key(code, 1);
       await new Promise((r) => setTimeout(r, ms));
@@ -187,18 +196,22 @@ async function webBackend() {
       return { width: d.width, height: d.height, data: Array.from(d.data) };
     }),
     request: async () => {
-      const r = (await page.evaluate(() => window.__gprsNet?.requests ?? []))
-        .find((q) => q.method === "GET" && /UP\.Browser/.test(q.userAgent ?? "") && q.status === 200);
-      return r && fetched.length ? { url: `${r.target} -> ${fetched[0]}`, userAgent: r.userAgent } : null;
+      const r = host.requests.find((q) => q.method === "GET" && /UP\.Browser/.test(q.headers["user-agent"] ?? ""));
+      return r ? { url: r.url, userAgent: r.headers["user-agent"] } : null;
     },
     exited: () => errors.length > 0,
     serial,
-    // what the page's network saw, for a failed run
-    report: () => page.evaluate(() => {
-      const n = window.__gprsNet;
-      return n && { frames: n.frames, connections: n.conns.size, requests: n.requests };
+    // the relay's frame counts and the gateway's log, for a failed run
+    report: async () => ({
+      frames: await page.evaluate(() => window.__gprsNet?.frames),
+      caption: await page.evaluate(() => document.querySelector("#gsm-caption")?.textContent),
+      gateway: fs.readFileSync(gwLog, "utf8").trim().split("\n").slice(-4),
     }),
-    close: () => browser.close(),
+    close: async () => {
+      await browser.close();
+      gw.kill();
+      await host.close();
+    },
     errors,
   };
 }

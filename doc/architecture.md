@@ -102,8 +102,8 @@ the authoritative list; in outline:
     hub 0 (the page boots the cell on `-netdev hubport,id=net0,hubid=0`);
     frames go out through `wasm_net_take()` and in through `wasm_net_put()`,
     both via `wasm_net_buf()` and SPSC rings, the inbound one drained by a
-    bottom half. `site/gprs-net.js` is the network on the page's side
-    ([gsm-network.md](gsm-network.md));
+    bottom half. `site/gprs-net.js` relays those frames over a WebSocket to
+    the GPRS gateway at `/gprs` ([gsm-network.md](gsm-network.md));
   - the counters the page reads: `wasm_vclock`, `wasm_fb_updates`,
     `wasm_insns`, `wasm_halts`, `wasm_clock_banked`.
 - **`audio/wasmaudio.c`** (`-audio wasm`): a mixeng backend that publishes
