@@ -3505,9 +3505,11 @@ function typedTaps(e) {
 }
 
 // a keydown typing has taken from its shortcut, whether or not this phone
-// can type the character
+// can type the character: a phone with no new line (LG) must not take
+// Shift+Enter as the joystick press, which sends the message
 const typingOwns = (e) => typeChk.checked && !typeChk.disabled && !!liveModule()
-  && TYPING_TAKES.has(e.code) && !(e.ctrlKey || e.altKey || e.metaKey);
+  && (TYPING_TAKES.has(e.code) || (e.key === "Enter" && e.shiftKey))
+  && !(e.ctrlKey || e.altKey || e.metaKey);
 
 // The key Backspace presses while typing: the keyboard's erase key, which on
 // the generic Siemens keyboard depends on the device (keyboards.js).
