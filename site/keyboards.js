@@ -422,6 +422,24 @@ const SIEMENS_ERASE = {
   ...Object.fromEntries(SIEMENS_X65.map((dev) => [dev, "left_soft"])),
 };
 
+// Capital letters. Siemens: # once in lower case gives a capital for one
+// letter. After it the indicator shows abc again but # goes on to ABC, and
+// a non-letter (a space) ends that, so a # then gives one capital again;
+// ABC lasts until # takes it back to abc. Read off the S75: "AwAy", "ABcd"
+// and "A Bc" all come out right this way, while a fixed way back (# until
+// abc) went through 123 and typed digits. So the page keeps the case it
+// left the phone in, taking a new run to start in lower case: capital[state]
+// and small[state] are the presses before a capital / a lower-case letter.
+const SIEMENS_UPPER = {
+  capital: { lower: ["hash"], one: ["hash"], caps: [] },
+  small: { caps: ["hash"] },
+};
+// LG: # goes abc -> ABC, which stays on, and every capital switches back
+// straight after its letter: ABC -> 123 -> Abc -> abc (KE800: "hello World
+// ABc Ok"). The presses after wait for the letter to be taken, as a # on a
+// pending letter changes the letter instead.
+const LG_UPPER = { before: ["hash"], after: ["hash", "hash", "hash"] };
+
 // a "keyboard" = a board + one variant per letter set engraved on it; a
 // variant carries the sub-labels (keyed by data-key) printed under the
 // digits, and the multi-tap table (taps, see tapTable()) its firmware types
@@ -439,6 +457,7 @@ export const KBD_KEYBOARDS = {
     tapPause: 1400,
     picker: SIEMENS_PICKER_X65,
     erase: SIEMENS_ERASE,
+    upper: SIEMENS_UPPER,
     variants: SIEMENS_VARIANTS,
   },
 
@@ -449,6 +468,7 @@ export const KBD_KEYBOARDS = {
     tapPause: 1400,
     picker: SIEMENS_PICKER_X75,
     erase: "right_soft",
+    upper: SIEMENS_UPPER,
     variants: SIEMENS_VARIANTS,
   },
 
@@ -460,6 +480,7 @@ export const KBD_KEYBOARDS = {
     picker: LG_PICKER,
     wake: LG_WAKE,
     erase: "clear",
+    upper: LG_UPPER,
     variants: LG_VARIANTS,
   },
 
@@ -474,6 +495,7 @@ export const KBD_KEYBOARDS = {
     picker: LG_PICKER,
     wake: LG_WAKE,
     erase: "clear",
+    upper: LG_UPPER,
     variants: {
       en: {
         name: "English",
@@ -504,8 +526,9 @@ export function pickVariant(keyboardId, variantId) {
 // cycle but in the keyboard's picker maps to { keys, settle, after }
 // instead: those keys, one press each, waiting settle ms once the first has
 // opened the picker and after ms once the last has closed it. erase is the
-// keyboard's erase key: a key name, or one per device with a default. The
-// lookup is by lower case: the phone's own case mode decides the case.
+// keyboard's erase key: a key name, or one per device with a default, and
+// upper the presses around a capital letter's taps. The lookup is by lower
+// case; a capital is a letter whose lower case is on a cycle.
 export function tapTable(keyboardId, variantId) {
   const id = keyboardId in KBD_KEYBOARDS ? keyboardId : DEFAULT_KEYBOARD;
   const kbd = KBD_KEYBOARDS[id];
@@ -524,7 +547,7 @@ export function tapTable(keyboardId, variantId) {
       chars.set(ch, { keys: pickerPresses(picker, ch), settle: picker.settle ?? 0, after: picker.after ?? 0 });
     }
   }
-  return { chars, pause: kbd.tapPause, wake: kbd.wake, erase: kbd.erase };
+  return { chars, pause: kbd.tapPause, wake: kbd.wake, erase: kbd.erase, upper: kbd.upper };
 }
 
 function keyButton(def, sub) {

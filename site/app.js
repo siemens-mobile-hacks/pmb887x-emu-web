@@ -3445,6 +3445,27 @@ async function guestWait(m, ms, from = Number(m._wasm_vclock())) {
   return false;
 }
 
+// The case the phone's letters come out in, as far as typing has left it
+// (keyboards.js *_UPPER): "lower", "one" (a capital for one letter just
+// went by) or "caps". Per guest; it takes the phone to start in lower case.
+let caseState = { m: null, state: "lower" };
+
+// The case presses round a typed character, and the state they leave. A
+// keyboard with `capital` keeps the state; one with `before`/`after` puts
+// the phone back in lower case after every capital.
+function casePresses(a, m) {
+  const up = typing.upper;
+  if (!up) return { before: [], after: [] };
+  if (!up.capital) return a.upper ? { before: up.before, after: up.after } : { before: [], after: [] };
+  if (caseState.m !== m) caseState = { m, state: "lower" };
+  const s = caseState.state;
+  const before = a.upper ? up.capital[s] : a.letter ? up.small[s] ?? [] : [];
+  caseState.state = a.upper ? (s === "lower" ? "one" : "caps")
+    : a.letter ? "lower"
+    : s === "one" ? "lower" : s;
+  return { before, after: [] };
+}
+
 async function pumpTyping() {
   if (typeBusy) return;
   typeBusy = true;
@@ -3457,19 +3478,30 @@ async function pumpTyping() {
         if (!(await guestWait(m, a.down ? TAP_HOLD_MS : TAP_GAP_MS))) break;
         continue;
       }
-      if (a.count && lastRelease?.m === m && lastRelease.key === a.key
+      const { before, after } = casePresses(a, m);
+      // A letter still pending on the key just used would take these taps as
+      // its own. Before a # that is any pending letter: a Siemens # does not
+      // commit it, but changes its case and the mode (S75: "ABc" came out
+      // "ACC").
+      const pending = before.length ? /^\d$/.test(lastRelease?.key) : lastRelease?.key === a.key;
+      if ((a.count || before.length) && pending && lastRelease.m === m
           && !(await guestWait(m, typing.pause, lastRelease.at))) break;
       // a phone that swallows the first key after a quiet spell (keyboards.js
       // LG_WAKE) gets a harmless one first
       const quiet = typing.wake && !(lastRelease?.m === m
         && Number(m._wasm_vclock()) - lastRelease.at < typing.wake.idle * 1e6);
-      const keys = [...(quiet ? [typing.wake.key] : []), ...(a.keys ?? Array(a.count).fill(a.key))];
+      // the presses after a letter wait for it to be taken, for the same reason
+      const own = a.keys ?? Array(a.count).fill(a.key);
+      const keys = [...(quiet ? [typing.wake.key] : []), ...before, ...own, ...after];
       const opener = quiet ? 1 : 0;   // a picker's settle follows the press that opened it
+      const taken = keys.length - after.length - 1;
       for (let i = 0; i < keys.length; i++) {
         sendKey(keys[i], true);
         if (!(await guestWait(m, TAP_HOLD_MS))) break run;
         sendKey(keys[i], false);
-        const settle = i === opener ? a.settle ?? 0 : i === keys.length - 1 ? a.after ?? 0 : 0;
+        const settle = i === opener ? a.settle ?? 0
+          : i === keys.length - 1 ? a.after ?? 0
+          : i === taken && after.length ? typing.pause : 0;
         if (!(await guestWait(m, TAP_GAP_MS + settle))) break run;
       }
     }
@@ -3501,7 +3533,12 @@ function typedTaps(e) {
   if (CODE_TO_KEY[e.code] && !e.shiftKey && !TYPING_TAKES.has(e.code)) return null;
   const ch = e.key === "Enter" ? "\n" : e.key;
   if ([...ch].length !== 1) return null;
-  return typing.chars.get(ch.toLowerCase()) ?? typing.chars.get(ch) ?? null;
+  const lower = ch.toLowerCase();
+  const taps = typing.chars.get(lower);
+  // a letter: its lower case's taps, which the keyboard's case presses
+  // (casePresses) turn into the case it was typed in
+  if (taps?.count && lower !== ch.toUpperCase()) return { ...taps, upper: lower !== ch, letter: true };
+  return taps ?? typing.chars.get(ch) ?? null;
 }
 
 // a keydown typing has taken from its shortcut, whether or not this phone

@@ -34,7 +34,8 @@ its digit key as many times as that phone's multi-tap needs (the phone's
 editor has to be in multi-tap, not T9; Shift reaches the characters on keys
 that are phone keys of their own, e.g. Shift+1 for "!"). A character no key
 cycles through, such as `$`, `;` or `{`, is picked from the phone's `*`
-symbol picker. While typing is on, `-` `=` `/` and `` ` `` type their
+symbol picker; a capital is typed with the phone's `#` case key, and
+Backspace presses the phone's erase key. While typing is on, `-` `=` `/` and `` ` `` type their
 characters; volume, `#` and `*` stay on the numpad. The tables and pickers
 are read off the firmware and kept with the keypads in `site/keyboards.js`,
 per keyboard and language. The phone itself is the same view everywhere and

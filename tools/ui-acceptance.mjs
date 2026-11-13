@@ -262,6 +262,16 @@ ok("3.1 symbol pickers", await page.evaluate(async () => {
     && keys("ke800", "}") === "star,up,1,left_soft"
     && tapTable("ke800", "en").wake?.key === "vol_up" && tapTable("s75", "en").wake === undefined;
 }));
+// capitals: Siemens keeps the case it left the phone in, LG switches back
+// after every capital; Backspace is the model's erase key
+ok("3.1 capitals and erase", await page.evaluate(async () => {
+  const { tapTable } = await import("./keyboards.js");
+  const s75 = tapTable("s75", "en"), ke = tapTable("ke800", "en"), gen = tapTable("siemens", "en");
+  return s75.upper.capital.lower.join() === "hash" && s75.upper.small.caps.join() === "hash"
+    && ke.upper.before.join() === "hash" && ke.upper.after.join() === "hash,hash,hash"
+    && s75.erase === "right_soft" && ke.erase === "clear"
+    && gen.erase["siemens-sl65"] === "left_soft" && gen.erase.default === "right_soft";
+}));
 ok("3.1 HUD label has no parenthetical, tooltip instead", await page.$eval("#opt-hud", (e) =>
   e.parentElement.textContent.trim() === "Performance HUD" && !!e.parentElement.title));
 ok("3.1 export buttons", await page.evaluate(() =>
