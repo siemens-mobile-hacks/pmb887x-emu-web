@@ -531,6 +531,14 @@ The binding method is in performance.md. These are the traps behind it.
 - **`ps` `%CPU` is a lifetime average.** Use `top -bn2` for what is running
   now. A killed driver leaves its headless Chromium emulating a phone;
   count browsers before trusting a number.
+- **The HUD checks need DejaVu Sans Mono as `monospace`.** The strip's
+  budget is the box width over the width of a monospace "0", so a narrower
+  font keeps more tokens and ui-acceptance's v4.3 fails at 360 and 320 px.
+  `playwright install-deps` brings `fonts-wqy-zenhei`, which fontconfig then
+  picks for `monospace`; with `fonts-dejavu-core` missing it was that or
+  IPAGothic (2026-11-13). Check `fc-match monospace` after installing
+  packages. The container also lost `libc6-dev`, glib and the other native
+  build headers that day; `scripts/build-native.sh` names what is missing.
 
 ## pmb887x facts
 
@@ -552,6 +560,19 @@ The binding method is in performance.md. These are the traps behind it.
   reaches `Abc`). The EL71 test image is Russian and asks to set the date
   and time about a minute in; its idle left soft key is "Нов.SMS" only once
   it is on the GSM cell. (2026-11-13, the multi-tap work.)
+- **A board config without the RF transceiver its firmware drives makes
+  Layer 1 give up at random.** The CX70 panicked in `l1bbcsg`
+  (`EXIT: 000A:017C` / `000B:017C`, x65-style dump) in 7-11 of 12 browser
+  boots of 240 s, at 30-150 guest s, more often the busier the host, and
+  never natively or under icount. A bisect over the qemu range found a DSP
+  translator commit (455f756d82) that made it common, but reverting that
+  on the newer pin changed nothing. The cause was the board: bsp 191612c
+  gave the CX70 its `pmb6270` on `TPU:RFSSC0`, and with qemu's model of it
+  0 runs of 24 exit, while the same build with that one `[peripheral.RF]`
+  block taken out of boards.tar exits in 8 of 12 (2026-11-13). A firmware
+  timing panic that only some hosts see can be a missing device, not a
+  timing bug; bootcheck now catches the x65 dump (it only knew
+  `>>EXIT<<`, and passed these runs).
 - Multi-tap tables are read off the firmware: a Siemens editor shows the
   tapped key's whole cycle in a bar along the bottom; an LG one shows
   none, so tap the key 1, 2, 3… times with a tap of another key between

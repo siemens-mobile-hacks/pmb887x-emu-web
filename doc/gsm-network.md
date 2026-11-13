@@ -3,27 +3,25 @@
 The page puts the emulated phone on a GSM network: qemu's own cell,
 `gsm-bts` (upstream, `qemu/hw/gsm/gsm-bts*.c`), which runs in the page with
 nothing outside it. The option is Advanced ▸ GSM network, **on by default**,
-and it does something on the boards whose config has a radio: EL71 and the LG
-phones. Any other board, and any run with the box unticked, has no network
-object at all (upstream removed the default beacon cell in 23d7df3200), no
+and it does something on the boards whose config has a radio, which since
+bsp 191612c (2026-11-13) is every phone here. A run with the box unticked has
+no network object at all (upstream removed the default beacon cell in 23d7df3200), no
 extra thread and no extra work.
 
 The box is the only control. The benchmarks (`scenebench.mjs`,
 `bootbench.mjs`, `idlebench.mjs`) untick it, so their scenes are the ones
 the numbers before the option were taken on.
 
-Verified in Chromium on the wasm64 dist (2026-11-11):
+Verified in Chromium on the wasm64 dist, qemu d992a03bf8 (smh 3403936c99),
+bsp 191612c (2026-11-13). Upstream's cell now defaults to DCS1800 ARFCN 512
+(it was ARFCN 5); the page passes no channel and takes the default.
 
 | board | with the option |
 |---|---|
-| EL71 | finds the cell (001-01, ARFCN 5), registers 23 s after Start, shows operator, signal and the GPRS icon; keys answered a minute later |
-| KE800 | **does not register**: "No network" after 150 s, signal bars shown, keys answered |
-| S75 (no radio in its config) | option ignored, ordinary run |
-
-KE800 and KE970 show the same "No network" on the built-in cell in the native
-build of the same qemu revision, so this is upstream's model, not the browser
-port; upstream's own test of the built-in network (bsp `e2e/gsm-ppp`) names
-EL71 only. On any board without a radio the option does nothing (below).
+| EL71 | finds the cell (001-01), registers 17 s after Start, shows operator, signal and the GPRS icon; keys answered (`gsmcheck.mjs`, `EL71v41lg91.bin`) |
+| S75 | registers: "CC 001 NC 01" on the idle screen; keys answered |
+| CX70 | boots, no firmware EXIT in 24 runs of 240 s; at 150 s it is in its first-boot "Phone Pilot" (registration not read) |
+| KE800, KE970 | boot (bootcheck); registration not read this time. On 2026-11-11 (qemu 47d1ff26aa) both stayed on "No network", native build included |
 
 ## The built-in network
 
@@ -113,16 +111,14 @@ Two things the check had to get past:
   `-machine pmb887x,gsm-network=gsm0`. The fork's qemu has no GSM code of
   its own: `hw/gsm` is upstream's with one fix, the uplink LLC buffer (GPRS
   data, above).
-- **The board.** The pinned bsp revision ships the ELKA radio
-  (`include/siemens-sg2-elka.toml`, `[peripheral.RF]`) commented out; upstream
-  bsp enabled it later. A GSM run of such a board boots an overlay config the
-  page writes (`<board>-gsm.toml`: `extends` the board, adds the radio block
-  uncommented from the include). A run without the option boots the board
-  file as before.
-- **The accessory.** A GSM run boots with the board's default accessory (the
-  data cable) instead of the music cable the page otherwise prefers; see the
-  deep-sleep entry below. Picking another accessory in the control still
-  works and is the user's choice.
+- **The board.** A board gets the cell when its config chain has a
+  transceiver of a type qemu models (`RADIO_TYPE_RE` in `site/app.js`:
+  hd155153np, hd155155npeb, hd155165bp, pmb6270, pmb6272, bright-6pla). Since
+  bsp 191612c every phone here has one, the ELKA include's included (the page
+  used to boot an overlay that uncommented it; that is gone).
+- **The accessory.** Every run boots with the board's default accessory, the
+  data cable; see the deep-sleep entry below. Picking another accessory in
+  the control still works and is the user's choice.
 
 ### Where it runs, and why not in a worker
 
@@ -196,9 +192,6 @@ So the built-in cell stays where upstream runs it.
 
 ## Not supported, known gaps
 
-- **Boards without a radio in their config** (S75 and the other x75, CX70,
-  SL65, …): the option does nothing, the run is an ordinary one. The
-  allow-list for the overlay is `GSM_RADIO_INCLUDES` in `site/app.js`.
 - **No SMS, no calls** (above).
 - **Without a GPRS gateway** the browser build has no Internet: the phone
   attaches and gets an address, and nothing answers.
@@ -210,8 +203,8 @@ So the built-in cell stays where upstream runs it.
   clock (`-icount shift=3,sleep=on`), EL71 stopped at the boot logo with a
   firmware `>>EXIT<<` from `l1bbcsg` (layer 1); with the page's clock
   (`ICOUNT=vt`) it registers. Seen once on `d5421c70af`, not looked into.
-- **LG boards**: KE800 and KE970 stay on "No network", native build
-  included.
+- **LG boards**: KE800 and KE970 stayed on "No network" at qemu
+  47d1ff26aa, native build included; not read again since.
 - **Deep sleep.** With the radio enabled and an accessory that lets the
   firmware deep-sleep (music cable, or none) EL71 hangs about a minute after
   boot: the firmware waits for `SCCUCLKSTA.GSMCLK` to clear after writing
@@ -220,9 +213,12 @@ So the built-in cell stays where upstream runs it.
   then skips `SLPSTP`. This is upstream's model, native build included
   (`-global accessory-connector.accessory=music-cable` reproduces it; seen at
   smh 55f765ae87, not looked at again after 23d7df3200), and is not fixed
-  here. With the data cable the firmware never enters that sleep. It also
-  means that moving the bsp pin past 15157fe ("enable RF transceiver on
-  ELKA") makes EL71 hang with the page's default music cable, GSM or not.
+  here. With the data cable the firmware never enters that sleep. Since the
+  bsp pin moved past 15157fe ("enable RF transceiver on ELKA") the EL71
+  hangs with the music cable GSM or not (seen 2026-11-13: halts frozen,
+  the wizard never answers a key), so the page now boots every board with
+  its default accessory; it used to prefer the music cable, and the stereo
+  headset on SGOLD boards. The data cable plays sound too.
 
 ## A network on a server (dropped)
 

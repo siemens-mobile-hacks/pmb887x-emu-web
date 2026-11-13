@@ -78,7 +78,8 @@ for (const [code, key] of Object.entries(CODE_TO_KEY)) {
 // Fullflash sidecars (SIDE_CAR_RE) + filename -> device inference now
 // live in fullflashes.js.
 
-// NOR flash OTP derivation (ported from pmb887x-emu-mcp/src/otp.ts)
+// NOR flash OTP derivation, as pmb887x-emu's src/siemens/otp.cpp: the data
+// only, since qemu's cfi-flash writes the lock words itself (smh 29df93fbf9)
 const ESN_KEY = [0x32, 0xe5, 0xf7, 0x03];
 const HEX = "0123456789ABCDEF";
 function esnToOtp0(esn) {
@@ -88,13 +89,13 @@ function esnToOtp0(esn) {
     const byte = parseInt(esn.slice((3 - i) * 2, (3 - i) * 2 + 2), 16) ^ ESN_KEY[i];
     out += HEX[byte >> 4] + HEX[byte & 0xf];
   }
-  return "0200" + out + "00000000";
+  return out + "00000000";
 }
 function imeiToOtp1(imei) {
   if (!/^\d{15}$/.test(imei)) throw new Error("IMEI must be 15 digits");
   let out = "";
   for (let i = 0; i < 14; i += 2) out += imei[i + 1] + imei[i];
-  return "0000" + out + "FF";
+  return out + "FF";
 }
 
 /* ------------------------------------------------------------------ */
@@ -1083,24 +1084,10 @@ function readAccessories(file, depth = 0) {
   return ext ? readAccessories(ext[1], depth + 1) : null;
 }
 
-// "pmb8875" (SGOLD) or "pmb8876" (SGOLD2), from the board config
-function readCpuType(file, depth = 0) {
-  const txt = boardText.get(file);
-  if (!txt || depth > 4) return null;
-  const type = txt.match(/^[ \t]*cpu\.type[ \t]*=[ \t]*"([^"]+)"/m);
-  if (type) return type[1];
-  const ext = txt.match(/^[ \t]*extends[ \t]*=[ \t]*"([^"]+)"/m);
-  return ext ? readCpuType(ext[1], depth + 1) : null;
-}
-
 /* ---- GSM network ---- */
 
-// Board includes whose radio the pinned bsp revision still ships commented
-// out, and upstream has since enabled (bsp 15157fe, "enable RF transceiver
-// on ELKA"). Only a GSM run gets it: with a radio the firmware finds a cell,
-// and the run without the option has to stay what it was.
-const GSM_RADIO_INCLUDES = ["include/siemens-sg2-elka.toml"];
-const RADIO_TYPE_RE = /^[ \t]*type[ \t]*=[ \t]*"(?:hd155153np|hd155155npeb|pmb6272)"/m;
+// the transceiver models qemu has (hw/gsm): a board with one gets the cell
+const RADIO_TYPE_RE = /^[ \t]*type[ \t]*=[ \t]*"(?:hd155153np|hd155155npeb|hd155165bp|pmb6270|pmb6272|bright-6pla)"/m;
 
 // The board's config files, the board itself first.
 function boardChain(file, depth = 0) {
@@ -1110,22 +1097,9 @@ function boardChain(file, depth = 0) {
   return [[file, txt], ...(ext ? boardChain(ext[1], depth + 1) : [])];
 }
 
-// A board config that extends `device` with the radio its include carries
-// commented out, or null when there is nothing to add.
-function gsmBoardOverlay(device) {
-  for (const [file, txt] of boardChain(device + ".toml")) {
-    if (!GSM_RADIO_INCLUDES.includes(file)) continue;
-    const block = txt.match(/^#\[peripheral\.RF\]\n(?:#.*\n)+/m);
-    if (!block) return null;
-    return `[board]\nextends = "${device}.toml"\n\n${block[0].replace(/^#/gm, "")}`;
-  }
-  return null;
-}
-
 // Does a GSM run of this board have a transceiver to receive with?
 function gsmBoardHasRadio(device) {
-  return !!gsmBoardOverlay(device) ||
-    boardChain(device + ".toml").some(([, txt]) => RADIO_TYPE_RE.test(txt));
+  return boardChain(device + ".toml").some(([, txt]) => RADIO_TYPE_RE.test(txt));
 }
 
 // Does a run of this board get the GSM network, qemu's built-in cell
@@ -1135,17 +1109,14 @@ function gsmFor(device) {
   return $("gsm").checked && !!device && gsmBoardHasRadio(device);
 }
 
-// What a run boots with: the music cable where the board has one, the stereo
-// headset on an SGOLD phone, else the board's own default. A GSM run takes
-// the default, which is the data cable: with anything else the firmware of a
-// phone that camps on a cell goes into deep sleep, and the SCCU model does
-// not bring it back (doc/gsm-network.md).
-function bootAccessory(conf, file) {
-  if (!conf) return null;
-  if (gsmFor(file.replace(/\.toml$/, ""))) return conf.default;
-  if (conf.names.includes("music-cable")) return "music-cable";
-  if (readCpuType(file) === "pmb8875" && conf.names.includes("headset-stereo")) return "headset-stereo";
-  return conf.default;
+// What a run boots with: the board's own default accessory, the data cable.
+// Every board has a transceiver since bsp 191612c, and with anything else
+// plugged in at boot the firmware goes into a deep sleep the SCCU model does
+// not bring it back from: an EL71 with the music cable, GSM or not, stops
+// answering keys at its first wizard (doc/gsm-network.md). Sound plays with
+// the data cable too, and the Accessory control plugs anything else in.
+function bootAccessory(conf) {
+  return conf?.default ?? null;
 }
 
 async function loadBoards() {
@@ -1755,7 +1726,7 @@ async function boot() {
     // what the Accessory control shows, chosen there or not
     const accConf = readAccessories(device + ".toml");
     const bootAcc = acc?.dev === device && acc.gsm === gsm
-      ? acc.plugged : bootAccessory(accConf, device + ".toml");
+      ? acc.plugged : bootAccessory(accConf);
     const accArgs = accConf && bootAcc && bootAcc !== accConf.default
       ? ["-global", `accessory-connector.accessory=${bootAcc}`]
       : [];
@@ -1817,11 +1788,7 @@ async function boot() {
         mod.FS.writeFile(FULLFLASH_PATH, flashBytes);
         for (const [suffix, bytes] of sidecarBytes)
           mod.FS.writeFile(FULLFLASH_PATH + suffix, bytes);
-        // a GSM run of a board whose radio the pinned config leaves out
-        // boots an overlay of that board instead
-        const gsmBoard = gsm ? gsmBoardOverlay(device) : null;
-        if (gsmBoard) mod.FS.writeFile(`/boards/${device}-gsm.toml`, gsmBoard);
-        mod.ENV.PMB887X_BOARD = `/boards/${device}${gsmBoard ? "-gsm" : ""}.toml`;
+        mod.ENV.PMB887X_BOARD = `/boards/${device}.toml`;
         mod.ENV.PMB887X_STARTUP = startup;
         mod.ENV.PMB887X_FLASH0_OTP0 = otp0;
         mod.ENV.PMB887X_FLASH0_OTP1 = otp1;
@@ -1991,7 +1958,7 @@ function renderAccessory() {
   if (acc?.dev !== dev || acc.gsm !== gsm) {
     const conf = dev ? readAccessories(dev + ".toml") : null;
     const names = conf?.names.filter((n) => n !== conf.unplugged) ?? [];
-    acc = { dev, gsm, unplugged: conf?.unplugged ?? null, names, plugged: bootAccessory(conf, dev + ".toml") };
+    acc = { dev, gsm, unplugged: conf?.unplugged ?? null, names, plugged: bootAccessory(conf) };
     sel.replaceChildren(...(names.length ? names : [""]).map((n) => {
       const opt = document.createElement("option");
       opt.value = n;

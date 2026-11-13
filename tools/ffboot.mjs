@@ -46,6 +46,14 @@ await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ ? "&" + extraQ : ""
 await p.selectOption("#startup", "ONLINE");
 await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
+// without the GSM cell: since bsp 191612c every board has a radio, and its
+// GPRS relay to /gprs fails where no gateway runs, which Firefox reports as
+// a JavaScript error (gsmcheck/gprscheck are the GSM tests)
+await p.evaluate(() => {
+  const gsm = document.querySelector("#gsm");
+  gsm.checked = false;
+  for (const type of ["input", "change"]) gsm.dispatchEvent(new Event(type, { bubbles: true }));
+});
 const t0 = Date.now();
 await p.click("#btn-start");
 await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });

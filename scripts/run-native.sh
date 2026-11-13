@@ -73,13 +73,13 @@ fi
 
 # OTP words from IMEI/ESN (same derivation as site/app.js)
 ESN_KEY=(0x32 0xe5 0xf7 0x03)
-OTP0="0200"
+OTP0=""
 for i in 0 1 2 3; do
   byte=$(( 16#${ESN:((3 - i)) * 2:2} ^ ${ESN_KEY[$i]} ))
   OTP0+="$(printf '%02X' "$byte")"
 done
 OTP0+="00000000"
-OTP1="0000"
+OTP1=""
 for ((i = 0; i < 14; i += 2)); do OTP1+="${IMEI:i+1:1}${IMEI:i:1}"; done
 OTP1+="FF"
 
