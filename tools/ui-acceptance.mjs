@@ -236,8 +236,8 @@ ok("3.1 keyboard group contents", await page.evaluate(() => {
 }));
 ok("3.1 shortcut checkbox copy",
   (await page.$eval("#kbd-hints", (e) => e.parentElement.textContent.trim())) === "Show shortcuts on keys");
-ok("3.1 typing checkbox copy, off by default", await page.$eval("#kbd-typing", (e) =>
-  e.parentElement.textContent.trim() === "Type letters on the phone" && !e.checked));
+ok("3.1 typing checkbox copy, on by default", await page.$eval("#kbd-typing", (e) =>
+  e.parentElement.textContent.trim() === "Type letters on the phone" && e.checked));
 // multi-tap: a character is the key it is on, pressed as often as the
 // firmware cycles to it; on a Russian table each script counts from its own
 // input language

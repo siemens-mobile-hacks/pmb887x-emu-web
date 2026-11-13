@@ -3357,9 +3357,10 @@ function fillSelect(sel, entries, value) {
 // "Type letters on the phone": the multi-tap table of the keyboard on screen
 // (keyboards.js tapTable()). A keyboard without one has nothing to type with,
 // so the option is greyed out there rather than silently doing nothing.
+// On wherever there is a table, unless it was turned off.
 const typeChk = $("kbd-typing");
 let typing = { chars: new Map(), pause: 0 };
-typeChk.checked = localStorage.getItem("kbd-typing") === "1";
+typeChk.checked = localStorage.getItem("kbd-typing") !== "0";
 typeChk.addEventListener("change", () => {
   localStorage.setItem("kbd-typing", typeChk.checked ? "1" : "0");
 });
