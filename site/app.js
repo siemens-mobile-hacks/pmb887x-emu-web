@@ -3509,6 +3509,16 @@ function typedTaps(e) {
 const typingOwns = (e) => typeChk.checked && !typeChk.disabled && !!liveModule()
   && TYPING_TAKES.has(e.code) && !(e.ctrlKey || e.altKey || e.metaKey);
 
+// The key Backspace presses while typing: the keyboard's erase key, which on
+// the generic Siemens keyboard depends on the device (keyboards.js).
+function eraseKey(e) {
+  if (e.code !== "Backspace" || e.ctrlKey || e.altKey || e.metaKey) return null;
+  if (!typeChk.checked || typeChk.disabled || !liveModule()) return null;
+  const erase = typing.erase;
+  return typeof erase === "string" ? erase
+    : erase?.[ranDevice ?? currentDevice()] ?? erase?.default ?? null;
+}
+
 // Fields that take text keep their keys. A checkbox does not take any, and
 // it is what holds the focus right after ticking "Type letters on the phone".
 const takesText = (el) => el.isContentEditable || el.tagName === "TEXTAREA"
@@ -3518,6 +3528,15 @@ const takesText = (el) => el.isContentEditable || el.tagName === "TEXTAREA"
 const heldKeys = new Set();
 window.addEventListener("keydown", (e) => {
   if (takesText(e.target)) return;
+  const erase = eraseKey(e);
+  if (erase) {
+    e.preventDefault();
+    // a held Backspace erases at the phone's pace and stops when let go
+    if (e.repeat && (typeBusy || typeQueue.length)) return;
+    typeQueue.push({ keys: [erase] });
+    pumpTyping();
+    return;
+  }
   const taps = typedTaps(e);
   if (taps) {
     // Space would otherwise scroll the page or press the focused button

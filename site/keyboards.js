@@ -409,6 +409,19 @@ function pickerPresses(picker, ch) {
   return [picker.open, ...turns, slot, picker.select];
 }
 
+// Backspace while typing: the key that erases the character before the
+// cursor in the phone's editor. The x75 Siemens show "<C" on the right soft
+// key (S75, EL71), the x65 ones on the left (SL65), and LG has its C key.
+// The generic keyboard stands for both Siemens generations, so it goes by
+// the device the phone runs as. The board configs cannot tell: they follow
+// the chip, and the C75/CX75/M75 run the x75 firmware on the x65's.
+const SIEMENS_X65 = ["siemens-c65", "siemens-cx65", "siemens-cx70", "siemens-m65",
+  "siemens-s65", "siemens-sl65", "siemens-sk65"];
+const SIEMENS_ERASE = {
+  default: "right_soft",
+  ...Object.fromEntries(SIEMENS_X65.map((dev) => [dev, "left_soft"])),
+};
+
 // a "keyboard" = a board + one variant per letter set engraved on it; a
 // variant carries the sub-labels (keyed by data-key) printed under the
 // digits, and the multi-tap table (taps, see tapTable()) its firmware types
@@ -425,6 +438,7 @@ export const KBD_KEYBOARDS = {
     board: "generic",
     tapPause: 1400,
     picker: SIEMENS_PICKER_X65,
+    erase: SIEMENS_ERASE,
     variants: SIEMENS_VARIANTS,
   },
 
@@ -434,6 +448,7 @@ export const KBD_KEYBOARDS = {
     board: "s75",
     tapPause: 1400,
     picker: SIEMENS_PICKER_X75,
+    erase: "right_soft",
     variants: SIEMENS_VARIANTS,
   },
 
@@ -444,6 +459,7 @@ export const KBD_KEYBOARDS = {
     tapPause: 1000,
     picker: LG_PICKER,
     wake: LG_WAKE,
+    erase: "clear",
     variants: LG_VARIANTS,
   },
 
@@ -457,6 +473,7 @@ export const KBD_KEYBOARDS = {
     tapPause: 1000,
     picker: LG_PICKER,
     wake: LG_WAKE,
+    erase: "clear",
     variants: {
       en: {
         name: "English",
@@ -486,8 +503,9 @@ export function pickVariant(keyboardId, variantId) {
 // though each also sits further along the other's cycle). A character on no
 // cycle but in the keyboard's picker maps to { keys, settle, after }
 // instead: those keys, one press each, waiting settle ms once the first has
-// opened the picker and after ms once the last has closed it. The lookup is by lower case: the phone's own case mode decides
-// the case.
+// opened the picker and after ms once the last has closed it. erase is the
+// keyboard's erase key: a key name, or one per device with a default. The
+// lookup is by lower case: the phone's own case mode decides the case.
 export function tapTable(keyboardId, variantId) {
   const id = keyboardId in KBD_KEYBOARDS ? keyboardId : DEFAULT_KEYBOARD;
   const kbd = KBD_KEYBOARDS[id];
@@ -506,7 +524,7 @@ export function tapTable(keyboardId, variantId) {
       chars.set(ch, { keys: pickerPresses(picker, ch), settle: picker.settle ?? 0, after: picker.after ?? 0 });
     }
   }
-  return { chars, pause: kbd.tapPause, wake: kbd.wake };
+  return { chars, pause: kbd.tapPause, wake: kbd.wake, erase: kbd.erase };
 }
 
 function keyButton(def, sub) {
