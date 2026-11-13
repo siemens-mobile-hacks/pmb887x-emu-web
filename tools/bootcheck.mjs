@@ -11,9 +11,11 @@
 //
 //   node tools/bootcheck.mjs [--dist dist-jit] [--secs 150] [--flash id,id]
 //
-// PASS for a board = no firmware ">>EXIT<<" on the serial log, no page
-// error / wasm abort, the LCD drew something, and the guest kept
-// executing.  Progress is measured in instructions, not framebuffer
+// PASS for a board = no firmware EXIT dump on the serial log (">>EXIT<<"
+// on x75/x85, a bare "EXIT: <code>" line on the x65 CX70 — the gate only
+// knew the first form and passed a CX70 that had panicked) and the guest
+// still running as far as the page is concerned, no page error / wasm
+// abort, the LCD drew something, and the guest kept executing.  Progress is measured in instructions, not framebuffer
 // updates: EL71 stops at a "set time and date?" wizard (a static screen
 // that never redraws) and is perfectly healthy there, while a KE800 stuck
 // on a device poll it can never satisfy stops executing altogether.
@@ -70,14 +72,24 @@ const BOARDS = [
 const STALL_S = 150;
 const STALL_INSNS = 1e6;
 
-const probe = () => {
+// both dump openings the page's own EXIT parser knows (site/app.js)
+// (the x65 line is padded, so it is the code's shape that marks it)
+const EXIT_RE = />>EXIT<<[^\x00]{0,120}|EXIT: [0-9A-F]{4}:[0-9A-F]{4}[^\x00]{0,100}/;
+
+const probe = (src) => {
   const m = window.__qemu;
   let ser = "";
   try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch {}
+  const ui = window.__ui ?? {};
+  // the page's verdict too: its parsed EXIT report, or the run back at
+  // idle (the guest is gone, whatever ended it)
+  const ended = ui.state === "idle" ? `guest ended (page idle, exit code ${ui.exitCode})` : "";
   return {
     fb: m?._wasm_fb_updates ? Number(m._wasm_fb_updates()) : 0,
     insns: m?._wasm_insns ? Number(m._wasm_insns()) : 0,
-    exit: (ser.match(/>>EXIT<<[^\x00]{0,120}/) || [""])[0],
+    vclock: m?._wasm_vclock && ui.state !== "idle" ? Number(m._wasm_vclock()) / 1e9 : null,
+    exit: (ser.match(new RegExp(src)) || [""])[0].trim()
+      || (ui.exit ? `EXIT ${[ui.exit.type, ui.exit.code].filter(Boolean).join(" ")}` : "") || ended,
   };
 };
 
@@ -118,16 +130,17 @@ for (const board of BOARDS) {
     // A frozen page (the pre-0034 KE800 deadlocked the renderer) makes
     // evaluate hang forever, so bound it and treat a timeout as a failure.
     const mx = await Promise.race([
-      page.evaluate(probe).catch((e) => ({ err: String(e).slice(0, 120) })),
+      page.evaluate(probe, EXIT_RE.source).catch((e) => ({ err: String(e).slice(0, 120) })),
       new Promise((r) => setTimeout(() => r({ err: "page unresponsive" }), 20000)),
     ]);
     if (mx.err) { errors.push(mx.err); break; }
     if (mx.insns - lastProgress.insns >= STALL_INSNS || mx.fb !== last.fb) {
       lastProgress = { t: Date.now(), insns: mx.insns };
     }
-    last = mx;
+    last = { ...mx, vclock: mx.vclock ?? last.vclock };
     console.log(`[${board.id}] t=${((Date.now() - t0) / 1000).toFixed(0)}s ` +
-                `insns=${(mx.insns / 1e6).toFixed(0)}M fb=${mx.fb}${mx.exit ? " *** EXIT ***" : ""}`);
+                `insns=${(mx.insns / 1e6).toFixed(0)}M fb=${mx.fb}` +
+                `${mx.vclock != null ? ` guest=${mx.vclock.toFixed(1)}s` : ""}${mx.exit ? " *** EXIT ***" : ""}`);
     if ((Date.now() - lastProgress.t) / 1000 > STALL_S) break;
   }
 
@@ -147,7 +160,7 @@ for (const board of BOARDS) {
     const printable = tail.replace(/[\x00-\x09\x0b-\x1f\x7f-\xff]/g, " ");
     console.log(`[${board.id}] serial tail (${serPath}):`);
     for (const l of printable.split("\n").filter((l) => l.trim()).slice(-6)) console.log(`   | ${l.slice(0, 160)}`);
-    last.exit = (printable.match(/>>EXIT<<[^\n]{0,120}/) || [last.exit])[0];
+    last.exit = (printable.match(/>>EXIT<<[^\n]{0,120}|EXIT: [0-9A-F]{4}:[0-9A-F]{4}[^\n]{0,100}/) || [last.exit])[0].trim();
   }
 
   if (/(^|&)tracebuf=1/.test(QUERY)) {
@@ -159,13 +172,14 @@ for (const board of BOARDS) {
 
   const stalled = (Date.now() - lastProgress.t) / 1000 > STALL_S;
   const blank = last.fb < 2;
-  const why = last.exit ? `firmware exit: ${last.exit.replace(/[\x00-\x1f\xfe\xff]/g, " ")}`
+  const why = last.exit.startsWith("guest ended") ? last.exit
+    : last.exit ? `firmware exit: ${last.exit.replace(/[\x00-\x1f\xfe\xff]/g, " ")}`
     : errors.length ? errors[0]
     : stalled ? `no progress for ${STALL_S}s (<${STALL_INSNS / 1e6}M insns, no fb update)`
     : blank ? "LCD never drew anything"
     : board.minInsns && last.insns < board.minInsns ? `only ${(last.insns / 1e6).toFixed(0)}M insns (need ${board.minInsns / 1e6}M)`
     : "";
-  results.push({ id: board.id, pass: !why, why, fb: last.fb, insns: last.insns });
+  results.push({ id: board.id, pass: !why, why, fb: last.fb, insns: last.insns, vclock: last.vclock });
 
   const shot = path.join(ROOT, "tests", "results", `bootcheck-${DIST}-${board.id}.png`);
   const lcd = await page.$("#lcd");
@@ -175,9 +189,10 @@ for (const board of BOARDS) {
 
 await browser.close();
 
-console.log(`\n| board | ${DIST} | fb | insns | note |`);
-console.log("| ----- | ------- | -- | ----- | ---- |");
+console.log(`\n| board | ${DIST} | fb | insns | guest s | note |`);
+console.log("| ----- | ------- | -- | ----- | ------- | ---- |");
 for (const r of results) {
-  console.log(`| ${r.id} | ${r.pass ? "PASS" : "FAIL"} | ${r.fb} | ${(r.insns / 1e6).toFixed(0)}M | ${r.why} |`);
+  console.log(`| ${r.id} | ${r.pass ? "PASS" : "FAIL"} | ${r.fb} | ${(r.insns / 1e6).toFixed(0)}M | ` +
+    `${r.vclock != null ? r.vclock.toFixed(1) : "-"} | ${r.why} |`);
 }
 process.exit(results.every((r) => r.pass) ? 0 : 1);
