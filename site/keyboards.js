@@ -250,6 +250,31 @@ const LG_STAR_SUB = `<span class="sub-stack">${KBD_ICONS.timer}<span>.,</span></
 const LG_ZERO_SUB = '<span class="sub-stack">+<span>␣</span></span>';
 const LG_HASH_SUB = `<span class="sub-pair">${KBD_ICONS.flash_down}${KBD_ICONS.arrow_up}</span>`;
 
+// Siemens multi-tap, read off the firmware's own cycle bar (one tap per key
+// in an SMS): S75 v40, EL71 v41 and SL65 v49 cycle the same in English. The
+// EL71 is a Russian phone, and in Cyrillic its keys cycle the Russian
+// letters, the digit, then the Latin ones; * opens the symbol table and #
+// changes case, so neither is part of it. These are the lower-case cycles:
+// with capitals on, the accented tail is shorter (the SL65's 2 is
+// ABC2ÄÆÅ: no À or Ç), so an accented capital can come out as its
+// neighbour. Letters, digits and punctuation sit at the same place either
+// way.
+const SIEMENS_TAPS_EN = {
+  1: " \n1", 2: "abc2äàæåç", 3: "def3éè", 4: "ghi4ì", 5: "jkl5",
+  6: "mno6öøòñ", 7: "pqrs7ß", 8: "tuv8üù", 9: "wxyz9", 0: ".,?!'\"0+-()@/:_",
+};
+const SIEMENS_TAPS_RU = {
+  ...SIEMENS_TAPS_EN,
+  2: [SIEMENS_TAPS_EN[2], "абвг2abc"],
+  3: [SIEMENS_TAPS_EN[3], "деёжзє3def"],
+  4: [SIEMENS_TAPS_EN[4], "ийкл4ghiї"],
+  5: [SIEMENS_TAPS_EN[5], "мно5jkl"],
+  6: [SIEMENS_TAPS_EN[6], "прс6mno"],
+  7: [SIEMENS_TAPS_EN[7], "туфх7pqrs"],
+  8: [SIEMENS_TAPS_EN[8], "цчшщъ8tuv"],
+  9: [SIEMENS_TAPS_EN[9], "ыьэюя9wxyz"],
+};
+
 // Siemens legends, shared by every Siemens keyboard: the digit block is
 // engraved the same way across the family (keyboards/S75-ru.webp), the
 // Russian keypad simply adds its letters after the Latin ones.
@@ -262,6 +287,7 @@ const SIEMENS_VARIANTS = {
       7: "pqrs", 8: "tuv", 9: "wxyz",
       0: "+", star: KBD_ICONS.bell, hash: KBD_ICONS.key,
     },
+    taps: SIEMENS_TAPS_EN,
   },
   ru: {
     name: "Russian",
@@ -271,7 +297,30 @@ const SIEMENS_VARIANTS = {
       6: "mno прс", 7: "pqrs туфх", 8: "tuv цчшщь", 9: "wxyz ъыэюя",
       0: "+", star: KBD_ICONS.bell, hash: KBD_ICONS.key,
     },
+    taps: SIEMENS_TAPS_RU,
   },
+};
+
+// LG multi-tap, typed out key by key in a KE800 v11b SMS (the firmware shows
+// no cycle bar): punctuation on 1, and 0 types a space per tap rather than
+// cycling; * opens the symbol table. That firmware has no Russian input, so
+// the Cyrillic cycles are not read off a phone but follow the KE800's Russian
+// legend in order, the digit after them as on every firmware read here —
+// check them against a Russian LG firmware when there is one.
+const LG_TAPS_EN = {
+  1: ".,?!'\"1-()@/:_", 2: "abc2àâæç", 3: "def3éèêë", 4: "ghi4îï", 5: "jkl5",
+  6: "mno6ñôöœ", 7: "pqrs7", 8: "tuv8û", 9: "wxyz9ŵŷ", 0: " ",
+};
+const LG_TAPS_RU = {
+  ...LG_TAPS_EN,
+  2: [LG_TAPS_EN[2], "абвг2"],
+  3: [LG_TAPS_EN[3], "дежз3"],
+  4: [LG_TAPS_EN[4], "ийкл4"],
+  5: [LG_TAPS_EN[5], "мноп5"],
+  6: [LG_TAPS_EN[6], "рсту6"],
+  7: [LG_TAPS_EN[7], "фхцч7"],
+  8: [LG_TAPS_EN[8], "шщъы8"],
+  9: [LG_TAPS_EN[9], "ьэюя9"],
 };
 
 // LG legends: the KE800's keypad (keyboards/LG KE800.png), which the KE970
@@ -289,6 +338,7 @@ const LG_VARIANTS = {
       7: "pqrs", 8: "tuv", 9: "wxyz",
       0: LG_ZERO_SUB, star: LG_STAR_SUB, hash: LG_HASH_SUB,
     },
+    taps: LG_TAPS_EN,
   },
   ru: {
     name: "Russian",
@@ -298,18 +348,83 @@ const LG_VARIANTS = {
       6: "mno рсту", 7: "pqrs фхцч", 8: "tuv шщъы", 9: "wxyz ьэюя",
       0: LG_ZERO_SUB, star: LG_STAR_SUB, hash: LG_HASH_SUB,
     },
+    taps: LG_TAPS_RU,
   },
 };
 
+// The * symbol pickers: how a character no key cycles through gets typed.
+// They differ by model, not by language (the Russian EL71's is the S75's).
+//
+// Siemens: a grid that opens with the cursor on its own "*". Left/Right
+// walk it row to row and wrap from the end round to the start, so the grid
+// is one circular sequence and its width (8 on the x75s, 9 on the SL65)
+// never matters; the joystick press inserts the symbol. The x65 SL65 has a
+// "`" after "^" that the x75 S75 and EL71 lack. The generic keyboard, which
+// stands for both, keeps the SL65's list: the shortest way to anything up
+// to "^" is rightward and to anything from "§" on leftward, both the same
+// count on either family, so only "`" itself comes out wrong on an x75 (as
+// "§"). "\n" is the picker's ↵.
+const SIEMENS_PICKER_X65 = {
+  open: "star", select: "center", start: "*",
+  ring: "\n¿¡_;.,?!+-\"':*/()¤¥$£€@\\&#[]{}%~<=>|^`§ΓΔΘΛΞΠΣΦΨΩ",
+};
+const SIEMENS_PICKER_X75 = { ...SIEMENS_PICKER_X65, ring: SIEMENS_PICKER_X65.ring.replace("`", "") };
+
+// LG phones swallow the first key that comes after ~10–15 s (guest) of no
+// keys while they wake up (KE800: a key after 10 s idle typed, after 15 s it
+// was lost), Siemens ones do not. Typing presses `key`, a side key that does
+// nothing in an editor or the picker, before a character that comes `idle`
+// ms after the last key.
+const LG_WAKE = { key: "vol_up", idle: 8000 };
+
+// LG (KE800 v11b): pages of twelve, each symbol on the key printed beside it
+// (1–9, *, 0, #); Down/Up turn the page and wrap. A key only collects its
+// symbol into a line at the top, and OK (the left soft key) inserts the
+// line. The picker takes ~0.56 s (guest) to come up and the editor ~0.44 s
+// to come back, and keys sent before either are lost, hence settle (after
+// the opening press) and after (after OK).
+const LG_PICKER = {
+  open: "star", settle: 800, after: 600, next: "down", prev: "up", select: "left_soft",
+  slots: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "star", "0", "hash"],
+  pages: [" .,?!:;-@+*(", ")'\"_#&€£$¥%/", "<>¿¡§|~\\[]^=", "ΦΓΛΩΠΨΣΘΞΔ¤{", "}`¶"],
+};
+
+// the presses that type `ch` through a picker, or null when it has none
+function pickerPresses(picker, ch) {
+  if (!picker) return null;
+  if (picker.ring) {
+    const ring = [...picker.ring];
+    const at = ring.indexOf(ch);
+    if (at < 0) return null;
+    const right = (at - ring.indexOf(picker.start) + ring.length) % ring.length;
+    const left = (ring.length - right) % ring.length;
+    const moves = right < left ? Array(right).fill("right") : Array(left).fill("left");
+    return [picker.open, ...moves, picker.select];
+  }
+  const page = picker.pages.findIndex((p) => p.includes(ch));
+  if (page < 0) return null;
+  const back = picker.pages.length - page;
+  const turns = page <= back ? Array(page).fill(picker.next) : Array(back).fill(picker.prev);
+  const slot = picker.slots[[...picker.pages[page]].indexOf(ch)];
+  return [picker.open, ...turns, slot, picker.select];
+}
+
 // a "keyboard" = a board + one variant per letter set engraved on it; a
 // variant carries the sub-labels (keyed by data-key) printed under the
-// digits. Add a variant here — or a whole new keyboard, with its own board
+// digits, and the multi-tap table (taps, see tapTable()) its firmware types
+// with. Add a variant here — or a whole new keyboard, with its own board
 // when the phone's keys/arrangement differ — and the two dropdowns pick it
 // up automatically. The first variant of a keyboard is its default.
+// tapPause is the keyboard's multi-tap timeout in guest ms: how long the
+// firmware waits after a tap before it takes the letter and a new tap on the
+// same key starts the next one. Measured from the release, with some margin:
+// S75 and SL65 ~0.8 s, EL71 ~1 s, KE970 ~0.6 s.
 export const KBD_KEYBOARDS = {
   siemens: {
     name: "Siemens Generic",
     board: "generic",
+    tapPause: 1400,
+    picker: SIEMENS_PICKER_X65,
     variants: SIEMENS_VARIANTS,
   },
 
@@ -317,6 +432,8 @@ export const KBD_KEYBOARDS = {
   s75: {
     name: "Siemens S75",
     board: "s75",
+    tapPause: 1400,
+    picker: SIEMENS_PICKER_X75,
     variants: SIEMENS_VARIANTS,
   },
 
@@ -324,6 +441,9 @@ export const KBD_KEYBOARDS = {
   ke800: {
     name: "LG KE800",
     board: "ke800",
+    tapPause: 1000,
+    picker: LG_PICKER,
+    wake: LG_WAKE,
     variants: LG_VARIANTS,
   },
 
@@ -334,10 +454,14 @@ export const KBD_KEYBOARDS = {
   ke970: {
     name: "LG KE970",
     board: "ke970",
+    tapPause: 1000,
+    picker: LG_PICKER,
+    wake: LG_WAKE,
     variants: {
       en: {
         name: "English",
         subs: { ...LG_VARIANTS.en.subs, star: ".,", hash: KBD_ICONS.arrow_up },
+        taps: LG_TAPS_EN,
       },
     },
   },
@@ -350,6 +474,39 @@ export const DEFAULT_KEYBOARD = "siemens";
 export function pickVariant(keyboardId, variantId) {
   const variants = KBD_KEYBOARDS[keyboardId]?.variants ?? {};
   return variantId in variants ? variantId : Object.keys(variants)[0];
+}
+
+// What typing a character on the computer's keyboard presses on the phone,
+// for a keyboard + variant: char -> { key, count } (press `key` `count`
+// times), plus the keyboard's tapPause. A variant's taps maps a key to the
+// characters it cycles through, in the firmware's order; a key whose cycle
+// depends on the phone's input language gives one string per language, and
+// a character counts from the one it comes earliest in — the language it is
+// typed in (Russian Siemens: "а" is 2×1 in Cyrillic, "a" 2×1 in English,
+// though each also sits further along the other's cycle). A character on no
+// cycle but in the keyboard's picker maps to { keys, settle, after }
+// instead: those keys, one press each, waiting settle ms once the first has
+// opened the picker and after ms once the last has closed it. The lookup is by lower case: the phone's own case mode decides
+// the case.
+export function tapTable(keyboardId, variantId) {
+  const id = keyboardId in KBD_KEYBOARDS ? keyboardId : DEFAULT_KEYBOARD;
+  const kbd = KBD_KEYBOARDS[id];
+  const taps = kbd.variants[pickVariant(id, variantId)].taps ?? {};
+  const chars = new Map();
+  for (const [key, cycles] of Object.entries(taps)) {
+    for (const cycle of [cycles].flat()) {
+      [...cycle].forEach((ch, i) => {
+        if (!(chars.get(ch)?.count <= i + 1)) chars.set(ch, { key, count: i + 1 });
+      });
+    }
+  }
+  const picker = kbd.picker;
+  for (const ch of picker ? [...(picker.ring ?? picker.pages.join(""))] : []) {
+    if (!chars.has(ch)) {
+      chars.set(ch, { keys: pickerPresses(picker, ch), settle: picker.settle ?? 0, after: picker.after ?? 0 });
+    }
+  }
+  return { chars, pause: kbd.tapPause, wake: kbd.wake };
 }
 
 function keyButton(def, sub) {

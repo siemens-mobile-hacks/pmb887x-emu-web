@@ -10,7 +10,7 @@
 //     MCP `press_key` tool uses (converted to linux keycodes, which is what
 //     this qemu fork's input layer consumes).
 
-import { KBD_KEYBOARDS, DEFAULT_KEYBOARD, pickVariant, applyKbdLayout } from "./keyboards.js";
+import { KBD_KEYBOARDS, DEFAULT_KEYBOARD, pickVariant, applyKbdLayout, tapTable } from "./keyboards.js";
 import {
   PRESET_FULLFLASHES, SIDE_CAR_RE, inferDevice, detectDevice,
   cacheAvailable, entryCacheState, downloadEntry, deleteEntry, readCachedEntry,
@@ -3262,12 +3262,17 @@ syncHud();   // applies the remembered toggle, and nothing above could
 /* keypad: one <button> per phone key                                   */
 /* ------------------------------------------------------------------ */
 
+// the key the phone last saw let go, and when (guest ns): a typed character
+// on that same key has to wait out the multi-tap window first (see typing)
+let lastRelease = null;
+
 function sendKey(phoneKey, down) {
   const m = liveModule();
   if (!m?._wasm_send_key) return;
   const lnx = KEY_TO_LINUX[phoneKey];
   if (lnx == null) return;
   m._wasm_send_key(lnx, down ? 1 : 0);
+  if (!down) lastRelease = { m, key: phoneKey, at: Number(m._wasm_vclock()) };
 }
 
 const KEY_SELECTOR =
@@ -3349,6 +3354,24 @@ function fillSelect(sel, entries, value) {
   sel.value = value;
 }
 
+// "Type letters on the phone": the multi-tap table of the keyboard on screen
+// (keyboards.js tapTable()). A keyboard without one has nothing to type with,
+// so the option is greyed out there rather than silently doing nothing.
+const typeChk = $("kbd-typing");
+let typing = { chars: new Map(), pause: 0 };
+typeChk.checked = localStorage.getItem("kbd-typing") === "1";
+typeChk.addEventListener("change", () => {
+  localStorage.setItem("kbd-typing", typeChk.checked ? "1" : "0");
+});
+
+function refreshTyping() {
+  const none = typing.chars.size === 0;
+  typeChk.disabled = none;
+  typeChk.parentElement.title = none
+    ? "This keyboard has no multi-tap table"
+    : "Letters, space and punctuation press the digit key they are on, as many times as the phone needs";
+}
+
 // apply the pickers and remember them; keeps the chosen variant across a
 // keyboard switch whenever the new keyboard also has it (see pickVariant).
 // What is remembered is the letter set the user *asked for*, not the one
@@ -3361,6 +3384,8 @@ function selectKeyboard(wanted = wantedVariant) {
   const variant = pickVariant(kbdSel.value, wanted);
   fillSelect(varSel, Object.entries(kbd.variants), variant);
   applyKbdLayout(kbdSel.value, variant, renderKeypad);
+  typing = tapTable(kbdSel.value, variant);
+  refreshTyping();
   localStorage.setItem("kbd-keyboard", kbdSel.value);
   localStorage.setItem("kbd-variant", wanted);
 }
@@ -3394,22 +3419,126 @@ hintsChk.addEventListener("change", () => {
   localStorage.setItem("kbd-hints", hintsChk.checked ? "1" : "0");
 });
 
+/* ---- typing: a character becomes its digit key, pressed N times ---- */
+
+// Each tap is held and then let go for this long, and a character on the
+// key just used first waits out typing.pause. All of it is guest time: the
+// firmware times its multi-tap window on the guest clock, which falls behind
+// the wall clock on a slow host.
+const TAP_HOLD_MS = 100, TAP_GAP_MS = 100;
+
+// Typed characters and the physical keys pressed among them, in order:
+// { key, count } is a character's taps, { keys, settle, after } a character's
+// way through the symbol picker (one press each), { key, down } one edge of a phone
+// key. While anything is queued every physical key goes through here too,
+// or an Enter typed after a word would reach the phone before the word.
+const typeQueue = [];
+let typeBusy = false;
+
+// resolves false if the guest went away (or was replaced) meanwhile
+async function guestWait(m, ms, from = Number(m._wasm_vclock())) {
+  while (liveModule() === m) {
+    if (Number(m._wasm_vclock()) - from >= ms * 1e6) return true;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return false;
+}
+
+async function pumpTyping() {
+  if (typeBusy) return;
+  typeBusy = true;
+  const m = liveModule();
+  try {
+    run: while (m && typeQueue.length) {
+      const a = typeQueue.shift();
+      if ("down" in a) {
+        sendKey(a.key, a.down);
+        if (!(await guestWait(m, a.down ? TAP_HOLD_MS : TAP_GAP_MS))) break;
+        continue;
+      }
+      if (a.count && lastRelease?.m === m && lastRelease.key === a.key
+          && !(await guestWait(m, typing.pause, lastRelease.at))) break;
+      // a phone that swallows the first key after a quiet spell (keyboards.js
+      // LG_WAKE) gets a harmless one first
+      const quiet = typing.wake && !(lastRelease?.m === m
+        && Number(m._wasm_vclock()) - lastRelease.at < typing.wake.idle * 1e6);
+      const keys = [...(quiet ? [typing.wake.key] : []), ...(a.keys ?? Array(a.count).fill(a.key))];
+      const opener = quiet ? 1 : 0;   // a picker's settle follows the press that opened it
+      for (let i = 0; i < keys.length; i++) {
+        sendKey(keys[i], true);
+        if (!(await guestWait(m, TAP_HOLD_MS))) break run;
+        sendKey(keys[i], false);
+        const settle = i === opener ? a.settle ?? 0 : i === keys.length - 1 ? a.after ?? 0 : 0;
+        if (!(await guestWait(m, TAP_GAP_MS + settle))) break run;
+      }
+    }
+  } finally {
+    typeQueue.length = 0;   // what a stopped guest left undone is dropped
+    typeBusy = false;
+  }
+}
+
+function pressPhysical(key, down) {
+  if (!typeBusy) { sendKey(key, down); return; }
+  typeQueue.push({ key, down });
+}
+
+// Shortcuts that sit on character keys only for want of better ones (volume
+// on - and =, # on /, * on `). While typing is on these keys type their
+// characters, and volume, # and * are left to the numpad.
+const TYPING_TAKES = new Set(["Minus", "Equal", "Slash", "Backquote"]);
+
+// The presses for the character a keydown types, or null when it is not one
+// to type. A key that is a phone key of its own (CODE_TO_KEY) stays that key;
+// with Shift it types the character printed on it instead (Shift+1 is "!",
+// Shift+Enter a new line). Ctrl/Alt/Meta shortcuts are left to the browser,
+// but AltGr — which reports Ctrl+Alt on Windows — is how many layouts type
+// their letters.
+function typedTaps(e) {
+  if (!typeChk.checked || typeChk.disabled || !liveModule()) return null;
+  if ((e.ctrlKey || e.altKey || e.metaKey) && !e.getModifierState("AltGraph")) return null;
+  if (CODE_TO_KEY[e.code] && !e.shiftKey && !TYPING_TAKES.has(e.code)) return null;
+  const ch = e.key === "Enter" ? "\n" : e.key;
+  if ([...ch].length !== 1) return null;
+  return typing.chars.get(ch.toLowerCase()) ?? typing.chars.get(ch) ?? null;
+}
+
+// a keydown typing has taken from its shortcut, whether or not this phone
+// can type the character
+const typingOwns = (e) => typeChk.checked && !typeChk.disabled && !!liveModule()
+  && TYPING_TAKES.has(e.code) && !(e.ctrlKey || e.altKey || e.metaKey);
+
+// Fields that take text keep their keys. A checkbox does not take any, and
+// it is what holds the focus right after ticking "Type letters on the phone".
+const takesText = (el) => el.isContentEditable || el.tagName === "TEXTAREA"
+  || el.tagName === "SELECT" || (el.tagName === "INPUT" && el.type !== "checkbox");
+
 // physical keyboard -> phone keys
 const heldKeys = new Set();
 window.addEventListener("keydown", (e) => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (takesText(e.target)) return;
+  const taps = typedTaps(e);
+  if (taps) {
+    // Space would otherwise scroll the page or press the focused button
+    e.preventDefault();
+    if (e.repeat) return;
+    typeQueue.push(taps);
+    pumpTyping();
+    return;
+  }
+  if (typingOwns(e)) { e.preventDefault(); return; }
   const key = CODE_TO_KEY[e.code];
   if (!key) return;
   // prevent on repeats too: otherwise holding an arrow key scrolls the page
   e.preventDefault();
   if (heldKeys.has(e.code)) return;
   heldKeys.add(e.code);
-  sendKey(key, true);
+  pressPhysical(key, true);
 });
 window.addEventListener("keyup", (e) => {
   if (!heldKeys.delete(e.code)) return;
   const key = CODE_TO_KEY[e.code];
-  if (key) sendKey(key, false);
+  if (key) pressPhysical(key, false);
 });
 
 // The tools/ drivers set these fields straight from Playwright, whose

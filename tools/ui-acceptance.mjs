@@ -232,10 +232,36 @@ ok("3.1 accessory group contents", await page.evaluate(() => {
 ok("3.1 keyboard group contents", await page.evaluate(() => {
   const g = document.querySelectorAll("#post-panel .group")[1];
   return !!g.querySelector("#kbd-keyboard") && !!g.querySelector("#kbd-variant")
-    && !!g.querySelector("#kbd-hints") && !!g.querySelector("#opt-hud");
+    && !!g.querySelector("#kbd-hints") && !!g.querySelector("#kbd-typing") && !!g.querySelector("#opt-hud");
 }));
 ok("3.1 shortcut checkbox copy",
   (await page.$eval("#kbd-hints", (e) => e.parentElement.textContent.trim())) === "Show shortcuts on keys");
+ok("3.1 typing checkbox copy, off by default", await page.$eval("#kbd-typing", (e) =>
+  e.parentElement.textContent.trim() === "Type letters on the phone" && !e.checked));
+// multi-tap: a character is the key it is on, pressed as often as the
+// firmware cycles to it; on a Russian table each script counts from its own
+// input language
+ok("3.1 multi-tap tables", await page.evaluate(async () => {
+  const { tapTable } = await import("./keyboards.js");
+  const at = (kbd, v, ch) => { const t = tapTable(kbd, v).chars.get(ch); return t && `${t.key}x${t.count}`; };
+  return at("s75", "en", "s") === "7x4" && at("s75", "en", " ") === "1x1" && at("s75", "en", "?") === "0x3"
+    && at("siemens", "ru", "a") === "2x1" && at("siemens", "ru", "в") === "2x3" && at("siemens", "ru", "ё") === "3x3"
+    && at("ke800", "en", " ") === "0x1" && at("ke800", "en", ".") === "1x1"
+    && at("ke970", "ru", "z") === "9x4" && tapTable("ke970", "ru").chars.get("я") === undefined;
+}));
+// a character on no cycle goes through the * picker: Siemens walks its
+// circular grid from the "*" it opens on, LG turns pages and presses the
+// symbol's key; LG also wakes a phone that has been quiet
+ok("3.1 symbol pickers", await page.evaluate(async () => {
+  const { tapTable } = await import("./keyboards.js");
+  const keys = (kbd, ch) => tapTable(kbd, "en").chars.get(ch)?.keys?.join();
+  return keys("siemens", "$") === "star,right,right,right,right,right,right,center"
+    && keys("siemens", "Ω") === "star," + Array(15).fill("left").join() + ",center"
+    && keys("s75", "`") === undefined && keys("s75", "§") === "star," + Array(24).fill("right").join() + ",center"
+    && keys("ke800", "~") === "star,down,down,7,left_soft"
+    && keys("ke800", "}") === "star,up,1,left_soft"
+    && tapTable("ke800", "en").wake?.key === "vol_up" && tapTable("s75", "en").wake === undefined;
+}));
 ok("3.1 HUD label has no parenthetical, tooltip instead", await page.$eval("#opt-hud", (e) =>
   e.parentElement.textContent.trim() === "Performance HUD" && !!e.parentElement.title));
 ok("3.1 export buttons", await page.evaluate(() =>

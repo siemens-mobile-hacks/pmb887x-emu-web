@@ -348,6 +348,14 @@
           Show shortcuts on keys
         </label>
 
+        <!-- off by default and remembered: a letter typed on the computer
+             presses its digit key as many times as the keyboard's multi-tap
+             table says (keyboards.js), for the text editors on the phone -->
+        <label class="checkbox-label" for="kbd-typing">
+          <input type="checkbox" id="kbd-typing">
+          Type letters on the phone
+        </label>
+
         <!-- both layouts honour this; it starts on at phone widths, where the
              strip is the only readout there is, and off on desktop -->
         <label class="checkbox-label hud-toggle" for="opt-hud" title="Guest speed, per second">

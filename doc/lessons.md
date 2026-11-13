@@ -542,3 +542,17 @@ The binding method is in performance.md. These are the traps behind it.
   through the same display chain.
 - A slow J2ME stopwatch is throughput, not pacing: the guest never halts
   there.
+- Driving an LG phone from a tool: the KE800 and KE970 swallow the first
+  key that comes after ~10–15 s (guest) without one, whatever the key, while
+  they wake up (KE800: a key after 10 s idle typed, after 15 s it was
+  lost). A tool that presses one key per screenshot loses every press and
+  the phone looks dead; send a key that does nothing there first (`vol_up`).
+  The Siemens phones do not do this. A digit opens the dialler, whose
+  Options ▸ New message ▸ Text message is the way into an editor. The KE970's editor starts in T9 (`#` four times
+  reaches `Abc`). The EL71 test image is Russian and asks to set the date
+  and time about a minute in; its idle left soft key is "Нов.SMS" only once
+  it is on the GSM cell. (2026-11-13, the multi-tap work.)
+- Multi-tap tables are read off the firmware: a Siemens editor shows the
+  tapped key's whole cycle in a bar along the bottom; an LG one shows
+  none, so tap the key 1, 2, 3… times with a tap of another key between
+  the groups and read the text.

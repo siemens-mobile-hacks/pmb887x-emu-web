@@ -26,7 +26,16 @@ under 0.80× real time — the **Run** panel holds the keypad/HUD settings,
 **Copy diagnostics** and the flash + EFA exports, a two-line performance
 strip sits on the top edge of the screen while the guest runs, and the
 on-screen keypad has every phone key as its own `<button>` (plus
-physical-keyboard mapping). The phone itself is the same view everywhere and
+physical-keyboard mapping). With **Type letters on the phone** ticked (Run ▸
+Keyboard), a letter, space or punctuation mark typed on the computer presses
+its digit key as many times as that phone's multi-tap needs (the phone's
+editor has to be in multi-tap, not T9; Shift reaches the characters on keys
+that are phone keys of their own, e.g. Shift+1 for "!"). A character no key
+cycles through, such as `$`, `;` or `{`, is picked from the phone's `*`
+symbol picker. While typing is on, `-` `=` `/` and `` ` `` type their
+characters; volume, `#` and `*` stay on the numpad. The tables and pickers
+are read off the firmware and kept with the keypads in `site/keyboards.js`,
+per keyboard and language. The phone itself is the same view everywhere and
 fills whatever it is given: the screen takes the board's own aspect ratio and
 the keypad scales with it, on a phone and on a desktop alike. From 900px wide
 the two panels flank it; below that they are bottom sheets, and a window that
