@@ -30,6 +30,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ppmFileToPng } from "./ppm2png.mjs";
+import { flashPath } from "./lib/boards.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const RUN_NATIVE = path.join(ROOT, "scripts", "run-native.sh");
@@ -42,12 +43,9 @@ const REG_NAMES = [
   "r11", "r12", "sp", "lr", "pc", "cpsr",
 ];
 
-export const FLASHES = {
-  s75: "fullflashes/s75_working20060710172101.bin",
-  el71: "fullflashes/rr_ff_el71_stock.bin",
-  c81: "fullflashes/rrC81 .bin",
-  ke800: "fullflashes/KE800-v11b.bin",
-};
+// --flash ids (tools/lib/boards.mjs), as paths relative to ROOT
+export const FLASHES = Object.fromEntries(
+  ["s75", "el71", "c81", "ke800"].map((id) => [id, path.relative(ROOT, flashPath(id))]));
 
 // --- args ---------------------------------------------------------------------
 function parseArgs() {
