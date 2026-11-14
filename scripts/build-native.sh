@@ -89,8 +89,10 @@ echo "$ID" > qemu-source.txt.tmp
 mv -f qemu-source.txt.tmp qemu-source.txt
 
 if [ "$MODE" = tci ]; then
-  if "$OUT/qemu-system-arm" -plugin help 2>&1 | grep -q "plugin interface not enabled"; then
-    echo "!! plugins still disabled in $OUT — inspect meson configuration" >&2
+  # positive: configured with plugins, and the binary lists the option
+  PLUGIN_HELP="$("$OUT/qemu-system-arm" -plugin help 2>&1 || true)"
+  if ! grep -qx '#define CONFIG_PLUGIN' config-host.h || [[ "$PLUGIN_HELP" != *"Plugin options"* ]]; then
+    echo "!! plugins not enabled in $OUT — inspect meson configuration" >&2
     exit 1
   fi
   echo "=== native TCI qemu ready (plugins on): $OUT/qemu-system-arm (qemu $ID) ==="

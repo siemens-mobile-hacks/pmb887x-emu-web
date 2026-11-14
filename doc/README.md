@@ -21,7 +21,7 @@ speed. Everything else is reference.
 
 | Command | What it does |
 |---|---|
-| `scripts/ninja-fast.sh` | incremental rebuild + deploy to `site/dist-jit`, or to `$WEB_DIST` (absolute path) |
+| `scripts/ninja-fast.sh` | incremental rebuild + deploy to `site/dist-jit`, or to `$WEB_DIST` |
 | `scripts/gate.sh quick\|keep\|close` | builds the native references from `qemu/` as checked out, then every correctness gate, run concurrently, one verdict table |
 | `tools/perf/swab.sh` | paired free-run A/B of two dists built with `tools/perf/freerun.diff` |
 | `tools/perf/bootab.sh` | paired boot A/B of two dists, paced as on the page |

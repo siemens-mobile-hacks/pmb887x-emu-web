@@ -18,9 +18,9 @@
 #     initializes it
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
 WEB_DIR="$ROOT"
-source scripts/build-dirs.sh
+source "$ROOT/scripts/build-dirs.sh"
+cd "$ROOT"
 
 source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null
 export CPATH="$DEPS_ROOT/target/include"

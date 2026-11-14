@@ -34,6 +34,12 @@ test("build-dirs: the test plugins follow WEB_BUILD", () => {
   assert.equal(shellDirs({ WEB_BUILD: "/x" }), "/x|/x/qemu-native-build|/x/qemu-native-tci-build|/x/test-plugins");
 });
 
+test("build-dirs: a relative directory is made absolute from the current directory", () => {
+  const cwd = process.cwd();
+  assert.equal(shellDirs({ WEB_BUILD: "rel" }),
+    [`${cwd}/rel`, `${cwd}/rel/qemu-native-build`, `${cwd}/rel/qemu-native-tci-build`, `${cwd}/rel/test-plugins`].join("|"));
+});
+
 test("build-dirs: tools/lib/build-dirs.mjs resolves what scripts/build-dirs.sh does", () => {
   for (const set of [
     {},
@@ -42,6 +48,8 @@ test("build-dirs: tools/lib/build-dirs.mjs resolves what scripts/build-dirs.sh d
     { WEB_BUILD: "/x", QEMU_NATIVE_BUILD: "/j" },
     { QEMU_NATIVE_TCI_BUILD: "/t", TEST_PLUGINS_DIR: "/p" },
     { WEB_BUILD: "/x", QEMU_NATIVE_BUILD: "/j", QEMU_NATIVE_TCI_BUILD: "/t", TEST_PLUGINS_DIR: "/p" },
+    { WEB_BUILD: "rel" },
+    { WEB_BUILD: "/x", QEMU_NATIVE_BUILD: "j/", TEST_PLUGINS_DIR: "../p" },
   ]) {
     assert.equal(nodeDirs(set), shellDirs(set), JSON.stringify(set));
   }

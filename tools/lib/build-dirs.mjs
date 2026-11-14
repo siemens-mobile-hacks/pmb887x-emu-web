@@ -1,5 +1,6 @@
 // The native build directories of scripts/build-dirs.sh, for the node tools:
-// the same defaults and the same env overrides.
+// the same defaults and the same env overrides. A relative directory is
+// taken from the current directory, as the scripts do.
 //   WEB_BUILD              the build tree (default build/ in the repository)
 //   QEMU_NATIVE_BUILD      the JIT reference build ($WEB_BUILD/qemu-native-build)
 //   QEMU_NATIVE_TCI_BUILD  the TCI build ($WEB_BUILD/qemu-native-tci-build)
@@ -8,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const env = (name) => process.env[name] || "";
+const env = (name) => (process.env[name] ? path.resolve(process.env[name]) : "");
 
 export const BUILD = env("WEB_BUILD") || path.join(ROOT, "build");
 export const QEMU_NATIVE_BUILD = env("QEMU_NATIVE_BUILD") || path.join(BUILD, "qemu-native-build");

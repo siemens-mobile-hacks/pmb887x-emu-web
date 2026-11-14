@@ -22,6 +22,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+WEB_DIR="$ROOT"
+source "$ROOT/scripts/build-dirs.sh"
 cd "$ROOT"
 
 EMU="$ROOT/pmb887x-emu"
@@ -39,9 +42,6 @@ for dep in spdlog tomlplusplus; do
   fi
 done
 
-# shellcheck disable=SC1091
-WEB_DIR="$ROOT"
-source scripts/build-dirs.sh
 source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null
 
 DIST="$ROOT/site/dist"

@@ -15,7 +15,14 @@
 # The node tools take the native ones from tools/lib/build-dirs.mjs, with the
 # same defaults. QEMU_BIN, QEMU_JIT/QEMU_TCI or --a-bin/--b-bin still point
 # a single run at another binary.
+# A relative directory is taken from the current directory. It is made
+# absolute and exported, so the scripts this one runs, which may cd, see the
+# same directory.
 # Expects WEB_DIR, the repository root.
+for _v in WEB_BUILD WASM_DEPS QEMU_NATIVE_BUILD QEMU_NATIVE_TCI_BUILD TEST_PLUGINS_DIR PMB887X_BSP_DIR; do
+  if [ -n "${!_v:-}" ]; then export "$_v=$(realpath -m -- "${!_v}")"; fi
+done
+unset _v
 BUILD="${WEB_BUILD:-$WEB_DIR/build}"
 DEPS_ROOT="${WASM_DEPS:-$BUILD/deps}"
 NATIVE_BUILD="${QEMU_NATIVE_BUILD:-$BUILD/qemu-native-build}"

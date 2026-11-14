@@ -22,9 +22,9 @@
 set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$WEB_DIR/scripts/build-dirs.sh"
+source "$WEB_DIR/scripts/submodules.sh"
 cd "$WEB_DIR"
-source scripts/build-dirs.sh
-source scripts/submodules.sh
 
 note() { echo "build-release: $*"; }
 

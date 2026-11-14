@@ -198,9 +198,9 @@ tools read the same settings from `tools/lib/build-dirs.mjs`. `WEB_BUILD`
 (default `build/`) moves all of them: `qemu-wasm64/`, `deps/` (or
 `WASM_DEPS`), the JIT build `qemu-native-build/` (or `QEMU_NATIVE_BUILD`)
 and the TCI build `qemu-native-tci-build/` (or `QEMU_NATIVE_TCI_BUILD`),
-and the test plugins `test-plugins/` (or `TEST_PLUGINS_DIR`). Set
-them in the environment of the builds and of the scripts, tests and tools
-that run the binaries. `QEMU_BIN` (`QEMU_JIT`/`QEMU_TCI`, `--a-bin`/`--b-bin`)
+and the test plugins `test-plugins/` (or `TEST_PLUGINS_DIR`); a relative
+path is taken from the current directory. Set them in the environment of
+the builds and of the scripts, tests and tools that run the binaries. `QEMU_BIN` (`QEMU_JIT`/`QEMU_TCI`, `--a-bin`/`--b-bin`)
 still points one run at another binary.
 
 ## Layout

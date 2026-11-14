@@ -22,7 +22,8 @@ WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$WEB_DIR/scripts/build-dirs.sh"
 TARGET="$DEPS_ROOT/target"
 BUILD_DIR="$BUILD/qemu-wasm64"
-DIST="${WEB_DIST:-$WEB_DIR/site/dist-jit}"
+# absolute: the build below runs in the build dir
+DIST="$(realpath -m -- "${WEB_DIST:-$WEB_DIR/site/dist-jit}")"
 
 use_emsdk
 export PATH="$HOME/.local/bin:$PATH"
