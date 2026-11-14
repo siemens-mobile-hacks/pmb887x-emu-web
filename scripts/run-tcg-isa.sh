@@ -100,7 +100,7 @@ elif [ ! -d "$ROOT/tools/node_modules" ]; then
                     || echo "== wasm legs skipped (no tools/node_modules)"
 else
   PORT_TCG="${PORT_TCG:-8093}"
-  ( cd "$ROOT" && PORT=$PORT_TCG HTTPS=0 node serve.mjs >/dev/null 2>&1 ) &
+  ( cd "$ROOT" && PORT=$PORT_TCG HTTPS=0 exec node serve.mjs >/dev/null 2>&1 ) &
   SRV=$!
   for _ in $(seq 1 50); do
     curl -sf "http://127.0.0.1:$PORT_TCG/" >/dev/null && break

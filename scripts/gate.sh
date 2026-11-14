@@ -150,7 +150,7 @@ done
 SRV=""
 if [ "$need_server" = 1 ] && ! curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
   echo "gate: starting serve.mjs on $PORT"
-  ( cd "$ROOT" && PORT=$PORT HTTPS=0 node serve.mjs >/dev/null 2>&1 ) &
+  ( cd "$ROOT" && PORT=$PORT HTTPS=0 exec node serve.mjs >/dev/null 2>&1 ) &
   SRV=$!
   for _ in $(seq 60); do
     curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && break
