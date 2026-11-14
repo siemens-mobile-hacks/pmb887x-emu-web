@@ -234,6 +234,9 @@ const commands = {
 
 const server = net.createServer((conn) => {
   let buf = "";
+  // a client that went away before its reply: the reply is dropped, the
+  // session lives on
+  conn.on("error", (e) => log("client connection:", e.code || String(e)));
   conn.on("data", (d) => {
     buf += d;
     let i;
