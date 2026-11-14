@@ -172,7 +172,12 @@ class WasmSide {
     // nor with the GSM cell, which the page adds by default on a board with
     // a radio; on the board run-native.sh boots
     const board = nativeBoard(flashPath);
-    await loadOwnFlash(this.page, flashPath, { startup: "ONLINE", gsm: false, device: board })
+    // with the EFA sidecar when there is one: the native leg's flash device
+    // loads <fullflash>.cfi-efa by itself (cfi-flash.c), and an LG image
+    // without it factory-resets its EEPROM
+    const efa = flashPath + ".cfi-efa";
+    const files = fs.existsSync(efa) ? [flashPath, efa] : [flashPath];
+    await loadOwnFlash(this.page, files, { startup: "ONLINE", gsm: false, device: board })
       .catch((e) => {
         throw new Error(`the page did not take ${board}, the native leg's board: ${String(e.message).split("\n")[0]}`);
       });
