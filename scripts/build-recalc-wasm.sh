@@ -40,7 +40,9 @@ for dep in spdlog tomlplusplus; do
 done
 
 # shellcheck disable=SC1091
-source build/deps/emsdk/emsdk_env.sh >/dev/null
+WEB_DIR="$ROOT"
+source scripts/build-dirs.sh
+source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null
 
 DIST="$ROOT/site/dist"
 mkdir -p "$DIST"
