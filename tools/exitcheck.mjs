@@ -13,7 +13,8 @@
 // runs without an image that happens to be broken.
 import { chromium } from "playwright-core";
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { flashPath } from "./lib/boards.mjs";
+import { loadOwnFlash } from "./lib/page.mjs";
 
 const PORT = process.env.PORT || "8080";
 // SERIAL_POLL=1 takes the page's fallback path (no FS tap) through the same
@@ -22,7 +23,7 @@ const POLL = process.env.SERIAL_POLL === "1";
 const URL_ = `http://127.0.0.1:${PORT}/` + (POLL ? "?serialpoll=1" : "");
 const INJECT = process.argv.includes("--inject");
 const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-const FLASH = args[0] ?? fileURLToPath(new URL("../fullflashes/BROKEN)S66_no_recalc.bin", import.meta.url));
+const FLASH = args[0] ?? flashPath("s66-broken");
 const DEVICE = args[1] ?? "siemens-s65";
 const BOOT_TIMEOUT = Number(process.env.BOOT_TIMEOUT || 600) * 1000;
 
@@ -70,9 +71,7 @@ await page.addInitScript(() => {
 await page.goto(URL_, { waitUntil: "networkidle", timeout: 120000 });
 const flash = INJECT ? (await import("./testflash.mjs")).fullflash : FLASH;
 const device = INJECT ? null : DEVICE;
-await page.click("#ff-mode-own");
-await page.setInputFiles("#fullflash", flash);
-if (device) await page.selectOption("#device", device);
+await loadOwnFlash(page, flash, { device: device || undefined });
 await page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 });
 console.log(`booting ${flash} as ${await page.evaluate(() => window.__ui.device)}`
   + (INJECT ? " (dump injected once it is up)" : ""));
