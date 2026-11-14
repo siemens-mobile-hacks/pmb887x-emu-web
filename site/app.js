@@ -106,9 +106,11 @@ let rafHandle = 0;
 let serialTimer = 0;
 let boards = [];         // [{id, file}] parsed from boards.tar
 let boardsBuf = null;
-let bootCancelled = false; // Stop pressed before boot() had a live guest
+let bootCancelled = false; // Stop pressed before boot()/bootSuite() had a live guest
 let startWaiting = false;  // a Start waiting for boards.tar
 const BOOT_CANCELLED = Symbol("boot cancelled");
+// boot() and bootSuite() call this before every step that can take a while
+const checkCancel = () => { if (bootCancelled) throw BOOT_CANCELLED; };
 let boardsReady = null;   // loadBoards() promise — boot() awaits it
 let pendingDevice = null; // device inferred from a fullflash picked before
                           // boards.tar finished loading (slow links)
@@ -1333,6 +1335,24 @@ function launch({ factory, engine, args, opts, setup, report }) {
 
 let exitCode = null;
 
+// The catch of boot() and bootSuite(): true when e is a Stop or Cancel
+// before the guest was live, which it reports.
+function startCancelled(e) {
+  if (e === BOOT_CANCELLED) {
+    showOverlay("Ready to boot", "Start cancelled");
+  } else if (e?.name === "AbortError" || engineCancelled) {
+    // a cancelled preset keeps whatever files finished; the engine's
+    // partial fetch leaves nothing behind
+    showOverlay("Ready to boot", engineCancelled
+      ? "Download cancelled"
+      : "Download cancelled — whatever finished stays cached");
+    engineCancelled = false;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 async function bootSuite(url) {
   errorMsg = null;
   exitCode = null;
@@ -1340,14 +1360,18 @@ async function bootSuite(url) {
   serialTapped = false;
   ranDevice = null;       // not a phone: nothing here can EXIT
   ranFlashName = null;
+  bootCancelled = false;
   setEmuState("booting");
   showOverlay("Loading suite…");
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
+    checkCancel();
     const engineWasmMod = await ensureEngine();
+    checkCancel();
     const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
+    checkCancel();
     /* ?icount=1: the icount timing model — measures the icount
      * tax on the tcgbench workload (TB icount-capping + accounting +
      * virtual-timer runs) against the same run without it */
@@ -1383,10 +1407,15 @@ async function bootSuite(url) {
     runStartedAt = Date.now();
     setEmuState("running");
   } catch (e) {
-    console.error(e);
     setEmuState("idle");
-    setError(String(e));
+    if (!startCancelled(e)) {
+      console.error(e);
+      setError(String(e));
+    }
+    return;
   }
+  // Stop came while the factory was starting the guest: stop it the usual way
+  if (bootCancelled) stop();
 }
 
 // The 2^32 ESN sweep, with the progress and Cancel a minutes-long wait needs.
@@ -1492,7 +1521,6 @@ async function boot() {
 
   // [[".cfi-efa", bytes], ...] — filled below, checked again after the boot
   let sidecarBytes = [];
-  const checkCancel = () => { if (bootCancelled) throw BOOT_CANCELLED; };
   let gsm = false;
 
   try {
@@ -1504,6 +1532,7 @@ async function boot() {
       // First Start with this preset: download it into the browser cache
       // (live progress; later boots come straight from the cache).
       const st = await entryCacheState(preset);
+      checkCancel();
       if (!st.complete) {
         presetBusy = true;
         // a 64 MiB fullflash is a long wait — Cancel stops it (the catch
@@ -1538,6 +1567,7 @@ async function boot() {
         }
         setEmuState("booting");
         await refreshPresetUi();
+        checkCancel();
       }
       showOverlay("Reading fullflash…");
       const cached = await readCachedEntry(preset); // main .bin first
@@ -1554,6 +1584,7 @@ async function boot() {
     // The engine wasm is normally prefetched and compiled by now (the
     // background download starts once the page is up); a Start that beat
     // it waits the rest of the download out inside ensureEngine.
+    checkCancel();
     const engineWasmMod = await ensureEngine();
     checkCancel();
     // Compile the factory fresh per boot (the emscripten ES6 factory is
@@ -1587,6 +1618,7 @@ async function boot() {
           "pick “Automatically recalculate keys” instead.");
         return;
       }
+      checkCancel();
       const found = await runEsnRecovery(identity, device);
       if (!found) return;   // cancelled, or the whole space held no answer
       imei = identity.imei;
@@ -1755,16 +1787,7 @@ async function boot() {
     });
   } catch (e) {
     setEmuState("idle");
-    if (e === BOOT_CANCELLED) {
-      showOverlay("Ready to boot", "Start cancelled");
-    } else if (e?.name === "AbortError" || engineCancelled) {
-      // a cancelled preset keeps whatever files finished; the engine's
-      // partial fetch leaves nothing behind
-      showOverlay("Ready to boot", engineCancelled
-        ? "Download cancelled"
-        : "Download cancelled — whatever finished stays cached");
-      engineCancelled = false;
-    } else {
+    if (!startCancelled(e)) {
       console.error(e);
       setError(String(e));
     }
@@ -1840,8 +1863,8 @@ function stop() {
   // a capture in flight is finished and saved first — the frames stop
   // arriving the moment the guest goes away
   finishRecording(() => {
-    // a Start still on its way to a live guest: boot() checks for this
-    // between its steps
+    // a Start still on its way to a live guest: checkCancel() turns this
+    // into "Start cancelled" before the next step
     if (emuState === "booting" && !running) {
       bootCancelled = true;
       showOverlay("Stopping…");
