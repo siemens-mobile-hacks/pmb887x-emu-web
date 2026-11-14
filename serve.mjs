@@ -173,6 +173,15 @@ async function handler(req, res) {
   createReadStream(servePath).pipe(res);
 }
 
+// A rejected handler would otherwise be an unhandled rejection, which ends
+// the process: one malformed URL took the whole server down.
+function serve(req, res) {
+  handler(req, res).catch((e) => {
+    if (!res.headersSent) res.writeHead(e instanceof URIError ? 400 : 500);
+    res.end();
+  });
+}
+
 function etagOf(p) {
   const st = statSync(p);
   return `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
@@ -208,13 +217,13 @@ const proxyGprs = (req, socket, head) => {
 
 const httpServer = http.createServer((req, res) => {
   if (httpsEnabled && redirectNonLoopbackToHttps(req, res)) return;
-  handler(req, res);
+  serve(req, res);
 });
 httpServer.on("upgrade", proxyGprs);
 httpServer.listen(port, "0.0.0.0");
 
 if (httpsEnabled) {
-  const httpsServer = https.createServer({ key: cert.key, cert: cert.cert }, handler);
+  const httpsServer = https.createServer({ key: cert.key, cert: cert.cert }, serve);
   httpsServer.on("upgrade", proxyGprs);
   httpsServer.listen(httpsPort, "0.0.0.0");
 }
