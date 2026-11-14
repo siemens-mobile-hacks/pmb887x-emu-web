@@ -20,7 +20,7 @@ const root = resolve(toolsDir, "..");
 
 const { detectDevice } = await import(resolve(root, "site/fullflashes.js"));
 
-// model -> the board the page must land on (null: "has no board yet")
+// the model a file's real name carries -> the board the page must land on
 const EXPECT = {
   S75: "siemens-s75", EL71: "siemens-el71", C81: "siemens-c81",
   CX70: "siemens-cx70", SL65: "siemens-sl65",
@@ -44,6 +44,19 @@ if (!paths.length) {
   }
 }
 
+// The expectation comes from the name the file really has, which the
+// detector never sees: what it detected cannot vouch for itself.
+function expected(p) {
+  const up = basename(p).toUpperCase();
+  const model = Object.keys(EXPECT).find((m) => up.includes(m));
+  return model ? EXPECT[model] : null;
+}
+
+if (!paths.length) {
+  console.error("no fullflashes to check: pass some, or put them in fullflashes/");
+  process.exit(1);
+}
+
 let fails = 0, count = 0;
 function ok(name, cond, extra = "") {
   count++;
@@ -56,11 +69,13 @@ for (const p of paths) {
   // an opaque name: the filename rules must contribute nothing
   const file = new File([bytes], `backup_${Date.now()}.bin`);
   const hit = await detectDevice(file);
-  const want = EXPECT[hit?.model] ?? null;
+  const want = expected(p);
   ok(basename(p),
-    hit != null && hit.device === want && (want == null || hit.model),
-    hit == null ? "nothing detected"
-      : `${hit.vendor ? hit.vendor + " " : ""}${hit.model} → ${hit.device ?? "(no board)"}${hit.exact ? "" : " (stand-in)"}`);
+    want != null && hit != null && hit.device === want,
+    (want == null ? "no expected board for this file name; " : "")
+    + (hit == null ? "nothing detected"
+      : `${hit.vendor ? hit.vendor + " " : ""}${hit.model} → ${hit.device ?? "(no board)"}${hit.exact ? "" : " (stand-in)"}`)
+    + (want != null && hit?.device !== want ? `, want ${want}` : ""));
 }
 
 console.log(`\n${count - fails}/${count} checks passed`);
