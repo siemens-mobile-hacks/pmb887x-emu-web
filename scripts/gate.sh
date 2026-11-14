@@ -90,6 +90,10 @@ export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$ROOT/tools/chrome}
 # has exposed races the single-board runs miss (see "Gates" in
 # doc/lessons.md).
 #
+# firefox and ui boot a pinned image (--flash, a tools/lib/boards.mjs id),
+# not whatever TESTFLASH or the gitignored testflash.local.json names, so
+# they run on a fresh clone and boot the same image everywhere.
+#
 # ui always drives the page's default dist (dist-jit): --dist does not reach
 # it.  It is here because nothing else runs it, and a UI check nobody runs
 # rots -- its slow-warning check failed unnoticed because a page-level CPU
@@ -115,7 +119,7 @@ JOBS=(
   "firefox|close|yes|600|gate_firefox"
   "detect|close|no|300|node '$ROOT/tools/detect-check.mjs'"
   "efa-web|close|yes|300|PORT=$PORT node '$ROOT/tools/efa-web.mjs' && PORT=$PORT node '$ROOT/tools/efa-web.mjs' noefa"
-  "ui|close|yes|600|PORT=$PORT node '$ROOT/tools/ui-acceptance.mjs'"
+  "ui|close|yes|600|PORT=$PORT node '$ROOT/tools/ui-acceptance.mjs' --flash s75"
 )
 
 # ffboot reports in text, not an exit code: the Firefox module budget is
@@ -126,7 +130,7 @@ gate_firefox() {
   tmp="$(mktemp)"
   # tee rather than capture: a two-minute job whose log stays empty until
   # it exits is indistinguishable from a hung one.
-  BROWSER=firefox PORT="$PORT" MAX=120 node "$ROOT/tools/ffboot.mjs" "$DIST" 2>&1 | tee "$tmp"
+  BROWSER=firefox PORT="$PORT" MAX=120 node "$ROOT/tools/ffboot.mjs" --flash s75 "$DIST" 2>&1 | tee "$tmp"
   progress="$(grep -o 'progress=.*' "$tmp" | tail -1 | cut -d= -f2-)"
   errors="$(grep -o 'errors=[0-9]*' "$tmp" | tail -1 | cut -d= -f2)"
   rm -f "$tmp"

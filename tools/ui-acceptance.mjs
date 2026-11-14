@@ -1,13 +1,21 @@
 // Drives the emulator page through mocks/emulator-ui-acceptance-criteria.md.
 //
-//   node tools/ui-acceptance.mjs            # everything, including a real boot
+//   node tools/ui-acceptance.mjs [--flash id]   # everything, including a real boot
 //   SKIP_BOOT=1 node tools/ui-acceptance.mjs
 //
-// The boot section needs a fullflash (tools/testflash.local.json or
-// TESTFLASH=) and a built site/dist-jit; everything else is pure UI.
+// The boot section needs a built site/dist-jit and a Siemens fullflash:
+// --flash names one by its tools/lib/boards.mjs id (the gate pins one),
+// else the test fullflash (tools/testflash.local.json or TESTFLASH=).
+// Everything else is pure UI.
 import { chromium } from "playwright-core";
 import { readFile } from "node:fs/promises";
 import { pageCall } from "./lib/page.mjs";
+import { parseArgs } from "./lib/argv.mjs";
+import { flashFiles } from "./lib/boards.mjs";
+
+const FLASH = parseArgs(process.argv.slice(2), {
+  values: ["flash"], usage: "node tools/ui-acceptance.mjs [--flash id]",
+}).opt("flash", "");
 
 const PORT = process.env.PORT || "8080";
 const URL_ = `http://127.0.0.1:${PORT}/`;
@@ -805,7 +813,7 @@ ok("v5.4 the chosen file's name reopens the picker", await fc);
 
 /* ---------------- boot ---------------- */
 if (!process.env.SKIP_BOOT) {
-  const { fullflash } = await import("./testflash.mjs");
+  const fullflash = FLASH ? flashFiles(FLASH) : (await import("./testflash.mjs")).fullflash;
   await page.click("#ff-mode-own");
   await page.setInputFiles("#fullflash", fullflash);
   await page.waitForFunction(() => window.__ui.ready);

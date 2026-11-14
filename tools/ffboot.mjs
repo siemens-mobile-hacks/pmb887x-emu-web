@@ -1,18 +1,27 @@
 // Boot a dist in Playwright's Firefox (or chromium with BROWSER=chromium),
 // sampling vclock/insns/RSS and capturing console errors — the
 // cross-browser smoke for the wasm64 backend (Firefox OOM repro).
-// Usage: [BROWSER=firefox|chromium] [PORT=8080] [MAX=180] node ffboot.mjs [dist] [extraQ]
+// Usage: [BROWSER=firefox|chromium] [PORT=8080] [MAX=180] node ffboot.mjs [--flash id] [dist] [extraQ]
+// --flash: a tools/lib/boards.mjs id (the gate pins one); without it the
+// test fullflash (TESTFLASH or tools/testflash.local.json)
 import { firefox, chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startGateway } from "./gprs-gateway.mjs";
 import { bounded, pageCall } from "./lib/page.mjs";
+import { parseArgs } from "./lib/argv.mjs";
+import { flashFiles } from "./lib/boards.mjs";
 
-const dist = process.argv[2] || "dist-jit";
-const extraQ = process.argv[3] || "";
+const args = parseArgs(process.argv.slice(2), {
+  values: ["flash"], positional: 2,
+  usage: "node tools/ffboot.mjs [--flash id] [dist] [extraQ]",
+});
+const dist = args.positional[0] || "dist-jit";
+const extraQ = args.positional[1] || "";
+const flashId = args.opt("flash", "");
+const fullflash = flashId ? flashFiles(flashId) : (await import("./testflash.mjs")).fullflash;
 const port = process.env.PORT || "8080";
 const maxSecs = Number(process.env.MAX || 180);
 const which = process.env.BROWSER || "firefox";
