@@ -519,3 +519,5 @@ writeFileSync(`${outBase}.json`, JSON.stringify({
   summary, results,
 }, null, 1));
 console.log(`results: ${outBase}.json`);
+// a dist without one successful run has no numbers to compare
+if (dists.some((d) => summary[d].ok === 0)) process.exitCode = 1;
