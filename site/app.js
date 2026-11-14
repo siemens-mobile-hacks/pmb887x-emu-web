@@ -979,8 +979,9 @@ $("btn-settings").addEventListener("click", (e) => openSheet($("sheet-settings")
 // breakpoint — and on any window too short to put them beside the phone —
 // they are bottom sheets, which is a different place in the DOM and so the
 // one layout decision that cannot be a stylesheet rule. It must agree with
-// the `min-width: 900px` block in style.css.
-const phoneLayout = matchMedia("(max-width: 899px), (max-height: 620px)");
+// the `width >= 900px` block in style.css; range syntax, so that a fractional
+// viewport (browser zoom) falls on one side of each breakpoint.
+const phoneLayout = matchMedia("(width < 900px), (height < 621px)");
 const mainEl = document.querySelector("main");
 const phonePanel = document.querySelector(".phone-panel");
 

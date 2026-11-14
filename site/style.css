@@ -235,7 +235,7 @@ main {
    keypad moves beside the screen and the phone wants the whole window; it
    must also match `phoneLayout` in app.js, which is what moves the two
    panels into the sheets. */
-@media (min-width: 900px) and (min-height: 621px) {
+@media (width >= 900px) and (height >= 621px) {
   header { display: flex; }
   main {
     display: grid; gap: 1rem; padding: 1rem; align-items: stretch;
@@ -351,7 +351,7 @@ main {
    under the screen to line up with anyway. It is a media query and not a
    reset further down for a reason: `:has()` lends these selectors more
    specificity than a plain `.phone-panel .screen-cell` could beat. */
-@media (min-height: 621px), (max-width: 559px) {
+@media (height >= 621px), (width < 560px) {
   .phone-panel:has(.aux-keys-left button):not(:has(.aux-keys-right button)) .screen-cell {
     margin-right: min(calc(var(--tab-w) + var(--row-gap)),
       max(0px, calc(100cqw - var(--box-w) - var(--tab-w) - var(--row-gap))));
@@ -658,7 +658,7 @@ body.show-key-hints .aux-keys-right .key-hint { display: none; }
    it. Same pieces, same arithmetic; only the axis the two of them share
    changes, and the keypad now takes its height from the row rather than a
    share of the column. */
-@media (max-height: 620px) and (min-width: 560px) {
+@media (height < 621px) and (width >= 560px) {
   .phone-panel {
     display: grid; align-content: center; justify-content: center;
     grid-template-columns: auto auto; grid-template-rows: auto minmax(0, 1fr);

@@ -257,7 +257,7 @@ thread is using them).
     then balanced back to centre with a margin on the empty side, but only
     out of width nothing else wants — where the box is width-limited it keeps
     every pixel and hangs half a tab off centre instead.
-  - Short and wide (`max-height: 620px`, from 560px) puts the keypad *beside*
+  - Short and wide (`height < 621px`, from 560px wide) puts the keypad *beside*
     the screen instead of under it — a phone on its side, or a shallow
     window. Same pieces and the same arithmetic; only the axis the two share
     changes. Three things about that block have already gone wrong once, and
