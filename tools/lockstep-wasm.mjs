@@ -104,7 +104,9 @@ class WasmSide {
         "-accel tcg,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,clock=vm"),
       ...(this.args.env || []).map((e) => "env=" + encodeURIComponent(e)),
     ].join("&");
-    this.browser = await chromium.launch({ headless: true });
+    // an unknown switch, ignored by chromium; rss() finds this leg's
+    // browser by it
+    this.browser = await chromium.launch({ headless: true, args: [`--lockstep-leg=${this.dir}`] });
     this.page = await this.browser.newPage({ viewport: { width: 1280, height: 900 } });
     if (process.env.LS_CONSOLE) {
       const cf = fs.openSync(path.join(this.dir, "console.log"), "w");
@@ -152,7 +154,17 @@ class WasmSide {
   // total RSS (MB) of this leg's chromium process tree — the renderer
   // OOM metric (the wasm64 heap lives there).  playwright-core here has
   // no browser.process(), so find the chromium root among the driver's
-  // own children by comm and walk its subtree.
+  // own children by comm and by this leg's --lockstep-leg switch, and walk
+  // its subtree.
+  isMine(pid) {
+    try {
+      return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")
+        .includes(`--lockstep-leg=${this.dir}`);
+    } catch {
+      return false;
+    }
+  }
+
   rss() {
     try {
       const out = execSync("ps -eo pid=,ppid=,rss=,comm=", { encoding: "ascii" });
@@ -164,7 +176,8 @@ class WasmSide {
         const r = { pid: +m[1], ppid: +m[2], rss: +m[3], comm: m[4] };
         if (!kids.has(r.ppid)) kids.set(r.ppid, []);
         kids.get(r.ppid).push(r);
-        if (r.ppid === process.pid && /chrome|headless/.test(r.comm)) {
+        if (r.ppid === process.pid && /chrome|headless/.test(r.comm) &&
+            this.isMine(r.pid)) {
           roots.push(r.pid);
         }
       }
