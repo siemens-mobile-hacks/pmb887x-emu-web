@@ -136,7 +136,13 @@ Shared code for the tools is in `tools/lib/`: `boards.mjs` (the test
 fullflashes by short id, and `expectedBoard()`, the board the page's own
 filename rules give a file name), `page.mjs` (loading an own-file fullflash
 the way a user does; `bounded()` for a page that may be frozen) and
-`argv.mjs` (`--name value` options).
+`argv.mjs` (`--name value` options). Three modules at the top of `tools/`
+are shared too: `testflash.mjs` (the test fullflash, from `TESTFLASH` or
+the gitignored `testflash.local.json`; importing it throws when neither
+names an existing file), `ppm2png.mjs` (qemu's `screendump` PPM to the PNGs
+in `tests/results`) and `gprs-gateway.mjs` (`startGateway()`: bts-emulator's
+`gprs-gw` on loopback for a test, or the one already listening there; used
+by `gprscheck.mjs --web` and `ffboot.mjs`).
 
 **Gates** (correctness — parallel-safe, run them through
 `scripts/gate.sh`) and **benchmarks** (measurement — one at a time on a
@@ -187,6 +193,8 @@ Profiling:
 | `threadmap.mjs`, `syscallprobe.mjs` | thread census / syscall CPU attribution |
 | `asyncify-audit.mjs`, `costack-suite.mjs` | which frames the Asyncify onlylist still needs (`QEMU_COSTACK=1` is the evidence half); `costack-suite.mjs [port] [dist]` collects that evidence from the op-suite page, every distinct `[qemu] COSTACK` stack |
 | `modfloor.mjs`, `modgrow.mjs`, `modshape-probe.mjs`, `dispatch-probe.mjs`, `dispsize-probe.mjs`, `callref-probe.mjs`, `locals-probe.mjs`, `tierup-probe.mjs`, `import-probe.mjs`, `merge-probe.mjs`, `bcprobe.mjs`, `tests/wasm/dispatchbench.mjs` | synthetic V8 probes that build their own wasm modules in a page: module creation cost, dispatch mechanisms and locality, declared locals by tier, tier-up, cross-instance calls, the memory bound check by memory type (`bcprobe.mjs --chrome`). Their September results are in performance.md (Closed ideas) and lessons.md (wasm and V8) |
+| `wasmclone-probe.mjs`, `wasmcache-probe.mjs` | the AOT-cache question in two parts, `PORT=<p> node tools/<probe> [--count N] [--browsers chromium,firefox]`: whether a `WebAssembly.Module` restored from IndexedDB skips compilation and what persisting it costs, then whether Chromium's wasm code cache serves `compileStreaming` of Cache API responses. Both answered no (performance.md, Closed ideas, AOT cache) |
+| `interp-probe.c` | the same TCI-shaped interpreter loop built native (`gcc -O2`) and to wasm (`emcc -O3 … -sENVIRONMENT=node`), to price an interpreted guest instruction in wasm against native (lessons.md; 7.3 ns per op both ways) |
 
 Probes and traces:
 
