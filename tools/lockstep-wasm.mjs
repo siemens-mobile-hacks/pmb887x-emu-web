@@ -26,7 +26,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Side, compareDigestLogs, FLASHES, claimRunStamp } from "./lockstep.mjs";
-import { fullflash } from "./testflash.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
