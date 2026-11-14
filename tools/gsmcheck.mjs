@@ -1,9 +1,10 @@
 // GSM network check: boot a phone on a wasm dist with the GSM option on and
 // watch it register (doc/gsm-network.md).
 //
-//   PORT=8090 node tools/gsmcheck.mjs [--dist dist-jit] [--flash <image>] [--secs 240]
+//   node tools/gsmcheck.mjs [--dist dist-jit] [--flash <image>] [--secs 240]
 //       [--gsm 1|0] [--ref <png>] [--saveref <png>] [--rows 0,20]
-//       [--hold 60] [--keys 75:right_soft,82:left_soft]
+//       [--hold 60] [--keys 75:right_soft,82:left_soft] [--query q]
+//       [--port P (default $PORT, else 8080)]
 //
 // The image is the usual test fullflash (TESTFLASH or
 // tools/testflash.local.json) unless --flash names one; --keys is for an
@@ -29,16 +30,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
-import { opt as argOpt } from "./lib/argv.mjs";
+import { parseArgs } from "./lib/argv.mjs";
 import { bootOwnFlash } from "./lib/page.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const argv = process.argv.slice(2);
-const opt = (n, d) => argOpt(argv, n, d);
+const { opt } = parseArgs(process.argv.slice(2), {
+  values: ["dist", "secs", "gsm", "query", "hold", "keys", "flash", "ref", "rows", "saveref", "port"],
+  usage: "node tools/gsmcheck.mjs [--dist d] [--flash image] [--secs s] [--gsm 1|0] [--ref png]"
+    + " [--saveref png] [--rows a,b] [--hold s] [--keys s:key,...] [--query q] [--port P]",
+});
 
 const DIST = opt("dist", "dist-jit");
 const SECS = Number(opt("secs", 240));
-const PORT = process.env.PORT || "8080";
+const PORT = opt("port", process.env.PORT || "8080");
 const GSM = opt("gsm", "1");
 const QUERY = [opt("query", ""), process.env.EXTRA_Q || ""].filter(Boolean).join("&");
 

@@ -1,7 +1,7 @@
 // A key event that arrives before the machine exists must not take the
 // module down.
 //
-//   PORT=8080 node tools/earlykey.mjs [--dist dist-jit] [--board cx70]
+//   node tools/earlykey.mjs [--dist dist-jit] [--board cx70] [--port P (default $PORT, else 8080)]
 //
 // wasm_send_key() is exported the moment the module instantiates, which is
 // long before wasm_display_init() creates the bottom half it schedules --
@@ -21,12 +21,14 @@
 // the export exists, and a normal press afterwards still reaches the guest.
 import { chromium } from "playwright-core";
 import { existsSync } from "node:fs";
-import { opt as argOpt } from "./lib/argv.mjs";
+import { parseArgs } from "./lib/argv.mjs";
 import { flashFiles } from "./lib/boards.mjs";
 import { bootOwnFlash, bounded, pageCall } from "./lib/page.mjs";
 
-const argv = process.argv.slice(2);
-const opt = (n, d) => argOpt(argv, n, d);
+const { opt } = parseArgs(process.argv.slice(2), {
+  values: ["board", "dist", "port"],
+  usage: "node tools/earlykey.mjs [--dist dist-jit] [--board s75|el71|ke800|ke970|cx70] [--port P]",
+});
 
 // --board -> tools/lib/boards.mjs id (this check boots the other S75 image)
 const BOARDS = { s75: "s75-v40", el71: "el71", ke800: "ke800", ke970: "ke970", cx70: "cx70" };
@@ -34,7 +36,7 @@ const boardId = opt("board", "cx70");
 const flash = BOARDS[boardId];
 if (!flash) { console.error(`unknown --board ${boardId}`); process.exit(2); }
 const dist = opt("dist", "dist-jit");
-const port = process.env.PORT || "8080";
+const port = opt("port", process.env.PORT || "8080");
 
 const b = await chromium.launch({ headless: true });
 // wide enough for the three-column layout: below 900px the Firmware and

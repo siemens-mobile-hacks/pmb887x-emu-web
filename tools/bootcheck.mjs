@@ -10,6 +10,7 @@
 // one.
 //
 //   node tools/bootcheck.mjs [--dist dist-jit] [--secs 150] [--flash id,id]
+//       [--query q] [--port P (default $PORT, else 8080)]
 //
 // PASS for a board, after --secs:
 // - no firmware EXIT dump on the serial log (">>EXIT<<" on x75/x85, a bare
@@ -23,18 +24,21 @@ import { chromium } from "playwright-core";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { opt as argOpt } from "./lib/argv.mjs";
+import { parseArgs } from "./lib/argv.mjs";
 import { flashFiles } from "./lib/boards.mjs";
 import { bootOwnFlash, bounded, pageCall } from "./lib/page.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 fs.mkdirSync(path.join(ROOT, "tests", "results"), { recursive: true });
-const argv = process.argv.slice(2);
-const opt = (n, d) => argOpt(argv, n, d);
+const args = parseArgs(process.argv.slice(2), {
+  values: ["dist", "secs", "flash", "query", "port"],
+  usage: "node tools/bootcheck.mjs [--dist dist-jit] [--secs 150] [--flash id,id] [--query q] [--port P]",
+});
+const opt = args.opt;
 
 const DIST = opt("dist", "dist-jit");
 const SECS = Number(opt("secs", 150));
-const PORT = process.env.PORT || "8080";
+const PORT = opt("port", process.env.PORT || "8080");
 const ONLY = opt("flash", "").split(",").filter(Boolean);
 // --query "trace=dsp&tracebuf=1": extra page parameters for every board;
 // with tracebuf=1 the page keeps qemu's stderr in window.__qemulog and

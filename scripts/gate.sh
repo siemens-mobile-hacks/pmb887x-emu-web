@@ -67,7 +67,7 @@ done
 PORT_TCG=$((PORT + 13))
 [[ "$JOBS_MAX" =~ ^[1-9][0-9]*$ ]] ||
   { echo "gate.sh: --jobs must be 1 or more, not '$JOBS_MAX'" >&2; exit 2; }
-# bootcheck and earlykey take the server from the environment only
+# efa-web, ui-acceptance and ffboot take the server from the environment
 export PORT
 # the playwright browsers are downloaded into tools/chrome; default to
 # them, as tools/parbench.sh does
@@ -97,19 +97,19 @@ export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$ROOT/tools/chrome}
 JOBS=(
   "unit|quick keep close|no|120|node --test '$ROOT'/tests/unit/*.test.mjs"
   "opsuite|quick keep close|no|600|PORT_TCG=$PORT_TCG WASM=1 TCGISA_DIST=$DIST bash '$ROOT/scripts/run-tcg-isa.sh'"
-  "boot-s75|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash s75"
-  "boot-el71|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash el71"
-  "boot-ke800|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke800"
-  "boot-cx70|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash cx70"
-  "boot-ke970|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke970"
-  "key-s75|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board s75"
-  "key-el71|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board el71"
-  "key-ke800|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board ke800"
-  "key-cx70|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board cx70"
-  "key-ke970|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board ke970"
+  "boot-s75|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --port $PORT --dist $DIST --secs 150 --flash s75"
+  "boot-el71|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --port $PORT --dist $DIST --secs 150 --flash el71"
+  "boot-ke800|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --port $PORT --dist $DIST --secs 150 --flash ke800"
+  "boot-cx70|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --port $PORT --dist $DIST --secs 150 --flash cx70"
+  "boot-ke970|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --port $PORT --dist $DIST --secs 150 --flash ke970"
+  "key-s75|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --port $PORT --dist $DIST --board s75"
+  "key-el71|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --port $PORT --dist $DIST --board el71"
+  "key-ke800|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --port $PORT --dist $DIST --board ke800"
+  "key-cx70|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --port $PORT --dist $DIST --board cx70"
+  "key-ke970|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --port $PORT --dist $DIST --board ke970"
   "native|keep close|no|900|node '$ROOT/tests/run.mjs' --label gate --timeout 240"
   "lockstep-wasm|keep close|yes|600|node '$ROOT/tools/lockstep-wasm.mjs' --port $PORT --dist $DIST --insns 250e6 --runs 1 --label gate-wasm"
-  "boot-ordered|close|yes|2400|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150"
+  "boot-ordered|close|yes|2400|node '$ROOT/tools/bootcheck.mjs' --port $PORT --dist $DIST --secs 150"
   "lockstep-native|close|no|1800|bash '$ROOT/scripts/run-lockstep.sh'"
   "lockstep-full|close|yes|1500|node '$ROOT/tools/lockstep-wasm.mjs' --port $PORT --dist $DIST --insns 2.5e9 --runs 3 --par 3 --label gate-close"
   "firefox|close|yes|600|gate_firefox"

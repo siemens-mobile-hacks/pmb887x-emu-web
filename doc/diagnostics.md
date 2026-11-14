@@ -7,7 +7,9 @@ take the test fullflash from `tools/testflash.local.json` (copy the
 port as an argument instead: `costack-suite.mjs [port] [dist]`,
 `tcgisa.mjs [port] [dist] …` and `verify-boot.mjs <tag> <secs> [port]`
 (default 8080), and `uidiff.mjs <portA> <portB>`, which compares two
-servers. `lockstep-wasm.mjs` takes `--port`, defaulting to `PORT`.
+servers. `bootcheck.mjs`, `earlykey.mjs`, `gsmcheck.mjs` and
+`lockstep-wasm.mjs` take `--port`, defaulting to `PORT`; they refuse an
+option they do not know (exit 2).
 
 ## Page URL parameters
 
@@ -134,7 +136,8 @@ Shared code for the tools is in `tools/lib/`: `boards.mjs` (the test
 fullflashes by short id, and `expectedBoard()`, the board the page's own
 filename rules give a file name), `page.mjs` (loading an own-file fullflash
 the way a user does; `bounded()` for a page that may be frozen),
-`argv.mjs` (`--name value` options) and `build-dirs.mjs` (the native build
+`argv.mjs` (`--name value` options, from a list of the tool's own; any
+other exits 2) and `build-dirs.mjs` (the native build
 directories and test plugins, with `scripts/build-dirs.sh`'s defaults and
 overrides: `WEB_BUILD`, `QEMU_NATIVE_BUILD`, `QEMU_NATIVE_TCI_BUILD`,
 `TEST_PLUGINS_DIR`). Three modules at the top of `tools/`
