@@ -430,7 +430,7 @@ always revert with `git apply -R`.
 - **Board configs:** `site/dist/boards.tar` is shared by every dist and
   repacked from `bsp/` on every ninja-fast deploy. A dist that needs
   another BSP must be served from a second site root
-  (`WEB_SITE_DIR=<root> PORT=8081 node serve.mjs`, then
+  (`WEB_SITE_DIR=<root> PORT=8081 HTTPS=0 node serve.mjs`, then
   `PORT_B=8081 tools/perf/swab.sh ...`).
 
 **Normal absolute values on a quiet host** (free-run, bounds checks,

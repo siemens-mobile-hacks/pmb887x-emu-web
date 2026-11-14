@@ -310,24 +310,35 @@ const proxyGprs = (req, socket, head) => {
 
 // Any other Upgrade (h2c) is ignored, as HTTP/1.1 allows: the request is
 // answered as a plain one.
+let httpsUp = false;   // the redirect needs an https listener to go to
 const httpServer = http.createServer({ shouldUpgradeCallback: isWebSocket }, (req, res) => {
-  if (cert && redirectNonLoopbackToHttps(req, res)) return;
+  if (httpsUp && redirectNonLoopbackToHttps(req, res)) return;
   serve(req, res);
 });
 httpServer.on("upgrade", proxyGprs);
-httpServer.listen(port, "0.0.0.0");
+httpServer.on("error", (e) => {
+  console.error(`serve.mjs: cannot serve http on port ${port}: ${e.code === "EADDRINUSE" ? "the port is in use" : e.message}`);
+  process.exit(1);
+});
+httpServer.listen(port, "0.0.0.0", () =>
+  console.log(`qemu-pmb887x web: http://127.0.0.1:${port}  (serving ${root})`));
 
+// https is for other devices only: a port that is taken (another serve.mjs
+// runs) leaves this one serving http
 if (cert) {
   const httpsServer = https.createServer(
     { key: cert.key, cert: cert.cert, shouldUpgradeCallback: isWebSocket }, serve);
   httpsServer.on("upgrade", proxyGprs);
-  httpsServer.listen(httpsPort, "0.0.0.0");
+  httpsServer.on("error", (e) => {
+    console.warn(`https disabled, serving http only: port ${httpsPort}: ` +
+      `${e.code === "EADDRINUSE" ? "in use (HTTPS_PORT picks another, HTTPS=0 turns https off)" : e.message}`);
+  });
+  httpsServer.listen(httpsPort, "0.0.0.0", () => {
+    httpsUp = true;
+    const urls = lanIPs().map((ip) => `https://${ip}:${httpsPort}`).join("  ");
+    console.log(
+      `  from other devices (phone/LAN): ${urls || `https://<lan-ip>:${httpsPort}`}` +
+        ` — self-signed cert, accept the browser warning once`,
+    );
+  });
 }
-
-const urls = lanIPs().map((ip) => `https://${ip}:${httpsPort}`).join("  ");
-console.log(`qemu-pmb887x web: http://127.0.0.1:${port}  (serving ${root})`);
-if (cert)
-  console.log(
-    `  from other devices (phone/LAN): ${urls || `https://<lan-ip>:${httpsPort}`}` +
-      ` — self-signed cert, accept the browser warning once`,
-  );
