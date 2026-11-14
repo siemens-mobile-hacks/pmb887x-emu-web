@@ -283,6 +283,7 @@ async function runPairWasm(args, flashPath, dir, log) {
   const t0 = Date.now();
   let stopped = false;
   let lastStatus = 0;
+  let timedOut = false;
   const bExited = b.waitExited().then(() => log("   b: wasm leg exited"));
   for (;;) {
     a.poll();
@@ -300,6 +301,7 @@ async function runPairWasm(args, flashPath, dir, log) {
     if (b.dead) break;
     if (Date.now() - t0 > args.secs * 1000) {
       log(`!! wall timeout ${args.secs}s (a insns=${fmt(a.progress.insns)}, b insns=${fmt(b.progress.insns)})`);
+      timedOut = true;
       break;
     }
   }
@@ -307,8 +309,14 @@ async function runPairWasm(args, flashPath, dir, log) {
   await b.grab().catch(() => {});
   b.poll();
   await b.quit();
-  const reasons = [`a insns=${a.progress.insns}`, `b insns=${b.progress.insns}`];
   await a.quit("budget");
+  // the last E-line either leg can write is the last whole epoch of the budget
+  const need = Math.floor(args.insns / args.epoch) * args.epoch;
+  const reasons = [
+    timedOut ? `wall timeout ${args.secs}s` : null,
+    ...[a, b].filter((s) => s.progress.insns < need)
+      .map((s) => `${s.name} stopped at ${fmt(s.progress.insns)} insns, short of ${fmt(need)}`),
+  ].filter(Boolean);
   return { a, b, reasons, wallS: (Date.now() - t0) / 1000 };
 }
 
@@ -356,7 +364,7 @@ const worker = async (wi) => {
   for (let r = wi; r < args.runs; r += args.par) {
     const dir = path.join(baseDir, `run${r}`);
     log(`== run ${r + 1}/${args.runs}: JIT(native) vs wasm64(browser) flash=${args.flash} budget=${fmt(args.insns)} insns`);
-    const { a, b, wallS } = await runPairWasm(args, flash, dir, log);
+    const { a, b, reasons, wallS } = await runPairWasm(args, flash, dir, log);
     // end-state screenshots -> tests/results: the wasm leg's page + LCD
     // crop, plus the native leg's screendump when it's still around at
     // quit time (the plugin's stop_at normally self-exits it first)
@@ -381,7 +389,7 @@ const worker = async (wi) => {
       run: r + 1, dir, wallS, screenshots,
       a: { insns: a.progress.insns, epoch: a.progress.epoch, exit: a.exitCode },
       b: { insns: b.progress.insns, epoch: b.progress.epoch, exit: b.exitCode },
-      cmp: null, serialIdentical: null,
+      earlyExit: reasons, cmp: null, serialIdentical: null,
     };
     try {
       runRes.serialIdentical =
@@ -398,7 +406,7 @@ const worker = async (wi) => {
     // HARD: config, serial, internal-SRAM (range 0). SOFT (opts below):
     // register E-lines + the SDRAM slice — the emscripten threading race.
     const cmp = compareDigestLogs(a.log, b.log, { soft: ["epoch", "mem-sdram"] });
-    const serialFail = runRes.serialIdentical === false;
+    const serialFail = runRes.serialIdentical !== true;
     runRes.cmp = { commonEpochs: cmp.commonEpochs, commonSram: cmp.commonSram,
                    commonSdram: cmp.commonSdram, commonMem: cmp.commonMem,
                    truncated: cmp.truncated,
@@ -406,10 +414,17 @@ const worker = async (wi) => {
                    soft: (cmp.soft || []).map((s) => ({ ...s, lineA: undefined, lineB: undefined })) };
     log(`   a: ${fmt(a.progress.insns)} insns / epoch ${a.progress.epoch}` +
         `   b: ${fmt(b.progress.insns)} insns / epoch ${b.progress.epoch}` +
-        `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical" : "DIFFERS"}`);
+        `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical"
+          : runRes.serialIdentical === false ? "DIFFERS" : "UNREADABLE"}`);
     if (serialFail) {
       fail = true;
-      log(`!! SERIAL DIVERGENCE run ${r + 1}: the two legs' serial output differs (real bug)`);
+      log(runRes.serialIdentical === false
+        ? `!! SERIAL DIVERGENCE run ${r + 1}: the two legs' serial output differs (real bug)`
+        : `!! run ${r + 1}: a leg's serial log could not be read, so serial was not compared`);
+    }
+    if (reasons.length) {
+      fail = true;
+      log(`!! run ${r + 1} did not run the whole budget: ${reasons.join("; ")}`);
     }
     if (cmp.diverged) {
       fail = true;
@@ -426,7 +441,7 @@ const worker = async (wi) => {
       log(`!! no comparable digests (wasm fold output missing? dist on the server?) — ${dir}`);
       log(`   a stderr tail: ${(a.errTail || "").split("\n").slice(-5).join("\n")}`);
       log(`   b page errors: ${(b.errTail || "").slice(-400)}`);
-    } else {
+    } else if (!serialFail && !reasons.length) {
       const softN = (cmp.soft || []).length;
       log(`   HARD ok: ${cmp.commonSram} internal-SRAM digests + serial identical` +
           (cmp.commonSdram != null ? ` ; ${cmp.commonSdram} SDRAM identical` : "")
@@ -442,18 +457,22 @@ const workers = [];
 for (let w = 0; w < Math.min(args.par, args.runs); w++) workers.push(worker(w));
 await Promise.all(workers);
 
+function cleanRun(r) {
+  return r.cmp && !r.cmp.diverged && r.serialIdentical === true && !r.earlyExit.length;
+}
+
 const summary = {
   label: args.label, stamp, flash: args.flash, wasmLeg: true,
   aBin: args.aBin, dist: args.dist,
   insns: args.insns, period: args.period, epoch: args.epoch,
   meminsns: args.meminsns, mem: args.mem,
-  runs: results.length, clean: results.filter((r) => r.cmp && !r.cmp.diverged && r.serialIdentical).length,
+  runs: results.length, clean: results.filter(cleanRun).length,
   results,
 };
 const resFile = path.join(ROOT, "tests", "results", `lockstep-${args.label}-${stamp}.json`);
 fs.mkdirSync(path.dirname(resFile), { recursive: true });
 fs.writeFileSync(resFile, JSON.stringify(summary, null, 1) + "\n");
-log(`== ${results.filter((r) => r.cmp && !r.cmp.diverged && r.serialIdentical).length}/${results.length} runs clean; results: ${resFile}`);
+log(`== ${results.filter(cleanRun).length}/${results.length} runs clean; results: ${resFile}`);
 log(`== run dirs under ${baseDir} (tmp — remove when done)`);
 
 process.exit(fail ? 1 : 0);
