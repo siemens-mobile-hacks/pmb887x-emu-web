@@ -34,8 +34,9 @@ submodule_require_pin() {
          "commit the gitlink bump, or check the pin out with: git submodule update $1" >&2
     exit 1
   fi
-  if [ -n "$(git -C "$WEB_DIR/$1" status --porcelain)" ]; then
-    echo "$(basename "$0"): $1/ has local changes (git -C $1 status); a release builds its gitlink only" >&2
+  # explicit: status.showUntrackedFiles=no would hide a new source file
+  if [ -n "$(git -C "$WEB_DIR/$1" status --porcelain --untracked-files=normal)" ]; then
+    echo "$(basename "$0"): $1/ has local changes or untracked files (git -C $1 status); a release builds its gitlink only" >&2
     exit 1
   fi
 }
