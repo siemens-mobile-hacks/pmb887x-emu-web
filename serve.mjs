@@ -105,7 +105,8 @@ const sameMtime = (a, b) => Math.abs(a.mtimeMs - b.mtimeMs) < 1;
 const gzInflight = new Map();
 
 async function compressSidecar(path, gz) {
-  const tmp = gz + ".tmp";
+  // per process: another serve.mjs on the same site dir compresses too
+  const tmp = `${gz}.${process.pid}.tmp`;
   let src = null;
   try {
     src = await open(path, "r");
