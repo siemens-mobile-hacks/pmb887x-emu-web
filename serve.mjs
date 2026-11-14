@@ -199,7 +199,14 @@ const redirectNonLoopbackToHttps = (req, res) => {
   return false;
 };
 
-const cert = httpsEnabled ? ensureCert() : null;
+let cert = null;
+if (httpsEnabled) {
+  try {
+    cert = ensureCert();
+  } catch (e) {
+    console.warn(`https disabled, serving http only: ${e.code === "ENOENT" ? "openssl not found" : e.message}`);
+  }
+}
 
 // The phone's GPRS goes to a GPRS gateway (bts-emulator's gprs-gw) over a
 // WebSocket at /gprs, as nginx passes it in the deployment.
@@ -218,13 +225,13 @@ const proxyGprs = (req, socket, head) => {
 };
 
 const httpServer = http.createServer((req, res) => {
-  if (httpsEnabled && redirectNonLoopbackToHttps(req, res)) return;
+  if (cert && redirectNonLoopbackToHttps(req, res)) return;
   serve(req, res);
 });
 httpServer.on("upgrade", proxyGprs);
 httpServer.listen(port, "0.0.0.0");
 
-if (httpsEnabled) {
+if (cert) {
   const httpsServer = https.createServer({ key: cert.key, cert: cert.cert }, serve);
   httpsServer.on("upgrade", proxyGprs);
   httpsServer.listen(httpsPort, "0.0.0.0");
@@ -232,7 +239,7 @@ if (httpsEnabled) {
 
 const urls = lanIPs().map((ip) => `https://${ip}:${httpsPort}`).join("  ");
 console.log(`qemu-pmb887x web: http://127.0.0.1:${port}  (serving ${root})`);
-if (httpsEnabled)
+if (cert)
   console.log(
     `  from other devices (phone/LAN): ${urls || `https://<lan-ip>:${httpsPort}`}` +
       ` — self-signed cert, accept the browser warning once`,
