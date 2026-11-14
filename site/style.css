@@ -1,4 +1,6 @@
 :root {
+  /* the page is dark only: native controls and scrollbars follow it */
+  color-scheme: dark;
   --bg: #16181d;
   --panel: #1e2229;
   --panel2: #262b34;
