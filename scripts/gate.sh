@@ -171,14 +171,15 @@ done
 # the unpaced native qemus keep running on their own otherwise.  The same
 # goes for its server and for a pre-step (a native build) still running.
 SRV="" pre=""
-pids=()
+# the jobs not yet reaped, by pid: a finished job's pid can be reused
+declare -A live=()
 descendants() {
   local c
   for c in $(pgrep -P "$1"); do echo "$c"; descendants "$c"; done
 }
 cleanup() {
   local p all=()
-  for p in "${pids[@]}" $pre; do
+  for p in "${!live[@]}" $pre; do
     kill -0 "$p" 2>/dev/null && all+=("$p" $(descendants "$p"))
   done
   [ ${#all[@]} -eq 0 ] || kill "${all[@]}" 2>/dev/null
@@ -255,24 +256,29 @@ t_all=$(date +%s)
 # The server started above is a background job of this shell too: count and
 # wait for the gate's own jobs only, or the wait never returns.
 names=()
-running_jobs() {
-  local n=0 p
-  for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && n=$((n + 1)); done
-  echo "$n"
+# waits for one job to end and forgets it
+reap_one() {
+  local done_pid="" rc=0
+  wait -n -p done_pid "${!live[@]}" 2>/dev/null || rc=$?
+  if [ -n "$done_pid" ]; then
+    unset "live[$done_pid]"
+  elif [ "$rc" = 127 ]; then
+    live=()
+  fi
 }
 for j in "${selected[@]}"; do
   IFS='|' read -r name _t _s cmd <<<"$j"
   names+=("$name")
-  while [ "$(running_jobs)" -ge "$JOBS_MAX" ]; do wait -n "${pids[@]}" 2>/dev/null || sleep 1; done
+  while [ "${#live[@]}" -ge "$JOBS_MAX" ]; do reap_one; done
   (
     t0=$(date +%s)
     eval "$cmd" >"$LOGDIR/$name.log" 2>&1
     rc=$?
     echo "$rc $(( $(date +%s) - t0 ))" >"$LOGDIR/$name.rc"
   ) &
-  pids+=($!)
+  live[$!]=1
 done
-wait "${pids[@]}"
+while [ "${#live[@]}" -gt 0 ]; do reap_one; done
 
 echo
 printf '%-16s %-7s %7s  %s\n' JOB VERDICT TIME LOG
