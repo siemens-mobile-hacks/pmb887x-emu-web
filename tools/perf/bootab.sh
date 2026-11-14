@@ -17,8 +17,9 @@
 # audio by their sum), lagMax, tIdle.
 ph=$1; A=$2; B=$3; n=${4:-4}
 [ "$n" -ge 1 ] && [ "$n" -le 4 ] || { echo "pairs must be 1-4" >&2; exit 2; }
-SETS=("0,1,16,17" "2,3,18,19" "4,5,20,21" "6,7,22,23" "8,9,24,25" "10,11,26,27" "12,13,28,29" "14,15,30,31")
 cd "$(dirname "$0")/../.."
+source tools/perf/coresets.sh
+need_sets "$n"
 export PLAYWRIGHT_BROWSERS_PATH=$PWD/tools/chrome
 bf=""
 [ "${BFLAGS:-0}" = 1 ] && bf="--js-flags=--wasm-enforce-bounds-checks"

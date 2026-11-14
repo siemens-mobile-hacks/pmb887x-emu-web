@@ -1,7 +1,7 @@
 #!/bin/bash
 # Paired free-run A/B, all pairs at once: pair p runs leg A and leg B together
-# on two whole physical cores each (SMT siblings n, n+16) of the same CCD; A/B
-# sides alternate between pairs.  V8 explicit bounds checks on (Android),
+# on two whole physical cores each (with their SMT siblings, from the host's
+# topology: tools/perf/coresets.sh); A/B sides alternate between pairs.  V8 explicit bounds checks on (Android),
 # free-run switched on when the measurement starts: both dists must be built
 # with tools/perf/freerun.diff applied (see doc/performance.md).
 #   swab.sh <scene> <distA> <distB> [pairs 1-4] [measure s]
@@ -11,8 +11,9 @@
 sc=$1; A=$2; B=$3; n=${4:-4}; m=${5:-20}
 [ "$n" -ge 1 ] && [ "$n" -le 4 ] || { echo "pairs must be 1-4" >&2; exit 2; }
 metric=${METRIC:-vratio}
-SETS=("0,1,16,17" "2,3,18,19" "4,5,20,21" "6,7,22,23" "8,9,24,25" "10,11,26,27" "12,13,28,29" "14,15,30,31")
 cd "$(dirname "$0")/../.."
+source tools/perf/coresets.sh
+need_sets "$n"
 export PLAYWRIGHT_BROWSERS_PATH=$PWD/tools/chrome
 export SCENEBENCH_AT_MEASURE="window.__qemu._wasm_free_run(1)"
 bf="--js-flags=--wasm-enforce-bounds-checks"
