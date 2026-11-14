@@ -23,7 +23,6 @@ const classify = (fr) => {
   if (/_mmu$|mmu_lookup|_mmio_|tlb_|probe_access|io_prepare|io_read|io_write|address_space|memory_region|flatview|get_page_addr_code|victim_tlb|ram_block|iotlb|phys_page_find|section/.test(name)) return ["memory", name];
   if (/futex|mutex|timedwait|bql_|cond_|__timedwait|pthread/.test(name)) return ["locks-waits", name];
   if (/^(tpu_|vic_|pmb887x|dif_|dmac_|scu_|gptu_|stm_|rtc_|usart|ssc_|dsp_|pcl_|i2c|keypad|cpu_do_interrupt|arm_cpu_do_interrupt|qemu_set_irq|timer_|timerlist|qemu_clock|icount|cpsr_write|helper_cpsr|rebuild_hflags|arm_rebuild|do_interrupt|cpu_handle_interrupt|arm_cpu_exec_interrupt|cpu_exec|cpu_tb_exec|helper_|qemu_irq)/.test(name)) return ["cpu-loop+devices", name];
-  if (/^tcg_qemu_tb_exec$/.test(name)) return ["jit-guest", "tcg_qemu_tb_exec"];
   return ["other", name];
 };
 let pick = 0, best = 0;
