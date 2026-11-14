@@ -3,7 +3,11 @@
 Everything here lives in `tools/` (playwright-core + the
 playwright-downloaded Chromium; `npm i` in that dir once). Most tools
 take the test fullflash from `tools/testflash.local.json` (copy the
-`.example`) and the server port from `PORT` (default 8080).
+`.example`) and the server port from `PORT` (default 8080). Four take the
+port as an argument instead: `costack-suite.mjs [port] [dist]`,
+`tcgisa.mjs [port] [dist] …` and `verify-boot.mjs <tag> <secs> [port]`
+(default 8080), and `uidiff.mjs <portA> <portB>`, which compares two
+servers. `lockstep-wasm.mjs` takes `--port`, defaulting to `PORT`.
 
 ## Page URL parameters
 

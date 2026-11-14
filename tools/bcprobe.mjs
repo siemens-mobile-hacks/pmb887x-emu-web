@@ -37,6 +37,7 @@
 //
 //   node tools/bcprobe.mjs                      # node's V8
 //   node tools/bcprobe.mjs --chrome             # Chrome, the one that counts
+//     (on serve.mjs at PORT, default 8080, or --url=<page>)
 //   node tools/bcprobe.mjs --chrome --js-flags=--no-wasm-bounds-checks
 //
 // The design validates itself with that last line.  If the i64 leg does not
@@ -248,7 +249,7 @@ if (!argv.includes("--chrome")) {
      isolation -- about:blank has none, so the two production legs would
      fail there.  serve.mjs sets COOP/COEP, so run the page on it. */
   const url = (argv.find((a) => a.startsWith("--url=")) || "").slice(6) ||
-              "http://127.0.0.1:8080/";
+              `http://127.0.0.1:${process.env.PORT || "8080"}/`;
   const { chromium } = await import("playwright-core");
   const b = await chromium.launch({
     headless: true,
