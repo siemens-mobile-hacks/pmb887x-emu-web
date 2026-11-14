@@ -22,7 +22,7 @@
 #   MemAvailable  headroom, in kB.
 #   runq       first loadavg field.
 set -u
-S=${PERF_LOGS:-/workspace/tools/perf/logs}
+S=${PERF_LOGS:-$(cd "$(dirname "$0")" && pwd)/logs}
 mkdir -p "$S"
 OUT="$S/hostmon.tsv"
 [ -s "$OUT" ] || printf 'epoch\tpswpout\tpswpin\tallocstall\tmemavail_kb\tswpd_kb\trunq\n' > "$OUT"
