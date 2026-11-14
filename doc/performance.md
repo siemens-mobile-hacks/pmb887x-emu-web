@@ -576,7 +576,9 @@ bash scripts/gate.sh close --dist dist-x           # before the last commit of a
 | Multi-instruction TBs | Prefix `LS_QARGS="-rtc base=2000-01-01T00:00:00,clock=vm"`. This **replaces** the default qargs, so the wasm side runs real TBs and superblocks and does io_recompile rewinds; native stays one instruction per TB. Add `-accel tcg,cross-page-links=on` to cover the page's linking | vt-only paths |
 | DSP translator changes | Native old vs new binary: `node tools/lockstep.mjs --a-bin <old>/qemu-system-arm --b-bin <new>/qemu-system-arm --flash el71 --insns 1e9`, then S75. Normal lockstep runs the same DSP translator on both sides, so it cannot see a DSP change | SL65 (see below) |
 
-- **The reference is stamped.** It is `build/qemu-native-build`.
+- **The reference is stamped.** It is `build/qemu-native-build`
+  (`$WEB_BUILD/qemu-native-build` or `$QEMU_NATIVE_BUILD` when set:
+  `scripts/build-dirs.sh`).
   `scripts/build-native.sh` writes `qemu-source.txt` (HEAD plus a diff hash,
   from `scripts/qemu-source-id.sh`), and every wasm deploy writes the same
   stamp into its dist. `lockstep-wasm.mjs` refuses a mismatch.

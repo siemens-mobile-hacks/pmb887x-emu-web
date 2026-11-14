@@ -161,7 +161,7 @@ the wasm builds; S75 boots to the idle screen in ~15 s, unpaced: the
 launcher's default `-icount shift=3,sleep=off` never waits for wall time):
 
 ```bash
-scripts/build-native.sh                          # qemu/ as checked out → build/qemu-native-build
+scripts/build-native.sh                          # qemu/ as checked out → build/qemu-native-build (see below)
 scripts/run-native.sh fullflashes/s75_working20060710172101.bin
 # LG (device auto-inferred; the EFA block is picked up from
 # <fullflash>.cfi-efa next to the flash — keep them together):
@@ -193,6 +193,17 @@ parts compiled into every build (marked **all** in
 and are what the native suite (`tests/run.mjs`) and the lockstep gate
 cover.
 
+The build directories are set in `scripts/build-dirs.sh`, and the node
+tools read the same settings from `tools/lib/build-dirs.mjs`. `WEB_BUILD`
+(default `build/`) moves all of them: `qemu-wasm64/`, `deps/` (or
+`WASM_DEPS`), the JIT build `qemu-native-build/` (or `QEMU_NATIVE_BUILD`)
+and the TCI build `qemu-native-tci-build/` (or `QEMU_NATIVE_TCI_BUILD`).
+The test plugins go to `tests/` while `WEB_BUILD` is unset and to
+`$WEB_BUILD/test-plugins/` when it is set (or to `TEST_PLUGINS_DIR`). Set
+them in the environment of the builds and of the scripts, tests and tools
+that run the binaries. `QEMU_BIN` (`QEMU_JIT`/`QEMU_TCI`, `--a-bin`/`--b-bin`)
+still points one run at another binary.
+
 ## Layout
 
 ```
@@ -221,7 +232,9 @@ cover.
   scripts/
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
     build-dirs.sh       the directories the build scripts share (WEB_BUILD,
-                        WASM_DEPS, PMB887X_BSP_DIR), sourced by each of them
+                        WASM_DEPS, QEMU_NATIVE_BUILD, QEMU_NATIVE_TCI_BUILD,
+                        TEST_PLUGINS_DIR, PMB887X_BSP_DIR), sourced by each
+                        of them; tools/lib/build-dirs.mjs for the node tools
     submodules.sh       the gitlink helpers build-qemu.sh and
                         build-release.sh share (a submodule's pin is its
                         gitlink)
@@ -248,7 +261,8 @@ cover.
     build-native-tci.sh native TCI build of the same tree (plugins on — the
                         lockstep b-side)
     build-plugins.sh    the native TCG plugins the test harnesses load
-                        (tests/insncount.so, tests/lockstep.so)
+                        (insncount.so, lockstep.so in tests/ or
+                        TEST_PLUGINS_DIR)
     qemu-source-id.sh   names the qemu sources a build came from (HEAD + a
                         hash of the uncommitted diff); the wasm builds and
                         build-native.sh write it to qemu-source.txt and

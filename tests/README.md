@@ -22,7 +22,7 @@ The lockstep harness is documented below.
 ## Running
 
 ```bash
-scripts/build-native.sh          # build/qemu-native-build/qemu-system-arm
+scripts/build-native.sh          # build/qemu-native-build/qemu-system-arm (WEB_BUILD, QEMU_NATIVE_BUILD)
 bash scripts/sync-bsp.sh         # the bsp/ submodule, at its gitlink
 
 node tests/run.mjs               # ~1 min (see defaults below)
@@ -40,7 +40,10 @@ Useful options:
 | `--keep` | – | keep per-run dirs under `/tmp` for inspection |
 
 Env overrides `QEMU_BIN` / `BOARDS_DIR` select the emulator binary and
-board-config directory (forwarded to `scripts/run-native.sh`). Results are
+board-config directory (forwarded to `scripts/run-native.sh`); the default
+binary and the insncount plugin come from the build directories of
+`tools/lib/build-dirs.mjs` (`WEB_BUILD`, `QEMU_NATIVE_BUILD`,
+`TEST_PLUGINS_DIR`, as for `scripts/build-dirs.sh`). Results are
 written to `tests/results/<label>-<timestamp>.json` together with a PNG
 screenshot per flash — `<label>-<stamp>-<flash>-boot.png` (first shot with
 LCD content, the boot-progress proof) and `<label>-<stamp>-<flash>.png`
@@ -67,7 +70,8 @@ instruction-count plugin.
 ## Benchmarks
 
 - `tests/insncount.c` — TCG plugin that counts executed guest
-  instructions (compiled to `tests/insncount.so` by
+  instructions (compiled to `tests/insncount.so`, or into
+  `TEST_PLUGINS_DIR` / `$WEB_BUILD/test-plugins` when set, by
   `scripts/build-plugins.sh`, which `gate.sh` runs; needs the qemu source
   tree headers).
 - **MIPS** — executed instructions per second over the `--bench-secs`
@@ -100,7 +104,8 @@ SELF=1 scripts/run-lockstep.sh           # harness self-check (JIT vs JIT)
 node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
 ```
 
-- **Plugin** `tests/lockstep.c` (built to `tests/lockstep.so`): samples
+- **Plugin** `tests/lockstep.c` (built to `tests/lockstep.so`, or next to
+  `insncount.so` as above): samples
   the r0–pc + CPSR vector every 2^16 executed guest insns (an inline
   per-insn counter + conditional callback) and writes a tiny text log —
   one E-line per 2^20 insns with a hash of the vector at that sample,

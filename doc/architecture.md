@@ -345,6 +345,12 @@ thread is using them).
 
 ## Native (Linux) reference builds
 
+The directories are `scripts/build-dirs.sh`'s, which `tools/lib/build-dirs.mjs`
+mirrors for the node tools: under `build/`, or `$WEB_BUILD` when set, with
+`QEMU_NATIVE_BUILD`, `QEMU_NATIVE_TCI_BUILD` and `TEST_PLUGINS_DIR` (the
+test plugins: `tests/` while `WEB_BUILD` is unset, else
+`$WEB_BUILD/test-plugins/`) for each one alone.
+
 - `scripts/build-native.sh` → `build/qemu-native-build/` (real TCG JIT,
   built from `qemu/` as it is checked out, uncommitted edits included —
   the very tree the wasm builds compile; the emscripten parts are inert)
@@ -353,8 +359,9 @@ thread is using them).
   to the binary, and `tools/lockstep-wasm.mjs` refuses a reference whose
   stamp is missing or differs from the dist's (`--no-ref-check` for a
   deliberate cross-version comparison, `--a-bin` for another build).
-- `scripts/build-native-tci.sh` → native TCI with plugins force-enabled
-  (the lockstep b-side), from the same source.
+- `scripts/build-native-tci.sh` → `build/qemu-native-tci-build/`, native
+  TCI with plugins force-enabled (the lockstep b-side), from the same
+  source.
 - `scripts/run-native.sh` — launcher mirroring the web boot recipe's
   pflash/serial/env-var set and SIM device, but timed by
   `-icount shift=3,sleep=off` by default (deterministic and unpaced, so
@@ -368,9 +375,9 @@ concurrently** and prints one verdict table — a gate never reads a wall
 clock as a result, so host load cannot change a verdict. Before its jobs
 start it brings the native reference builds (`build-native.sh`, and
 `build-native-tci.sh` when a job needs TCI) up to date with `qemu/`, and
-rebuilds the test plugins (`build-plugins.sh`: `tests/insncount.so`,
-`tests/lockstep.so`) when their sources or qemu's plugin API are newer. The
-benchmarks at the bottom are *not* in it and must be run one at a time on
+rebuilds the test plugins (`build-plugins.sh`: `insncount.so` and
+`lockstep.so` in `tests/` or `TEST_PLUGINS_DIR`) when their sources or
+qemu's plugin API are newer. The benchmarks at the bottom are *not* in it and must be run one at a time on
 a quiet host.
 
 | gate | what it proves | driver |

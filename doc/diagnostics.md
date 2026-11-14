@@ -135,8 +135,11 @@ counters moves again, so a guest that recovers un-stalls.
 Shared code for the tools is in `tools/lib/`: `boards.mjs` (the test
 fullflashes by short id, and `expectedBoard()`, the board the page's own
 filename rules give a file name), `page.mjs` (loading an own-file fullflash
-the way a user does; `bounded()` for a page that may be frozen) and
-`argv.mjs` (`--name value` options). Three modules at the top of `tools/`
+the way a user does; `bounded()` for a page that may be frozen),
+`argv.mjs` (`--name value` options) and `build-dirs.mjs` (the native build
+directories and test plugins, with `scripts/build-dirs.sh`'s defaults and
+overrides: `WEB_BUILD`, `QEMU_NATIVE_BUILD`, `QEMU_NATIVE_TCI_BUILD`,
+`TEST_PLUGINS_DIR`). Three modules at the top of `tools/`
 are shared too: `testflash.mjs` (the test fullflash, from `TESTFLASH` or
 the gitignored `testflash.local.json`; importing it throws when neither
 names an existing file), `ppm2png.mjs` (qemu's `screendump` PPM to the PNGs
@@ -147,10 +150,11 @@ by `gprscheck.mjs --web` and `ffboot.mjs`).
 **Gates** (correctness — parallel-safe, run them through
 `scripts/gate.sh`) and **benchmarks** (measurement — one at a time on a
 quiet host) are different things. `scripts/gate.sh quick|keep|close`
-builds the native references (`build-native.sh`, `build-native-tci.sh`)
-first, then runs the whole gate set concurrently and prints one verdict
-table; the benchmarks are never in it. How to measure and how to read the
-numbers: [performance.md](performance.md).
+builds the native references (`build-native.sh`, `build-native-tci.sh`,
+into the directories `scripts/build-dirs.sh` names) first, then runs the
+whole gate set concurrently and prints one verdict table; the benchmarks
+are never in it. How to measure and how to read the numbers:
+[performance.md](performance.md).
 
 Benchmarks:
 
@@ -226,7 +230,10 @@ env PMB887X_BOARD=bsp/lib/data/board/siemens-s75.toml \
     -debug-channels log=dsp,scu,io=dsp,scu -serial file:serial.log -D trace.log
 ```
 
-(`scripts/run-native.sh` builds this command line from the fullflash
+(`build/qemu-native-build` is the JIT build's default directory; it is
+`$QEMU_NATIVE_BUILD` when that is set, else `$WEB_BUILD/qemu-native-build`
+when `WEB_BUILD` is.
+`scripts/run-native.sh` builds this command line from the fullflash
 name; pass `-debug-channels …` after the fullflash, as an extra
 argument. `-device gsm-sim` plugs into the board's empty
 `iso7816-slot`.) A wasm run under `?icount=shift=3,sleep=off` replays the
