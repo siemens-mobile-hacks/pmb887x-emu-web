@@ -310,7 +310,7 @@ static void on_vcpu_init(unsigned int vcpu, void *ud)
     GArray *regs = qemu_plugin_get_registers();
     if (!regs) {
         fprintf(stderr, "lockstep: no register list\n");
-        return;
+        exit(1);
     }
     for (guint i = 0; i < regs->len; i++) {
         qemu_plugin_reg_descriptor *d =
@@ -327,10 +327,11 @@ static void on_vcpu_init(unsigned int vcpu, void *ud)
     }
     g_array_free(regs, TRUE);
     if (n_regh != (int)(sizeof want / sizeof want[0])) {
+        /* both sides would fold the same placeholders and compare equal */
         fprintf(stderr, "lockstep: found only %d/%zu wanted registers "
-                "(first missing: %s) — regs digest degraded\n",
-                n_regh, sizeof want / sizeof want[0],
-                want[n_regh < 0 ? 0 : n_regh]);
+                "(first missing: %s)\n",
+                n_regh, sizeof want / sizeof want[0], want[n_regh]);
+        exit(1);
     }
 }
 
