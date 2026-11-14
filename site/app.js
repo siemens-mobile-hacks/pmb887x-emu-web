@@ -597,7 +597,7 @@ function applyPicked(list) {
     // async: reading the image to name the device settles after this returns
     applyFullflashFile(ownBin).catch(() => {});
     if (efas.length === 1) ownEfa = efas[0];
-    else if (others.length) setNote(O.note, null, `Ignored ${others.length} other file(s).`);
+    if (others.length) setNote(O.note, null, `Ignored ${others.length} other file(s).`);
   }
   warnEfaDevice();
   renderOwn();
