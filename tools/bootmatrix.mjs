@@ -1,6 +1,6 @@
 // Parallel wasm boot matrix: boot several pages with different query
 // params / fullflashes in one headless browser and report per-page
-// progress (virtual time, insns, fb updates, serial, >>EXIT<<).
+// progress (virtual time, insns, fb updates, serial, firmware EXIT).
 //
 // Complements tools/session.mjs (single persistent session for
 // interactive iteration): this one answers "which config boots?" by
@@ -63,10 +63,8 @@ const WATCH = `
   setInterval(() => {
     const m = window.__qemu; if (!m) return;
     try { window.__mx.ser = m.FS.readFile("/serial.log").length; } catch {}
-    try {
-      const s = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log"));
-      const x = s.match(/>>EXIT<<[^\\x00]{0,90}/); if (x) window.__mx.exit = x[0];
-    } catch {}
+    const x = window.__ui?.exit;
+    if (x) window.__mx.exit = [x.type, x.code].filter(Boolean).join(" ") || "no details";
     try {
       window.__mx.v = Number(m._wasm_vclock()) / 1e9;
       window.__mx.insns = Number(m._wasm_insns());
