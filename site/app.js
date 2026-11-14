@@ -2250,6 +2250,7 @@ const SERIAL_KEEP = 16384;   // the tail the <pre> holds; Download has it all
 let serialTapped = false;    // the callback is in place for this run
 let serialText = "";         // that tail, exactly as the guest printed it
 let serialWork = 0, serialDraw = 0;
+let serialPolled = 0;        // the log's size at the last poll (no tap)
 
 function tapSerial(mod) {
   try {
@@ -2316,7 +2317,7 @@ function drawSerial() {
 function resetSerial() {
   clearInterval(serialTimer);
   clearTimeout(serialDraw);
-  serialWork = serialDraw = 0;
+  serialWork = serialDraw = serialPolled = 0;
   serialText = "";
   $("serial").textContent = "";
   $("serial-box").hidden = true;
@@ -2337,11 +2338,15 @@ function pollSerial() {
   if (!m?.FS) return;
   try {
     if (!m.FS.analyzePath(SERIAL_PATH).exists) return;
-    const data = m.FS.readFile(SERIAL_PATH, { encoding: "binary" });
-    const text = new TextDecoder("latin1").decode(
-      data.length > SERIAL_KEEP ? data.subarray(data.length - SERIAL_KEEP) : data);
-    if (text === serialText) return;
-    serialText = text;
+    // only the tail the <pre> holds, and only once the log has grown
+    const size = m.FS.stat(SERIAL_PATH).size;
+    if (size === serialPolled) return;
+    serialPolled = size;
+    const data = new Uint8Array(Math.min(size, SERIAL_KEEP));
+    const fd = m.FS.open(SERIAL_PATH, "r");
+    try { m.FS.read(fd, data, 0, data.length, size - data.length); }
+    finally { m.FS.close(fd); }
+    serialText = new TextDecoder("latin1").decode(data);
     drawSerial();
     watchForExit();
   } catch { /* not there yet */ }
