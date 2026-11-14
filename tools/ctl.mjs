@@ -37,4 +37,8 @@ sock.on("data", (d) => {
   }
 });
 sock.on("connect", () => sock.write(JSON.stringify([cmd, ...args]) + "\n"));
-setTimeout(() => { console.error("ctl: timeout"); process.exit(1); }, 10 * 60 * 1000).unref();
+sock.on("close", () => { console.error("ctl: the session closed the connection without a reply"); process.exit(1); });
+// wait is bounded by the daemon (its timeout argument or WAIT_TIMEOUT), and
+// may well run longer than this
+if (cmd !== "wait")
+  setTimeout(() => { console.error("ctl: timeout"); process.exit(1); }, 10 * 60 * 1000).unref();
