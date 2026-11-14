@@ -16,7 +16,7 @@
 BM             := ../baremetal
 BAREMETAL_MAIN := tcgisa_main
 
-TEST_OBJS = harness.o main.o \
+TEST_OBJS = uart.o harness.o main.o \
             t_arith.o t_logic.o t_shift.o t_mul.o t_clz.o t_psr.o \
             t_ldst.o t_block.o t_swp.o t_sat.o t_interwork.o t_smc.o t_memstress.o \
             t_blit.o shiftops.o condops.o blockops.o smcops.o thumb.o blitops.o
@@ -25,7 +25,7 @@ all: tcgisa.bin tcgisa-wasm.bin
 
 include $(BM)/baremetal.mk
 
-%.o: %.c harness.h ops.h
+%.o: %.c harness.h ops.h $(BM)/uart.h
 	$(CC) $(CFLAGS_COMMON) -c -o $@ $<
 
 %.o: %.S

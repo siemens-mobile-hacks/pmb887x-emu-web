@@ -12,6 +12,8 @@
 
 #include <stdint.h>
 
+#include "uart.h"
+
 /* flag packing in the 4-bit words used everywhere below (CPSR order) */
 #define F_N 8u
 #define F_Z 4u
@@ -22,7 +24,6 @@
 
 extern unsigned suite_pass, suite_fail;
 
-void uart_puts(const char *s);
 void suite_plan(void);
 
 /* value + selected flags (fmask = which of NZCV the oracle covers) */

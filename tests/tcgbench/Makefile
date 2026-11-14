@@ -13,7 +13,7 @@
 BM             := ../baremetal
 BAREMETAL_MAIN := bench_main
 
-OBJS = bench.o
+OBJS = bench.o uart.o
 
 all: tcgbench.bin tcgbench-wasm.bin
 
@@ -25,14 +25,14 @@ CFLAGS_COMMON += -DITERS_DIV=$(ITERS_DIV)
 quick: tcgbench-quick.bin tcgbench-quick-wasm.bin
 
 # the quick images are separate objects so both variants coexist
-bench-quick.o: bench.c Makefile
+bench-quick.o: bench.c $(BM)/uart.h Makefile
 	$(CC) $(CFLAGS_COMMON) -UITERS_DIV -DITERS_DIV=4 -c -o $@ $<
 
-tcgbench-quick.elf: startup-exit.o bench-quick.o $(BM)/linker.ld
-	$(CC) $(CFLAGS_COMMON) startup-exit.o bench-quick.o -o $@
+tcgbench-quick.elf: startup-exit.o bench-quick.o uart.o $(BM)/linker.ld
+	$(CC) $(CFLAGS_COMMON) startup-exit.o bench-quick.o uart.o -o $@
 
-tcgbench-quick-wasm.elf: startup-park.o bench-quick.o $(BM)/linker.ld
-	$(CC) $(CFLAGS_COMMON) startup-park.o bench-quick.o -o $@
+tcgbench-quick-wasm.elf: startup-park.o bench-quick.o uart.o $(BM)/linker.ld
+	$(CC) $(CFLAGS_COMMON) startup-park.o bench-quick.o uart.o -o $@
 
 %.o: %.c
 	$(CC) $(CFLAGS_COMMON) -c -o $@ $<

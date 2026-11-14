@@ -30,11 +30,7 @@
  */
 #include <stdint.h>
 
-/* PL011 UART0 on -M versatilepb (0x101f1000; qemu drains DR writes with
- * no init).  FR bit 5 = TX FIFO empty (the mix phase polls it as its
- * stand-in for a firmware MMIO register). */
-#define UART0_DR (*(volatile uint32_t *)0x101F1000u)
-#define UART0_FR (*(volatile uint32_t *)0x101F1018u)
+#include "uart.h"
 
 /* Iteration scale: the defaults total ~5.3G guest instructions (run
  * times in README.md).  Build with -DITERS_DIV=n to shrink every phase
@@ -43,41 +39,6 @@
 #define ITERS_DIV 1
 #endif
 #define IT(n) ((uint32_t)((n) / ITERS_DIV))
-
-static void uputc(char c) { UART0_DR = (uint32_t)(unsigned char)c; }
-
-static void uart_puts(const char *s)
-{
-    while (*s) {
-        uputc(*s++);
-    }
-}
-
-static void uputhex8(uint32_t v)
-{
-    static const char H[] = "0123456789abcdef";
-    for (int i = 7; i >= 0; i--) {
-        uputc(H[(v >> (i * 4)) & 0xf]);
-    }
-}
-
-static void uputdec(uint32_t n)
-{
-    /* decimal via shifts only (arm926 has no divide) */
-    char b[12];
-    int i = 0;
-    if (!n) {
-        uputc('0');
-        return;
-    }
-    while (n) {
-        b[i++] = (char)('0' + (n % 10));
-        n /= 10;
-    }
-    while (i) {
-        uputc(b[--i]);
-    }
-}
 
 /* ---- checksum state (kept live across phases; printed at the end) ---- */
 static uint32_t cksum = 0x12345678u;

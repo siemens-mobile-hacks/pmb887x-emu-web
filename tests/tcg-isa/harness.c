@@ -1,53 +1,7 @@
 #include "harness.h"
 
-/* PL011 UART0 on -M versatilepb lives at 0x101f1000 (0x10009000 is UART3).
- * qemu drains DR writes with no CR/LCRH setup needed. */
-#define UART0_DR (*(volatile uint32_t *)0x101F1000u)
-
 unsigned suite_pass, suite_fail;
 static unsigned suite_n;
-
-static void uputc(char c) { UART0_DR = (uint32_t)(unsigned char)c; }
-
-void uart_puts(const char *s)
-{
-    while (*s) {
-        uputc(*s++);
-    }
-}
-
-static const char HEXD[] = "0123456789abcdef";
-
-static void uputhex8(uint32_t v)
-{
-    for (int i = 7; i >= 0; i--) {
-        uputc(HEXD[(v >> (i * 4)) & 0xf]);
-    }
-}
-
-/* decimal without __aeabi_uidiv (arm926 has no divide; keep the image free
- * of libgcc so nothing outside the tests can perturb codegen) */
-static void uputdec(unsigned n)
-{
-    static const unsigned p10[10] = {
-        1000000000u, 100000000u, 10000000u, 1000000u, 100000u,
-        10000u, 1000u, 100u, 10u, 1u,
-    };
-    unsigned started = 0;
-    for (int i = 0; i < 10; i++) {
-        unsigned d = 0;
-        while (n >= p10[i]) {
-            n -= p10[i];
-            d++;
-        }
-        if (d) {
-            started = 1;
-        }
-        if (started || i == 9) {
-            uputc((char)('0' + d));
-        }
-    }
-}
 
 static void put_f(uint32_t mask, uint32_t f)
 {
@@ -159,6 +113,8 @@ static char *nm_copy(char *buf, const char *op)
 
 static char *nm_h(char *buf, uint32_t v)
 {
+    static const char HEXD[] = "0123456789abcdef";
+
     for (int i = 7; i >= 0; i--) {
         *buf++ = HEXD[(v >> (i * 4)) & 0xf];
     }
