@@ -2006,8 +2006,9 @@ function downloadBlob(blob, name) {
   const url = a.href = URL.createObjectURL(blob);
   a.download = name;
   a.click();
-  // a revoke in the same tick has cancelled large downloads in Safari
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  // a revoke in the same tick has cancelled large downloads in Safari; once
+  // the download has begun the blob is not needed, and a flash is 32-128 MiB
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
 function downloadMemfs(path, name) {
