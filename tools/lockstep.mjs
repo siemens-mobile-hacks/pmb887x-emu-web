@@ -84,6 +84,12 @@ function parseArgs() {
       default: throw new Error(`unknown arg: ${t}`);
     }
   }
+  for (const k of ["runs", "par"]) {
+    if (!Number.isInteger(a[k]) || a[k] < 1) {
+      console.error(`--${k} must be a whole number of 1 or more, not ${process.argv[process.argv.indexOf("--" + k) + 1]}`);
+      process.exit(2);
+    }
+  }
   return a;
 }
 
@@ -560,6 +566,10 @@ export async function main() {
     await Promise.all(workers);
   } finally {
     await quitAll("driver ending");
+  }
+  if (results.length < args.runs) {
+    fail = true;
+    log(`!! only ${results.length} of ${args.runs} runs have a result`);
   }
 
   const summary = {
