@@ -9,10 +9,7 @@
 // often enough for that to land promptly.
 
 import createSiemensRecalc from "./dist/siemens-recalc.js";
-
-// site-src/recalc/recalc_wasm.cpp: one md5Batch() call covers this many
-// consecutive candidates.
-const BATCH = 8;
+import { BATCH } from "./recalc.js";
 
 // onmessage is installed before the module is awaited, and the job is held
 // until it is ready: a dedicated worker's port is enabled once the script has

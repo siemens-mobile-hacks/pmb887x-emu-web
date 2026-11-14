@@ -16,8 +16,9 @@ const SKEY = 12345678;
 
 // The library's batched MD5 works on MD5_BATCH_SIZE consecutive candidates
 // per md5Batch() call, and sr_scan's start/stride are multiples of it (see
-// site-src/recalc/recalc_wasm.cpp).
-const BATCH = 8;
+// site-src/recalc/recalc_wasm.cpp). Must equal MD5_BATCH_SIZE in
+// pmb887x-emu's src/crypto/md5.h; recalc-worker.js imports it from here.
+export const BATCH = 8;
 
 /* ---- the flat SrIdentity struct from site-src/recalc/recalc_wasm.cpp ---- */
 const ID_SIZE = 4 * 4 + 16 + 16 + 16;
