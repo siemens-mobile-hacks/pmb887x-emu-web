@@ -179,15 +179,15 @@ let keyReport = null;
 // The ESN sweep's AbortController while it runs — Cancel uses it, the way
 // downloadAbort works for a preset download.
 let esnAbort = null;
-// §6 of the HUD criteria: the guest has been slower than 0.80x for three
-// seconds. Drawn on the pill whether or not the HUD itself is shown.
+// The guest has been slower than 0.80x for three seconds. Drawn on the pill
+// whether or not the HUD itself is shown.
 let slow = false;
 // The clock is banked for the guest's first ?bank= seconds of its own clock —
 // the boot: time lost to a slow host is caught up rather than dropped, so
-// v/wall below 1 is not "slow" yet. §6 stays quiet while banked (see
-// trackSpeed).
+// v/wall below 1 is not "slow" yet. The slow warning stays quiet while
+// banked (see trackSpeed).
 let banked = false;
-// §6b: the guest has stopped executing while the page still believes it is
+// The guest has stopped executing while the page still believes it is
 // running. The vCPU is a worker thread and the state machine above never
 // hears about one that dies or wedges — the run stays "Running · 0:21" with
 // a dead guest behind it, which is what an Android KE800 boot looks like.
@@ -481,7 +481,7 @@ for (const entry of PRESET_FULLFLASHES) {
   opt.textContent = entry.label;
   P.sel.appendChild(opt);
 }
-// "was last used", else the first entry (§1.2)
+// "was last used", else the first entry
 const lastPreset = presetById(localStorage.getItem("ff-preset") ?? "");
 selectedPreset = lastPreset ?? PRESET_FULLFLASHES[0] ?? null;
 if (selectedPreset) P.sel.value = selectedPreset.id;
@@ -559,7 +559,7 @@ function renderOwn() {
   }
   const dev = O.device.value;
   const lg = dev.startsWith("lg-");
-  // §1.4.5: the EFA block exists only for LG devices — a sidecar picked
+  // the EFA block exists only for LG devices — a sidecar picked
   // for one is remembered in ownEfa and comes back with the block
   if (lg && !O.efaBlock.isConnected) O.body.appendChild(O.efaBlock);
   else if (!lg && O.efaBlock.isConnected) O.efaBlock.remove();
@@ -574,7 +574,7 @@ function renderOwn() {
   refreshSiemensKeys();
 }
 
-// §1.5 — one selection can carry both slots. The rules are applied in
+// One selection can carry both slots. The rules are applied in
 // order; a rejected selection leaves both slots exactly as they were.
 function applyPicked(list) {
   const files = [...list];
@@ -681,7 +681,7 @@ O.device.addEventListener("change", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* run state: the pill is the only Start/Stop (§2)                      */
+/* run state: the pill is the only Start/Stop                          */
 /* ------------------------------------------------------------------ */
 
 function currentDevice() {
@@ -691,7 +691,7 @@ function currentDevice() {
   return O.device.value || null;
 }
 
-// §2.2: preset mode needs a preset, own-file mode a .bin and a device.
+// Preset mode needs a preset, own-file mode a .bin and a device.
 // The sidecar never gates Start.
 function firmwareReady() {
   if (startBlocked) return false;
@@ -724,8 +724,8 @@ function pillText() {
   // while the recording pill is up the two have to share one 32px row:
   // the uptime alone, no "Running · " in front of it
   const bare = !!recorder && phoneLayout.matches;
-  // "· slow" is the pill's half of §6: the amber colour says something is
-  // wrong, the word says what
+  // "· slow" is the pill's half of the slow warning: the amber colour says
+  // something is wrong, the word says what
   const tail = stalled ? " · stopped" : slow ? " · slow" : "";
   switch (emuState) {
     case "downloading": return dlWhat === "engine"
@@ -798,7 +798,7 @@ function render() {
   captionEl.textContent = cap;
   captionEl.hidden = !cap;
 
-  // §1.7 — nothing in the Firmware panel can be touched while it is live.
+  // Nothing in the Firmware panel can be touched while it is live.
   // The fieldset alone would do it, but only as a computed state: the
   // attribute goes on every control too, and the two things a `disabled`
   // fieldset cannot reach (the disclosure, the roving segmented tabindex)
@@ -828,7 +828,7 @@ function render() {
   renderAccessory();
 
   $("btn-shot").disabled = !live;
-  // §1 of the recording criteria: a capture can start as soon as there is
+  // A capture can start as soon as there is
   // something on the screen to capture. Off the phone layout the button
   // keeps the rule it always had.
   const canRecord = (phoneLayout.matches ? emuState === "booting" || live : live)
@@ -902,7 +902,7 @@ function setError(msg, { block = false } = {}) {
 }
 
 /* ------------------------------------------------------------------ */
-/* bottom sheets (§5.4)                                                 */
+/* bottom sheets                                                      */
 /* ------------------------------------------------------------------ */
 
 const scrim = $("sheet-scrim");
@@ -1153,7 +1153,7 @@ async function loadBoards() {
     .filter((f) => /^[^/]+\.toml$/.test(f.name))
     .map((f) => ({ id: f.name.replace(/\.toml$/, ""), file: f }));
   const sel = O.device;
-  // §1.4.4: the placeholder stays selected — no device is picked for the user
+  // the placeholder stays selected — no device is picked for the user
   const placeholder = sel.querySelector('option[value=""]');
   // the value stays the board id (every tool and test keys off it); only what
   // the user reads changes, and the order follows what they read
@@ -1207,8 +1207,8 @@ function syncKeyboardToDevice(dev) {
   }
 }
 
-// Device + on-screen keyboard inference from a fullflash filename (§1.4.4
-// allows it; the user can still change the dropdown).
+// Device + on-screen keyboard inference from a fullflash filename (the user
+// can still change the dropdown).
 function applyFullflashName(name) {
   const dev = inferDevice(name);
   applyDevice(dev);
@@ -1629,7 +1629,7 @@ async function boot() {
       sidecars = cached.slice(1).map(shim);
     } else {
       file = ownBin;
-      // §1.5: a sidecar picked for a non-LG device is kept in the UI but
+      // a sidecar picked for a non-LG device is kept in the UI but
       // never handed to the emulator
       sidecars = ownEfa && device.startsWith("lg-") ? [ownEfa] : [];
     }
@@ -1702,8 +1702,8 @@ async function boot() {
     const printErr = (t) => {
       // Kept whether or not ?tracebuf=1 is on: when the guest stops dead
       // these are the only account of why, and a phone has no console to
-      // read them back from (§6b). qemu ends most messages with a newline
-      // of their own, so blank lines would be most of the window.
+      // read them back from (the stall report). qemu ends most messages with
+      // a newline of their own, so blank lines would be most of the window.
       if (t.trim()) {
         logTail.push(t);
         if (logTail.length > 40) logTail.shift();
@@ -2878,7 +2878,7 @@ function buildShortUA(hi) {
   const mobile = d?.mobile ?? /Mobi|Android/.test(navigator.userAgent);
   let os = uaOS(d?.platform, hi?.platformVersion);
   if (!mobile) {
-    // §2's desktop line is "Linux x86_64 · Chrome 147": with no model to
+    // the desktop line is "Linux x86_64 · Chrome 147": with no model to
     // name, the architecture rides with the OS rather than being a token
     const m = navigator.userAgent.match(/\b(x86_64|aarch64|arm64|Win64|WOW64)\b/);
     const arch = m && (m[1] === "Win64" || m[1] === "WOW64" ? "x64" : m[1]);
@@ -2908,7 +2908,7 @@ const hudPad = (s, n) => String(s).padStart(n);
 
 // Every token is padded to a fixed width, so a line does not jitter as its
 // numbers move. `drop` is the order they leave in when the line will not
-// fit, lowest first: paint goes before halts because §3's two narrow cases
+// fit, lowest first: paint goes before halts because the two narrow cases
 // pin it that way (272px keeps speed, MIPS, fps and lag; 312px keeps
 // halt/s too).
 function metricTokens(r) {
@@ -3030,9 +3030,10 @@ function hudTick() {
   hudLast = s;
 }
 
-// §6b. Fifteen seconds is past any legitimate gap — a GC pause, a compile
-// burst, a phone that is merely slow — so a boot in slow motion is never
-// called dead, and it still lands while the user is looking at the splash.
+// The stall detector. Fifteen seconds is past any legitimate gap — a GC
+// pause, a compile burst, a phone that is merely slow — so a boot in slow
+// motion is never called dead, and it still lands while the user is looking
+// at the splash.
 // All three counters must be still: a guest asleep in WFI stops retiring
 // instructions, but the halt count moves every time it wakes, and the
 // display keeps being read.
@@ -3063,9 +3064,10 @@ function stallReason() {
   return `No guest instructions for ${secs}s. ${why} — Copy diagnostics has the rest.`;
 }
 
-// §6: three consecutive seconds under 0.80x turn the pill amber, three back
-// over it turn it green again. The hysteresis is the point — one slow sample
-// (a GC pause, a tab coming back) must not flicker the pill.
+// The slow warning: three consecutive seconds under 0.80x turn the pill
+// amber, three back over it turn it green again. The hysteresis is the
+// point — one slow sample (a GC pause, a tab coming back) must not flicker
+// the pill.
 function trackSpeed(vratio, now) {
   // While the clock is still banked (the boot) v/wall below 1 is a guest
   // that is behind and will catch up, not a slow one. Clearing both timers
@@ -3106,7 +3108,7 @@ const hudLive = () => !exitReport
   && (emuState === "booting" || emuState === "running" || emuState === "paused");
 
 // The strip is an overlay on the screen box, so it waits for a guest rather
-// than sitting on the idle "Ready to boot" panel (§4). The sampler follows
+// than sitting on the idle "Ready to boot" panel. The sampler follows
 // the guest, not the strip: it runs for any live guest either way — the
 // pill's slow warning does not wait for the strip — and stops the moment the
 // guest goes, since there is nothing left to sample and calling the exports
@@ -3241,7 +3243,7 @@ function diagnostics() {
     // bank makes vratio readable: 0.6x is a slow host once the bank is
     // over, but a guest still catching up while banked
     device: currentDevice(), state: emuState, slow, exitCode,
-    // §6b: a run that says "running" with a dead guest behind it, and the
+    // a run that says "running" with a dead guest behind it, and the
     // last thing qemu said — the whole report a stalled phone can give
     stalled, fatal: fatalMsg, log: logTail.slice(),
     // the phone column's height budget, for "the keypad does not fit"
@@ -3700,7 +3702,7 @@ async function diagnoseIsolation() {
     { block: true });
 }
 
-setMode("preset");   // §1.2 — Preset, with the last-used entry selected
+setMode("preset");   // Preset, with the last-used entry selected
 applyLayout();
 if (selectedPreset) syncKeyboardToDevice(inferDevice(selectedPreset.files[0]));
 setAspect();

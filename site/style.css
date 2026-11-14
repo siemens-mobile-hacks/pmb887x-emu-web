@@ -114,7 +114,7 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .status[data-state="running"] .status-dot { background: var(--good); }
 .status[data-state="paused"] { background: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
 .status[data-state="paused"] .status-dot { background: var(--warn); }
-/* the guest has been slower than 0.80x for three seconds (§6), and the
+/* the guest has been slower than 0.80x for three seconds, and the
    real-time cap is no longer banking — during the banked boot, below 1.00x
    is what the guest is supposed to look like. Amber until it has been back
    up for three. After the green rules, before the red one */

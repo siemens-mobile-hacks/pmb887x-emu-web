@@ -102,7 +102,7 @@ There are no counter exports. Tools written against the September ones
 not listed below, or print zeros in those columns (uibench, keylag,
 serialwatch).
 
-## When the guest stops dead (`site/app.js` §6b)
+## When the guest stops dead (`trackStall` in `site/app.js`)
 
 The vCPU is a worker thread and the page's state machine never hears
 about one that dies or wedges. Without a detector a dead guest reads

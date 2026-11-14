@@ -33,7 +33,7 @@ await page.goto(URL_, { waitUntil: "networkidle" });
 // cycle: past the banked window the cap repays up to 500 ms of every stall,
 // which an idle guest warps through at once, so each run slot is a sample at
 // v/wall >= 1 that resets the 3 s hysteresis. Held, the guest reads 0x; the
-// §6b stall overlay is 15 s away. One session for the whole run: a second
+// stall overlay is 15 s away. One session for the whole run: a second
 // auto-attach after a detach gets the workers listed but never answered.
 let workerCdp = null;
 const workers = new Map();
@@ -70,7 +70,7 @@ async function drop(sel, names) {
   }, { sel, names });
 }
 
-/* ---------------- §1 Firmware panel ---------------- */
+/* ---------------- Firmware panel ---------------- */
 
 ok("1.1 legend is Firmware", (await text("#firmware-panel legend")) === "Firmware");
 ok("1.1 no Boot/Fullflash heading", await page.evaluate(() => {
@@ -86,7 +86,7 @@ ok("1.2 default is Preset", await page.$eval("#ff-mode-preset", (e) => e.getAttr
 ok("1.2 preset mode has no file input", !(await has('#firmware-panel input[type="file"]')));
 ok("1.3 preset dropdown present", await has("#ff-preset"));
 
-// order of the preset body (§1.3)
+// order of the preset body
 ok("1.3 render order", await page.evaluate(() => {
   const ids = [...document.querySelector("#ff-preset").parentElement.children].map((e) => e.id || e.className);
   return ids[0] === "ff-preset" && ids[1].includes("ff-status-row")
@@ -110,7 +110,7 @@ ok("1.3 preset switch updates status line", (await text("#ff-preset-status")).in
 await page.selectOption("#ff-preset", "s75v40lg1");
 await page.waitForFunction(() => document.getElementById("ff-preset-device").textContent.includes("siemens-s75"));
 
-// §1.2 arrow-key navigation
+// arrow-key navigation
 await page.focus("#ff-mode-preset");
 await page.keyboard.press("ArrowRight");
 ok("1.2 arrow key selects Own file", (await ui()).mode === "own");
@@ -124,7 +124,7 @@ ok("2.2 Start disabled without firmware", await page.$eval("#btn-start", (e) => 
 ok("2.2 caption names what is missing",
   (await text("#status-caption")) === "Choose a file and device to start");
 
-/* §1.5 multi-file rules (all through the drop path) */
+/* multi-file rules (all through the drop path) */
 await drop("#ff-bin-slot", ["a.bin", "b.bin"]);
 ok("1.5r3 two .bin rejected", !(await has("#ff-bin-chip:not([hidden])"))
   && (await text("#ff-bin-note")) === "Choose one .bin and, optionally, one .cfi-efa.");
@@ -163,7 +163,7 @@ ok("1.5 case-insensitive extensions",
   (await page.$eval("#ff-bin-name", (e) => e.textContent)) === "KE800.BIN"
   && (await page.$eval("#device", (e) => e.value)) === "lg-ke800");
 
-/* §1.2 values survive a mode switch */
+/* values survive a mode switch */
 await page.click("#ff-mode-preset");
 await page.click("#ff-mode-own");
 ok("1.2 own-file values survived the round trip",
@@ -204,13 +204,12 @@ ok("the mode came back with the block",
   (await page.$eval('input[name="siemens-mode"]:checked', (e) => e.value)) === "recover-esn");
 await page.check('input[name="siemens-mode"][value="recalc"]');
 
-/* §1.6 */
 ok("1.6 no Start/Stop inside the panel",
   !(await has("#firmware-panel #btn-start")) && !(await has("#firmware-panel #btn-stop")));
 ok("1.6 last child is Advanced",
   await page.$eval("#firmware-panel", (e) => e.lastElementChild.id === "advanced"));
 
-/* ---------------- §2 status pill ---------------- */
+/* ---------------- status pill ---------------- */
 ok("2.1 the action lives in the pill", await has("#status #pill-action #btn-start"));
 ok("2.1 capture buttons follow the pill", await page.evaluate(() => {
   const row = document.querySelector(".status-row");
@@ -223,7 +222,7 @@ ok("2.2 idle dot + text", (await text("#status-text")) === "Idle"
   && (await page.$eval("#status", (e) => e.dataset.state)) === "idle");
 ok("2.3 screen placeholder", (await text("#ov-msg")) === "Ready to boot");
 
-/* ---------------- §3 Run panel ---------------- */
+/* ---------------- Run panel ---------------- */
 ok("3.1 groups", await page.evaluate(() =>
   [...document.querySelectorAll("#post-panel .group-title")].map((e) => e.textContent).join() === "Accessory,Keyboard,Export"));
 ok("3.1 no Run legend", !(await has("#post-panel legend")));
@@ -317,7 +316,7 @@ ok("EFA export is only offered for an LG phone", await page.evaluate(async () =>
   return siemensHidden && lgShown && efa.hidden;
 }));
 
-/* §6.1 every disabled control states its reason within 8px */
+/* every disabled control states its reason within 8px */
 ok("6.1 caption sits within 8px of the pill", await page.evaluate(() => {
   const pill = document.querySelector(".status-row").getBoundingClientRect();
   const cap = document.getElementById("status-caption");
@@ -354,7 +353,7 @@ ok("6.1 export caption within 8px", await page.evaluate(() => {
 ok("6.2 exactly one filled primary button", await page.evaluate(() =>
   document.querySelectorAll(".pill-btn.primary").length === 1));
 
-/* ---------------- v4 §1/§2/§3/§5: the performance HUD ---------------- */
+/* ---------------- the performance HUD ---------------- */
 ok("v4.1 nothing above the panels carries performance text", await page.evaluate(() => {
   for (let n = document.querySelector("main").previousElementSibling; n; n = n.previousElementSibling) {
     if (/MIPS|fps|halt|isolated|Mozilla|GB/i.test(n.textContent)) return false;
@@ -362,7 +361,7 @@ ok("v4.1 nothing above the panels carries performance text", await page.evaluate
   return !document.querySelector("body > pre");
 }));
 // one place at every width: an overlay on the screen box, so turning it on
-// costs the column no height and cannot move the keypad (v4 §4)
+// costs the column no height and cannot move the keypad
 ok("v4.5 the strip is an overlay on the screen box", await page.evaluate(() => {
   const h = document.getElementById("hud");
   return h.parentElement === document.querySelector(".lcd-wrap")
@@ -424,7 +423,7 @@ await page.uncheck("#opt-hud");
 await page.waitForTimeout(200);
 ok("v4.5 turning it off hides it again", await page.$eval("#hud", (e) => e.hidden));
 
-/* ---------------- §4 desktop layout ---------------- */
+/* ---------------- desktop layout ---------------- */
 // the tracks stretch: the phone column is the height of the window, and a
 // panel taller than that scrolls inside itself rather than growing the row
 ok("4 three columns", await page.evaluate(() => {
@@ -463,9 +462,9 @@ ok("4 phone column centred", await page.evaluate(() => {
   return Math.abs((lcd.left + lcd.right) / 2 - (main.left + main.right) / 2) < 2;
 }));
 
-/* ---------------- §5 phone layout ---------------- */
-// back to the default firmware (the S75 preset): the numbers in v2 §3 are
-// quoted for the board the page opens on
+/* ---------------- phone layout ---------------- */
+// back to the default firmware (the S75 preset): the screen-box numbers
+// below are for the board the page opens on
 await page.click("#ff-mode-preset");
 await page.selectOption("#ff-preset", "s75v40lg1");
 await page.setViewportSize({ width: 390, height: 844 });
@@ -482,7 +481,7 @@ ok("5.2 title bar and panels are out of the view", await page.evaluate(() =>
   && document.getElementById("pre-panel").closest(".sheet") !== null
   && document.getElementById("post-panel").closest(".sheet") !== null));
 
-/* ---------------- v2 §1: one 32px control row ---------------- */
+/* ---------------- one 32px control row ---------------- */
 ok("v2.1 exactly one row above the screen", await page.evaluate(() => {
   const top = document.querySelector(".screen-row").getBoundingClientRect().top;
   // every element box that sits entirely above the screen and is not an
@@ -504,7 +503,7 @@ ok("v2.1 pill + five 28px buttons", await page.evaluate(() => {
     return Math.round(r.width) === 28 && Math.round(r.height) === 28;
   };
   // rec-pill sits in the record button's place and is hidden until a
-  // capture runs (recording criteria §2); the speaker and fullscreen
+  // capture runs; the speaker and fullscreen
   // follow the recorder
   return ids.join() === "status,btn-shot,btn-record,rec-pill,btn-sound,btn-fullscreen,btn-settings"
     && document.getElementById("rec-pill").hidden
@@ -513,7 +512,7 @@ ok("v2.1 pill + five 28px buttons", await page.evaluate(() => {
     && document.getElementById("btn-settings").getAttribute("aria-label") === "Settings";
 }), await page.evaluate(() => [...document.querySelector(".status-row").children].map((e) => e.id).join()));
 
-/* ---------------- recording criteria §1 (idle) ---------------- */
+/* ---------------- recording, idle ---------------- */
 ok("v3.1 camcorder icon, no red circle", await page.evaluate(() => {
   const b = document.getElementById("btn-record");
   return getComputedStyle(b.querySelector(".rec-cam")).display === "block"
@@ -552,7 +551,7 @@ ok("v2.1 idle pill names the firmware and opens the sheet", await page.evaluate(
 }), await text("#status-text"));
 ok("v2.1 no locked-summary row left", !(await has("#ff-summary")) && !(await has("#phone-bar")));
 
-/* ---------------- v2 §2: thin edge keys ---------------- */
+/* ---------------- thin edge keys ---------------- */
 // The tabs are 40px tall with an 8px gap; their width is whatever the
 // ratio-locked screen box cannot use, between a 14px floor and a 44px ceiling.
 ok("v2.2 edge tabs are 40 tall, 14-44 wide, with an 8px gap", await page.evaluate(() => {
@@ -607,7 +606,7 @@ ok("v2.2 no shortcut labels on the edge keys", await page.evaluate(() =>
   [...document.querySelectorAll(".aux-keys-left .key-hint, .aux-keys-right .key-hint")]
     .every((e) => getComputedStyle(e).display === "none")));
 
-/* ---------------- v2 §3: screen box at the device ratio ---------------- */
+/* ---------------- screen box at the device ratio ---------------- */
 ok("v2.3 no object-fit letterboxing", await page.$eval("#lcd", (e) =>
   getComputedStyle(e).objectFit !== "contain"));
 // 844 − 12 page padding − 32 control row − 2×6 gaps − the keypad's
@@ -649,7 +648,7 @@ ok("v2.3 canvas fills the box", await page.evaluate(() => {
   return Math.abs(b.width - c.width) < 1 && Math.abs(b.height - c.height) < 1;
 }));
 
-// §5.4 sheets
+// sheets
 await page.click("#status-open");
 await page.waitForTimeout(300);
 ok("5.4 firmware sheet opens", await page.$eval("#sheet-firmware", (e) => !e.hidden && e.classList.contains("open")));
@@ -679,7 +678,7 @@ await page.click("#btn-settings");
 await page.waitForTimeout(300);
 ok("5.4 settings sheet body", await page.evaluate(() =>
   [...document.querySelectorAll("#sheet-settings .group-title")].map((e) => e.textContent).join() === "Accessory,Keyboard,Export"));
-// v4 §4 said the toggle had no effect on a phone and hid it there; both
+// The toggle once had no effect on a phone and was hidden there; both
 // layouts honour it now, so the sheet is where a phone reaches it
 ok("v4.4 the HUD toggle is in the mobile settings sheet", await page.evaluate(() => {
   const c = document.querySelector("#sheet-settings #opt-hud");
@@ -701,7 +700,7 @@ await page.keyboard.press("Escape");
 await page.waitForTimeout(300);
 ok("5.4 Escape closes", await page.$eval("#sheet-settings", (e) => e.hidden));
 
-/* ---------------- v2 §4: the keypad always fits ---------------- */
+/* ---------------- the keypad always fits ---------------- */
 for (const [w, h] of [[320, 568], [320, 490], [360, 640], [360, 560], [390, 844],
   [390, 750], [430, 932], [430, 830]]) {
   await page.setViewportSize({ width: w, height: h });
@@ -798,7 +797,7 @@ const fc = page.waitForEvent("filechooser", { timeout: 5000 }).then(() => true, 
 await page.click("#ff-bin-pick");
 ok("v5.4 the chosen file's name reopens the picker", await fc);
 
-/* ---------------- boot: §1.7, §2.2 running, §3.2 ---------------- */
+/* ---------------- boot ---------------- */
 if (!process.env.SKIP_BOOT) {
   const { fullflash } = await import("./testflash.mjs");
   await page.click("#ff-mode-own");
@@ -809,9 +808,10 @@ if (!process.env.SKIP_BOOT) {
   await page.click("#btn-start");
   await page.waitForFunction(() => window.__ui.state === "running", null, { timeout: 180000 });
 
-  /* v4 §6a: no slow warning while the clock is still banked. It has to run
+  /* no slow warning while the clock is still banked. It has to run
      here — the guest is seconds into its own clock, so the clock is
-     certainly still banked, which it may not be by the time §6b runs. */
+     certainly still banked, which it may not be by the time the slow-warning
+     section runs. */
   {
     // the phase is published by the 2 Hz HUD sampler, so it reads "off" for
     // up to one tick after the module starts — wait for the first sample
@@ -838,7 +838,7 @@ if (!process.env.SKIP_BOOT) {
     }
   }
 
-  // the v4 §6 "· slow" suffix rides on the same text whenever the guest has
+  // the "· slow" suffix rides on the same text whenever the guest has
   // been under 0.80x for three seconds
   ok("2.2 running pill", /^Running · \d+:\d\d( · slow)?$/.test(await text("#status-text")), await text("#status-text"));
   ok("2.2 Stop replaced Start", !(await has("#btn-start")) && (await has("#btn-stop")));
@@ -871,7 +871,7 @@ if (!process.env.SKIP_BOOT) {
   await page.waitForTimeout(2200);
   ok("2.2 uptime ticks", (await text("#status-text")) !== t1, `${t1} -> ${await text("#status-text")}`);
 
-  /* ---------------- v4 §3/§5: the strip with a live guest ------------- */
+  /* ---------------- the strip with a live guest ------------- */
   await page.check("#opt-hud");
   await page.waitForTimeout(1600);   // 2 Hz — two samples make the first rate
   ok("v4.3 line 1: speed, MIPS, fps, paint, lag, halts", await page.evaluate(() =>
@@ -894,7 +894,7 @@ if (!process.env.SKIP_BOOT) {
     [...document.querySelectorAll(".hud-line")]
       .every((e) => e.scrollWidth <= e.clientWidth + 1)));
 
-  /* ---------------- v4 §4: the phone overlay ---------------- */
+  /* ---------------- the phone overlay ---------------- */
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(600);
   ok("v4.4 the toggle governs the overlay too", await page.evaluate(async () => {
@@ -904,7 +904,8 @@ if (!process.env.SKIP_BOOT) {
       await new Promise((r) => setTimeout(r, 200));
       return document.getElementById("hud").hidden;
     };
-    const off = await set(false), on = await set(true);   // left on for §4 below
+    // left on for the phone overlay below
+    const off = await set(false), on = await set(true);
     return off && !on;
   }));
   ok("v4.4 an overlay on the top edge of the screen box", await page.evaluate(() => {
@@ -933,7 +934,7 @@ if (!process.env.SKIP_BOOT) {
     return String(withStrip) === String(without) && withStrip[1] > 100;
   }));
 
-  // §3's fitting rule, at the three widths it is quoted for
+  // the strip's fitting rule, at the three widths it is quoted for
   for (const [w, want] of [[390, 6], [360, 5], [320, 4]]) {
     await page.setViewportSize({ width: w, height: 844 });
     await page.waitForTimeout(700);
@@ -968,12 +969,12 @@ if (!process.env.SKIP_BOOT) {
       got[0] === want[0] && got[1] === want[1], `${got} vs ${want}`);
   }
 
-  /* ---------------- v4 §6: the slow warning ---------------- */
+  /* ---------------- the slow warning ---------------- */
   {
     const speed = () => page.evaluate(() => window.__hud.diagnostics().avg10s.vratio);
 
-    // §6b the warning itself, which only applies once the bank is over
-    // (§6a, in the boot section, covers the banked half). Waiting on the
+    // the warning itself, which only applies once the bank is over
+    // (the boot section covers the banked half). Waiting on the
     // phase rather than a timeout is what makes this deterministic — under an
     // explicit ?bank=0 it resolves at once.
     await page.waitForFunction(() => window.__ui.bank !== "banked", null,
@@ -996,7 +997,7 @@ if (!process.env.SKIP_BOOT) {
   await page.setViewportSize({ width: 1770, height: 1000 });
   await page.waitForTimeout(400);
 
-  /* ---------------- recording criteria §2-§5, on the phone row ---------- */
+  /* ---------------- recording, on the phone row ---------- */
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(400);
   const geom = () => page.evaluate(() => {
@@ -1057,7 +1058,7 @@ if (!process.env.SKIP_BOOT) {
     JSON.stringify({ before, during }));
   ok("v3.4 screenshot stays enabled", await page.$eval("#btn-shot", (e) => !e.disabled));
 
-  // §3 verify: both pills plus the two icon buttons on one 32px row at 320px
+  // verify: both pills plus the two icon buttons on one 32px row at 320px
   await page.setViewportSize({ width: 320, height: 568 });
   await page.waitForTimeout(400);
   ok("v3.3 everything fits one row at 320px", await page.evaluate(() => {

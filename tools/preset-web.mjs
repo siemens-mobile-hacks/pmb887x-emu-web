@@ -62,7 +62,7 @@ assert("preset line shows progress: " + await statusText(),
 await page.screenshot({ path: "preset-web-dl.png" }).catch(() => {});
 await page.waitForFunction(
   () => window.__ui.state === "running", null, { timeout: 300000 });
-// "· slow" is appended whenever the guest has been under 0.80x for 3 s (v4 §6)
+// "· slow" is appended whenever the guest has been under 0.80x for 3 s
 assert("boot status: " + await pillText(), /^Running · \d+:\d\d( · slow)?$/.test(await pillText()));
 assert("booted device", (await page.evaluate(() => window.__ui.device)) === "lg-ke800");
 assert("preset now cached: " + await statusText(),
