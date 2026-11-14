@@ -1857,6 +1857,7 @@ async function boot() {
   runStartedAt = Date.now();
   noEfaWarning = noEfa;
   setEmuState("running");
+  refreshTyping();
   attachAudio();   // needs liveModule(); the worklet loads on its own time
   // a dist built before the export existed runs without the phone's Internet
   if (gsm && qemuModule._wasm_net_attach) {
@@ -1880,6 +1881,7 @@ function onGuestExit(code) {
   gprsNet = null;
   showGprsStatus("stopped");
   exitCode = code;
+  refreshTyping();
   stopPainting();
   stopRecording();          // flushes whatever was captured
   finalExitCheck();         // a crash dump it printed on its way out
@@ -3355,11 +3357,18 @@ typeChk.addEventListener("change", () => {
   localStorage.setItem("kbd-typing", typeChk.checked ? "1" : "0");
 });
 
+// typing paces its taps through the guest-timed key queue, which a ?dist=
+// built before qemu 8fb9035755 does not export
+const canQueueKeys = (m) => !!(m?._wasm_send_key_after && m._wasm_keys_queued && m._wasm_key_last_at);
+
 function refreshTyping() {
   const none = typing.chars.size === 0;
-  typeChk.disabled = none;
+  const m = liveModule();
+  const noQueue = !!m && !canQueueKeys(m);
+  typeChk.disabled = none || noQueue;
   typeChk.parentElement.title = none
     ? "This keyboard has no multi-tap table"
+    : noQueue ? "This emulator build cannot pace typed keys"
     : "Letters, space and punctuation press the digit key they are on, as many times as the phone needs";
 }
 
@@ -3539,7 +3548,7 @@ const TYPING_TAKES = new Set(["Minus", "Equal", "Slash", "Backquote"]);
 // but AltGr — which reports Ctrl+Alt on Windows — is how many layouts type
 // their letters.
 function typedTaps(e) {
-  if (!typeChk.checked || typeChk.disabled || !liveModule()) return null;
+  if (!typeChk.checked || typeChk.disabled || !canQueueKeys(liveModule())) return null;
   if ((e.ctrlKey || e.altKey || e.metaKey) && !e.getModifierState("AltGraph")) return null;
   if (CODE_TO_KEY[e.code] && !e.shiftKey && !TYPING_TAKES.has(e.code)) return null;
   const ch = e.key === "Enter" ? "\n" : e.key;
@@ -3555,7 +3564,7 @@ function typedTaps(e) {
 // a keydown typing has taken from its shortcut, whether or not this phone
 // can type the character: a phone with no new line (LG) must not take
 // Shift+Enter as the joystick press, which sends the message
-const typingOwns = (e) => typeChk.checked && !typeChk.disabled && !!liveModule()
+const typingOwns = (e) => typeChk.checked && !typeChk.disabled && canQueueKeys(liveModule())
   && (TYPING_TAKES.has(e.code) || (e.key === "Enter" && e.shiftKey))
   && !(e.ctrlKey || e.altKey || e.metaKey);
 
@@ -3563,7 +3572,7 @@ const typingOwns = (e) => typeChk.checked && !typeChk.disabled && !!liveModule()
 // the generic Siemens keyboard depends on the device (keyboards.js).
 function eraseKey(e) {
   if (e.code !== "Backspace" || e.ctrlKey || e.altKey || e.metaKey) return null;
-  if (!typeChk.checked || typeChk.disabled || !liveModule()) return null;
+  if (!typeChk.checked || typeChk.disabled || !canQueueKeys(liveModule())) return null;
   return typingSetting(typing.erase) ?? null;
 }
 
