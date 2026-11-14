@@ -2126,17 +2126,18 @@ const recType = (sound = true) => typeof MediaRecorder === "undefined" ? undefin
   : (sound ? REC_AV_TYPES : REC_TYPES).find((t) => MediaRecorder.isTypeSupported(t));
 const recExt = (t) => t?.startsWith("video/mp4") ? ".mp4" : ".webm";
 let recorder = null;
-let recDone = null;   // ran after the file has been handed over
+let recDone = [];     // run after the file has been handed over
 const recBtn = $("btn-record");
 if (typeof MediaRecorder === "undefined") recBtn.dataset.unsupported = "1";
 
 function say(msg) { $("live-region").textContent = msg; }
 
 // after = what to do once the capture has been saved (Stop finishes the
-// recording before it takes the guest down)
+// recording before it takes the guest down). A Finish while the file is
+// still being written must not drop a Stop that is waiting for it.
 function finishRecording(after = null) {
   if (!recorder) { after?.(); return; }
-  recDone = after;
+  if (after) recDone.push(after);
   if (recorder.state !== "inactive") recorder.stop();
 }
 // the guest going away mid-capture: flush whatever was recorded
@@ -2167,11 +2168,19 @@ function startRecording() {
     if (chunks.length) downloadBlob(new Blob(chunks, { type: mimeType || "video/webm" }),
       captureName() + recExt(mimeType));
     say("Recording saved");
-    const after = recDone;
-    recDone = null;
-    after?.();
+    for (const after of recDone.splice(0)) after();
   };
-  recorder.start();
+  try {
+    recorder.start();
+  } catch (e) {
+    // a recorder that never started never fires onstop either
+    for (const t of stream.getTracks()) t.stop();
+    endRecordSound();
+    recorder = null;
+    console.warn("[record]", e);
+    say("Recording could not start");
+    return;
+  }
   setRecordLabel(true);
   say("Recording started");
 }
