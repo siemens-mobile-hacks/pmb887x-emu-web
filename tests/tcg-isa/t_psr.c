@@ -10,7 +10,8 @@ static uint32_t op_msr_mrs(uint32_t f4)
 
     __asm__ volatile ("msr cpsr_f, %[f]\nmrs %[p], cpsr"
                       : [p] "=r" (p)
-                      : [f] "r" (f4 << 28));
+                      : [f] "r" (f4 << 28)
+                      : "cc");
     return p;
 }
 

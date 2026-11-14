@@ -6,9 +6,9 @@ static inline uint32_t op_qadd(uint32_t a, uint32_t b, uint32_t *q)
 {
     uint32_t v, p;
 
-    __asm__ ("qadd %[v], %[a], %[b]\nmrs %[p], cpsr"
-             : [v] "=&r" (v), [p] "=&r" (p)
-             : [a] "r" (a), [b] "r" (b));
+    __asm__ volatile ("qadd %[v], %[a], %[b]\nmrs %[p], cpsr"
+                      : [v] "=&r" (v), [p] "=&r" (p)
+                      : [a] "r" (a), [b] "r" (b));
     *q = (p >> 27) & 1u;
     return v;
 }
@@ -17,9 +17,9 @@ static inline uint32_t op_qsub(uint32_t a, uint32_t b, uint32_t *q)
 {
     uint32_t v, p;
 
-    __asm__ ("qsub %[v], %[a], %[b]\nmrs %[p], cpsr"
-             : [v] "=&r" (v), [p] "=&r" (p)
-             : [a] "r" (a), [b] "r" (b));
+    __asm__ volatile ("qsub %[v], %[a], %[b]\nmrs %[p], cpsr"
+                      : [v] "=&r" (v), [p] "=&r" (p)
+                      : [a] "r" (a), [b] "r" (b));
     *q = (p >> 27) & 1u;
     return v;
 }
@@ -28,9 +28,9 @@ static inline uint32_t op_qdadd(uint32_t a, uint32_t b, uint32_t *q)
 {
     uint32_t v, p;
 
-    __asm__ ("qdadd %[v], %[a], %[b]\nmrs %[p], cpsr"
-             : [v] "=&r" (v), [p] "=&r" (p)
-             : [a] "r" (a), [b] "r" (b));
+    __asm__ volatile ("qdadd %[v], %[a], %[b]\nmrs %[p], cpsr"
+                      : [v] "=&r" (v), [p] "=&r" (p)
+                      : [a] "r" (a), [b] "r" (b));
     *q = (p >> 27) & 1u;
     return v;
 }
@@ -39,9 +39,9 @@ static inline uint32_t op_qdsub(uint32_t a, uint32_t b, uint32_t *q)
 {
     uint32_t v, p;
 
-    __asm__ ("qdsub %[v], %[a], %[b]\nmrs %[p], cpsr"
-             : [v] "=&r" (v), [p] "=&r" (p)
-             : [a] "r" (a), [b] "r" (b));
+    __asm__ volatile ("qdsub %[v], %[a], %[b]\nmrs %[p], cpsr"
+                      : [v] "=&r" (v), [p] "=&r" (p)
+                      : [a] "r" (a), [b] "r" (b));
     *q = (p >> 27) & 1u;
     return v;
 }
