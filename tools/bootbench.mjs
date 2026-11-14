@@ -111,7 +111,9 @@ async function boot(p, spec, measured) {
   });
   await p.selectOption("#startup", "ONLINE");
   await p.click("#ff-mode-own");
-  await p.setInputFiles("#fullflash", [flash]);
+  // an LG flash goes in with the EFA block next to it, or the firmware
+  // factory-resets its EEPROM and that boot is what gets timed
+  await p.setInputFiles("#fullflash", [flash, flash + ".cfi-efa"].filter((f) => existsSync(f)));
   // the engine prefetch compiles the module in the background; a Start that
   // beats it waits for the same compile, so let it finish for every leg alike
   await p.waitForFunction(() => !/Prefetching|Downloading/.test(document.body.innerText), null, { timeout: 120000 })
