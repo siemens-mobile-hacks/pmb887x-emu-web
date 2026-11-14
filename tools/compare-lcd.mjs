@@ -14,8 +14,6 @@ const ref = fs.readFileSync(process.argv[3] || (here + "final-lcd.png")).toStrin
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-let exitSeen = false;
-page.on("console", (m) => { if (m.text().includes(">>EXIT<<")) exitSeen = true; });
 await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/`, { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", "ONLINE");
 await page.click("#ff-mode-own");
@@ -70,6 +68,10 @@ const res = await page.evaluate(async (refB64) => {
 }, ref);
 console.log("LCD diff vs reference:", JSON.stringify(res.pct ?? res), "%  (# = very different, . = some diff)");
 if (res.blocks) for (const b of res.blocks) console.log("|" + b + "|");
+const exitSeen = await page.evaluate(() => {
+  const x = window.__ui?.exit;
+  return x ? [x.type, x.code].filter(Boolean).join(" ") || "no details" : false;
+});
 console.log("exitSeen:", exitSeen);
 await page.screenshot({ path: "compare-lcd-live.png" });
 await browser.close();
