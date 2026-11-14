@@ -640,7 +640,11 @@ for (const t of ["dragover", "drop"]) {
   document.addEventListener(t, (e) => e.preventDefault());
 }
 
+// counts the devices picked by hand, so a detection that was reading the
+// image meanwhile can tell (applyFullflashFile)
+let devicePicks = 0;
 O.device.addEventListener("change", () => {
+  devicePicks++;
   setNote(O.devNote, null, "");
   syncKeyboardToDevice(O.device.value);
   renderOwn();
@@ -1120,13 +1124,18 @@ function applyDevice(dev) {
 }
 
 // The filename is the cheap answer; when it gives nothing away (dump.bin,
-// backup_2006.bin) the image itself says which phone it came off. Only ever
-// fills the picker in — it never overrides a device already chosen by hand.
+// backup_2006.bin) the image itself says which phone it came off. Its answer
+// is dropped when the user picks a device by hand while the image is read,
+// and when a Start came first: the device and keyboard never change under a
+// boot or a live guest.
 async function applyFullflashFile(file) {
   if (applyFullflashName(file.name)) return;
   setNote(O.devNote, null, "Detecting device…");
+  const picks = devicePicks;
   const hit = await detectDevice(file);
   if (ownBin !== file) return;   // the user moved on while we were reading
+  if (devicePicks !== picks) return; // the pick cleared the note already
+  if (emuState !== "idle") { setNote(O.devNote, null, ""); return; }
   if (!hit) {
     setNote(O.devNote, null, "Couldn't detect the device — please choose it below.");
     return;
