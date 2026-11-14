@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { esnToOtp0, imeiToOtp1 } from "../../site/otp.js";
 
 test("esnToOtp0: byte-reversed ESN xor the key, then the empty half", () => {
@@ -15,7 +16,7 @@ test("imeiToOtp1: nibble-swapped pairs of the first 14 digits, then FF", () => {
 });
 
 test("scripts/run-native.sh derives the same words", () => {
-  const sh = new URL("../../scripts/run-native.sh", import.meta.url).pathname;
+  const sh = fileURLToPath(new URL("../../scripts/run-native.sh", import.meta.url));
   const src = execFileSync("sed", ["-n", "/^ESN_KEY=/,/^OTP1+=/p", sh], { encoding: "utf8" });
   assert.match(src, /OTP1\+="FF"/);
   for (const [esn, imei] of [["12345678", "490154203237518"], ["0a1B2c3D", "001010123456789"], ["ffffffff", "999999999999999"]]) {
