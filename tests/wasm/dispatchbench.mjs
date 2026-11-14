@@ -491,7 +491,12 @@ function time(entry, n) {
 }
 
 const VARIANTS = (CFG.DB_VARIANTS ||
-    'xtail,xtail37,xloop,stail,loop,direct,merged,merged37').split(',');
+    'xtail,xtail37,xloop,stail,loop,direct' +
+    (PAD > 0 ? ',merged,merged37' : '')).split(',');
+if (PAD <= 0 && VARIANTS.some((v) => v.startsWith('merged'))) {
+    throw new Error('merged variants need DB_PAD > 0: at PAD=0 every arm is '
+                    + 'the same `br $L` and TurboFan folds them into one');
+}
 const N = Number((typeof process !== 'undefined' && process.argv[2]) ||
                  CFG.DB_N || 20e6);
 const REPS = Number((typeof process !== 'undefined' && process.argv[3]) ||
