@@ -97,12 +97,9 @@ elif [ ! -d "$ROOT/tools/node_modules" ]; then
                     || echo "== wasm leg skipped (no tools/node_modules)"
 else
   PORT_TCG="${PORT_TCG:-8093}"
-  ( cd "$ROOT" && PORT=$PORT_TCG HTTPS=0 exec node serve.mjs >/dev/null 2>&1 ) &
-  SRV=$!
-  for _ in $(seq 1 50); do
-    curl -sf "http://127.0.0.1:$PORT_TCG/" >/dev/null && break
-    sleep 0.1
-  done
+  # shellcheck source=serve-local.sh
+  . "$ROOT/scripts/serve-local.sh"
+  start_serve "$ROOT" "$PORT_TCG" || echo "!! serve.mjs is not answering on $PORT_TCG"
   # The wasm64 leg is the point of this gate: it is the backend every perf
   # patch edits, with its own emitter, so native JIT-vs-TCI agreement says
   # nothing about it.  (Fixed 2026-09-16: it had been a KNOWN HOLE since

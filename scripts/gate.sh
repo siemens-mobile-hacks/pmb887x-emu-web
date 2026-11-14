@@ -150,12 +150,9 @@ done
 SRV=""
 if [ "$need_server" = 1 ] && ! curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
   echo "gate: starting serve.mjs on $PORT"
-  ( cd "$ROOT" && PORT=$PORT HTTPS=0 exec node serve.mjs >/dev/null 2>&1 ) &
-  SRV=$!
-  for _ in $(seq 60); do
-    curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && break
-    sleep 0.5
-  done
+  # shellcheck source=serve-local.sh
+  . "$ROOT/scripts/serve-local.sh"
+  start_serve "$ROOT" "$PORT" || echo "gate: serve.mjs is not answering on $PORT"
 fi
 # A gate stopped half way must not leave its jobs behind: their browsers and
 # the unpaced native qemus keep running on their own otherwise.
