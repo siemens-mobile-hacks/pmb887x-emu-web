@@ -560,9 +560,9 @@ bash scripts/gate.sh close --dist dist-x           # before the last commit of a
 - **References first:** the gate builds the native references
   (`scripts/build-native.sh`, `scripts/build-native-tci.sh`) from `qemu/` as
   checked out, then starts its jobs.
-- **`keep`** runs opsuite, boot and early-key checks on S75, EL71, KE800,
-  CX70 and KE970, the native boots (`tests/run.mjs`) and `lockstep-wasm`
-  (S75, 250e6 insns). `close` adds the ordered boot, native lockstep,
+- **`keep`** runs the page modules' unit tests (`tests/unit`), opsuite,
+  boot and early-key checks on S75, EL71, KE800, CX70 and KE970, the native
+  boots (`tests/run.mjs`) and `lockstep-wasm` (S75, 250e6 insns). `close` adds the ordered boot, native lockstep,
   `lockstep-full` (2.5e9 x3), Firefox, detect, efa-web and the UI check.
   `--list` prints the tiers.
 - **Browser jobs boot with the page default** (vt + cross-page-links). The
