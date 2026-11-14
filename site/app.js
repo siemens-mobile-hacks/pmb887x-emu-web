@@ -1308,6 +1308,33 @@ const engineInstantiate = (mod) => mod ? {
   },
 } : {};
 
+// The loader parks the page thread's pthread mailbox in an Atomics.waitAsync
+// on the engine heap that nothing notifies once the guest has exited, and a
+// pending wait keeps its Module and the 2 GiB heap reachable for the life of
+// the page. The latest wait on each heap is recorded so that releaseHeap()
+// can settle it at exit; the woken loader re-arms at once, so a released
+// heap gets an inert wait instead of a real one.
+const heapWaits = new WeakMap();      // heap SharedArrayBuffer -> [view, index]
+const releasedHeaps = new WeakSet();
+if (typeof Atomics.waitAsync === "function") {
+  const waitAsync = Atomics.waitAsync;
+  Atomics.waitAsync = function (view, index) {
+    if (releasedHeaps.has(view.buffer)) return { async: true, value: new Promise(() => {}) };
+    const w = Reflect.apply(waitAsync, Atomics, arguments);
+    if (w.async) heapWaits.set(view.buffer, [view, index]);
+    return w;
+  };
+}
+
+function releaseHeap(mod) {
+  const heap = mod?.HEAPU8?.buffer;
+  if (!heap) return;
+  releasedHeaps.add(heap);
+  const w = heapWaits.get(heap);
+  heapWaits.delete(heap);
+  if (w) Atomics.notify(w[0], w[1]);
+}
+
 // Starts qemu for both boot paths: factory and engine are the build's
 // module factory and its prefetched module, opts more Module settings,
 // setup(mod) fills MEMFS and the environment before main(), and
@@ -1329,6 +1356,7 @@ function launch({ factory, engine, args, opts, setup, report }) {
         try { report(read, code); } catch (e) { /* page going down anyway */ }
       }
       onGuestExit(code);
+      releaseHeap(modRef);
     },
     preRun: (mod) => {
       modRef = mod;
@@ -1845,6 +1873,8 @@ function onGuestExit(code) {
   acc = null;
   gprsNet?.stop();
   gprsNet = null;
+  window.__gprsNet = null;
+  lastRelease = null;       // names this run's module, which must not outlive it
   showGprsStatus("stopped");
   exitCode = code;
   refreshTyping();
