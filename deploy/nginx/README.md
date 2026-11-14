@@ -14,14 +14,19 @@ Three moving parts:
 scripts/bundle-dist.sh          # → dist/ (see -- usage header for flags)
 ```
 
-Ships exactly what the page loads (`site/app.js` knows the list):
-`index.html`, `app.js`, `style.css`, `keyboards.js`, `fullflashes.js`,
-`siemensfw.js`, `recalc.js`, `recalc-worker.js`, `gprs-net.js`, `audio-worklet.js`
-(drained by the AudioWorklet — leave it out and the page is silent),
-`dist/boards.tar` and the Siemens key module (always fetched from `dist/`),
-the engine (`dist-jit/`), each with a `.gz` sidecar (the ~12 MB wasm ships
-as ~4 MB), plus
-`manifest.sha256` covering every file — `cd dist && sha256sum -c
+Ships exactly what the page loads. The list is `page` and `images` at
+the top of `scripts/bundle-dist.sh`, which refuses to bundle while a
+tracked file under `site/` (outside `site/dist*`) is missing from it:
+`index.html`, `style.css`, `app.js` and the modules it imports
+(`boards.js`, `exit-report.js`, `otp.js`, `ua.js`, `keyboards.js`,
+`fullflashes.js`, `siemensfw.js`, `recalc.js`, `gprs-net.js`),
+`recalc-worker.js` (the ESN sweep's workers), `audio-worklet.js`
+(drained by the AudioWorklet — leave it out and the page is silent) and
+`img/ke970-wheel.webp`; then `dist/boards.tar` and the Siemens key module
+`dist/siemens-recalc.{js,wasm}` (always fetched from `dist/`) and the
+engine `dist-jit/qemu-system-arm.{js,wasm}`. Every text and wasm file
+gets a `.gz` sidecar (the ~12 MB wasm ships as ~4 MB), and
+`manifest.sha256` covers every file — `cd dist && sha256sum -c
 manifest.sha256` verifies a copy/deploy.  Dev-only extras
 (`.symbols` maps, tcgisa/tcgbench images) are excluded unless
 `BUNDLE_SYMBOLS=1` / `BUNDLE_TESTS=1`.
