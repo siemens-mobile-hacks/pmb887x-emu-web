@@ -1722,7 +1722,7 @@ async function boot() {
       : ["-audio", `wasm,out.frequency=${audioRate()},out.channels=2`];
     // the card is a device of its own, plugged into the board's empty
     // "iso7816-slot"; a board without one runs with no SIM
-    const simSlot = [...boardText.values()].some((t) => t.includes('"iso7816-slot"'));
+    const simSlot = boardChain(device + ".toml").some(([, t]) => t.includes('"iso7816-slot"'));
     const simArgs = simSlot && sim === "virtual"
       ? ["-device", `gsm-sim,operator=${operator}`]
       : [];
