@@ -16,7 +16,8 @@
 // timestamped as they stream) and <dist-name> (wasm page legs via
 // ?suite=dist/tcgbench.bin&dist=<name>, /serial.log polled, lines
 // timestamped on appearance; guest insns read at DONE for MIPS).
-// Results -> tests/results/tcgbench-<ts>.json (+ tcgbench-latest.json).
+// Results -> tests/results/tcgbench-<ts>.json (+ tcgbench-latest.json, only
+// when every leg finished with identical checksums).
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -239,7 +240,8 @@ console.log(cksumOk
   : `!! CHECKSUM MISMATCH: ${[...cksums].join(" ")}`);
 const failed = results.filter((e) => e.rc !== 0);
 for (const e of failed) console.log(`!! ${e.leg}${e.icount ? "+icount" : ""} run${e.run} did not finish (rc ${e.rc})`);
-if (!cksumOk || failed.length) process.exitCode = 1;
+const ok = cksumOk && !failed.length;
+if (!ok) process.exitCode = 1;
 
 const out = {
   ts: new Date().toISOString(),
@@ -249,6 +251,7 @@ const out = {
 fs.mkdirSync(`${ROOT}/tests/results`, { recursive: true });
 const file = `${ROOT}/tests/results/tcgbench-${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16)}.json`;
 fs.writeFileSync(file, JSON.stringify(out, null, 1));
+// a failed run must not become the baseline the next one is compared with
 const latest = `tcgbench-${suite === "tcgbench" ? "" : "quick-"}latest.json`;
-fs.writeFileSync(`${ROOT}/tests/results/${latest}`, JSON.stringify(out, null, 1));
-console.log(`results: ${file} (+ ${latest})`);
+if (ok) fs.writeFileSync(`${ROOT}/tests/results/${latest}`, JSON.stringify(out, null, 1));
+console.log(`results: ${file}` + (ok ? ` (+ ${latest})` : ` (failed: ${latest} NOT updated)`));
