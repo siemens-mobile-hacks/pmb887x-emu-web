@@ -26,6 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+fs.mkdirSync(path.join(ROOT, "tests", "results"), { recursive: true });
 const argv = process.argv.slice(2);
 const opt = (n, d) => {
   const i = argv.indexOf("--" + n);
