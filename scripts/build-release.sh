@@ -23,6 +23,7 @@ set -euo pipefail
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$WEB_DIR"
 source ./versions.env
+source scripts/build-dirs.sh
 
 note() { echo "build-release: $*"; }
 
@@ -45,14 +46,14 @@ note "qemu @ $(git -C qemu rev-parse --short HEAD) (versions.env pin $QEMU_PMB88
 
 # ---- 2. wipe the qemu build dirs (toolchain/deps stay) ------------------
 
-rm -rf build/qemu-wasm64
+rm -rf "$BUILD/qemu-wasm64"
 # site/dist holds assets only (boards.tar, the key module); drop any engine
 # a former TCI build left there.
 rm -f site/dist/qemu-system-arm.js site/dist/qemu-system-arm.wasm \
       site/dist/qemu-system-arm.js.symbols site/dist/qemu-system-arm.wasm.gz
 if [ "${DEPS_CLEAN:-0}" = 1 ]; then
-  rm -rf build/deps
-  note "DEPS_CLEAN=1: build/deps wiped too — expect the full first-run cost"
+  rm -rf "$DEPS_ROOT"
+  note "DEPS_CLEAN=1: $DEPS_ROOT wiped too — expect the full first-run cost"
 fi
 
 # ---- 3. rebuild + bundle ------------------------------------------------
