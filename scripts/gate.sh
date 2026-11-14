@@ -35,7 +35,7 @@
 # in parallel, measurements serial.
 #
 # Exit 0 iff every job in the tier passed.  Per-job logs land in
-# tests/results/gate-<stamp>/<job>.log and the failing tail is printed.
+# tests/results/gate-<stamp>-<random>/<job>.log and the failing tail is printed.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -214,9 +214,9 @@ if [ "$need_server" = 1 ]; then
     "http://127.0.0.1:$PORT/$DIST/qemu-system-arm.wasm" || true
 fi
 
-STAMP="$(date +%Y%m%d-%H%M%S)"
-LOGDIR="$ROOT/tests/results/gate-$STAMP"
-mkdir -p "$LOGDIR"
+# mktemp: two gates started in the same second must not share a directory
+mkdir -p "$ROOT/tests/results"
+LOGDIR="$(mktemp -d "$ROOT/tests/results/gate-$(date +%Y%m%d-%H%M%S)-XXXX")"
 
 # The native jobs run the reference builds of qemu/ as it is checked out;
 # bring them up to date before any job starts (incremental, seconds when
