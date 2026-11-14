@@ -142,6 +142,7 @@ let serialTimer = 0;
 let boards = [];         // [{id, file}] parsed from boards.tar
 let boardsBuf = null;
 let bootCancelled = false; // Stop pressed before boot() had a live guest
+let startWaiting = false;  // a Start waiting for boards.tar
 const BOOT_CANCELLED = Symbol("boot cancelled");
 let boardsReady = null;   // loadBoards() promise — boot() awaits it
 let pendingDevice = null; // device inferred from a fullflash picked before
@@ -1519,7 +1520,12 @@ async function boot() {
   // boards.tar populates the device list and feeds preRun's untar — never
   // start a boot that could race it (device inference would be lost and
   // qemu would get an empty board dir).
-  if (boardsReady) await boardsReady;
+  // the state is still idle here, so Start is still there to click again
+  if (boardsReady) {
+    if (startWaiting) return;
+    startWaiting = true;
+    try { await boardsReady; } finally { startWaiting = false; }
+  }
   if (!boardsBuf) {
     setError("boards.tar failed to load — reload the page", { block: true });
     return;
