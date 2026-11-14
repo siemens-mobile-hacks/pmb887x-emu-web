@@ -209,12 +209,14 @@ function nextIndex(rand) {
  * not distribute over each other, so alternating them defeats constant
  * folding; the chain ends in local 1, which feeds the index, so none of it is
  * dead.  Each op is one cycle, so PAD buys code size far faster than time.
+ * The first constant is an odd multiple of the seed mod 4096, so it differs
+ * between any two of up to 4096 seeds and no two arms are the same code.
  */
 function pad(seed) {
     const out = [];
     for (let k = 0; k < PAD; k++) {
         out.push(0x20, 1,
-                 0x42, ...sleb(((seed + k) * 2654435761) % 60 + 1),
+                 0x42, ...sleb((seed * 2654435761 + k * 40503) % 4096 + 1),
                  k & 1 ? 0x85 : 0x7c,       /* i64.xor : i64.add */
                  0x21, 1);
     }
