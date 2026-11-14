@@ -178,7 +178,6 @@ Profiling:
 | `tools/perf/wasmgrab.mjs`, `tools/perf/wasm-bhint.mjs` | save a running page's hottest TB modules to read their TurboFan code; add a branch-hint section to a captured module |
 | `threadmap.mjs`, `syscallprobe.mjs` | thread census / syscall CPU attribution |
 | `asyncify-audit.mjs` | which frames the Asyncify onlylist still needs (`QEMU_COSTACK=1` is the evidence half) |
-| `abortlog.mjs` | boots `BOARD=` (el71/s75/cx70/ke800) and prints every console line and pageerror verbatim, for a run that died where a meter only reported an exception |
 | `modfloor.mjs`, `modgrow.mjs`, `modshape-probe.mjs`, `dispatch-probe.mjs`, `dispsize-probe.mjs`, `callref-probe.mjs`, `locals-probe.mjs`, `tierup-probe.mjs`, `import-probe.mjs`, `merge-probe.mjs`, `tests/wasm/dispatchbench.mjs` | synthetic V8 probes that build their own wasm modules in a page: module creation cost, dispatch mechanisms and locality, declared locals by tier, tier-up, cross-instance calls. Their September results are in performance.md (Closed ideas) and lessons.md (wasm and V8) |
 
 Probes and traces:
