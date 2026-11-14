@@ -85,8 +85,9 @@ try {
   }
 } catch (e) {
   console.error("PROBE ERROR:", e);
+  process.exitCode = 1;
 } finally {
   console.log("__DONE__");
   await new Promise((r) => setTimeout(r, 500));
-  process.exit(0);
+  process.exit(process.exitCode ?? 0);
 }
