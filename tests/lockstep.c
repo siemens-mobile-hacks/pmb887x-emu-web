@@ -161,7 +161,7 @@ static uint64_t mem_digest(const struct memrange *r)
     bool ok = qemu_plugin_read_memory_vaddr(r->addr, membuf, r->len);
     if (probe_mode && probe_mem_reported < 4) {
         uint64_t first = 0;
-        memcpy(&first, membuf->data, membuf->len < 8 ? membuf->len : 0);
+        memcpy(&first, membuf->data, membuf->len < 8 ? membuf->len : 8);
         fprintf(stderr, "lockstep: mem read %llx+%llx ok=%d len=%u first=%016llx\n",
                 (unsigned long long)r->addr, (unsigned long long)r->len,
                 ok, membuf->len, (unsigned long long)first);
