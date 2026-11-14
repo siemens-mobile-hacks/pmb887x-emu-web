@@ -13,13 +13,8 @@
 # Freestanding, no libc/libgcc (not even __aeabi_uidiv): everything the
 # image executes is either the suite's own instruction shims or plain
 # arithmetic the compiler can't "help" with.
-CROSS   ?= arm-none-eabi-
-CC      := $(CROSS)gcc
-OBJCOPY := $(CROSS)objcopy
-
-CFLAGS_COMMON = -mcpu=arm926ej-s -mfloat-abi=soft -ffreestanding -fno-builtin \
-                -fno-stack-protector -fno-common -O2 -Wall -Wextra \
-                -nostdlib -nostartfiles -T linker.ld -Wl,--build-id=none
+BM             := ../baremetal
+BAREMETAL_MAIN := tcgisa_main
 
 TEST_OBJS = harness.o main.o \
             t_arith.o t_logic.o t_shift.o t_mul.o t_clz.o t_psr.o \
@@ -28,27 +23,19 @@ TEST_OBJS = harness.o main.o \
 
 all: tcgisa.bin tcgisa-wasm.bin
 
+include $(BM)/baremetal.mk
+
 %.o: %.c harness.h ops.h
 	$(CC) $(CFLAGS_COMMON) -c -o $@ $<
 
 %.o: %.S
 	$(CC) $(CFLAGS_COMMON) -c -o $@ $<
 
-startup-exit.o: startup.c
-	$(CC) $(CFLAGS_COMMON) -c -o $@ $<
-
-startup-park.o: startup.c
-	$(CC) $(CFLAGS_COMMON) -DTCGISA_NO_EXIT -c -o $@ $<
-
-tcgisa.elf: startup-exit.o $(TEST_OBJS) linker.ld
+tcgisa.elf: startup-exit.o $(TEST_OBJS) $(BM)/linker.ld
 	$(CC) $(CFLAGS_COMMON) startup-exit.o $(TEST_OBJS) -o $@
 
-tcgisa-wasm.elf: startup-park.o $(TEST_OBJS) linker.ld
+tcgisa-wasm.elf: startup-park.o $(TEST_OBJS) $(BM)/linker.ld
 	$(CC) $(CFLAGS_COMMON) startup-park.o $(TEST_OBJS) -o $@
-
-%.bin: %.elf
-	$(OBJCOPY) -O binary $< $@
-	@ls -l $@
 
 install: tcgisa-wasm.bin
 	cp tcgisa-wasm.bin ../../site/dist/tcgisa.bin

@@ -1,44 +1,46 @@
 /* Entry at 0x00010000 (qemu -kernel raw image). The qemu boot stub at 0x0
  * (r0=0, r1=0x183 board id, r2=0x100 atags) has already jumped here in SVC
- * mode. We just set up a stack, zero .bss, run the suite and exit through
- * the semihosting SYS_EXIT call (clean process exit on every backend). */
+ * mode. Set up a stack, zero .bss, run BAREMETAL_MAIN (the image's C entry,
+ * set by baremetal.mk) and exit through the semihosting SYS_EXIT call
+ * (clean process exit on every backend) with its verdict. */
 #include <stdint.h>
 
-extern int tcgisa_main(void);
+extern int BAREMETAL_MAIN(void);
 extern uint32_t __bss_start[], __bss_end[];
 
-void suite_run(void) __attribute__((noreturn));
+void baremetal_run(void) __attribute__((noreturn));
 
 /* naked: a compiled prologue would push through the boot stub's sp (0) */
-__attribute__((naked, section(".text.entry"))) void suite_entry(void)
+__attribute__((naked, section(".text.entry"))) void baremetal_entry(void)
 {
     __asm__ volatile (
         /* SVC mode, IRQ+FIQ masked (no vector table installed), ARM state */
         "msr cpsr_c, #0xd3\n"
         /* stack top inside the 128 MiB SDRAM, far above the image */
         "ldr sp, =0x00800000\n"
-        "b suite_run\n");
+        "b baremetal_run\n");
 }
 
-void suite_run(void)
+void baremetal_run(void)
 {
     for (uint32_t *p = __bss_start; p < __bss_end; p++) {
         *p = 0;
     }
 
-    int fail = tcgisa_main();
+    int fail = BAREMETAL_MAIN();
 
-    /* semihosting SYS_EXIT: reason ADP_Stopped_ApplicationExit -> exit(0);
-     * any other reason makes qemu exit(1) — mirrors the suite verdict */
-#ifdef TCGISA_NO_EXIT
+#ifdef BAREMETAL_NO_EXIT
     /* wasm-page variant: the semihosting exit path from the vCPU pthread
      * tears the page down before onExit can run — idle instead and let
      * the host-side runner collect the serial log */
+    (void)fail;
     /* wait-for-interrupt (ARM926 CP15) then park */
     __asm__ volatile (
         "mcr p15, 0, r0, c7, c0, 4\n"
         "1: b 1b\n");
 #else
+    /* semihosting SYS_EXIT: reason ADP_Stopped_ApplicationExit -> exit(0);
+     * any other reason makes qemu exit(1) — mirrors the verdict */
     __asm__ volatile (
         "mov r0, #0x18\n"
         "mov r1, %[rc]\n"
