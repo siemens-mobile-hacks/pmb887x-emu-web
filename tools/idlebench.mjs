@@ -87,7 +87,7 @@
 //
 // Usage:
 //   PORT=8094 node tools/idlebench.mjs [dists] [--runs N] [--max S]
-//     dists: comma list, default "dist,dist-jit"
+//     dists: comma list, default "dist-jit" (the dist the page ships)
 //   PORT=8094 node tools/idlebench.mjs --quick             # ~2 min A/B
 //   PORT=8094 node tools/idlebench.mjs dist --runs 3
 //   PORT=8094 node tools/idlebench.mjs dist-jit --runs 3 --max 1800
@@ -119,7 +119,7 @@ const positional = argv.filter((a, i) => {
   const prev = argv[i - 1];
   return !(prev && prev.startsWith("--") && VALUE_OPTS.has(prev.slice(2)));
 });
-const dists = (positional[0] || "dist,dist-jit").split(",");
+const dists = (positional[0] || "dist-jit").split(",");
 // A dist may be written "<dir>@<query>" to append per-dist query parameters
 // (e.g. "dist-jit@env=W64_COMPACT_MEMBERS=100000000").  That makes a KNOB
 // A/B interleavable the way a two-build A/B is: EXTRA_Q applies to every
