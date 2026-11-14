@@ -224,7 +224,8 @@ thread is using them).
   ended with **Finish** — "Stop" only ever means the emulator.
 - **The phone column is the same view at every size, and it is laid out in
   CSS alone.** One `100dvh` page that never scrolls: a single 32px control
-  row (state/firmware pill, screenshot, record, fullscreen, settings), the
+  row (state/firmware pill, screenshot, record, sound, fullscreen, and the
+  settings gear where the panels are sheets), the
   screen at the board's own `[peripheral.LCD0]` aspect ratio flanked by edge
   tabs for the side keys, and the keypad under it. From 900px wide (and
   621px tall) the Firmware and Run panels come back as the two columns
@@ -288,7 +289,8 @@ thread is using them).
   - `viewport-fit=cover` is deliberately not set, so the viewport stops above
     the system bars and the `env(safe-area-inset-*)` on `main` read 0; they
     are kept only in case that meta returns.
-  - `#btn-fullscreen`, the control row's third icon (after the recorder), is
+  - `#btn-fullscreen`, the control row's fourth icon (after the recorder and
+    the sound button), is
     the only way to get the browser and system bars back — worth ~80px on a
     phone. It needs a user gesture, syncs on `fullscreenchange` (swipe, Back
     and Esc never go through the button), stands down while a capture runs
@@ -308,8 +310,9 @@ thread is using them).
   tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on
   -machine pmb887x -drive if=pflash… -serial file:/serial.log -monitor
   none -parallel none [-device gsm-sim,…]`, every board alike; on a board
-  with a radio the GSM option adds `-object gsm-bts,id=gsm0` and
-  `gsm-network=gsm0` on the machine, see
+  with a radio the GSM option adds `-netdev hubport,id=net0,hubid=0
+  -object gsm-bts,id=gsm0,netdev=net0` and `gsm-network=gsm0` on the
+  machine, see
   [gsm-network.md](gsm-network.md); `?bank=`/`?idlelead=` set
   those two values, `?icount=` swaps the accel for `-icount`, a `?qargs=`
   with its own `-accel` drops it). The native launcher uses the same
@@ -322,10 +325,12 @@ thread is using them).
   connector (qemu's `accessory-connector`, `IO_CONNECTOR` in the board
   config). The dropdown lists the board's profiles, read out of boards.tar
   like the panel size (`readAccessories()`), minus the `unplugged` one;
-  a run boots with the music cable where the board has one, with the stereo
-  headset on an SGOLD (`pmb8875`) board, and with the board's `default`
-  otherwise (a data cable on the remaining Siemens boards),
-  passed as `-global accessory-connector.accessory=`. The button reads
+  a run boots with the board's `default` (the data cable on the Siemens
+  boards; anything else plugged in at boot can leave the firmware in a
+  sleep the model does not wake it from, see `bootAccessory()`), or with
+  what the control chose before the run for that board and GSM setting,
+  passed as `-global accessory-connector.accessory=` when it is not the
+  default. The button reads
   Disconnect while the selected profile is the plugged one (it then plugs
   `unplugged`), and Connect otherwise, which swaps whatever is plugged for
   the selection. Before a run it chooses what the phone starts with; while

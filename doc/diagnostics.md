@@ -50,12 +50,10 @@ a short user agent (`Android 8 · Chrome 147 · SM-G955U`), cores, memory and
 `isolated`. Narrow screens drop whole tokens off the line rather than wrap
 or shrink, paint first.
 
-**"Performance HUD"** in the Run panel draws it — under the status pill on
-desktop, and at phone widths (where the panel is the settings sheet) as an
-overlay on the top edge of the screen box, which waits for a guest rather
-than covering the idle panel. The choice is remembered; with none stored it starts on at
-phone widths, the one place with no debugger to fall back to, and off on
-desktop. Either way the pill itself turns amber and gains `· slow` after
+**"Performance HUD"** in the Run panel draws it as an overlay on the top
+edge of the screen box, at every width, shown only while a guest is booting,
+running or paused rather than covering the idle panel. It starts off and the
+choice is remembered. Either way the pill itself turns amber and gains `· slow` after
 three seconds under 0.80× — except while the clock is still banked
 (`?bank=` above), where below 1.00× is a guest that is behind and will
 catch up, not a slow one. The three-second
