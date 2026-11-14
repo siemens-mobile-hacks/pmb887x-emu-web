@@ -44,7 +44,7 @@ for (const line of readFileSync(`${root}site/${dist}/qemu-system-arm.js.symbols`
 }
 
 const pats = readFileSync(`${root}qemu/configs/meson/asyncify-only.txt`, "utf8")
-  .split("\n").map(s => s.trim()).filter(Boolean);
+  .split("\n").map(s => s.trim()).filter(s => s && !s.startsWith("#"));
 const rx = pats.map(p => ({
   pat: p,
   re: new RegExp("^" + p.replace(/[.+^${}()|[\]\\]/g, "\\$&")
