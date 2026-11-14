@@ -9,8 +9,10 @@ it up automatically).
 
 Sibling suites in this directory (each with its own README): `tcg-isa/`
 (the guest op-suite, gate `scripts/run-tcg-isa.sh`) and `tcgbench/` (the
-versatilepb perf bench + device-tax mirrors, `tools/tcgbench.mjs`). The
-lockstep harness is documented below.
+versatilepb perf bench + device-tax mirrors, `tools/tcgbench.mjs`).
+`wasm/dispatchbench.mjs` is a standalone node microbenchmark of the
+wasm64 TB-to-TB transition (no build, no page; options in its header).
+The lockstep harness is documented below.
 
 ## Running
 
