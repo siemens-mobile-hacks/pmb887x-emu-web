@@ -24,8 +24,37 @@ DIR="$ROOT/tests/tcg-isa"
 JIT="${QEMU_JIT:-$ROOT/build/qemu-native-build/qemu-system-arm}"
 TCI="${QEMU_TCI:-$ROOT/build/qemu-native-tci-build/qemu-system-arm}"
 T="$(mktemp -d)"
-IMG=""
-trap 'rm -rf "$T"; [ -z "$IMG" ] || rm -f "$IMG"; [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true' EXIT
+IMG="" SRV="" CHILD=""
+descendants() {
+  local c
+  for c in $(pgrep -P "$1"); do echo "$c"; descendants "$c"; done
+}
+# a run stopped half way takes its qemu, or its page driver and browser,
+# down with it
+cleanup() {
+  local p all=()
+  for p in $CHILD $SRV; do
+    kill -0 "$p" 2>/dev/null && all+=("$p" $(descendants "$p"))
+  done
+  [ ${#all[@]} -eq 0 ] || kill "${all[@]}" 2>/dev/null
+  rm -rf "$T"
+  [ -z "$IMG" ] || rm -f "$IMG"
+  return 0
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# A trap runs only once a foreground command has finished, so each leg runs
+# in the background, where `wait` gives way to it.
+run_child() { # <command...>
+  local rc=0
+  "$@" &
+  CHILD=$!
+  wait "$CHILD" || rc=$?
+  CHILD=""
+  return "$rc"
+}
 
 fail=0
 run_qemu() { # <name> <binary> <log>
@@ -33,7 +62,7 @@ run_qemu() { # <name> <binary> <log>
   [ -x "$bin" ] || { echo "!! $name: $bin not built — see scripts/build-native.sh"; return 2; }
   echo "== $name =="
   local rc=0
-  timeout 120 "$bin" -M versatilepb -kernel "$T/tcgisa.bin" \
+  run_child timeout 120 "$bin" -M versatilepb -kernel "$T/tcgisa.bin" \
       -semihosting -display none -monitor none -serial "file:$log" || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "!! $name: qemu exited $rc"
@@ -83,7 +112,8 @@ run_wasm_leg() { # <name> <dist> <driver> <log>
     return 0
   fi
   echo "== $name =="
-  if ( cd "$ROOT/tools" && TCGISA_IMAGE="dist/${IMG##*/}" node "$driver" "$PORT_TCG" "$dist" "$log" >/dev/null ); then
+  if run_child env -C "$ROOT/tools" TCGISA_IMAGE="dist/${IMG##*/}" \
+      node "$driver" "$PORT_TCG" "$dist" "$log" >/dev/null; then
     if cmp -s "$T/jit.log" "$log"; then
       echo "   $name vs native JIT serial: IDENTICAL"
       return 0
