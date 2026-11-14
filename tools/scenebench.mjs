@@ -202,6 +202,11 @@ if (!sc) {
   process.exit(2);
 }
 const measureS = Number(opt("measure", sc.measure));
+const saveRef = process.env.SCENEBENCH_SAVEREF;
+if (saveRef && !sc.path) {
+  console.error(`SCENEBENCH_SAVEREF: ${scenarioName} walks no path, so there is no app screen to save`);
+  process.exit(2);
+}
 const flash = opt("flash", [here + "../fullflashes/" + sc.image, here + "../../fullflashes/" + sc.image]
   .find((f) => existsSync(f)));
 if (!flash || !existsSync(flash)) throw new Error(`${sc.image} not found: pass --flash <path>`);
@@ -410,7 +415,6 @@ async function runOnce(spec, run) {
     const idle = await grab();
     const SOFT = [idle.height - Math.round(idle.height * 28 / 320), idle.height];
     const atIdle = async () => (await diffPct(idle, SOFT)) <= 2;
-    const saveRef = process.env.SCENEBENCH_SAVEREF;
     if (saveRef) {
       for (const [k, ms] of sc.path) await s.key(k, ms);
       const live = await grab();
@@ -502,6 +506,14 @@ async function runOnce(spec, run) {
   if (cdp) await p.close().catch(() => {});
   await browser.close();
   return result;
+}
+
+// the reference is one screen: one boot of the first dist, no measurement
+if (saveRef) {
+  const res = await runOnce(dists[0], 1);
+  const saved = res.error?.startsWith("reference saved");
+  console.log(`[scenebench] ${scenarioName} ${dists[0]}: ${saved ? res.error.split(" pageerror=")[0] : "FAILED " + res.error}`);
+  process.exit(saved ? 0 : 1);
 }
 
 const results = [];
