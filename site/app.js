@@ -3509,6 +3509,8 @@ const takesText = (el) => el.isContentEditable || el.tagName === "TEXTAREA"
 const heldKeys = new Set();
 window.addEventListener("keydown", (e) => {
   if (takesText(e.target)) return;
+  // a key a handler has already taken, such as the Escape that closes a sheet
+  if (e.defaultPrevented) return;
   const erase = eraseKey(e);
   if (erase) {
     e.preventDefault();
