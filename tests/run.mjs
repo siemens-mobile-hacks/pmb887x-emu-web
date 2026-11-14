@@ -130,6 +130,15 @@ const readInsnFile = (file) => {
 };
 
 // --- one emulator instance ---------------------------------------------------
+// the qemus still running, so that stopping the suite stops them too
+const liveChildren = new Set();
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    for (const c of liveChildren) c.kill("SIGTERM");
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  });
+}
+
 class Instance {
   constructor(flash, runDir) {
     this.flash = flash;
@@ -169,6 +178,7 @@ class Instance {
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    liveChildren.add(this.child);
     this.t0Cpu = procCpuSecs(this.child.pid);
     let err = "";
     this.child.stdout.on("data", (d) => { err += d; if (err.length > 200000) err = err.slice(-100000); this.stdoutTail = err; });
@@ -179,6 +189,7 @@ class Instance {
       this.stderrTail = serr;
     });
     this.child.on("exit", (code, signal) => {
+      liveChildren.delete(this.child);
       this.dead = true;
       this.exitCode = code;
       this.exitSignal = signal;
