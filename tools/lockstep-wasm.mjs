@@ -38,7 +38,7 @@ function parseArgs() {
     // SRAM (HARD) + a 1MB SDRAM slice (SOFT): keep the 16MB full-range
     // default out — the M-digest reads were the first full-gate timeout
     mem: "800000+18000:a8000000+100000",
-    port: process.env.PORT || "8094", dist: "dist-jit",
+    port: process.env.PORT || "8080", dist: "dist-jit",
     aBin: path.join(ROOT, "build/qemu-native-build/qemu-system-arm"),
     label: "wasm",
     env: [],

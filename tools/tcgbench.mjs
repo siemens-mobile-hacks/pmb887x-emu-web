@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = path.resolve(here, "..");
-const port = process.env.PORT || "8094";
+const port = process.env.PORT || "8080";
 const legs = (process.env.LEGS || "native-jit,dist-jit").split(",");
 const icounts = (process.env.ICOUNTS || "0").split(","); // e.g. "0,1": tax matrix
 const extraQ = process.env.EXTRA_Q || "";
