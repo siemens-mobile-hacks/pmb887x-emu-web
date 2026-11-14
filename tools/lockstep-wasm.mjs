@@ -26,7 +26,7 @@ import { chromium } from "playwright-core";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Side, compareDigestLogs, FLASHES, claimRunStamp, PLUGIN, quitAll, requireLogs } from "./lockstep.mjs";
 import { bounded, loadOwnFlash, pageCall, PageUnresponsive } from "./lib/page.mjs";
 import { NATIVE_JIT_BIN } from "./lib/build-dirs.mjs";
@@ -34,7 +34,7 @@ import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 fs.mkdirSync(path.join(ROOT, "tests", "results"), { recursive: true });
-const { inferDevice } = await import(path.join(ROOT, "site", "fullflashes.js"));
+const { inferDevice } = await import(pathToFileURL(path.join(ROOT, "site", "fullflashes.js")).href);
 
 // scripts/run-native.sh's choice: BOARD, else the page's filename rules
 const nativeBoard = (flash) =>

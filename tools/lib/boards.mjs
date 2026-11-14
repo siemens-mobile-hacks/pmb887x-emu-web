@@ -2,7 +2,7 @@
 // short ids the tools take on their command lines. efa: the LG EEPROM
 // sidecar that goes in next to the image.
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const FULLFLASH_DIR = path.join(ROOT, "fullflashes");
@@ -32,7 +32,7 @@ export const flashPath = (id) => path.join(FULLFLASH_DIR, entry(id).file);
 // else the stand-in for a model token in it (S66 -> siemens-s65). null when
 // the name names no model.
 export async function expectedBoard(name) {
-  const { inferDevice, variantFor } = await import(path.join(ROOT, "site/fullflashes.js"));
+  const { inferDevice, variantFor } = await import(pathToFileURL(path.join(ROOT, "site/fullflashes.js")).href);
   const base = path.basename(name);
   const byRule = inferDevice(base);
   if (byRule) return byRule;

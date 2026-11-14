@@ -14,7 +14,7 @@
 //              rewriting back for the original restores them byte for byte
 // Exit 0 iff every check passed.
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const toolsDir = dirname(fileURLToPath(import.meta.url));
@@ -29,7 +29,7 @@ function ok(name, cond, extra = "") {
 }
 
 const createSiemensRecalc =
-  (await import(resolve(root, "site/dist/siemens-recalc.js"))).default;
+  (await import(pathToFileURL(resolve(root, "site/dist/siemens-recalc.js")).href)).default;
 const M = await createSiemensRecalc();
 
 const bytes = new Uint8Array(await readFile(flashPath));

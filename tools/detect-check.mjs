@@ -14,15 +14,15 @@
 import { readdir } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve, basename } from "node:path";
 import { expectedBoard } from "./lib/boards.mjs";
 
 const toolsDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(toolsDir, "..");
 
-const { detectDevice } = await import(resolve(root, "site/fullflashes.js"));
-const { untar } = await import(resolve(root, "site/boards.js"));
+const { detectDevice } = await import(pathToFileURL(resolve(root, "site/fullflashes.js")).href);
+const { untar } = await import(pathToFileURL(resolve(root, "site/boards.js")).href);
 
 // the boards the page knows: the configs in its boards.tar, as app.js reads them
 const tarBytes = await readFile(resolve(root, "site/dist/boards.tar"));
