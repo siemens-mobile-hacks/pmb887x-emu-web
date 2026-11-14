@@ -11,10 +11,9 @@ import https from "node:https";
 import net from "node:net";
 import { execFileSync } from "node:child_process";
 import {
-  createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync,
-  statSync, writeFileSync,
+  createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync,
 } from "node:fs";
-import { rename, stat as statP } from "node:fs/promises";
+import { open, rename, stat as statP, unlink, utimes } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { extname, join, normalize, resolve, dirname, sep } from "node:path";
@@ -97,53 +96,96 @@ const isLoopback = (addr) => !addr || /^(127\.|::1$|::ffff:127\.)/.test(addr);
 // so keep a pre-gzip'd sidecar next to it (~4 MB, ~3x smaller) and
 // regenerate it when the source changes (ninja-fast redeploys). One
 // compressor per file, shared by concurrent requests. GZIP=0 disables.
+//
+// A sidecar is fresh when its mtime equals its source's: the compressor
+// stamps it with the mtime of the file it read, so a source deployed while
+// it ran never matches it, and one replaced since is caught by a re-stat
+// before the rename. Equal to the millisecond, as utimes() rounds.
+const sameMtime = (a, b) => Math.abs(a.mtimeMs - b.mtimeMs) < 1;
 const gzInflight = new Map();
-async function gzSidecar(path) {
+
+async function compressSidecar(path, gz) {
+  const tmp = gz + ".tmp";
+  let src = null;
+  try {
+    src = await open(path, "r");
+    const st = await src.stat();
+    // tmp+rename so a partial sidecar is never served
+    await pipeline(src.createReadStream({ autoClose: false }), createGzip({ level: 6 }),
+      createWriteStream(tmp));
+    await utimes(tmp, st.atime, st.mtimeMs / 1000);
+    const now = await statP(path);
+    if (now.ino !== st.ino || now.size !== st.size || !sameMtime(now, st)) {
+      await unlink(tmp);   // the source changed under the compressor
+      return;
+    }
+    await rename(tmp, gz);
+  } catch {
+    await unlink(tmp).catch(() => {});
+  } finally {
+    await src?.close().catch(() => {});
+  }
+}
+
+// -> { fh, st } of a sidecar fresh for a source with stat `srcSt`, or null
+async function gzSidecar(path, srcSt) {
   if (process.env.GZIP === "0") return null;
   const gz = path + ".gz";
-  const fresh = async () => {
+  const openFresh = async () => {
+    let fh = null;
     try {
-      const [src, side] = await Promise.all([statP(path), statP(gz)]);
-      return side.mtimeMs >= src.mtimeMs;
-    } catch {
-      return false;
-    }
+      fh = await open(gz, "r");
+      const st = await fh.stat();
+      if (st.isFile() && sameMtime(st, srcSt)) return { fh, st };
+    } catch { /* no sidecar */ }
+    await fh?.close().catch(() => {});
+    return null;
   };
-  if (await fresh()) return gz;
+  const hit = await openFresh();
+  if (hit) return hit;
   let done = gzInflight.get(gz);
   if (!done) {
-    done = pipeline(
-      createReadStream(path),
-      createGzip({ level: 6 }),
-      // tmp+rename so a partial sidecar is never served
-      createWriteStream(gz + ".tmp"),
-    )
-      .then(() => rename(gz + ".tmp", gz))
-      .catch(() => null);
+    done = compressSidecar(path, gz).finally(() => gzInflight.delete(gz));
     gzInflight.set(gz, done);
-    await done;
-    gzInflight.delete(gz);
-  } else {
-    await done;
   }
-  return (await fresh()) ? gz : null;
+  await done;
+  return openFresh();
 }
+
+const notFound = (res) => {
+  res.writeHead(404, { "content-type": "text/plain" });
+  res.end("not found");
+};
 
 async function handler(req, res) {
   const url = new URL(req.url, "http://localhost");
   let path = normalize(join(root, decodeURIComponent(url.pathname)));
   if (path !== root && !path.startsWith(root + sep)) { res.writeHead(403); res.end(); return; }
   if (url.pathname === "/") path = join(root, "index.html");
-  if (!existsSync(path) || statSync(path).isDirectory()) {
-    res.writeHead(404, { "content-type": "text/plain" });
-    res.end("not found");
-    return;
+
+  // Everything below reads the one file it opened here (or the sidecar it
+  // opened instead): a deploy that replaces the file mid-request cannot
+  // make the headers and the body disagree.
+  let fh, st;
+  try {
+    fh = await open(path, "r");
+    st = await fh.stat();
+  } catch {
+    await fh?.close();
+    return notFound(res);
   }
+  if (!st.isFile()) { await fh.close(); return notFound(res); }
 
   // Prefer the pre-gzip'd sidecar for the wasm (see gzSidecar above).
-  let servePath = path;
-  if (extname(path) === ".wasm" && (req.headers["accept-encoding"] || "").includes("gzip"))
-    servePath = (await gzSidecar(path)) || path;
+  let gzipped = false;
+  if (extname(path) === ".wasm" && (req.headers["accept-encoding"] || "").includes("gzip")) {
+    const side = await gzSidecar(path, st).catch(() => null);
+    if (side) {
+      await fh.close();
+      ({ fh, st } = side);
+      gzipped = true;
+    }
+  }
 
   const headers = {
     "content-type": MIME[extname(path)] || "application/octet-stream",
@@ -159,21 +201,22 @@ async function handler(req, res) {
     // compile of the ~12 MB module — and the cached code includes whatever
     // TurboFan had tiered up, i.e. the V8 warm-up too.
     "cache-control": "no-cache",
-    etag: etagOf(servePath),
+    etag: etagOf(st),
   };
   if (extname(path) === ".wasm") headers["vary"] = "accept-encoding";
   if (req.headers["if-none-match"] === headers.etag) {
+    await fh.close();
     res.writeHead(304, headers);
     res.end();
     return;
   }
 
-  if (servePath !== path) headers["content-encoding"] = "gzip";
-  headers["content-length"] = statSync(servePath).size;
+  if (gzipped) headers["content-encoding"] = "gzip";
+  headers["content-length"] = st.size;
   res.writeHead(200, headers);
-  // headers are out by now: a file that fails to open or read mid-request
-  // (a deploy replacing it) can only cut the response short
-  createReadStream(servePath).on("error", () => res.destroy()).pipe(res);
+  // headers are out by now: a read that fails mid-request can only cut the
+  // response short; a client that goes away closes the file
+  pipeline(fh.createReadStream({ start: 0 }), res).catch(() => {});
 }
 
 // A rejected handler would otherwise be an unhandled rejection, which ends
@@ -186,8 +229,7 @@ function serve(req, res) {
   });
 }
 
-function etagOf(p) {
-  const st = statSync(p);
+function etagOf(st) {
   return `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
 }
 
