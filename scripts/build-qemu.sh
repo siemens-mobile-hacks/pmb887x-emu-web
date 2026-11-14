@@ -32,7 +32,11 @@ git -C "$WEB_DIR" submodule update --init
 # pin never equals `rev-parse HEAD`, and the checkout below then ran on every
 # build; two concurrent gate builds raced on index.lock and the loser's
 # `checkout -f` fallback wiped uncommitted qemu edits (2026-09-24).
-PIN="$(git -C "$QEMU_SRC" rev-parse --verify -q "$QEMU_PMB887X_REV^{commit}")"
+PIN="$(git -C "$QEMU_SRC" rev-parse --verify -q "$QEMU_PMB887X_REV^{commit}")" || {
+  echo "$(basename "$0"): the qemu pin $QEMU_PMB887X_REV is not in qemu/'s objects;" \
+       "fetch it: git -C qemu fetch origin $QEMU_PMB887X_REV" >&2
+  exit 1
+}
 if [ "$(git -C "$QEMU_SRC" rev-parse HEAD)" != "$PIN" ]; then
   git -C "$QEMU_SRC" checkout -q -B "$QEMU_PMB887X_BRANCH" "$PIN" 2>/dev/null \
     || { git -C "$QEMU_SRC" diff --quiet HEAD \
