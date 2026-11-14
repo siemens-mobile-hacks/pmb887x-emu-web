@@ -116,6 +116,10 @@ for line in open(log, errors="replace"):
                     break
         ticks.append((us, pc, vms, lookup(pc), caller, chain))
 
+if not ticks:
+    sys.exit(f"{log}: no tick records (not a --prof log, or the isolate never ran)")
+if not mod_fns:
+    sys.exit(f"{log}: no wasm code-creation records (not the vCPU isolate)")
 main_mod = mod_fns.most_common(1)[0][0]
 tmax = ticks[-1][0]
 t0 = ticks[0][0]
