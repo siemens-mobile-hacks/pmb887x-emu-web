@@ -22,7 +22,7 @@
 // (doc/gsm-network.md) fails here.
 // PASS = all of the above that could be read, no socket opened by the page
 // but its GPRS relay to its own /gprs,
-// no firmware ">>EXIT<<" and no page error. The LCD is saved to
+// no firmware EXIT (window.__ui.exit) and no page error. The LCD is saved to
 // tests/results/gsmcheck-<dist>-<flash>.png.
 import { chromium } from "playwright-core";
 import fs from "node:fs";
@@ -61,12 +61,11 @@ const SAVEREF = opt("saveref", "");
 
 const probe = () => {
   const m = window.__qemu;
-  let ser = "";
-  try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch {}
+  const x = window.__ui?.exit;
   return {
     insns: m?._wasm_insns ? Number(m._wasm_insns()) : 0,
     fb: m?._wasm_fb_updates ? Number(m._wasm_fb_updates()) : 0,
-    exit: (ser.match(/>>EXIT<<[^\x00]{0,120}/) || [""])[0],
+    exit: x ? [x.type, x.code].filter(Boolean).join(" ") || "no details" : "",
   };
 };
 
