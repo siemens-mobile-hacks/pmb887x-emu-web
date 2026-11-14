@@ -22,4 +22,11 @@ if [ "$BSP_DIR" = "$WEB_DIR/bsp" ]; then
   submodule_warn_off_pin bsp
 fi
 
-echo "bsp ready: $BSP_DIR @ $(git -C "$BSP_DIR" rev-parse --short HEAD)"
+if [ -e "$BSP_DIR/.git" ] && rev="$(git -C "$BSP_DIR" rev-parse --short HEAD)"; then
+  echo "bsp ready: $BSP_DIR @ $rev"
+elif [ -d "$BSP_DIR/lib/data/board" ]; then
+  echo "bsp ready: $BSP_DIR (not a git checkout)"
+else
+  echo "sync-bsp: no board configs in $BSP_DIR/lib/data/board" >&2
+  exit 1
+fi
