@@ -286,6 +286,16 @@ async function runInstance(flash, runDir, log) {
     if (!(test in inst.verdicts)) inst.verdicts[test] = { status: "PASS", why };
   };
 
+  const hwError = () => {
+    if (!/hardware error:|Invalid board config/.test(inst.stderrTail)) return false;
+    const line = inst.stderrTail.split("\n").find((l) => /hardware error:|Invalid board config/.test(l)) || "";
+    inst.mark("hwError", line.trim());
+    fail("boot-init", line.trim());
+    fail("boot-progress", line.trim());
+    fail("no-exit", line.trim());
+    return true;
+  };
+
   let prev = null;
   let benchDone = false, initDone = false, stableGrace = 0;
   const t0 = Date.now();
@@ -293,7 +303,11 @@ async function runInstance(flash, runDir, log) {
 
   while (true) {
     const elapsed = (Date.now() - t0) / 1000;
-    if (inst.dead) { inst.mark("pollDead"); break; }
+    if (inst.dead) {
+      inst.mark("pollDead");
+      hwError(); // an abort can land while the loop sleeps between polls
+      break;
+    }
     if (elapsed > TIMEOUT) { inst.mark("pollTimeout"); break; }
 
     const shot = path.join(runDir, `shot-${pollN}.ppm`);
@@ -315,14 +329,7 @@ async function runInstance(flash, runDir, log) {
       fail("no-exit", `firmware abort @${elapsed.toFixed(0)}s`);
       break;
     }
-    if (/hardware error:|Invalid board config/.test(inst.stderrTail)) {
-      const line = inst.stderrTail.split("\n").find((l) => /hardware error:|Invalid board config/.test(l)) || "";
-      inst.mark("hwError", line.trim());
-      fail("boot-init", line.trim());
-      fail("boot-progress", line.trim());
-      fail("no-exit", line.trim());
-      break;
-    }
+    if (hwError()) break;
 
     // milestones
     if (s.serialBytes > 0 && inst.since("serialFirst") === null) inst.mark("serialFirst", s.serialBytes);
@@ -386,7 +393,9 @@ async function runInstance(flash, runDir, log) {
   // final verdicts
   if (!("boot-init" in inst.verdicts)) {
     const ic = readInsnFile(inst.insnFile);
-    if ((ic?.insns ?? 0n) >= BigInt(INIT_MIN_INSNS)) pass("boot-init", "late sample");
+    const died = inst.since("processExit");
+    if (died !== null && died < INIT_SECS) fail("boot-init", `emulator died at ${died.toFixed(0)}s, before the ${INIT_SECS}s sample`);
+    else if ((ic?.insns ?? 0n) >= BigInt(INIT_MIN_INSNS)) pass("boot-init", "late sample");
     else fail("boot-init", "no insn sample");
   }
   if (!("boot-progress" in inst.verdicts)) {
