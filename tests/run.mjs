@@ -80,6 +80,12 @@ for (const f of FLASHES) {
   }
 }
 
+const PLUGIN = path.join(ROOT, "tests", "insncount.so");
+if (!fs.existsSync(PLUGIN)) {
+  console.error(`plugin missing: ${PLUGIN} (scripts/build-plugins.sh builds it)`);
+  process.exit(2);
+}
+
 // --- helpers ----------------------------------------------------------------
 const fmt = (n) => {
   const x = typeof n === "bigint" ? Number(n) : n;
@@ -166,7 +172,7 @@ class Instance {
     const runNative = path.join(ROOT, "scripts", "run-native.sh");
     this.child = spawn(runNative, [
       this.flash.path,
-      "-plugin", `file=${ROOT}/tests/insncount.so,count=${this.insnFile}`,
+      "-plugin", `file=${PLUGIN},count=${this.insnFile}`,
     ], {
       env: {
         ...process.env,
