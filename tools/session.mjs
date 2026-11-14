@@ -38,6 +38,18 @@ const LOG = path.join(TOOLS, ".session.log");
 const PORT = process.env.PORT || "8080";
 const URL_ = () => `http://127.0.0.1:${PORT}/`;
 
+// a socket that answers belongs to a session that is still running:
+// unlinking it would orphan that one, browser and page included
+const live = await new Promise((resolve) => {
+  const c = net.connect(SOCK);
+  c.on("connect", () => { c.destroy(); resolve(true); });
+  c.on("error", () => resolve(false));
+});
+if (live) {
+  console.error(`session: one is already running on ${SOCK} (node tools/ctl.mjs quit stops it)`);
+  process.exit(1);
+}
+
 if (process.argv.includes("--daemon")) {
   const out = fs.openSync(LOG, "a");
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
