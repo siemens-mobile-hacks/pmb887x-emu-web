@@ -1,6 +1,6 @@
 // Test suite + benchmark for the pmb887x emulator (native build).
 //
-// Boots every "currently working" fullflash (s75, el71, c81) in parallel
+// Boots every "currently working" fullflash (s75, el71, c81, ke800, ke970) in parallel
 // with scripts/run-native.sh's boot recipe (same -icount, OTP env, etc),
 // drives the HMP monitor for progress signals, and checks:
 //
@@ -14,7 +14,7 @@
 //
 // Usage:
 //   node tests/run.mjs [--label NAME] [--timeout SECS] [--bench-secs SECS]
-//                      [--parallel N] [--out FILE] [--flash id[,id...]]
+//                      [--poll-ms MS] [--out FILE] [--flash id[,id...]]
 //                      [--keep]   (keep run dirs under /tmp)
 //
 // Env: QEMU_BIN + BOARDS_DIR are forwarded to run-native.sh (defaults:
