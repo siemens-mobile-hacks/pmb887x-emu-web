@@ -1168,9 +1168,15 @@ async function applyFullflashFile(file) {
  * semihosting exit from the vCPU thread would tear the page down first;
  * tools/tcgisa.mjs reads the serial log up to its "# result:" line. */
 /* ?dist=<dir>: which build output to run (default dist-jit/; tools point
- * this at side-by-side builds).  boards.tar is always served from dist/. */
-const DIST = QS.get("dist") || null;
+ * this at side-by-side builds).  boards.tar is always served from dist/.
+ * Only a directory name under site/ is taken, anything else blocks Start;
+ * the wasm fetch and the loader import both resolve against ENGINE_DIR,
+ * since fetch() and import() resolve a free-form value differently. */
 const DIST_DEFAULT = "dist-jit";
+const DIST = QS.get("dist") || null;
+const DIST_OK = !DIST || (/^[\w.-]+$/.test(DIST) && !/^\.\.?$/.test(DIST));
+const ENGINE_DIR = new URL(`${DIST_OK && DIST || DIST_DEFAULT}/`, import.meta.url);
+const engineUrl = (file) => new URL(file, ENGINE_DIR).href;
 
 /* ---- engine prefetch ------------------------------------------------ */
 /* The qemu wasm (~12 MB, ~4 on the wire) is the long pole of a first
@@ -1191,7 +1197,7 @@ function startEngine() {
   const ctl = new AbortController();
   const st = { ctl, loaded: 0, total: 0 };
   st.promise = (async () => {
-    const url = `${DIST || DIST_DEFAULT}/qemu-system-arm.wasm`;
+    const url = engineUrl("qemu-system-arm.wasm");
     const res = await fetch(url, { signal: ctl.signal });
     if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
     // a gzipped body (serve.mjs' sidecar) decodes to more bytes than
@@ -1409,7 +1415,7 @@ async function bootSuite(url) {
     checkCancel();
     const engineWasmMod = await ensureEngine();
     checkCancel();
-    const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
+    const factory = (await import(engineUrl("qemu-system-arm.js"))).default;
     checkCancel();
     /* ?icount=1: the icount timing model — measures the icount
      * tax on the tcgbench workload (TB icount-capping + accounting +
@@ -1496,6 +1502,7 @@ async function runEsnRecovery(identity, device) {
 }
 
 async function boot() {
+  if (!DIST_OK) return;   // the overlay already says why
   // guest op-suite mode: no fullflash, no boards.tar needed
   {
     const suiteUrl = QS.get("suite");
@@ -1633,7 +1640,7 @@ async function boot() {
     // Compile the factory fresh per boot (the emscripten ES6 factory is
     // single-use once main() has run through exit()).
     showOverlay("Loading emulator…");
-    const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
+    const factory = (await import(engineUrl("qemu-system-arm.js"))).default;
     checkCancel();
     showOverlay("Booting…", device);
 
@@ -3551,6 +3558,10 @@ if (selectedPreset) syncKeyboardToDevice(inferDevice(selectedPreset.files[0]));
 setAspect();
 
 if (!crossOriginIsolated) diagnoseIsolation();
+if (!DIST_OK) {
+  setError(`?dist= must name a build directory under the site, such as ${DIST_DEFAULT} — not “${DIST}”`,
+    { block: true });
+}
 boardsReady = loadBoards().catch((e) => {
   setError("boards.tar: " + e, { block: true });
   return null; // resolved-with-null: boot() re-checks boardsBuf below
@@ -3566,7 +3577,7 @@ boardsReady = loadBoards().catch((e) => {
   const kick = () => {
     // Start is blocked on a page that is not cross-origin isolated; device
     // detection still uses the Siemens module there
-    if (crossOriginIsolated) startEngine();
+    if (crossOriginIsolated && DIST_OK) startEngine();
     loadSiemensFW().catch(() => {});
   };
   const idle = "requestIdleCallback" in window
