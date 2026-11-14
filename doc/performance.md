@@ -604,6 +604,90 @@ bash scripts/gate.sh close --dist dist-x           # before the last commit of a
   did not, each rewind left the count ahead, and the `LS_QARGS` run diverged
   wherever rewinds were frequent, which is what A5's barriers prevented.
 
+#### What lockstep-wasm compares (2026-11-14)
+
+The wasm gate jobs match almost no E lines: the last close gate (cd9360a)
+had 22, 22 and 18 of 2384 in `lockstep-full` and 15 of 238 in
+`lockstep-wasm`, each first differing at epoch 1. In M lines, 21 of 298
+SDRAM digests matched; every SRAM digest matched. The close gate at
+038582c, after this round's changes, has the same picture: 18, 22 and 14
+of 2384, 21 of 238, SDRAM 21 of 298 and 21 of 29. That is not a setup
+difference, and through 200M not a guest divergence. **The wasm fold
+counts instructions that the native plugin does not count**, so from
+66,976 instructions on the two legs sample different instructions:
+
+1. **TB-start exits.** The prologue charges a TB's instructions before the
+   TB's own exit check (`gen_tb_start`: icount budget, exit request). A TB
+   that leaves there runs nothing, but the charge stays: `cpu_tb_exec` does
+   not hand it back on `TB_EXIT_REQUESTED`, and `w64_acct_unwind` covers
+   unwinds only. The plugin's inline counter sits after that check. Such
+   exits are deterministic (the icount refill every 65,535 instructions,
+   deadlines, interrupts) plus host-timed exit requests. The first one is
+   at 66,976 (pc `0x4007dc`; native `-d exec` logs "Stopped execution of TB
+   chain" there). At 2M the wasm count was 30 ahead in two runs and 31 in a
+   third, and the native leg has exactly 30 such exits after the reset.
+   A refund in `cpu_tb_exec` alone would be wrong: the ARM back-edge
+   (`w64_back_edge`) leaves through the same label without having charged
+   its next pass.
+2. **DSP blocks.** The Teak blocks are compiled by the same backend
+   (`tcg_compile_block` → `tcg_gen_code`), so their prologues also call
+   `w64_lockstep_account()` with the DSP block's instruction count. The
+   counted DSP instructions land on the ARM instruction that accessed the
+   DSP (a base register holding `0xF6000000` or `0xF600100A`). Native DSP
+   blocks have no plugin hooks.
+
+The guest itself was not seen to diverge through 200M. Dense windows
+(period 1) of 131,072 instructions on both legs were aligned with vectors
+that are unique in both windows. The wasm count was this far ahead:
+
+| Native insns | Wasm ahead by | Note |
+|---|---|---|
+| 2M | 30 or 31 | = the native TB-start exits (30) |
+| 15M | 257 → 259 | one step every 65,535 instructions |
+| 60M, 90M, 120M | ~1,285, ~1,859, ~2,449 | |
+| 128M → 136M | ~2,603 → ~48,790 | DSP start; jumps of 7–57 within the 136M window |
+| 144M, 150M, 175M | ~49,999, ~49,926, ~50,591 | windows from separate runs; the count has a run-dependent part |
+| 200M | ~182,713 | 97,004 of 97,484 unique wasm vectors aligned against a native window from 199.5M |
+| 1e9 | not found | no unique wasm vector occurs in a native window from 990M (10M instructions); the pcs are the same code, the closest vectors differ in 2–4 registers. Open: either the count is more than 10M ahead (175M–200M added ~132k) or the guests differ |
+
+So the guests agree through 200M at least. Later points need the fold
+fixed; after that the E lines would show it directly.
+
+The ~20 E lines that match are samples where both legs sit in a polling
+loop whose register vector repeats. The SDRAM slice digests are taken at
+different instructions too: they match while the slice is static and
+differ from 184M on, when it changes every few thousand instructions.
+
+What the job's verdict rests on today:
+
+- **Internal SRAM digest ("HARD").** The firmware writes
+  `0x800000+0x18000` only in its first ~15.5M instructions. From 16.8M to
+  2.5e9 the digest is a single constant value, so 297 of 298 M lines
+  compare an unchanging range.
+- **Serial ("HARD").** S75 prints nothing on its serial port unless it
+  crashes, so "serial identical" compares two empty files. The native suite
+  shows `ser=0B` for S75 over 56 s as well. It is not a tool fault: the
+  page's serial path delivers the EXIT dumps that `exitcheck.mjs` and
+  `bootcheck.mjs` read.
+- **Budget and config line.** Both legs must reach the budget, with the
+  same `C` line.
+
+Fixing this needs a qemu change, which is the owner's call:
+
+- the prologue charge must not count a TB that leaves at its start
+  (charge after the exit check, or tell the TB-start exit from the
+  back-edge exit);
+- DSP block prologues must not call the lockstep fold.
+
+Until then, a hard E or SDRAM criterion would fail every run on the
+counting alone. Removed setup differences, which did not change the
+numbers: the page leg now boots the native leg's board, with the keys run
+as is (recalculating changes 0 bytes of the s75, s75-v40 and el71 images).
+The other option differences were not seen to reach the guest, since the
+alignment holds through 200M: `-display wasm` against `none`, `-parallel none`,
+the monitor, and the writable flash (writability only enables the
+host-side writeback). GSM and audio left the page leg in `8275b61`.
+
 ### DSP unit tests
 
 ```bash
