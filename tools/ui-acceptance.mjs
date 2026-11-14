@@ -10,6 +10,9 @@ import { readFile } from "node:fs/promises";
 
 const PORT = process.env.PORT || "8080";
 const URL_ = `http://127.0.0.1:${PORT}/`;
+// what the page's short user agent starts with on this host's desktop
+// Chrome (its reduced user agent says x86_64 on every Linux)
+const UA_OS = { linux: "Linux x86_64", darwin: "macOS", win32: "Windows x64" }[process.platform] ?? "[^·]+";
 
 let fails = 0, count = 0;
 function ok(name, cond, extra = "") {
@@ -370,7 +373,7 @@ ok("v4.G the strip is aria-hidden", await page.$eval("#hud", (e) => e.getAttribu
 ok("v4.2 Copy diagnostics is in the Keyboard/Export panel", await page.evaluate(() =>
   document.querySelector("#post-panel #btn-diag")?.textContent.trim() === "Copy diagnostics"));
 ok("v4.2 short user agent: " + await page.evaluate(() => window.__hud.shortUserAgent()),
-  /^Linux x86_64 · Chrome \d+$/.test(await page.evaluate(() => window.__hud.shortUserAgent())));
+  new RegExp(`^${UA_OS} · Chrome \\d+$`).test(await page.evaluate(() => window.__hud.shortUserAgent())));
 ok("v4.2 nothing missing shows up as undefined",
   !/undefined/.test(await page.evaluate(() => window.__hud.shortUserAgent())));
 ok("v4.2 it is built once per page load", await page.evaluate(() =>
@@ -407,7 +410,7 @@ ok("v4.3 monospace, tabular figures, never wrapped", await page.evaluate(() =>
       && (s.whiteSpace === "pre" || s.whiteSpace === "nowrap") && s.overflow === "hidden";
   })));
 ok("v4.3 line 2 is the environment: " + await text("#hud-env"),
-  /^Linux x86_64 · Chrome \d+ · \d+c( · \d+ GB)?( · isolated)?$/.test(await text("#hud-env")));
+  new RegExp(`^${UA_OS} · Chrome \\d+ · \\d+c( · \\d+ GB)?( · isolated)?$`).test(await text("#hud-env")));
 ok("v4.3 no 10 s averages in the strip", !/10s|avg/i.test(await text("#hud")));
 ok("v4.5 legible over the screen, muted line 2", await page.evaluate(() => {
   const bg = getComputedStyle(document.getElementById("hud")).backgroundColor;
