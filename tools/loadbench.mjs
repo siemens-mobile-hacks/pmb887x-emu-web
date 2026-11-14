@@ -23,7 +23,7 @@
 //   PORT=8081 PROFILE=/tmp/lb-cand node tools/loadbench.mjs 60   # warm
 
 import { chromium } from "playwright-core";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fullflash } from "./testflash.mjs";
@@ -32,6 +32,9 @@ const secs = Number(process.argv[2] || process.env.SECS || 60);
 const port = process.env.PORT || "8080";
 const profile =
   process.env.PROFILE || mkdtempSync(join(tmpdir(), "loadbench-"));
+if (!process.env.PROFILE) {
+  process.on("exit", () => { try { rmSync(profile, { recursive: true, force: true }); } catch {} });
+}
 const net = Number(process.env.NET || 0);
 const lat = Number(process.env.LAT_MS || 0);
 
