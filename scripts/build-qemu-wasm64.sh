@@ -107,28 +107,8 @@ echo "== ninja qemu-system-arm.js"
 SRC_ID="$(bash scripts/qemu-source-id.sh "$BUILD_DIR")"
 ninja -C "$BUILD_DIR" qemu-system-arm.js
 
-echo "== deploy -> $DIST (atomic: temp name + rename — the server may
-   be serving the previous artifact; a plain cp can serve a torn 45 MB file)"
-mkdir -p "$DIST"
-for f in qemu-system-arm.js qemu-system-arm.wasm; do
-  cp "$BUILD_DIR/$f" "$DIST/.$f.tmp"
-  mv -f "$DIST/.$f.tmp" "$DIST/$f"
-done
-# Refresh the symbol-map sidecar too (stale maps poison wprof2 profiles —
-# the 2026-09-11 session burned a whole profile round on this).
-for f in "$BUILD_DIR"/qemu-system-arm.js.symbols; do
-  [ -f "$f" ] && cp "$f" "$DIST/" && break
-done
-# what tools/lockstep-wasm.mjs matches the native reference against
-echo "$SRC_ID" > "$DIST/qemu-source.txt"
-# board configs (site/dist/boards.tar, what the page always fetches) are not
-# part of this build's ninja graph — refresh them with the deploy.
-# Both of these live in the shared site/dist/ and are live inputs to whatever
-# is being benchmarked out of it.
-bash scripts/pack-boards.sh
-# same for the Siemens key module (site/dist/siemens-recalc.wasm), which is
-# built from the pmb887x-emu submodule, not from qemu
-bash scripts/build-recalc-wasm.sh
+echo "== deploy -> $DIST"
+bash scripts/deploy-dist.sh "$BUILD_DIR" "$DIST" "$SRC_ID"
 # The lockstep fold reads the insn budget + grid from the URL (ls-* params).
 ls -la "$DIST"/qemu-system-arm.{js,wasm}
 echo "== done. Serve: node serve.mjs   Run: cd tools && node lockstep-wasm.mjs --runs 3"
