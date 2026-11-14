@@ -1415,6 +1415,7 @@ async function bootSuite(url) {
     running = true;
     runStartedAt = Date.now();
     setEmuState("running");
+    refreshTyping();
   } catch (e) {
     setEmuState("idle");
     if (!startCancelled(e)) {
@@ -3211,7 +3212,8 @@ typeChk.addEventListener("change", () => {
 });
 
 // typing paces its taps through the guest-timed key queue, which a ?dist=
-// built before qemu 8fb9035755 does not export
+// built before qemu 8fb9035755 does not export; the greyed checkbox is what
+// keeps keydown away from it, so every guest that goes live refreshes it
 const canQueueKeys = (m) => !!(m?._wasm_send_key_after && m._wasm_keys_queued && m._wasm_key_last_at);
 
 function refreshTyping() {
@@ -3322,13 +3324,14 @@ async function keysTaken(m) {
 let caseState = { m: null, state: "lower" };
 
 // The case presses round a typed character (keyboards.js caseStep), with
-// the state kept per guest.
+// the state kept per guest. caseStep's own result is handed on, so a
+// character costs one object, as before the split.
 function casePresses(a, m) {
   const up = typing.upper;
   if (up?.capital && caseState.m !== m) caseState = { m, state: "lower" };
-  const { before, after, state } = caseStep(up, caseState.state, a);
-  if (up?.capital) caseState.state = state;
-  return { before, after };
+  const step = caseStep(up, caseState.state, a);
+  if (up?.capital) caseState.state = step.state;
+  return step;
 }
 
 async function pumpTyping() {
@@ -3395,7 +3398,7 @@ const TYPING_TAKES = new Set(["Minus", "Equal", "Slash", "Backquote"]);
 // but AltGr — which reports Ctrl+Alt on Windows — is how many layouts type
 // their letters.
 function typedTaps(e) {
-  if (!typeChk.checked || typeChk.disabled || !canQueueKeys(liveModule())) return null;
+  if (!typeChk.checked || typeChk.disabled || !liveModule()) return null;
   if ((e.ctrlKey || e.altKey || e.metaKey) && !e.getModifierState("AltGraph")) return null;
   if (CODE_TO_KEY[e.code] && !e.shiftKey && !TYPING_TAKES.has(e.code)) return null;
   const ch = e.key === "Enter" ? "\n" : e.key;
@@ -3411,7 +3414,7 @@ function typedTaps(e) {
 // a keydown typing has taken from its shortcut, whether or not this phone
 // can type the character: a phone with no new line (LG) must not take
 // Shift+Enter as the joystick press, which sends the message
-const typingOwns = (e) => typeChk.checked && !typeChk.disabled && canQueueKeys(liveModule())
+const typingOwns = (e) => typeChk.checked && !typeChk.disabled && !!liveModule()
   && (TYPING_TAKES.has(e.code) || (e.key === "Enter" && e.shiftKey))
   && !(e.ctrlKey || e.altKey || e.metaKey);
 
@@ -3419,7 +3422,7 @@ const typingOwns = (e) => typeChk.checked && !typeChk.disabled && canQueueKeys(l
 // the generic Siemens keyboard depends on the device (keyboards.js).
 function eraseKey(e) {
   if (e.code !== "Backspace" || e.ctrlKey || e.altKey || e.metaKey) return null;
-  if (!typeChk.checked || typeChk.disabled || !canQueueKeys(liveModule())) return null;
+  if (!typeChk.checked || typeChk.disabled || !liveModule()) return null;
   return typingSetting(typing.erase) ?? null;
 }
 
