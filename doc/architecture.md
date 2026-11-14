@@ -370,8 +370,12 @@ test plugins, `test-plugins/`) for each one alone.
 ## Correctness / testing ladder
 
 **`scripts/gate.sh quick|keep|close` runs all of the gates below
-concurrently** and prints one verdict table — a gate never reads a wall
-clock as a result, so host load cannot change a verdict. Before its jobs
+concurrently** and prints one verdict table. A gate asks whether the
+guest reaches a state, not how fast; the gates that wait for it by a
+wall-clock deadline (bootcheck's `--secs`, the native suite's boot-init
+and `--timeout`, ffboot's `MAX`, each job's time limit) set it far above
+the time the state takes, so running them together does not change a
+verdict, though an overloaded host can still fail one. Before its jobs
 start it brings the native reference builds (`build-native.sh`, and
 `build-native-tci.sh` when a job needs TCI) up to date with `qemu/`, and
 rebuilds the test plugins (`build-plugins.sh`: `insncount.so` and

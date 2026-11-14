@@ -135,6 +135,7 @@ is not deterministic enough for it even against itself
 ## Notes
 
 - The instances run in parallel, one per fullflash. Under heavy contention a phone may miss a firmware deadline
-  (`>>EXIT<<`) — rerun or reduce parallelism if a flake is suspected.
+  (`>>EXIT<<`) — if a flake is suspected, rerun, or boot that phone alone
+  with `--flash <id>`.
 - `lit` = non-black pixels of the qemu console screendump (240×320 frame
   containing the phone LCD); `col` = saturated-pixel count.

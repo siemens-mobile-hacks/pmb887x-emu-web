@@ -28,11 +28,15 @@
 #   --list       print the jobs of each tier and exit
 #
 # Why this can be parallel at all: a gate asks whether the guest reaches a
-# state, not how fast it got there.  Nothing here reads a wall clock as a
-# result, so host load cannot change a verdict -- which is exactly what is
-# NOT true of the benchmarks (idlebench/uibench/tcgbench/loadbench), and
-# they must still be run alone on a quiet host.  Keep the two apart: gates
-# in parallel, measurements serial.
+# state, not how fast it got there.  Some ask it by a wall-clock deadline
+# (bootcheck's --secs and its instruction minimums, the native suite's 15 s
+# boot-init and --timeout, ffboot's MAX, and the job time limits below), but
+# each is set far above the time the state takes, so the load of the gates
+# running together does not change a verdict.  An overloaded host can still
+# fail one: rerun that job alone before believing it.  The benchmarks
+# (idlebench/uibench/tcgbench/loadbench) are different: their result IS a
+# time, and they must be run alone on a quiet host.  Keep the two apart:
+# gates in parallel, measurements serial.
 #
 # Exit 0 iff every job in the tier passed.  Per-job logs land in
 # tests/results/gate-<stamp>-<random>/<job>.log and the failing tail is printed.

@@ -482,8 +482,11 @@ rules, the measuring method, the cost model, closed ideas and history.
   `towerblox` on the S75) and measures sound as well: dropouts and
   silenced time while the guest plays.
 - Gates: **`bash scripts/gate.sh keep`** builds the native references and
-  then runs every gate at once. A gate never reads a wall clock as a
-  result, so unlike the benchmarks it is safe to parallelise. `gate.sh
+  then runs every gate at once. A gate asks whether the guest reaches a
+  state; where it waits for it by a wall-clock deadline, the deadline is
+  far above the time the state takes, so unlike the benchmarks the gates
+  can run in parallel (an overloaded host can still fail one: rerun that
+  job alone). `gate.sh
   close` adds the ordered boot of all five boards in one browser, the
   native lockstep, the 2.5e9 lockstep, Firefox, device detection, the EFA
   page test and the UI checks.
