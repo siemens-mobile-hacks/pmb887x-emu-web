@@ -41,9 +41,10 @@
  *    otherwise seeds from host time — the one real nondeterminism
  *    source found; under -icount the vm clock is guest-driven).
  *
- * At each sample the full GPR+CPSR vector is folded into a per-epoch
- * hash; every epoch an E-line is emitted; every `meminsns` the
- * configured memory ranges are digested into an M-line. All boundaries
+ * Every epoch an E-line carries a hash of the GPR+CPSR vector at the
+ * epoch's last sample (the samples in between feed only the dense
+ * T-lines); every `meminsns` the configured memory ranges are digested
+ * into an M-line. All boundaries
  * are insn-indexed — byte-diffable across backends. Dense mode
  * (period=1) dumps a T-line per insn for localization of a divergent
  * epoch down to the exact insn + register vector, which then bisects
@@ -63,8 +64,9 @@
  *              ':' between ranges — ',' is qemu's plugin-arg separator)
  *   from/to    dense dump window of insn indices [from,to): every insn
  *              in the window gets a T-line (~150 bytes each)
- *   corrupt    positive control: flip one bit of r0 at the first sample
- *              at/after this insn (the harness must flag + localize it)
+ *   corrupt    positive control: flip one bit of r0 from the first sample
+ *              at/after this insn up to the next E-line, so that epoch
+ *              diverges (the harness must flag + localize it)
  *   stop_at    with stop_at=<insn>, exit the emulator after the first
  *              sample at/after that insn has run (X-line at the sample,
  *              exactly that many insns executed) — used to stop a side
@@ -80,8 +82,9 @@
  *   T <vcpu> <insn> <regs_hash> <r0> ... <r12> <sp> <lr> <pc> <cpsr> (dense)
  *   X <vcpu> <insn_total> <samples> <regs_all>             (at exit)
  *
- * Epoch hashes reset per epoch (localization granularity = 1 epoch);
- * regs_all folds the epoch hashes (whole-run equality check).
+ * An E-line hash covers its own sample only (localization granularity =
+ * 1 epoch); regs_all folds the E-line hashes (whole-run equality check).
+ * The T-line regs_hash is a running fold of the epoch's samples so far.
  */
 #include <inttypes.h>
 #include <stdio.h>
@@ -105,8 +108,8 @@ struct memrange {
 
 struct vstate {
     uint64_t samples;      /* samples taken = floor(insns/period) */
-    uint64_t regs;         /* per-epoch regs hash */
-    uint64_t regs_all;     /* fold of epoch hashes */
+    uint64_t regs;         /* running fold of the epoch's samples (T-lines) */
+    uint64_t regs_all;     /* fold of the E-line hashes */
 };
 
 static FILE *logf;
@@ -117,6 +120,7 @@ static struct memrange memr[MAX_MEM];
 static int n_memr;
 static uint64_t tr_from = 0, tr_to = 0; /* dense window, empty by default */
 static uint64_t corrupt_at = 0;        /* positive-control hook (tests) */
+static int corrupting;                 /* r0 flipped until the next E-line */
 static uint64_t stop_at = 0;           /* exit after first sample at/after */
 static int x_written = 0;
 
@@ -210,11 +214,15 @@ static void on_sample(unsigned int vcpu, void *ud)
     uint64_t vals[MAX_REGS];
     read_regs(vals);
 
-    /* positive control: inject a 1-bit value bug at (the first sample at
-     * or after) this insn — the driver's digest comparison must flag the
+    /* positive control: inject a 1-bit value bug from (the first sample at
+     * or after) this insn until the epoch's E-line, which only hashes the
+     * epoch's last sample — the driver's digest comparison must flag the
      * epoch and the dense rerun must pinpoint the insn (--corrupt) */
     if (corrupt_at && insn_total >= corrupt_at) {
         corrupt_at = 0;
+        corrupting = 1;
+    }
+    if (corrupting) {
         vals[0] ^= 1;
     }
 
@@ -243,11 +251,11 @@ static void on_sample(unsigned int vcpu, void *ud)
     if (insn_total % epoch_insns == 0) {
         uint64_t epoch = insn_total / epoch_insns;
         /* Point-in-time hash of the register vector at this sample (folds
-         * in idx so an off-by-one sample still diverges). The per-epoch
-         * running digest `s->regs` is kept for regs_all but is not what the
-         * E-line reports: comparing a rolling hash across backends is
-         * fragile (it amplifies any transient), whereas the register vector
-         * is the ground truth the gate checks. */
+         * in idx so an off-by-one sample still diverges). The running
+         * digest `s->regs` only feeds the dense T-lines: comparing a
+         * rolling hash across backends is fragile (it amplifies any
+         * transient), whereas the register vector is the ground truth the
+         * gate checks. */
         uint64_t ehash = fnv1a(FNV0, &idx, sizeof idx);
         ehash = fnv1a(ehash, vals, n_regh * sizeof(uint64_t));
         s->regs_all = fnv1a(s->regs_all, &ehash, sizeof ehash);
@@ -256,6 +264,7 @@ static void on_sample(unsigned int vcpu, void *ud)
                 (unsigned long long)ehash);
         fflush(logf);
         s->regs = FNV0;
+        corrupting = 0;
     }
     if (insn_total % mem_insns == 0) {
         fprintf(logf, "M %u %llu", vcpu,

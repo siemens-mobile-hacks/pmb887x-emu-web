@@ -95,11 +95,11 @@ SELF=1 scripts/run-lockstep.sh           # harness self-check (JIT vs JIT)
 node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
 ```
 
-- **Plugin** `tests/lockstep.c` (built to `tests/lockstep.so`): folds
-  the r0–pc + CPSR vector (sampled every 2^16 executed guest insns, via
-  an inline per-insn counter + conditional callback) and SRAM/SDRAM
-  digests into a tiny text log — one E-line per 2^20 insns, one M-line
-  per 2^23. Sampling is keyed on *executed guest instructions*, not TB
+- **Plugin** `tests/lockstep.c` (built to `tests/lockstep.so`): samples
+  the r0–pc + CPSR vector every 2^16 executed guest insns (an inline
+  per-insn counter + conditional callback) and writes a tiny text log —
+  one E-line per 2^20 insns with a hash of the vector at that sample,
+  one M-line of SRAM/SDRAM digests per 2^23. Sampling is keyed on *executed guest instructions*, not TB
   boundaries (TB partitioning is TCG-internal — see the plugin header
   for the three qemu properties this design owes to).
 - **Driver** `tools/lockstep.mjs`: boots the fullflash on both binaries
@@ -113,9 +113,9 @@ node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
   re-runs both sides with a dense per-insn dump window over the
   divergent epoch and reports the exact first differing insn + register
   vector — hand that to the op-suite (`tests/tcg-isa`) to bisect by op.
-- **Positive control**: `--corrupt N` flips one bit of r0 at insn N on
-  the b-side only; the gate must flag the containing epoch and the
-  dense rerun must pinpoint insn N.
+- **Positive control**: `--corrupt N` flips one bit of r0 on the b-side
+  only, from insn N to the end of its epoch; the gate must flag that
+  epoch and the dense rerun must pinpoint insn N.
 
 The gate is JIT vs TCI on S75, 3 × 2.5G guest insns (a full boot through
 idle), run in parallel. Lockstep requires the icount timing model. SL65
