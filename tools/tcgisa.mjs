@@ -75,7 +75,7 @@ for (;;) {
       }
     });
     serial = s;
-    if (/^# result:/m.test(serial)) break; // verdict printed — done
+    if (/^# result:.*\n/m.test(serial)) break; // whole verdict line printed
   } catch (e) {
     // page closed mid-run without the bridge: keep whatever we have
     break;
