@@ -95,7 +95,7 @@
 //   PORT=8094 node tools/idlebench.mjs dist-jit --board ke800 --max 240
 import { chromium } from "playwright-core";
 import { createHash } from "node:crypto";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -220,7 +220,9 @@ let chromeVer = "unknown";
 function rssMB(marker) {
   try {
     let pid;
-    try { pid = +execSync(`pgrep -f "${marker}" | head -1`, { encoding: "ascii" }).trim(); } catch { return null; }
+    // no shell: the marker carries the dist spec, which may hold any query
+    const pattern = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    try { pid = +execFileSync("pgrep", ["-f", pattern], { encoding: "ascii" }).split("\n")[0]; } catch { return null; }
     if (!pid) return null;
     const out = execSync("ps -eo pid=,ppid=,rss=,comm=", { encoding: "ascii" });
     const rowsArr = [];
