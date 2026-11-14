@@ -1715,6 +1715,8 @@ async function boot() {
       }
       if (debug) { console.log("[qemu]", t); return; }
       const n = (seenMsg.get(t) ?? 0) + 1;
+      // with ?trace= every line is distinct
+      if (n === 1 && seenMsg.size >= 4096) seenMsg.clear();
       seenMsg.set(t, n);
       if (n === 1 || n % 500 === 0) console.log(`[qemu${n > 1 ? " x" + n : ""}]`, t);
     };
