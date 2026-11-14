@@ -29,16 +29,17 @@ note() { echo "build-release: $*"; }
 
 # ---- 1. qemu source = the pin, exactly --------------------------------
 
+# init only the top-level submodules (not pmb887x-emu's nested qemu);
+# the checkout below is forced unconditionally, so local edits cannot
+# ride along.  First, or on a fresh clone the fetch runs in the parent.
+git submodule update --init
+
 # Best-effort: make the pinned objects available when the pin was just
 # bumped (GitHub allows fetching SHAs).  Harmless when present, tolerated
 # when offline.
 git -C qemu fetch origin "$QEMU_PMB887X_REV" 2>/dev/null ||
   note "fetch of $QEMU_PMB887X_REV failed (offline?) — continuing with local objects"
 
-# init only the top-level submodules (not pmb887x-emu's nested qemu);
-# the checkout below is forced unconditionally, so local edits cannot
-# ride along.
-git submodule update --init
 git -C qemu checkout -q -f -B "$QEMU_PMB887X_BRANCH" "$QEMU_PMB887X_REV"
 [ -z "$(git -C qemu status --porcelain)" ] ||
   note "WARNING: qemu/ still dirty after forced checkout (untracked files — inspect with: git -C qemu status)"
