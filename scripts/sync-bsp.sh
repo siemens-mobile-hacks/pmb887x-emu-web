@@ -10,10 +10,11 @@
 # recreate. A plain checkout of PMB887X_BSP_REV is the whole story.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$ROOT/versions.env"
+WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$WEB_DIR/versions.env"
+source "$WEB_DIR/scripts/build-dirs.sh"
 
-BSP="${PMB887X_BSP_DIR:-$ROOT/build/bsp}"
+BSP="$BSP_DIR"
 
 if [ ! -d "$BSP/.git" ]; then
   git clone "$PMB887X_BSP_REPO" "$BSP"
