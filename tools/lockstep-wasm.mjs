@@ -26,7 +26,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Side, compareDigestLogs, FLASHES, claimRunStamp, PLUGIN } from "./lockstep.mjs";
+import { Side, compareDigestLogs, FLASHES, claimRunStamp, PLUGIN, quitAll, requireLogs } from "./lockstep.mjs";
 import { bounded, loadOwnFlash, pageCall, PageUnresponsive } from "./lib/page.mjs";
 import { NATIVE_JIT_BIN } from "./lib/build-dirs.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
@@ -83,6 +83,9 @@ function parseArgs() {
 const fmt = (n) => n.toLocaleString("en-US");
 
 // --- the browser leg -----------------------------------------------------------
+// every page leg started and not yet quit
+const liveWasm = new Set();
+
 class WasmSide {
   constructor(name, dir, args) {
     this.name = name;
@@ -115,6 +118,7 @@ class WasmSide {
 
   async start(flashPath, port, dist) {
     fs.mkdirSync(this.dir, { recursive: true });
+    liveWasm.add(this);
     const q = [
       `dist=${dist}`,
       // the page's default vcpu-timers clock is not deterministic
@@ -297,6 +301,7 @@ class WasmSide {
   }
 
   async quit() {
+    if (!liveWasm.delete(this)) return;
     if (this.page && !this.unresponsive) {
       // final screenshot of the wasm leg (saved into the run dir, the
       // driver copies it to tests/results next to the JSON)
@@ -421,111 +426,129 @@ let fail = false;
 
 const worker = async (wi) => {
   for (let r = wi; r < args.runs; r += args.par) {
-    const dir = path.join(baseDir, `run${r}`);
-    log(`== run ${r + 1}/${args.runs}: JIT(native) vs wasm64(browser) flash=${args.flash} budget=${fmt(args.insns)} insns`);
-    let pair;
     try {
-      pair = await runPairWasm(args, flash, dir, log);
+      await oneRun(r);
     } catch (e) {
-      if (!(e instanceof StartError)) throw e;
+      // this run failed; the others go on, and every leg still up is quit
+      // at the end
       fail = true;
-      log(`!! run ${r + 1}: the page leg did not start: ${e.message}`);
-      results.push({ run: r + 1, startError: e.message, earlyExit: [], cmp: null, serialIdentical: null });
-      continue;
+      const msg = String(e?.message || e).split("\n")[0];
+      log(`!! run ${r + 1} failed: ${msg}`);
+      results.push({ run: r + 1, error: msg, earlyExit: [msg], cmp: null, serialIdentical: null });
     }
-    const { a, b, reasons, wallS } = pair;
-    // end-state screenshots -> tests/results: the wasm leg's page + LCD
-    // crop, plus the native leg's screendump when it's still around at
-    // quit time (the plugin's stop_at normally self-exits it first)
-    const screenshots = {};
-    const aPng = ppmFileToPng(path.join(a.dir, "final.ppm"));
-    if (aPng) {
-      const out = path.join(ROOT, "tests", "results",
-        `lockstep-${args.label}-${stamp}-run${r + 1}-a.png`);
-      fs.writeFileSync(out, aPng);
-      screenshots.a = out;
-    }
-    for (const suffix of ["", "-lcd"]) {
-      const f = path.join(b.dir, `final${suffix}.png`);
-      if (fs.existsSync(f)) {
-        const out = path.join(ROOT, "tests", "results",
-          `lockstep-${args.label}-${stamp}-run${r + 1}-b${suffix}.png`);
-        fs.copyFileSync(f, out);
-        screenshots[suffix ? "bLcd" : "b"] = out;
-      }
-    }
-    const runRes = {
-      run: r + 1, dir, wallS, screenshots,
-      a: { insns: a.progress.insns, epoch: a.progress.epoch, exit: a.exitCode },
-      b: { insns: b.progress.insns, epoch: b.progress.epoch, exit: b.exitCode },
-      earlyExit: reasons, cmp: null, serialIdentical: null,
-    };
-    try {
-      runRes.serialIdentical =
-        fs.readFileSync(a.serial).equals(fs.readFileSync(b.serial));
-    } catch { runRes.serialIdentical = null; }
-    if (!fs.existsSync(b.log)) {
-      fail = true;
-      log(`!! wasm leg produced no lockstep log — ${dir}/b (status/error?)`);
-      log(`   b last progress: insns=${fmt(b.progress.insns)} epoch=${b.progress.epoch}`);
-      log(`   b page errors: ${(b.errTail || "").slice(-400)}`);
-      results.push(runRes);
-      continue;
-    }
-    // HARD: config, serial, internal-SRAM (range 0). SOFT (opts below):
-    // register E-lines + the SDRAM slice, sampled at other instructions on
-    // the wasm leg (doc/performance.md, "What lockstep-wasm compares").
-    const cmp = compareDigestLogs(a.log, b.log, { soft: ["epoch", "mem-sdram"] });
-    const serialFail = runRes.serialIdentical !== true;
-    runRes.cmp = { commonEpochs: cmp.commonEpochs, commonSram: cmp.commonSram,
-                   commonSdram: cmp.commonSdram, commonMem: cmp.commonMem,
-                   truncated: cmp.truncated,
-                   diverged: cmp.diverged && { ...cmp.diverged, lineA: undefined, lineB: undefined },
-                   soft: (cmp.soft || []).map((s) => ({ ...s, lineA: undefined, lineB: undefined })) };
-    log(`   a: ${fmt(a.progress.insns)} insns / epoch ${a.progress.epoch}` +
-        `   b: ${fmt(b.progress.insns)} insns / epoch ${b.progress.epoch}` +
-        `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical"
-          : runRes.serialIdentical === false ? "DIFFERS" : "UNREADABLE"}`);
-    if (serialFail) {
-      fail = true;
-      log(runRes.serialIdentical === false
-        ? `!! SERIAL DIVERGENCE run ${r + 1}: the two legs' serial output differs (real bug)`
-        : `!! run ${r + 1}: a leg's serial log could not be read, so serial was not compared`);
-    }
-    if (reasons.length) {
-      fail = true;
-      log(`!! run ${r + 1} did not run the whole budget: ${reasons.join("; ")}`);
-    }
-    if (cmp.diverged) {
-      fail = true;
-      log(`!! DIVERGENCE run ${r + 1}: ${cmp.diverged.kind}` +
-          (cmp.diverged.kind === "mem"
-            ? ` @ insns=${fmt(cmp.diverged.insnsA)} (internal SRAM digest), differing: ${(cmp.diverged.fields || []).join(", ")}`
-            : cmp.diverged.kind === "epoch"
-              ? ` @ epoch ${cmp.diverged.epoch}`
-              : ""));
-      log(`   a: ${cmp.diverged.lineA}`);
-      log(`   b: ${cmp.diverged.lineB}`);
-    } else if (cmp.commonSram === 0 && cmp.commonEpochs === 0) {
-      fail = true;
-      log(`!! no comparable digests (wasm fold output missing? dist on the server?) — ${dir}`);
-      log(`   a stderr tail: ${(a.errTail || "").split("\n").slice(-5).join("\n")}`);
-      log(`   b page errors: ${(b.errTail || "").slice(-400)}`);
-    } else if (!serialFail && !reasons.length) {
-      const softN = (cmp.soft || []).length;
-      log(`   HARD ok: ${cmp.commonSram} internal-SRAM digests + serial identical` +
-          (cmp.commonSdram != null ? ` ; ${cmp.commonSdram} SDRAM identical` : "")
-          + (cmp.commonEpochs ? ` ; ${cmp.commonEpochs} epochs regs identical` : "")
-          + (softN ? ` ; SOFT(fold count drift): ${softN} E/SDRAM diffs` : "")
-          + (cmp.truncated ? " (tail truncated by stop point)" : ""));
-    }
-    results.push(runRes);
   }
 };
 
+const oneRun = async (r) => {
+  const dir = path.join(baseDir, `run${r}`);
+  log(`== run ${r + 1}/${args.runs}: JIT(native) vs wasm64(browser) flash=${args.flash} budget=${fmt(args.insns)} insns`);
+  let pair;
+  try {
+    pair = await runPairWasm(args, flash, dir, log);
+  } catch (e) {
+    if (!(e instanceof StartError)) throw e;
+    fail = true;
+    log(`!! run ${r + 1}: the page leg did not start: ${e.message}`);
+    results.push({ run: r + 1, startError: e.message, earlyExit: [], cmp: null, serialIdentical: null });
+    return;
+  }
+  const { a, b, reasons, wallS } = pair;
+  // end-state screenshots -> tests/results: the wasm leg's page + LCD
+  // crop, plus the native leg's screendump when it's still around at
+  // quit time (the plugin's stop_at normally self-exits it first)
+  const screenshots = {};
+  const aPng = ppmFileToPng(path.join(a.dir, "final.ppm"));
+  if (aPng) {
+    const out = path.join(ROOT, "tests", "results",
+      `lockstep-${args.label}-${stamp}-run${r + 1}-a.png`);
+    fs.writeFileSync(out, aPng);
+    screenshots.a = out;
+  }
+  for (const suffix of ["", "-lcd"]) {
+    const f = path.join(b.dir, `final${suffix}.png`);
+    if (fs.existsSync(f)) {
+      const out = path.join(ROOT, "tests", "results",
+        `lockstep-${args.label}-${stamp}-run${r + 1}-b${suffix}.png`);
+      fs.copyFileSync(f, out);
+      screenshots[suffix ? "bLcd" : "b"] = out;
+    }
+  }
+  const runRes = {
+    run: r + 1, dir, wallS, screenshots,
+    a: { insns: a.progress.insns, epoch: a.progress.epoch, exit: a.exitCode },
+    b: { insns: b.progress.insns, epoch: b.progress.epoch, exit: b.exitCode },
+    earlyExit: reasons, cmp: null, serialIdentical: null,
+  };
+  try {
+    runRes.serialIdentical =
+      fs.readFileSync(a.serial).equals(fs.readFileSync(b.serial));
+  } catch { runRes.serialIdentical = null; }
+  requireLogs(a);
+  if (!fs.existsSync(b.log)) {
+    fail = true;
+    log(`!! wasm leg produced no lockstep log — ${dir}/b (status/error?)`);
+    log(`   b last progress: insns=${fmt(b.progress.insns)} epoch=${b.progress.epoch}`);
+    log(`   b page errors: ${(b.errTail || "").slice(-400)}`);
+    results.push(runRes);
+    return;
+  }
+  // HARD: config, serial, internal-SRAM (range 0). SOFT (opts below):
+  // register E-lines + the SDRAM slice, sampled at other instructions on
+  // the wasm leg (doc/performance.md, "What lockstep-wasm compares").
+  const cmp = compareDigestLogs(a.log, b.log, { soft: ["epoch", "mem-sdram"] });
+  const serialFail = runRes.serialIdentical !== true;
+  runRes.cmp = { commonEpochs: cmp.commonEpochs, commonSram: cmp.commonSram,
+                 commonSdram: cmp.commonSdram, commonMem: cmp.commonMem,
+                 truncated: cmp.truncated,
+                 diverged: cmp.diverged && { ...cmp.diverged, lineA: undefined, lineB: undefined },
+                 soft: (cmp.soft || []).map((s) => ({ ...s, lineA: undefined, lineB: undefined })) };
+  log(`   a: ${fmt(a.progress.insns)} insns / epoch ${a.progress.epoch}` +
+      `   b: ${fmt(b.progress.insns)} insns / epoch ${b.progress.epoch}` +
+      `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical"
+        : runRes.serialIdentical === false ? "DIFFERS" : "UNREADABLE"}`);
+  if (serialFail) {
+    fail = true;
+    log(runRes.serialIdentical === false
+      ? `!! SERIAL DIVERGENCE run ${r + 1}: the two legs' serial output differs (real bug)`
+      : `!! run ${r + 1}: a leg's serial log could not be read, so serial was not compared`);
+  }
+  if (reasons.length) {
+    fail = true;
+    log(`!! run ${r + 1} did not run the whole budget: ${reasons.join("; ")}`);
+  }
+  if (cmp.diverged) {
+    fail = true;
+    log(`!! DIVERGENCE run ${r + 1}: ${cmp.diverged.kind}` +
+        (cmp.diverged.kind === "mem"
+          ? ` @ insns=${fmt(cmp.diverged.insnsA)} (internal SRAM digest), differing: ${(cmp.diverged.fields || []).join(", ")}`
+          : cmp.diverged.kind === "epoch"
+            ? ` @ epoch ${cmp.diverged.epoch}`
+            : ""));
+    log(`   a: ${cmp.diverged.lineA}`);
+    log(`   b: ${cmp.diverged.lineB}`);
+  } else if (cmp.commonSram === 0 && cmp.commonEpochs === 0) {
+    fail = true;
+    log(`!! no comparable digests (wasm fold output missing? dist on the server?) — ${dir}`);
+    log(`   a stderr tail: ${(a.errTail || "").split("\n").slice(-5).join("\n")}`);
+    log(`   b page errors: ${(b.errTail || "").slice(-400)}`);
+  } else if (!serialFail && !reasons.length) {
+    const softN = (cmp.soft || []).length;
+    log(`   HARD ok: ${cmp.commonSram} internal-SRAM digests + serial identical` +
+        (cmp.commonSdram != null ? ` ; ${cmp.commonSdram} SDRAM identical` : "")
+        + (cmp.commonEpochs ? ` ; ${cmp.commonEpochs} epochs regs identical` : "")
+        + (softN ? ` ; SOFT(fold count drift): ${softN} E/SDRAM diffs` : "")
+        + (cmp.truncated ? " (tail truncated by stop point)" : ""));
+  }
+  results.push(runRes);
+};
+
 const workers = [];
-for (let w = 0; w < Math.min(args.par, args.runs); w++) workers.push(worker(w));
-await Promise.all(workers);
+try {
+  for (let w = 0; w < Math.min(args.par, args.runs); w++) workers.push(worker(w));
+  await Promise.all(workers);
+} finally {
+  await Promise.all([quitAll("driver ending"), ...[...liveWasm].map((b) => b.quit())]);
+}
 
 function cleanRun(r) {
   return r.cmp && !r.cmp.diverged && r.serialIdentical === true && !r.earlyExit.length;

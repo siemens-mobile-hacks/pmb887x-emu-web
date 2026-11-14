@@ -88,6 +88,14 @@ function parseArgs() {
 }
 
 // --- one emulator side ---------------------------------------------------------
+// every Side started and not yet quit: a driver that fails half way quits
+// them all (quitAll) rather than leave unpaced qemus running on their own
+const liveSides = new Set();
+
+export async function quitAll(reason) {
+  await Promise.all([...liveSides].map((s) => s.quit(reason)));
+}
+
 export class Side {
   constructor(name, bin, dir, args) {
     this.name = name;
@@ -115,6 +123,7 @@ export class Side {
 
   async start(flash) {
     fs.mkdirSync(this.dir, { recursive: true });
+    liveSides.add(this);
     this.child = spawn(RUN_NATIVE, [
       flash, ...RTC_ARGS, ...OIPT_ARGS, "-plugin", this.pluginArgs(),
     ], {
@@ -175,6 +184,7 @@ export class Side {
   }
 
   async quit(reason) {
+    if (!liveSides.delete(this)) return;
     this.quitReason = reason;
     if (this.conn && !this.dead) {
       // final screenshot (also works while HMP-stopped; saved into the run
@@ -184,11 +194,11 @@ export class Side {
       this.conn.write("quit\n");
       await waitDead(this, 20000);
     }
-    if (!this.dead) {
+    if (this.child && !this.dead) {
       this.child.kill("SIGTERM");
       await waitDead(this, 5000);
     }
-    if (!this.dead) this.child.kill("SIGKILL");
+    if (this.child && !this.dead) this.child.kill("SIGKILL");
     await waitDead(this, 5000);
     if (this.conn) this.conn.destroy();
   }
@@ -209,10 +219,21 @@ export async function runPair(args, flash, dir, stopAtInsns, log) {
   const a = new Side("a", args.aBin, path.join(dir, "a"), common);
   const b = new Side("b", args.self ? args.aBin : args.bBin,
                      path.join(dir, "b"), { ...common, corrupt: args.corrupt });
+  const t0 = Date.now();
+  let reasons;
+  try {
+    reasons = await drivePair(args, a, b, flash, dir, stopAtInsns, log, t0);
+  } finally {
+    await a.quit("budget");
+    await b.quit("budget");
+  }
+  return { a, b, reasons, wallS: (Date.now() - t0) / 1000 };
+}
+
+async function drivePair(args, a, b, flash, dir, stopAtInsns, log, t0) {
   await a.start(flash);
   await b.start(flash);
 
-  const t0 = Date.now();
   let warned = false;
   let timedOut = false;
   const throttled = { a: false, b: false };
@@ -241,20 +262,28 @@ export async function runPair(args, flash, dir, stopAtInsns, log) {
     }
     await sleep(500);
   }
-  const reasons = [timedOut ? `wall timeout ${args.secs}s` : null,
-                   a.dead ? `a exited(${a.exitCode})` : null,
-                   b.dead ? `b exited(${b.exitCode})` : null,
-                   ...[a, b].filter((s) => s.progress.insns < stopAtInsns)
-                     .map((s) => `${s.name} stopped at ${fmt(s.progress.insns)} insns, short of ${fmt(stopAtInsns)}`),
+  return [timedOut ? `wall timeout ${args.secs}s` : null,
+          a.dead ? `a exited(${a.exitCode})` : null,
+          b.dead ? `b exited(${b.exitCode})` : null,
+          ...[a, b].filter((s) => s.progress.insns < stopAtInsns)
+            .map((s) => `${s.name} stopped at ${fmt(s.progress.insns)} insns, short of ${fmt(stopAtInsns)}`),
   ].filter(Boolean);
-  await a.quit("budget");
-  await b.quit("budget");
-  return { a, b, reasons, wallS: (Date.now() - t0) / 1000 };
 }
 
 // --- log comparison ------------------------------------------------------------
 function readLogLines(file) {
   return fs.readFileSync(file, "utf8").split("\n").filter((l) => l.length);
+}
+
+// A side that died before its plugin opened the log (a binary that cannot
+// load it, a bad option) leaves nothing to compare: say which, and why.
+export function requireLogs(...sides) {
+  for (const s of sides) {
+    if (fs.existsSync(s.log)) continue;
+    const tail = (s.errTail || "").trim().split("\n").slice(-3).join(" | ");
+    throw new Error(`${s.name} wrote no lockstep log (exit ${s.exitCode ?? "?"})` +
+                    (tail ? `: ${tail.slice(0, 300)}` : ""));
+  }
 }
 
 // Compare the two lockstep logs. Strict by default (the native gate:
@@ -373,6 +402,7 @@ async function localize(args, flash, baseDir, div, log) {
   const denseArgs = { ...args, denseFrom: from, denseTo: to };
   const dir = path.join(baseDir, "dense");
   const { a, b } = await runPair(denseArgs, flash, dir, stopAt, log);
+  requireLogs(a, b);
   const d = compareDenseLogs(path.join(dir, "a", "ls.log"), path.join(dir, "b", "ls.log"));
   if (!d) {
     log("!! dense rerun found no differing T line (epoch digest diverged but every sampled insn matches — divergence below sampling granularity or rerun flaked)");
@@ -411,7 +441,7 @@ export function claimRunStamp(label) {
 }
 
 function cleanRun(r) {
-  return !r.cmp.diverged && r.cmp.commonEpochs > 0 && r.serialIdentical === true && !r.earlyExit.length;
+  return r.cmp && !r.cmp.diverged && r.cmp.commonEpochs > 0 && r.serialIdentical === true && !r.earlyExit.length;
 }
 
 // --- main ----------------------------------------------------------------------
@@ -444,76 +474,93 @@ export async function main() {
     for (let r = wi; r < args.runs; r += args.par) {
       const dir = path.join(baseDir, `run${r}`);
       log(`== run ${r + 1}/${args.runs}: ${args.self ? "self-check (a vs a)" : "JIT vs TCI"} flash=${args.flash} budget=${fmt(args.insns)} insns`);
-      const { a, b, reasons, wallS } = await runPair(args, flash, dir, args.insns, log);
-      // final screendumps of both sides -> tests/results (they should show
-      // the same guest state; a visual diff is a free sanity check)
-      const screenshots = {};
-      for (const s of [a, b]) {
-        const png = ppmFileToPng(path.join(s.dir, "final.ppm"));
-        if (png) {
-          const out = path.join(ROOT, "tests", "results",
-            `lockstep-${args.label}-${stamp}-run${r + 1}-${s.name}.png`);
-          fs.mkdirSync(path.dirname(out), { recursive: true });
-          fs.writeFileSync(out, png);
-          screenshots[s.name] = out;
-        }
-      }
-      const runRes = {
-        run: r + 1, dir, wallS, screenshots,
-        a: { insns: a.progress.insns, epoch: a.progress.epoch, exit: a.exitCode },
-        b: { insns: b.progress.insns, epoch: b.progress.epoch, exit: b.exitCode },
-        earlyExit: reasons, cmp: null, dense: null, serialIdentical: null,
-      };
       try {
-        runRes.serialIdentical = fs.readFileSync(a.serial).equals(fs.readFileSync(b.serial));
-      } catch { runRes.serialIdentical = null; }
-      const cmp = compareDigestLogs(a.log, b.log);
-      runRes.cmp = { commonEpochs: cmp.commonEpochs, commonMem: cmp.commonMem,
-                     truncated: cmp.truncated,
-                     diverged: cmp.diverged && { ...cmp.diverged, lineA: undefined, lineB: undefined } };
-      log(`   a: ${fmt(a.progress.insns)} insns / epoch ${a.progress.epoch}` +
-          `   b: ${fmt(b.progress.insns)} insns / epoch ${b.progress.epoch}` +
-          `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical"
-            : runRes.serialIdentical === false ? "DIFFERS" : "UNREADABLE"}`);
-      if (runRes.serialIdentical !== true) {
+        results.push(await oneRun(r, dir));
+      } catch (e) {
+        // this run failed; the others go on, and its sides are quit
         fail = true;
-        log(runRes.serialIdentical === false
-          ? `!! SERIAL DIVERGENCE run ${r + 1}: the two sides' serial output differs`
-          : `!! run ${r + 1}: a side's serial log could not be read, so serial was not compared`);
+        const msg = String(e?.message || e).split("\n")[0];
+        log(`!! run ${r + 1} failed: ${msg}`);
+        results.push({ run: r + 1, dir, error: msg, earlyExit: [msg], cmp: null, dense: null, serialIdentical: null });
       }
-      if (reasons.length) {
-        fail = true;
-        log(`!! run ${r + 1} did not run the whole budget: ${reasons.join("; ")}`);
-      }
-      if (cmp.diverged) {
-        fail = true;
-        log(`!! DIVERGENCE run ${r + 1}: ${cmp.diverged.kind}` +
-            (cmp.diverged.kind === "epoch"
-              ? ` @ epoch ${cmp.diverged.epoch} (a insns=${fmt(cmp.diverged.insnsA)}, b insns=${fmt(cmp.diverged.insnsB)}), differing: ${(cmp.diverged.fields || []).join(", ")}`
-              : cmp.diverged.kind === "mem"
-                ? ` @ insns=${fmt(cmp.diverged.insnsA)} (memory digest), differing: ${(cmp.diverged.fields || []).join(", ")}`
-                : ""));
-        log(`   a: ${cmp.diverged.lineA}`);
-        log(`   b: ${cmp.diverged.lineB}`);
-        if (cmp.diverged.kind === "epoch" && args.localize) {
-          runRes.dense = await localize(args, flash, dir, cmp.diverged, log);
-        }
-      } else if (cmp.commonEpochs === 0) {
-        fail = true;
-        log(`!! no comparable epochs (plugin output missing?) — ${dir}`);
-        log(`   a stderr tail: ${(a.errTail || "").split("\n").slice(-5).join("\n")}`);
-        log(`   b stderr tail: ${(b.errTail || "").split("\n").slice(-5).join("\n")}`);
-      } else if (runRes.serialIdentical === true && !reasons.length) {
-        log(`   clean: ${cmp.commonEpochs} epochs + ${cmp.commonMem} mem digests identical` +
-            `${cmp.truncated ? " (tail truncated by stop point)" : ""}`);
-      }
-      results.push(runRes);
     }
   };
 
+  const oneRun = async (r, dir) => {
+    const { a, b, reasons, wallS } = await runPair(args, flash, dir, args.insns, log);
+    // final screendumps of both sides -> tests/results (they should show
+    // the same guest state; a visual diff is a free sanity check)
+    const screenshots = {};
+    for (const s of [a, b]) {
+      const png = ppmFileToPng(path.join(s.dir, "final.ppm"));
+      if (png) {
+        const out = path.join(ROOT, "tests", "results",
+          `lockstep-${args.label}-${stamp}-run${r + 1}-${s.name}.png`);
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+        fs.writeFileSync(out, png);
+        screenshots[s.name] = out;
+      }
+    }
+    const runRes = {
+      run: r + 1, dir, wallS, screenshots,
+      a: { insns: a.progress.insns, epoch: a.progress.epoch, exit: a.exitCode },
+      b: { insns: b.progress.insns, epoch: b.progress.epoch, exit: b.exitCode },
+      earlyExit: reasons, cmp: null, dense: null, serialIdentical: null,
+    };
+    try {
+      runRes.serialIdentical = fs.readFileSync(a.serial).equals(fs.readFileSync(b.serial));
+    } catch { runRes.serialIdentical = null; }
+    requireLogs(a, b);
+    const cmp = compareDigestLogs(a.log, b.log);
+    runRes.cmp = { commonEpochs: cmp.commonEpochs, commonMem: cmp.commonMem,
+                   truncated: cmp.truncated,
+                   diverged: cmp.diverged && { ...cmp.diverged, lineA: undefined, lineB: undefined } };
+    log(`   a: ${fmt(a.progress.insns)} insns / epoch ${a.progress.epoch}` +
+        `   b: ${fmt(b.progress.insns)} insns / epoch ${b.progress.epoch}` +
+        `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical"
+          : runRes.serialIdentical === false ? "DIFFERS" : "UNREADABLE"}`);
+    if (runRes.serialIdentical !== true) {
+      fail = true;
+      log(runRes.serialIdentical === false
+        ? `!! SERIAL DIVERGENCE run ${r + 1}: the two sides' serial output differs`
+        : `!! run ${r + 1}: a side's serial log could not be read, so serial was not compared`);
+    }
+    if (reasons.length) {
+      fail = true;
+      log(`!! run ${r + 1} did not run the whole budget: ${reasons.join("; ")}`);
+    }
+    if (cmp.diverged) {
+      fail = true;
+      log(`!! DIVERGENCE run ${r + 1}: ${cmp.diverged.kind}` +
+          (cmp.diverged.kind === "epoch"
+            ? ` @ epoch ${cmp.diverged.epoch} (a insns=${fmt(cmp.diverged.insnsA)}, b insns=${fmt(cmp.diverged.insnsB)}), differing: ${(cmp.diverged.fields || []).join(", ")}`
+            : cmp.diverged.kind === "mem"
+              ? ` @ insns=${fmt(cmp.diverged.insnsA)} (memory digest), differing: ${(cmp.diverged.fields || []).join(", ")}`
+              : ""));
+      log(`   a: ${cmp.diverged.lineA}`);
+      log(`   b: ${cmp.diverged.lineB}`);
+      if (cmp.diverged.kind === "epoch" && args.localize) {
+        runRes.dense = await localize(args, flash, dir, cmp.diverged, log);
+      }
+    } else if (cmp.commonEpochs === 0) {
+      fail = true;
+      log(`!! no comparable epochs (plugin output missing?) — ${dir}`);
+      log(`   a stderr tail: ${(a.errTail || "").split("\n").slice(-5).join("\n")}`);
+      log(`   b stderr tail: ${(b.errTail || "").split("\n").slice(-5).join("\n")}`);
+    } else if (runRes.serialIdentical === true && !reasons.length) {
+      log(`   clean: ${cmp.commonEpochs} epochs + ${cmp.commonMem} mem digests identical` +
+          `${cmp.truncated ? " (tail truncated by stop point)" : ""}`);
+    }
+    return runRes;
+  };
+
   const workers = [];
-  for (let w = 0; w < Math.min(args.par, args.runs); w++) workers.push(worker(w));
-  await Promise.all(workers);
+  try {
+    for (let w = 0; w < Math.min(args.par, args.runs); w++) workers.push(worker(w));
+    await Promise.all(workers);
+  } finally {
+    await quitAll("driver ending");
+  }
 
   const summary = {
     label: args.label, stamp, flash: args.flash,
