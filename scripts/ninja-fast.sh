@@ -19,8 +19,7 @@
 #               only worth it when serving to a phone over the LAN)
 set -euo pipefail
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD="${WEB_BUILD:-$WEB_DIR/build}"
-DEPS_ROOT="${WASM_DEPS:-$BUILD/deps}"
+source "$WEB_DIR/scripts/build-dirs.sh"
 TARGET="$DEPS_ROOT/target"
 BUILD_DIR="$BUILD/qemu-wasm64"
 DIST="${WEB_DIST:-$WEB_DIR/site/dist-jit}"

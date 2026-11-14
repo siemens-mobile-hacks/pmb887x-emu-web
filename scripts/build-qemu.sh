@@ -11,8 +11,7 @@ set -euo pipefail
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$WEB_DIR/versions.env"
 
-BUILD="${WEB_BUILD:-$WEB_DIR/build}"
-DEPS_ROOT="${WASM_DEPS:-$BUILD/deps}"
+source "$WEB_DIR/scripts/build-dirs.sh"
 TARGET="$DEPS_ROOT/target"
 DIST="$WEB_DIR/site/dist"
 mkdir -p "$BUILD" "$DIST"

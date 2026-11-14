@@ -11,9 +11,9 @@
 set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD="${WEB_BUILD:-$WEB_DIR/build}"
+source "$WEB_DIR/scripts/build-dirs.sh"
 DIST="$WEB_DIR/site/dist"
-BOARDS="$BUILD/bsp/lib/data/board"
+BOARDS="$BSP_DIR/lib/data/board"
 
 if [ ! -d "$BOARDS" ]; then
   echo "pack-boards: no bsp checkout at $BOARDS — run scripts/sync-bsp.sh" >&2
