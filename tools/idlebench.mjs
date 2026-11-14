@@ -113,7 +113,7 @@ const opt = (name, dflt) => {
 // used to read "ke800" as the dist and then every run died with "module
 // never loaded" after the full timeout.
 const VALUE_OPTS = new Set(["board", "runs", "max", "regress", "stall",
-  "noconv", "floor", "cmpinsns", "window", "rows", "pct", "flash", "ref"]);
+  "noconv", "floor", "cmpinsns", "window", "rows", "pct", "flash", "ref", "baseline"]);
 const positional = argv.filter((a, i) => {
   if (a.startsWith("--")) return false;
   const prev = argv[i - 1];
