@@ -6,6 +6,7 @@ import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
 import WebSocket from "ws";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 
 // wasm-function[N] -> C symbol map (emcc --emit-symbol-map sidecar; the
@@ -45,8 +46,13 @@ const delayS = Number(process.env.PROF_DELAY || 0);   // wait before Profiler.st
 // of booting a fresh one — for states that take keypad navigation to
 // reach (a running J2ME app).  [seconds] and [sampleUs] still apply.
 const attachPort = Number(process.env.PROF_ATTACH || 0);
-const devtoolsPort = attachPort || 9555;
-const server = attachPort ? null : await chromium.launch({ headless: true, args: ["--remote-debugging-port=9555"] });
+// a DevTools port nobody is listening on, so parallel runs do not collide
+const freePort = () => new Promise((res, rej) => {
+  const s = net.createServer().once("error", rej);
+  s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => res(port)); });
+});
+const devtoolsPort = attachPort || await freePort();
+const server = attachPort ? null : await chromium.launch({ headless: true, args: [`--remote-debugging-port=${devtoolsPort}`] });
 try {
   const browser = server;
   const page = attachPort ? null : await browser.newPage();

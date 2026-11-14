@@ -5,11 +5,17 @@ import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
 import WebSocket from "ws";
 import fs from "node:fs";
+import net from "node:net";
 
 const secs = Number(process.argv[2] || 12);
 const query = process.argv[3] || "";
 const port = process.env.PORT || "8080";
-const dbgPort = 9556;
+// a DevTools port nobody is listening on, so parallel runs do not collide
+const freePort = () => new Promise((res, rej) => {
+  const s = net.createServer().once("error", rej);
+  s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => res(port)); });
+});
+const dbgPort = await freePort();
 
 const server = await chromium.launch({ headless: true, args: [`--remote-debugging-port=${dbgPort}`] });
 try {
