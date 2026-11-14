@@ -3,11 +3,11 @@
 //
 // The native suite (tests/run.mjs) is the correctness reference; this is
 // its browser twin, because most of the wasm patches (io barriers, the
-// wasm64 backend, the halt/idle paths) are invisible to it.  Three boards
-// is the useful set: S75 and EL71 are icount boards that exercise
-// different firmware paths (EL71 programs its flash file system during
-// boot — the 0034 retaddr bug only ever showed there), KE800 is the LG
-// board.
+// wasm64 backend, the halt/idle paths) are invisible to it.  Five boards
+// make the set: S75 and EL71 exercise different firmware paths (EL71
+// programs its flash file system during boot — the 0034 retaddr bug only
+// ever showed there), KE800 and KE970 are the LG boards, CX70 the x65
+// one.
 //
 //   node tools/bootcheck.mjs [--dist dist-jit] [--secs 150] [--flash id,id]
 //
