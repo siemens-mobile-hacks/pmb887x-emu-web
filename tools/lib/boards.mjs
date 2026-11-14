@@ -29,7 +29,7 @@ export const flashPath = (id) => path.join(FULLFLASH_DIR, entry(id).file);
 
 // The board the page's own tables (site/fullflashes.js) give a fullflash's
 // real name: DEVICE_RULES, as the page applies them to a picked file's name,
-// else the stand-in for a model token in it (C66 -> siemens-c65). null when
+// else the stand-in for a model token in it (S66 -> siemens-s65). null when
 // the name names no model.
 export async function expectedBoard(name) {
   const { inferDevice, variantFor } = await import(path.join(ROOT, "site/fullflashes.js"));

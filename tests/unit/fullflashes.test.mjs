@@ -14,7 +14,7 @@ test("inferDevice: substring rules, longer tokens first", () => {
   assert.equal(inferDevice("ME75.bin"), "siemens-me75");
   assert.equal(inferDevice("s75_working20060710172101.bin"), "siemens-s75");
   assert.equal(inferDevice("CX70_FW56_clean.bin"), "siemens-cx70");
-  assert.equal(inferDevice("BROKEN)S66_no_recalc.bin"), "siemens-s66");
+  assert.equal(inferDevice("BROKEN)S66_no_recalc.bin"), null, "S66 runs as the S65, flagged");
   assert.equal(inferDevice("CF75v23.bin"), "siemens-cf75");
   assert.equal(inferDevice("unknown.bin"), null);
 });
@@ -22,21 +22,23 @@ test("inferDevice: substring rules, longer tokens first", () => {
 test("variantFor: exact model names only, rebadges flagged inexact", () => {
   assert.deepEqual(variantFor("C1F0"), { device: "siemens-el71", exact: true });
   assert.deepEqual(variantFor("c66"), { device: "siemens-c65", exact: false });
-  assert.equal(variantFor("S66"), null, "S66 has a board of its own");
+  assert.deepEqual(variantFor("s66"), { device: "siemens-s65", exact: false });
   assert.equal(variantFor("S665"), null);
   assert.equal(variantFor("CL61A"), null);
 });
 
-// Every bsp board with a model of its own has a filename rule: a board the
-// rules miss is found by the image only, and a stand-in row for it would
-// boot the phone as other hardware. The bare chip boards name no phone, and
-// upstream's EL71 config calls itself E71 (BOARD_NAME_FIXUPS in app.js).
+// Every bsp board with a model of its own has a filename rule, unless
+// MODEL_VARIANTS runs that model on another board (S66 on the S65's, the
+// owner's choice): a board the rules miss is found by the image only. The
+// bare chip boards name no phone, and upstream's EL71 config calls itself
+// E71 (BOARD_NAME_FIXUPS in app.js).
 test("DEVICE_RULES: one rule per bsp phone board", { skip: !existsSync(BOARD_DIR) && "no bsp checkout" }, () => {
   const missed = [];
   for (const f of readdirSync(BOARD_DIR).filter((f) => f.endsWith(".toml"))) {
     const id = f.slice(0, -5);
     if (/^(apoxi|generic)-|^siemens-pmb887[56]$/.test(id) || id === "siemens-el71") continue;
     const model = readFileSync(new URL(f, BOARD_DIR), "utf8").match(/^model\s*=\s*"([^"]+)"/m)?.[1];
+    if (variantFor(model ?? "")) continue;
     if (inferDevice(model ?? "") !== id) missed.push(`${id} (model ${model})`);
   }
   assert.deepEqual(missed, []);
@@ -52,12 +54,13 @@ function siemensHead(model) {
   return new Blob([h]);
 }
 
-test("detectDevice: the library's board wherever it exists", async () => {
+test("detectDevice: the stand-in table, else the library's board wherever it exists", async () => {
   const has = (...ids) => (dev) => ids.includes(dev);
   assert.deepEqual(await detectDevice(siemensHead("CF75"), has("siemens-cf75")),
     { device: "siemens-cf75", model: "CF75", exact: true });
+  // S66 has a board, and still runs as the S65
   assert.deepEqual(await detectDevice(siemensHead("S66"), has("siemens-s66", "siemens-s65")),
-    { device: "siemens-s66", model: "S66", exact: true });
+    { device: "siemens-s65", model: "S66", exact: false });
   // a board no rule knows yet is still taken when it exists
   assert.deepEqual(await detectDevice(siemensHead("ZX99"), has("siemens-zx99")),
     { device: "siemens-zx99", model: "ZX99", exact: true });

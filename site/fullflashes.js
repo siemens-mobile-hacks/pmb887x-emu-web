@@ -28,14 +28,14 @@ export const SIDE_CAR_RE = /\.cfi-[a-z0-9]+$/i;
 // fullflashes need the .cfi-efa sidecar (see SIDE_CAR_RE above).
 // Longer tokens come first wherever one contains another: EL71 before E71,
 // CL61A before CL61, ME75 before M75 — the first hit wins. One row per
-// board in the bsp with a model of its own (tests/unit/fullflashes.test.mjs
-// checks that against bsp/lib/data/board); C70 has neither a board nor a
-// sourced stand-in.
+// board in the bsp with a model of its own, except a model MODEL_VARIANTS
+// runs on another board (tests/unit/fullflashes.test.mjs checks that against
+// bsp/lib/data/board); C70 has neither a board nor a sourced stand-in.
 const DEVICE_RULES = [
   ["KE800", "lg-ke800"], ["KE970", "lg-ke970"],
   ["EL71", "siemens-el71"], ["E71", "siemens-e71"], ["C81", "siemens-c81"],
-  ["S75", "siemens-s75"], ["S65", "siemens-s65"], ["S66", "siemens-s66"],
-  ["SK65", "siemens-sk65"], ["CF75", "siemens-cf75"],
+  ["S75", "siemens-s75"], ["S65", "siemens-s65"], ["SK65", "siemens-sk65"],
+  ["CF75", "siemens-cf75"],
   ["CX75", "siemens-cx75"],
   ["CX70", "siemens-cx70"], ["CX65", "siemens-cx65"], ["SL75", "siemens-sl75"],
   ["SL65", "siemens-sl65"],
@@ -48,24 +48,31 @@ const DEVICE_RULES = [
   ["705P", "panasonic-705p"], ["VS7", "panasonic-vs7"],
 ];
 
-// Rebadges and regional variants: the same hardware under another name, with
-// no board of their own. Every row is sourced — an unsourced guess here would
-// boot someone's phone as the wrong hardware, so a model we cannot place is
-// left to the user instead. `exact` rows are asserted by upstream; the rest
+// Rebadges and regional variants: the same hardware under another name, run
+// on the board of the model they are a variant of. Every row is sourced —
+// an unsourced guess here would boot someone's phone as the wrong hardware,
+// so a model we cannot place is left to the user instead. `exact` rows are asserted by upstream; the rest
 // are stand-ins the UI says it is substituting, because even inside one
 // platform family the board configs differ in their HW_DET_MOB_TYPE straps
 // (S65 is 01100, C65 10010), which firmware can read.
 // Deliberately absent: CL61A is *not* a CL61 (different flash part, 0x880D vs
 // 0x8819); C70 has no source that puts it on the same silicon as a board we
-// ship. A model leaves this table for DEVICE_RULES when the bsp gives it a
-// board of its own: M75 and ME75 in bsp e79169f, S66 in bsp 65e63e4. See
-// doc/architecture.md.
+// ship. A row wins over a board of the model's own (detectDevice checks this
+// table first): S66 has one since bsp 65e63e4, and it still runs as the S65
+// by the owner's choice. M75 and ME75 left the table for DEVICE_RULES when
+// bsp e79169f gave them boards. See doc/architecture.md.
 const MODEL_VARIANTS = [
   // upstream's own supported-hardware table (pmb887x-emu/README.md)
   ["C1F0", "siemens-el71", true],
   // ru.wikipedia.org/wiki/BenQ-Siemens_EL71 — the same phone renamed
   ["ELF1", "siemens-el71", false],
   ["ELC1", "siemens-el71", false],
+  // ru.wikipedia.org/wiki/Siemens_S65: the S66 is the Americas-band S65,
+  // "функционально ничем от своего европейского двойника не отличается".
+  // The dump agrees: 32 MiB, BC65 bootcore, the R65 family that holds s65.
+  // The bsp's siemens-s66 differs from s65 in HW_DET_BAND_SEL only; the
+  // owner runs it as the S65, the hardware being mostly the same.
+  ["S66", "siemens-s65", false],
   // en.wikipedia.org/wiki/Siemens_C65: "known in North America as the
   // Siemens C66"; CT65/CV65/CO65 are its carrier variants
   ["C66", "siemens-c65", false],
@@ -83,7 +90,7 @@ export function inferDevice(filename) {
   return null;
 }
 
-// A model string that is not a board of its own, mapped onto the board that
+// A model string run on another model's board, mapped onto the board that
 // emulates it. Returns { device, exact } or null.
 export function variantFor(model) {
   const up = String(model).toUpperCase();
@@ -166,23 +173,23 @@ export async function detectDevice(file, hasBoard = null) {
     // not a pmb887x dump at all — worth saying differently from "no idea"
     if (field(head, CJKT_OFF, 4) !== "CJKT") return null;
 
-    // Siemens: the library is the source of truth (probeFullflash). Its
-    // board name is used as-is whenever that board exists; a model that is
-    // no board (C66, ELF1…) goes through the stand-in table, and the
-    // filename rules are the last resort, the way they were the only resort
-    // before the library took over. A module that fails to load is "not a
-    // Siemens image" here, not the end of detection: the LG scan below needs
-    // no module.
+    // Siemens: the library is the source of truth (probeFullflash). A model
+    // in the stand-in table (S66, C66, ELF1…) runs on the board the table
+    // gives it; otherwise the library's board name is used whenever that
+    // board exists, and the filename rules are the last resort, the way
+    // they were the only resort before the library took over. A module that
+    // fails to load is "not a Siemens image" here, not the end of detection:
+    // the LG scan below needs no module.
     let probed = null;
     try {
       probed = await probeFullflash(head.subarray(0, Math.min(PROBE_HEAD, head.length)));
     } catch { /* the fallbacks below are still worth their chance */ }
     if (probed) {
       const { model, device } = probed;
-      if (device && (hasBoard ? hasBoard(device) : inferDevice(model) === device))
-        return { device, model, exact: true };
       const v = variantFor(model);
       if (v) return { device: v.device, model, exact: v.exact };
+      if (device && (hasBoard ? hasBoard(device) : inferDevice(model) === device))
+        return { device, model, exact: true };
       const byRules = inferDevice(model);
       if (byRules) return { device: byRules, model, exact: false };
       return { device: null, model, exact: false };
