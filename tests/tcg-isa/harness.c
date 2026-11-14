@@ -49,7 +49,7 @@ static void uputdec(unsigned n)
     }
 }
 
-static void put_f(char tag, uint32_t mask, uint32_t f)
+static void put_f(uint32_t mask, uint32_t f)
 {
     /* dump one NZCV char: '0'/'1' when the oracle covers it, '-' when the
      * bit is architecturally unpredictable for this op */
@@ -61,14 +61,12 @@ static void put_f(char tag, uint32_t mask, uint32_t f)
             uputc('-');
         }
     }
-    (void)tag;
 }
 
-void check_vf(const char *name, uint32_t got_v, uint32_t got_f,
-              uint32_t exp_v, uint32_t exp_f, uint32_t fmask)
+/* "ok N - name" (or "not ok"), then the dump line up to its value; the
+ * caller appends its flag field and the newline */
+static void report(const char *name, unsigned ok, uint32_t got_v)
 {
-    unsigned ok = (got_v == exp_v) && ((got_f ^ exp_f) & fmask) == 0;
-
     suite_n++;
     uart_puts(ok ? "ok " : "not ok ");
     uputdec(suite_n);
@@ -80,23 +78,39 @@ void check_vf(const char *name, uint32_t got_v, uint32_t got_f,
     uart_puts(name);
     uart_puts(": v=");
     uputhex8(got_v);
-    uart_puts(" f=");
-    put_f('f', fmask, got_f);
-    uputc('\n');
+}
 
-    if (!ok) {
-        uart_puts("#   expected v=");
-        uputhex8(exp_v);
-        uart_puts(" f=");
-        put_f('f', fmask, exp_f);
-        uputc('\n');
-    }
+static void report_expected(uint32_t exp_v)
+{
+    uart_puts("#   expected v=");
+    uputhex8(exp_v);
+}
 
+static void tally(unsigned ok)
+{
     if (ok) {
         suite_pass++;
     } else {
         suite_fail++;
     }
+}
+
+void check_vf(const char *name, uint32_t got_v, uint32_t got_f,
+              uint32_t exp_v, uint32_t exp_f, uint32_t fmask)
+{
+    unsigned ok = (got_v == exp_v) && ((got_f ^ exp_f) & fmask) == 0;
+
+    report(name, ok, got_v);
+    uart_puts(" f=");
+    put_f(fmask, got_f);
+    uputc('\n');
+    if (!ok) {
+        report_expected(exp_v);
+        uart_puts(" f=");
+        put_f(fmask, exp_f);
+        uputc('\n');
+    }
+    tally(ok);
 }
 
 void check_v(const char *name, uint32_t got_v, uint32_t exp_v)
@@ -109,34 +123,17 @@ void check_vq(const char *name, uint32_t got_v, uint32_t got_q,
 {
     unsigned ok = (got_v == exp_v) && (got_q == exp_q);
 
-    suite_n++;
-    uart_puts(ok ? "ok " : "not ok ");
-    uputdec(suite_n);
-    uart_puts(" - ");
-    uart_puts(name);
-    uputc('\n');
-
-    uart_puts("# ");
-    uart_puts(name);
-    uart_puts(": v=");
-    uputhex8(got_v);
+    report(name, ok, got_v);
     uart_puts(" q=");
     uputc((char)('0' + (got_q != 0)));
     uputc('\n');
-
     if (!ok) {
-        uart_puts("#   expected v=");
-        uputhex8(exp_v);
+        report_expected(exp_v);
         uart_puts(" q=");
         uputc((char)('0' + (exp_q != 0)));
         uputc('\n');
     }
-
-    if (ok) {
-        suite_pass++;
-    } else {
-        suite_fail++;
-    }
+    tally(ok);
 }
 
 void suite_plan(void)
