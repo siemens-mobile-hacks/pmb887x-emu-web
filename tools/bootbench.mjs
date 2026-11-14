@@ -35,7 +35,7 @@
 //
 // Runs interleave across dists.  Results: tests/results/bootbench-<phone>-<ts>.json.
 import { chromium } from "playwright-core";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,6 +73,7 @@ const distQuery = (spec) => { const i = spec.indexOf("@"); return i < 0 ? "" : s
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
 const outBase = path.join(here, `../tests/results/bootbench-${phoneName}-${stamp}`);
+mkdirSync(path.dirname(outBase), { recursive: true });
 
 // Sampled in the page every 200 ms from the Start click; the samples stay in
 // the page so a busy main thread cannot skew them, and are read out at the end.
