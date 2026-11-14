@@ -67,6 +67,11 @@ fi
 
 # ---------------------------------------------------------------- assemble --
 
+# OUT is wiped first: only an empty directory or an earlier bundle (it has a
+# manifest) may be, never a directory BUNDLE_OUT named by mistake
+if [ -e "$OUT" ] && { [ ! -d "$OUT" ] || { [ -n "$(ls -A "$OUT")" ] && [ ! -f "$OUT/manifest.sha256" ]; }; }; then
+  fail "$OUT is not empty and has no manifest.sha256, so it is no bundle; not deleting it"
+fi
 rm -rf "$OUT"
 mkdir -p "$OUT/dist" "$OUT/dist-jit" "$OUT/img"
 
