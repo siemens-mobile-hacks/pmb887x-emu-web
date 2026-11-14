@@ -4,6 +4,9 @@
 // firmware EXIT, a page error or qemu exiting, and if the guest never
 // started or never drew; PASS if it is still running with framebuffer
 // activity (splash draws) after <seconds>.
+// SIEMENS_MODE=recalc|recover-esn|as-is picks the Siemens keys mode once the
+// page has named the device (default: the page's own, recalc); as-is boots
+// a broken image such as fullflashes/BROKEN)S66_no_recalc.bin into its EXIT.
 import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
 
@@ -18,6 +21,13 @@ await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "networkidle", timeout
 await page.selectOption("#startup", "ONLINE");
 await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
+const mode = process.env.SIEMENS_MODE;
+if (mode) {
+  await page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 }).catch(() => {});
+  const radio = await page.$(`input[name="siemens-mode"][value="${mode}"]`);
+  if (radio) await radio.check();
+  console.log(`[${tag}] Siemens keys: ${radio ? mode : "no such mode for this device"}`);
+}
 await page.click("#btn-start");
 
 let lastInsns = 0, lastT = 0, verdict = null, last = null;

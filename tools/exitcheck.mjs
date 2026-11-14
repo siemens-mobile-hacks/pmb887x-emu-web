@@ -11,6 +11,9 @@
 // --inject takes the same path from the page's side (the poll reads MEMFS
 // either way) and costs a boot instead of a crash, so it is the check that
 // runs without an image that happens to be broken.
+//
+// A crashing image boots with the Siemens keys "Run as is": the page's
+// default recalculation repairs the broken S66's keys, and it never EXITs.
 import { chromium } from "playwright-core";
 import { readFile } from "node:fs/promises";
 import { flashPath } from "./lib/boards.mjs";
@@ -70,11 +73,19 @@ await page.addInitScript(() => {
 
 await page.goto(URL_, { waitUntil: "networkidle", timeout: 120000 });
 const flash = INJECT ? (await import("./testflash.mjs")).fullflash : FLASH;
-const device = INJECT ? null : DEVICE;
-await loadOwnFlash(page, flash, { device: device || undefined });
+await loadOwnFlash(page, flash);
+// the device is picked once detection has landed, as a user would; the
+// keys block exists only for a Siemens board
+await page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 }).catch(() => {});
+let asIs = false;
+if (!INJECT) {
+  await page.selectOption("#device", DEVICE);
+  const radio = await page.$('input[name="siemens-mode"][value="as-is"]');
+  if (radio) { await radio.check(); asIs = true; }
+}
 await page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 });
 console.log(`booting ${flash} as ${await page.evaluate(() => window.__ui.device)}`
-  + (INJECT ? " (dump injected once it is up)" : ""));
+  + (asIs ? ", keys as is" : "") + (INJECT ? " (dump injected once it is up)" : ""));
 const t0 = Date.now();
 await page.click("#btn-start");
 
