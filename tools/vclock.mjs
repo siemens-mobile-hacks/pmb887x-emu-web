@@ -23,6 +23,7 @@ for (let t = 0; t < totalS; t += everyS) {
       updates: m?._wasm_fb_updates ? Number(m._wasm_fb_updates()) : -1,
     };
   }).catch((e) => ({ err: String(e).slice(0, 120) }));
+  if (s.err) { console.log(`t=${t + everyS}s error: ${s.err}`); process.exitCode = 1; break; }
   const vc = Number(s.vclock);
   const rate = ((vc - Number(last)) / 1e6 / everyS).toFixed(1);
   last = BigInt(vc);
