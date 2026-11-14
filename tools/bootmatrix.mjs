@@ -12,7 +12,7 @@
 //            query   e.g. "icount=shift=3" (& not needed; single param)
 //            files default to tools/testflash.mjs's flash
 //   Examples:
-//     node tools/bootmatrix.mjs 600 'shift3|icount=shift=3' 'none||fullflashes/KE800-v11b.bin|fullflashes/KE800-v11b.bin.cfi-efa'
+//     node tools/bootmatrix.mjs --secs 600 'shift3|icount=shift=3' 'none||fullflashes/KE800-v11b.bin|fullflashes/KE800-v11b.bin.cfi-efa'
 //
 // Output: one line per poll per page (label v=… insns=… …), a final
 // JSON verdict per page (last v/insns/fb, exit text, screenshots under
@@ -35,8 +35,7 @@ const opt = (name, dflt) => {
 };
 const secs = Number(opt("secs", 600));
 const poll = Number(opt("poll", 20));
-const specs = argv.filter((a, i) => a.startsWith("--") ? false : (isNaN(Number(a)) || i === 0 ? true : !argv[i - 1].startsWith("--")));
-// simpler: re-parse specs as args not preceded by an --option name
+// specs are the args not preceded by an --option name
 const specArgs = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i].startsWith("--")) { i++; continue; }
