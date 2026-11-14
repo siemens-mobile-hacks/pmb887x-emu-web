@@ -173,7 +173,7 @@ for j in "${JOBS[@]}"; do
 done
 [ ${#selected[@]} -gt 0 ] || { echo "gate.sh: no jobs selected" >&2; exit 2; }
 
-# ---- the browser gates need a server; start one only if nothing answers --
+# ---- the browser gates need a server: this checkout's, or one of its own --
 need_server=0
 for j in "${selected[@]}"; do
   IFS='|' read -r _n _t srv _rest <<<"$j"
@@ -214,11 +214,31 @@ run_pre() { # <log> <command...>
   return "$rc"
 }
 
-if [ "$need_server" = 1 ] && ! curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
-  echo "gate: starting serve.mjs on $PORT"
-  # shellcheck source=serve-local.sh
-  . "$ROOT/scripts/serve-local.sh"
-  start_serve "$ROOT" "$PORT" || { echo "gate: no serve.mjs of its own on $PORT"; exit 1; }
+# A server that already answers on the port is used only if it serves this
+# checkout's site/: the page (app.js) and the dist's engine (qemu-source.txt)
+# must be the ones here, or the gate would pass another tree.
+served_is_ours() {
+  local f served
+  for f in app.js "$DIST/qemu-source.txt"; do
+    served="$(curl -sf "http://127.0.0.1:$PORT/$f" 2>/dev/null)" || served="<none>"
+    [ -f "$ROOT/site/$f" ] || { [ "$served" = "<none>" ] && continue; }
+    if [ ! -f "$ROOT/site/$f" ] || [ "$served" != "$(cat "$ROOT/site/$f")" ]; then
+      echo "gate: the server on $PORT does not serve this checkout (its $f differs from site/$f);" \
+           "stop it or pick another --port" >&2
+      return 1
+    fi
+  done
+}
+
+if [ "$need_server" = 1 ]; then
+  if curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+    served_is_ours || exit 1
+  else
+    echo "gate: starting serve.mjs on $PORT"
+    # shellcheck source=serve-local.sh
+    . "$ROOT/scripts/serve-local.sh"
+    start_serve "$ROOT" "$PORT" || { echo "gate: no serve.mjs of its own on $PORT"; exit 1; }
+  fi
 fi
 
 # serve.mjs regenerates the gzip sidecar on the first request after a
