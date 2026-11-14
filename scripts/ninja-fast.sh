@@ -89,7 +89,11 @@ fi
 
 bash "$WEB_DIR/scripts/deploy-dist.sh" "$BUILD_DIR" "$DIST" "$SRC_ID"
 if [ "${GZ:-0}" = "1" ] && command -v gzip >/dev/null; then
-  gzip -9 -k "$DIST/qemu-system-arm.wasm"
+  # by rename, so serve.mjs never hands out a half-written sidecar; the
+  # wasm's mtime marks it as made from that wasm
+  gzip -9 -c "$DIST/qemu-system-arm.wasm" > "$DIST/.qemu-system-arm.wasm.gz.tmp"
+  touch -r "$DIST/qemu-system-arm.wasm" "$DIST/.qemu-system-arm.wasm.gz.tmp"
+  mv -f "$DIST/.qemu-system-arm.wasm.gz.tmp" "$DIST/qemu-system-arm.wasm.gz"
 fi
 
 WASM_MB="$(du -m "$DIST/qemu-system-arm.wasm" | cut -f1)"
