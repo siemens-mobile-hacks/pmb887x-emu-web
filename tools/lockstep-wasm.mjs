@@ -8,7 +8,7 @@
 //   node tools/lockstep-wasm.mjs --runs 3 --par 3       # the gate
 //   node tools/lockstep-wasm.mjs --insns 300e6          # short smoke
 //
-// Requires: the wasm64 dist served on --port (see scripts/serve.mjs),
+// Requires: the wasm64 dist served on --port (see serve.mjs),
 // scripts/build-qemu-wasm64.sh output copied to site/dist-jit/, and the
 // native reference build from scripts/build-native.sh, up to date with the
 // qemu source the dist was built from (checked through the dist's
