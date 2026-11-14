@@ -75,19 +75,6 @@ async function nativeBackend() {
   if (!/^user$/m.test(spawnSync(QEMU, ["-machine", "pmb887x", "-netdev", "help"], { encoding: "utf8" }).stdout ?? ""))
     throw new Error(`${QEMU} has no slirp (-netdev user): install libslirp-dev, rebuild with scripts/build-native.sh`);
 
-  // The ELKA include still carries the radio commented out on the pinned
-  // bsp; the same overlay site/app.js boots for a GSM run.
-  const boards = path.join(run, "board");
-  fs.cpSync(BOARDS, boards, { recursive: true });
-  const elka = fs.readFileSync(path.join(boards, "include", "siemens-sg2-elka.toml"), "utf8");
-  const rf = elka.match(/^#\[peripheral\.RF\]\n(?:#.*\n)+/m);
-  let board = "siemens-el71";
-  if (rf) {
-    board = "siemens-el71-gsm";
-    fs.writeFileSync(path.join(boards, `${board}.toml`),
-      `[board]\nextends = "siemens-el71.toml"\n\n${rf[0].replace(/^#/gm, "")}`);
-  }
-
   const flash = path.join(run, "flash.bin");
   fs.copyFileSync(FLASH, flash);
   const host = await startHostPage({ padding: 8192 });
@@ -96,7 +83,7 @@ async function nativeBackend() {
     "-netdev", "user,id=net0",
     "-object", "gsm-bts,id=gsm0,netdev=net0",
     "-machine", "pmb887x,gsm-network=gsm0"], {
-    env: { ...process.env, QEMU_BIN: QEMU, BOARDS_DIR: boards, BOARD: board, RW: "1", ICOUNT: "vt",
+    env: { ...process.env, QEMU_BIN: QEMU, BOARDS_DIR: BOARDS, BOARD: "siemens-el71", RW: "1", ICOUNT: "vt",
       MONITOR: `unix:${monitor}`, SERIAL: path.join(run, "serial.log") },
     stdio: ["ignore", fs.openSync(path.join(run, "qemu.log"), "w"), "inherit"],
   });
