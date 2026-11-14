@@ -1,0 +1,8 @@
+{
+  "name": "pmb887x-gprs-gw",
+  "private": true,
+  "description": "Runtime dependencies of bts-emulator's gprs-gw/server.mjs in the deploy/gprs-gw image",
+  "dependencies": {
+    "ws": "8.21.3"
+  }
+}
