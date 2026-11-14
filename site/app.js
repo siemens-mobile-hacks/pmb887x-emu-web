@@ -1134,7 +1134,9 @@ function bootAccessory(conf) {
 }
 
 async function loadBoards() {
-  boardsBuf = await (await fetch("dist/boards.tar")).arrayBuffer();
+  const res = await fetch("dist/boards.tar");
+  if (!res.ok) throw new Error(`dist/boards.tar: HTTP ${res.status}`);
+  boardsBuf = await res.arrayBuffer();
   const files = [];
   untar(boardsBuf, (name, data) => files.push({ name, data }));
   const dec = new TextDecoder();
