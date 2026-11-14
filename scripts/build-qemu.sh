@@ -32,12 +32,10 @@ done
 
 # --- board configs from the bsp/ submodule ---
 bash "$WEB_DIR/scripts/sync-bsp.sh"
-bash "$WEB_DIR/scripts/pack-boards.sh"
-
-# --- the Siemens key module the Firmware panel drives (site/dist/) ---
-bash "$WEB_DIR/scripts/build-recalc-wasm.sh"
 
 # --- build: wasm64 TCG backend (site/dist-jit/, the page default) ---
+# Its deploy (deploy-dist.sh) also packs boards.tar and builds the Siemens
+# key module into site/dist/.
 bash "$WEB_DIR/scripts/build-qemu-wasm64.sh"
 
 echo "=== web dist ready: $WEB_DIR/site/dist-jit ==="

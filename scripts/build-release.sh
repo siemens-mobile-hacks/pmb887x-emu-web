@@ -64,9 +64,9 @@ fi
 
 # ---- 3. rebuild + bundle ------------------------------------------------
 
-# build.sh: deps (cached unless DEPS_CLEAN) → submodule init/sync-bsp/
-# pack-boards/build-recalc-wasm (idempotent re-syncs) → build-qemu-wasm64
-# → site/dist-jit.  Native build dirs
+# build.sh: deps (cached unless DEPS_CLEAN) → submodule init/sync-bsp →
+# build-qemu-wasm64 → site/dist-jit, whose deploy also packs boards.tar and
+# builds the key module into site/dist.  Native build dirs
 # (qemu-native*) are not part of the deploy path and are left alone.
 bash ./build.sh
 

@@ -42,10 +42,22 @@ for dep in spdlog tomlplusplus; do
   fi
 done
 
-source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null
-
 DIST="$ROOT/site/dist"
 mkdir -p "$DIST"
+
+# Every deploy runs this, so it builds only when an input is newer than the
+# module: the library and its third-party headers, the glue, this script and
+# the emsdk. FORCE=1 builds anyway.
+if [ "${FORCE:-0}" != 1 ] && [ -f "$DIST/siemens-recalc.wasm" ] && [ -f "$DIST/siemens-recalc.js" ] &&
+   [ -z "$(find "$SRC/siemens" "$SRC/crypto" "$SRC/utils" "$ROOT/site-src/recalc" \
+             "$EMU/third_party/spdlog/include" "$EMU/third_party/tomlplusplus/include" \
+             "$ROOT/scripts/build-recalc-wasm.sh" "$DEPS_ROOT/emsdk/upstream/emscripten/emscripten-version.txt" \
+             -newer "$DIST/siemens-recalc.js" -print -quit 2>/dev/null)" ]; then
+  echo "recalc module up to date: site/dist/siemens-recalc.wasm"
+  exit 0
+fi
+
+source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
