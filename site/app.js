@@ -2065,10 +2065,11 @@ $("btn-accessory").addEventListener("click", () => {
 
 function downloadBlob(blob, name) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  const url = a.href = URL.createObjectURL(blob);
   a.download = name;
   a.click();
-  URL.revokeObjectURL(a.href);
+  // a revoke in the same tick has cancelled large downloads in Safari
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function downloadMemfs(path, name) {
