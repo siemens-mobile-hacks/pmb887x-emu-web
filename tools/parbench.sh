@@ -27,6 +27,7 @@ for r in $(seq 1 "$n"); do
   for d in "${D[@]}"; do
     i=$((i+1))
     node tools/scenebench.mjs "$sc" "$d" --runs 1 --measure "$m" > "$out/$i.log" 2>&1 &
+    echo "$i $d" >> "$out/runs"
     sleep 1.1
   done
 done
@@ -34,7 +35,10 @@ wait
 for d in "${D[@]}"; do
   lines=$(grep -h "SCENEBENCH $sc $d median" "$out"/*.log)
   vals=$(echo "$lines" | sed -nE "s/.* $metric=([0-9.]+).*/\\1/p" | sort -n | tr '\n' ' ')
-  fails=$(echo "$lines" | grep -c "ok=0")
+  # a run that died before its median line counts as failed too
+  logs=$(awk -v d="$d" -v o="$out" '$2 == d { printf "%s/%s.log ", o, $1 }' "$out/runs")
+  done_=$(grep -l "SCENEBENCH $sc $d median" $logs 2>/dev/null | wc -l)
+  fails=$(( $(echo "$lines" | grep -c "ok=0") + n - done_ ))
   med=$(echo $vals | awk '{n=split($0,a," "); if(n) print a[int((n+1)/2)]}')
   und=$(echo "$lines" | sed -nE 's/.*underruns=([0-9]+).*/\1/p' | tr '\n' ' ')
   echo "PAR $sc $d $metric=[$vals] median=$med underruns=[$und] fails=$fails"
