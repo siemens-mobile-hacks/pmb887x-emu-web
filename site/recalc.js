@@ -17,7 +17,8 @@ const SKEY = 12345678;
 // The library's batched MD5 works on MD5_BATCH_SIZE consecutive candidates
 // per md5Batch() call, and sr_scan's start/stride are multiples of it (see
 // site-src/recalc/recalc_wasm.cpp). Must equal MD5_BATCH_SIZE in
-// pmb887x-emu's src/crypto/md5.h; recalc-worker.js imports it from here.
+// pmb887x-emu's src/crypto/md5.h. recalc-worker.js gets it with each job
+// rather than importing this module, which would load siemensfw.js too.
 export const BATCH = 8;
 
 /* ---- the flat SrIdentity struct from site-src/recalc/recalc_wasm.cpp ---- */
@@ -229,6 +230,7 @@ export async function recoverEsn(identity, { signal, onProgress } = {}) {
           start: i * BATCH,
           stride: n * BATCH,
           slice: SLICE,
+          batch: BATCH,
         });
       }
     });

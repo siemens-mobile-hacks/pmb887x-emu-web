@@ -9,7 +9,6 @@
 // often enough for that to land promptly.
 
 import createSiemensRecalc from "./dist/siemens-recalc.js";
-import { BATCH } from "./recalc.js";
 
 // onmessage is installed before the module is awaited, and the job is held
 // until it is ready: a dedicated worker's port is enabled once the script has
@@ -23,16 +22,16 @@ self.onmessage = ({ data }) => {
   else pending = data;
 };
 
-function sweep({ skey, key, useBootKey, start, stride, slice }) {
+function sweep({ skey, key, useBootKey, start, stride, slice, batch }) {
   const keyPtr = mod._malloc(16);
   const esnPtr = mod._malloc(4);
   mod.HEAPU8.set(key, keyPtr);
   const useBK = useBootKey ? 1 : 0;
 
   let base = start >>> 0;
-  // one slice of `slice` candidates = slice/BATCH batches, each `stride`
-  // candidates apart, so the next slice starts stride * slice / 8 on
-  const step = stride * (slice / BATCH);
+  // one slice of `slice` candidates = slice/batch batches, each `stride`
+  // candidates apart, so the next slice starts stride * slice / batch on
+  const step = stride * (slice / batch);
 
   const run = () => {
     if (mod._sr_scan(skey, keyPtr, useBK, base, stride, slice, esnPtr)) {
