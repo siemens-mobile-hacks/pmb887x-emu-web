@@ -1,16 +1,19 @@
 // Boots ONLINE, soaks to the idle screen, then compares the live LCD canvas
-// against a reference LCD dump (tools/final-lcd.png) pixel-wise.
-//   PORT=8080 node compare-lcd.mjs [secs] [reference.png]
+// against a reference LCD dump pixel-wise (for example
+// tools/test_targets/S75v40lg1_idle.png when the test flash is S75v40lg1).
+//   PORT=8080 node compare-lcd.mjs <secs> <reference.png>
 // Exits 1 when more than MAX_DIFF percent of the pixels differ (default 5),
 // when the sizes do not match, or when the guest EXITed.
 import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 
-const here = fileURLToPath(new URL(".", import.meta.url));
 const secs = Number(process.argv[2] || 300);
-const ref = fs.readFileSync(process.argv[3] || (here + "final-lcd.png")).toString("base64");
+if (!process.argv[3]) {
+  console.error("usage: node compare-lcd.mjs <secs> <reference.png>");
+  process.exit(2);
+}
+const ref = fs.readFileSync(process.argv[3]).toString("base64");
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
