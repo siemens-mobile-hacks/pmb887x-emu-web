@@ -151,7 +151,7 @@ thread is using them).
   the filename first (`DEVICE_RULES`), then the image itself, so a dump named
   `dump.bin` still selects its board:
   - `0x3C` `"CJKT"` — every pmb887x NOR dump, LG included
-    (`build/bsp/boot/fakesign.py`). Separates "not a fullflash" from
+    (`bsp/boot/fakesign.py`). Separates "not a fullflash" from
     "a fullflash I can't identify".
   - Siemens phones are the library's business: `probeFullflash()` in
     pmb887x-emu's siemensfw (`src/siemens`), whose browser build the page

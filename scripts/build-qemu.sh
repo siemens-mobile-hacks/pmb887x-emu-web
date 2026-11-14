@@ -32,7 +32,7 @@ for sub in qemu pmb887x-emu; do
   submodule_warn_off_pin "$sub"
 done
 
-# --- board configs from bsp (pinned rev) ---
+# --- board configs from the bsp/ submodule ---
 bash "$WEB_DIR/scripts/sync-bsp.sh"
 bash "$WEB_DIR/scripts/pack-boards.sh"
 

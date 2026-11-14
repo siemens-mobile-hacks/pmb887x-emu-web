@@ -207,6 +207,9 @@ cover.
                         the source of the siemensfw library the page compiles
                         for key recalculation, ESN recovery and Siemens
                         device detection (scripts/build-recalc-wasm.sh)
+  bsp/                  git submodule: Azq2/pmb887x-dev @ master, the
+                        board configs (lib/data/board) that boards.tar,
+                        run-native.sh and the native tests boot with
   build.sh              one-shot WASM build (toolchain → deps → qemu →
                         site/dist-jit)
   serve.mjs             static server for the WASM page (COOP/COEP); serves
@@ -221,8 +224,8 @@ cover.
                         qemu out at the pinned rev, sync bsp/boards/siemensfw
                         and build the wasm dist (wasm64 backend →
                         site/dist-jit/)
-    sync-bsp.sh         bsp checkout @ pin → build/bsp
-    pack-boards.sh      build/bsp board configs → site/dist/boards.tar (run by
+    sync-bsp.sh         checks the bsp/ submodule out the first time
+    pack-boards.sh      bsp/ board configs → site/dist/boards.tar (run by
                         every deploy path)
     build-recalc-wasm.sh  pmb887x-emu's siemensfw library (src/siemens) +
                         the page's glue (site-src/recalc) →

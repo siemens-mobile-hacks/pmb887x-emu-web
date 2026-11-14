@@ -198,7 +198,7 @@ Probes and traces:
 ## Native reference runs
 
 ```
-env PMB887X_BOARD=build/bsp/lib/data/board/siemens-s75.toml \
+env PMB887X_BOARD=bsp/lib/data/board/siemens-s75.toml \
     PMB887X_STARTUP=ONLINE \
     PMB887X_FLASH0_OTP0=02004AB3C31100000000 PMB887X_FLASH0_OTP1=000094104502237315FF \
   build/qemu-native-build/qemu-system-arm -display none -icount shift=3,sleep=off -machine pmb887x \

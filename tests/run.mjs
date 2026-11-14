@@ -18,7 +18,7 @@
 //                      [--keep]   (keep run dirs under /tmp)
 //
 // Env: QEMU_BIN + BOARDS_DIR are forwarded to run-native.sh (defaults:
-// build/qemu-native-build + build/bsp of this workspace).
+// build/qemu-native-build + the bsp/ submodule of this workspace).
 //
 // Screenshots: the first LCD-content screendump (boot-progress proof) and
 // the final screendump are saved per flash to

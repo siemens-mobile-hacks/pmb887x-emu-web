@@ -4,11 +4,10 @@
 #
 # What "latest code" means here: the superproject's HEAD is the source of
 # truth —
-#   - qemu/ and pmb887x-emu/ must sit exactly on their gitlinks with no
+#   - qemu/, bsp/ and pmb887x-emu/ must sit exactly on their gitlinks with no
 #     local changes, or the release stops (it never moves or cleans a
 #     checkout: an edited file must not leak into a release artifact, and
 #     a commit not yet in a gitlink must not either)
-#   - bsp is re-synced at the pin (sync-bsp.sh, idempotent)
 #   - build/qemu-wasm64 is wiped, so no ninja object
 #     from an earlier tree can survive into the artifacts
 # The pinned toolchain/deps (build/deps: emsdk + glib/pixman/zlib/libffi)
@@ -30,13 +29,13 @@ source scripts/submodules.sh
 
 note() { echo "build-release: $*"; }
 
-# ---- 1. qemu source = the gitlink, exactly ----------------------------
+# ---- 1. sources = the gitlinks, exactly --------------------------------
 
 # (only pmb887x-emu's own top level, not its nested qemu)
-for sub in qemu pmb887x-emu; do
+for sub in qemu bsp pmb887x-emu; do
   submodule_require_pin "$sub"
 done
-note "qemu @ $(git -C qemu rev-parse --short HEAD) (the gitlink)"
+note "qemu @ $(git -C qemu rev-parse --short HEAD), bsp @ $(git -C bsp rev-parse --short HEAD) (the gitlinks)"
 
 # ---- 2. wipe the qemu build dirs (toolchain/deps stay) ------------------
 

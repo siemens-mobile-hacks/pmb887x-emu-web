@@ -78,6 +78,6 @@ if [ "$MODE" = tci ]; then
   echo "=== native TCI qemu ready (plugins on): $BUILD/qemu-system-arm (qemu $ID) ==="
 else
   echo "=== native qemu ready: $BUILD/qemu-system-arm (qemu $ID) ==="
-  echo "board configs: bash scripts/sync-bsp.sh (build/bsp)"
+  echo "board configs: bash scripts/sync-bsp.sh (the bsp/ submodule)"
   echo "run: scripts/run-native.sh fullflashes/<device>.bin"
 fi

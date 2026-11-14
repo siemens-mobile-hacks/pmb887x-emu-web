@@ -1,34 +1,25 @@
 #!/bin/bash
-# Check out the pinned pmb887x-dev (BSP) revision into build/bsp.
+# The board configs come from the bsp/ submodule (pmb887x-dev), pinned by its
+# gitlink. This checks it out the first time; after that the checkout is
+# used as it is, with one warning line when it is not at its gitlink.
+# PMB887X_BSP_DIR (scripts/build-dirs.sh) points the build at another
+# checkout instead, which is then used as it is.
 #
-# There is nothing to patch or merge any more: bsp master absorbed
-# everything this script used to carry — the hd155153np RF peripheral is
-# commented out at the source (bsp 55752c5, 2026-09-15, which retired the
-# old bsp-patches/ dir), and perk11's "board: LG boards read the RTC
-# counter as packed calendar fields" (PR#6) landed upstream as e8d490e
-# (2026-09-20), which retired PMB887X_BSP_FIX_REV and the merge it used to
-# recreate. A plain checkout of PMB887X_BSP_REV is the whole story.
+# There is nothing to patch or merge: bsp master absorbed everything this
+# script used to carry — the hd155153np RF peripheral is commented out at
+# the source (bsp 55752c5, 2026-09-15, which retired the old bsp-patches/
+# dir), and perk11's "board: LG boards read the RTC counter as packed
+# calendar fields" (PR#6) landed upstream as e8d490e (2026-09-20), which
+# retired PMB887X_BSP_FIX_REV and the merge it used to recreate.
 set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$WEB_DIR/versions.env"
 source "$WEB_DIR/scripts/build-dirs.sh"
+source "$WEB_DIR/scripts/submodules.sh"
 
-BSP="$BSP_DIR"
-
-if [ ! -d "$BSP/.git" ]; then
-  git clone "$PMB887X_BSP_REPO" "$BSP"
+if [ "$BSP_DIR" = "$WEB_DIR/bsp" ]; then
+  submodule_init bsp
+  submodule_warn_off_pin bsp
 fi
-(
-  cd "$BSP"
-  git fetch --all --quiet 2>/dev/null || true
 
-  # The checkout is left alone while it already sits on the pin —
-  # rebuilding it from scratch on every run would churn for nothing.
-  if [ "$(git rev-parse HEAD)" != "$PMB887X_BSP_REV" ]; then
-    git checkout -q -f -B bsp "$PMB887X_BSP_REV"
-  fi
-  git checkout -q -f -- . 2>/dev/null || true
-)
-
-echo "bsp ready: $BSP @ $PMB887X_BSP_REV"
+echo "bsp ready: $BSP_DIR @ $(git -C "$BSP_DIR" rev-parse --short HEAD)"

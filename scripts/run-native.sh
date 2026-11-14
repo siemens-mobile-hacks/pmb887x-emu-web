@@ -29,7 +29,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QEMU="${QEMU_BIN:-$ROOT/build/qemu-native-build/qemu-system-arm}"
-BOARDS="${BOARDS_DIR:-$ROOT/build/bsp/lib/data/board}"
+WEB_DIR="$ROOT"
+source "$ROOT/scripts/build-dirs.sh"
+BOARDS="${BOARDS_DIR:-$BSP_DIR/lib/data/board}"
 
 [ -x "$QEMU" ] || { echo "qemu-system-arm not built — see scripts/build-native.sh" >&2; exit 1; }
 [ -n "${1:-}" ] || { echo "usage: $0 <fullflash.bin> [extra qemu args...]" >&2; exit 1; }

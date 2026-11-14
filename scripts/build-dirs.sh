@@ -2,11 +2,11 @@
 # one setting moves them all:
 #   WEB_BUILD        the build tree (default build/ in the repository)
 #   WASM_DEPS        the emsdk + wasm64 dependency stack (default $WEB_BUILD/deps)
-#   PMB887X_BSP_DIR  the bsp checkout (default $WEB_BUILD/bsp)
+#   PMB887X_BSP_DIR  the bsp checkout (default the bsp/ submodule)
 # Expects WEB_DIR, the repository root.
 BUILD="${WEB_BUILD:-$WEB_DIR/build}"
 DEPS_ROOT="${WASM_DEPS:-$BUILD/deps}"
-BSP_DIR="${PMB887X_BSP_DIR:-$BUILD/bsp}"
+BSP_DIR="${PMB887X_BSP_DIR:-$WEB_DIR/bsp}"
 
 # the pinned emsdk's environment, quietly, or what to run to get it
 use_emsdk() {

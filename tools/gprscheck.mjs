@@ -71,7 +71,7 @@ const log = (s) => console.log(`[gprs] t=${((Date.now() - t0) / 1000).toFixed(0)
 // serial() and close(). Key names are HMP's.
 async function nativeBackend() {
   const QEMU = process.env.QEMU_BIN || path.join(ROOT, "build", "qemu-native-build", "qemu-system-arm");
-  const BOARDS = process.env.BOARDS_DIR || path.join(ROOT, "build", "bsp", "lib", "data", "board");
+  const BOARDS = process.env.BOARDS_DIR || path.join(ROOT, "bsp", "lib", "data", "board");
   if (!/^user$/m.test(spawnSync(QEMU, ["-machine", "pmb887x", "-netdev", "help"], { encoding: "utf8" }).stdout ?? ""))
     throw new Error(`${QEMU} has no slirp (-netdev user): install libslirp-dev, rebuild with scripts/build-native.sh`);
 

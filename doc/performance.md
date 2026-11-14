@@ -428,7 +428,7 @@ always revert with `git apply -R`.
 - **Old dists** can hang silently under the current scenebench (empty logs).
   Rebuild the old commit into a fresh dist instead.
 - **Board configs:** `site/dist/boards.tar` is shared by every dist and
-  repacked from `build/bsp` on every ninja-fast deploy. A dist that needs
+  repacked from `bsp/` on every ninja-fast deploy. A dist that needs
   another BSP must be served from a second site root
   (`WEB_SITE_DIR=<root> PORT=8081 node serve.mjs`, then
   `PORT_B=8081 tools/perf/swab.sh ...`).

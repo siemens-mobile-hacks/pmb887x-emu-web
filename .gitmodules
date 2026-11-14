@@ -6,3 +6,7 @@
 	path = qemu
 	url = https://github.com/Azq2/qemu-pmb887x
 	branch = wasm-browser-port
+[submodule "bsp"]
+	path = bsp
+	url = https://github.com/Azq2/pmb887x-dev
+	branch = master
