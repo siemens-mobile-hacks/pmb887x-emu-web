@@ -16,7 +16,7 @@ import {
 import { rename, stat as statP } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
-import { extname, join, normalize, resolve, dirname } from "node:path";
+import { extname, join, normalize, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 
@@ -131,7 +131,7 @@ async function gzSidecar(path) {
 async function handler(req, res) {
   const url = new URL(req.url, "http://localhost");
   let path = normalize(join(root, decodeURIComponent(url.pathname)));
-  if (!path.startsWith(root)) { res.writeHead(403); res.end(); return; }
+  if (path !== root && !path.startsWith(root + sep)) { res.writeHead(403); res.end(); return; }
   if (url.pathname === "/") path = join(root, "index.html");
   if (!existsSync(path) || statSync(path).isDirectory()) {
     res.writeHead(404, { "content-type": "text/plain" });
