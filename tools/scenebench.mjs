@@ -60,7 +60,7 @@
 // idle screen when a key press was dropped — the firmware drops them freely
 // under load.  A dist may be "<dir>@<query>" (extra page parameters, %2C
 // for commas).  Runs are sequential and interleaved across dists so host
-// drift hits all of them.  Results: tests/results/scenebench-<scenario>-<ts>.json.
+// drift hits all of them.  Results: tests/results/scenebench-<scenario>-<ts>-p<pid>.json.
 import { chromium, firefox } from "playwright-core";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -231,7 +231,7 @@ function treeCpuS() {
   walk(process.pid);
   return total;
 }
-const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
+const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
 // SCENEBENCH_BROWSER=firefox runs Playwright's Firefox instead of Chromium;
 // SCENEBENCH_FF_PREFS='{"pref": value}' adds user prefs to it.
 // SCENEBENCH_CDP=http://127.0.0.1:9222 attaches to a running Chromium
@@ -240,8 +240,9 @@ const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
 // flash goes to the page through DevTools, and cpu is not measured.
 const cdp = process.env.SCENEBENCH_CDP;
 const browserName = process.env.SCENEBENCH_BROWSER || "chromium";
+// the pid keeps concurrent runs (parbench.sh, perf/swab.sh) apart
 const outBase = path.join(here, `../tests/results/scenebench-${scenarioName}-` +
-  `${browserName === "chromium" ? "" : browserName + "-"}${stamp}`);
+  `${browserName === "chromium" ? "" : browserName + "-"}${stamp}-p${process.pid}`);
 
 const SNAP = `(() => {
   const m = window.__qemu;

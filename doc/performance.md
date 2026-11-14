@@ -169,7 +169,7 @@ Cost facts:
 every step against an LCD reference in `tools/test_targets/`), and measures a
 window. The flashes come from `fullflashes/`, next to or one level above the
 repo; `--flash` overrides that. Results go to
-`tests/results/scenebench-<scene>-<ts>.json`.
+`tests/results/scenebench-<scene>-<ts>-p<pid>.json`.
 
 | Scene | Phone (flash) | What runs | Where the time goes | Use it for |
 |---|---|---|---|---|
