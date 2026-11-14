@@ -1,6 +1,7 @@
 #!/bin/bash
 # Print the identity of the qemu source a build comes from: its HEAD commit,
-# plus a hash of the uncommitted diff when the tree has one.
+# plus a hash of the uncommitted diff and the untracked files when the tree
+# has any.
 #
 #   scripts/qemu-source-id.sh <qemu source dir | meson build dir>
 #
@@ -18,8 +19,15 @@ if [ -f "$INFO" ]; then
 fi
 
 HEAD="$(git -C "$DIR" rev-parse HEAD)"
-if git -C "$DIR" diff --quiet HEAD; then
+# a new source file not yet added changes the build as much as an edit
+UNTRACKED="$(git -C "$DIR" ls-files --others --exclude-standard)"
+if git -C "$DIR" diff --quiet HEAD && [ -z "$UNTRACKED" ]; then
   echo "$HEAD"
 else
-  echo "$HEAD+$(git -C "$DIR" diff --binary HEAD | sha1sum | cut -c1-12)"
+  echo "$HEAD+$( {
+    git -C "$DIR" diff --binary HEAD
+    if [ -n "$UNTRACKED" ]; then
+      git -C "$DIR" ls-files --others --exclude-standard -z | (cd "$DIR" && xargs -0 sha1sum)
+    fi
+  } | sha1sum | cut -c1-12)"
 fi
