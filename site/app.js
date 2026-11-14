@@ -1912,7 +1912,7 @@ function onGuestExit(code) {
   showGprsStatus("stopped");
   exitCode = code;
   refreshTyping();
-  stopPainting();
+  stopGuestOutput();
   stopRecording();          // flushes whatever was captured
   finalExitCheck();         // a crash dump it printed on its way out
   setEmuState("idle");
@@ -2543,7 +2543,9 @@ function startPainting() {
   rafHandle = requestAnimationFrame(step);
 }
 
-function stopPainting() {
+// Everything that feeds off a live guest: the paint loop, the serial poll,
+// the HUD sampler and the audio.
+function stopGuestOutput() {
   cancelAnimationFrame(rafHandle);
   clearInterval(serialTimer);
   stopHudTimer();
@@ -2690,7 +2692,7 @@ function presentExit(report, quit) {
   if (exitReport) return;
   exitReport = report;
   exitPending = null;
-  stopPainting();          // the last frame the phone drew stays on the canvas
+  stopGuestOutput();       // the last frame the phone drew stays on the canvas
   hideOverlay();
   beep();
   fadeScreen();
