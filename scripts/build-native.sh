@@ -48,10 +48,13 @@ exec 9>"$OUT.lock"
 flock 9
 
 # a build dir configured from another tree (the old pinned worktree) is
-# rebuilt from scratch: meson cannot move a build dir between sources
+# rebuilt from scratch: meson cannot move a build dir between sources.
+# Physical paths on both sides: meson records the real path, and a checkout
+# reached through a symlink is the same tree.
 INFO="$OUT/meson-info/meson-info.json"
-if [ -f "$INFO" ] && ! grep -q "\"source\": *\"$SRC\"" "$INFO"; then
-  rm -rf "$OUT"
+if [ -f "$INFO" ]; then
+  BUILT_FROM="$(sed -nE 's/.*"source": *"([^"]*)".*/\1/p' "$INFO")"
+  [ "$(realpath -m -- "$BUILT_FROM")" = "$(realpath -- "$SRC")" ] || rm -rf "$OUT"
 fi
 
 mkdir -p "$OUT"
