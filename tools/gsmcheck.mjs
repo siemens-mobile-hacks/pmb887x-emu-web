@@ -29,13 +29,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
+import { opt as argOpt } from "./lib/argv.mjs";
+import { bootOwnFlash } from "./lib/page.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const argv = process.argv.slice(2);
-const opt = (n, d) => {
-  const i = argv.indexOf("--" + n);
-  return i >= 0 ? argv[i + 1] : d;
-};
+const opt = (n, d) => argOpt(argv, n, d);
 
 const DIST = opt("dist", "dist-jit");
 const SECS = Number(opt("secs", 240));
@@ -108,11 +107,8 @@ if (GSM === "0") await page.evaluate(() => {
   gsm.checked = false;
   for (const type of ["input", "change"]) gsm.dispatchEvent(new Event(type, { bubbles: true }));
 });
-await page.selectOption("#startup", "ONLINE");
-await page.click("#ff-mode-own");
 // an LG image goes in with the EFA block that sits next to it
-await page.setInputFiles("#fullflash", [file, file + ".cfi-efa"].filter((f) => fs.existsSync(f)));
-await page.click("#btn-start");
+await bootOwnFlash(page, [file, file + ".cfi-efa"].filter((f) => fs.existsSync(f)), { startup: "ONLINE" });
 
 const press = (key) => page.evaluate(async (code) => {
   window.__qemu._wasm_send_key(code, 1);
