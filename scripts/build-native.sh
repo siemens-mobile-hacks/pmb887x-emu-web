@@ -10,8 +10,8 @@
 # is the reference of every native gate (tests/run.mjs, the lockstep
 # drivers), so it must be built from exactly what the dist under test was
 # built from; tools/lockstep-wasm.mjs checks that through
-# scripts/qemu-source-id.sh.  It used to build a worktree at the versions.env
-# pin, which nothing kept in step with the submodule: the gate then compared
+# scripts/qemu-source-id.sh.  It used to build a worktree at a qemu pin kept
+# apart from the submodule, which nothing kept in step: the gate then compared
 # new dists against month-old code.
 #
 # The TCI build has TCG plugins on: it is the b-side binary of the phase-0b

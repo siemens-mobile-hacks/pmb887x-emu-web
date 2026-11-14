@@ -217,13 +217,12 @@ cover.
                         artifacts (qemu wasm/js, boards.tar) live in
                         site/dist/ (boards.tar, key module) and
                         site/dist-jit/ (the wasm64 backend)
-  versions.env          pinned qemu-pmb887x / bsp / toolchain revisions
   scripts/
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
-    build-qemu.sh       initialise the qemu (+ pmb887x-emu) submodules, check
-                        qemu out at the pinned rev, sync bsp/boards/siemensfw
-                        and build the wasm dist (wasm64 backend →
-                        site/dist-jit/)
+    build-qemu.sh       check the qemu, pmb887x-emu and bsp submodules out
+                        when they are not yet, pack boards.tar, build
+                        siemensfw and the wasm dist (wasm64 backend →
+                        site/dist-jit/), from the submodules as checked out
     sync-bsp.sh         checks the bsp/ submodule out the first time
     pack-boards.sh      bsp/ board configs → site/dist/boards.tar (run by
                         every deploy path)
@@ -241,8 +240,9 @@ cover.
                         hash of the uncommitted diff); the wasm builds and
                         build-native.sh write it to qemu-source.txt and
                         lockstep-wasm.mjs compares the two
-    build-release.sh    release build: hard-sync to the pins, rebuild the
-                        dists, bundle for static deployment
+    build-release.sh    release build: require every submodule on its
+                        gitlink and clean, rebuild the dists, bundle for
+                        static deployment
     bundle-dist.sh      assemble the deployable static bundle in dist/ (what
                         deploy/nginx/ serves; pre-gzip'd + manifest)
     run-native.sh       native launcher (the web page's boot recipe, icount
@@ -392,35 +392,41 @@ v40 has no boot chime, only a short blip. Native captures: `node` + `-audio wav,
 
 ## Pins
 
-`versions.env` pins what `build-qemu.sh` and `build-release.sh` check out;
-its comments record every bump and why. In outline:
+The submodules are the pins: what the parent repo's HEAD records for
+`qemu/`, `bsp/` and `pmb887x-emu/` (their gitlinks) is what a release
+builds. `build-qemu.sh` checks a submodule out only the first time and
+otherwise builds it as it is, with a warning when it is not at its
+gitlink; `build-release.sh` refuses that, and local changes. A fresh clone
+needs `git clone --recurse-submodules` (or `git submodule update --init`).
+[doc/version-pins.md](doc/version-pins.md) records every bump and why. In
+outline:
 
-- qemu-pmb887x (`QEMU_PMB887X_REV`, branch `wasm-browser-port`) — the fork
+- qemu-pmb887x (`qemu/`, branch `wasm-browser-port`) — the fork
   series on top of siemens-mobile-hacks/qemu-pmb887x master, which is
-  merged in regularly (last: `0539060008` on 2026-11-12). Upstream carries
+  merged in regularly (last: `3403936c99` on 2026-11-13). Upstream carries
   the DSP LLE (the Teak mask ROM and the downloaded code run through a TCG
   JIT synchronously on the vCPU thread), the `vcpu-timers` clock,
   `-debug-channels`, the SIM as `-device gsm-sim` and the CFI flash with
   its own writeback. What the fork adds is outlined in
   [doc/architecture.md](doc/architecture.md), and every speed-only change
   is listed in [doc/wasm-fast-paths.md](doc/wasm-fast-paths.md).
-- bsp (pmb887x-dev, `PMB887X_BSP_REV`) — a bsp master revision; a plain
-  checkout of the pin is the whole tree. Each board declares an empty
+- bsp (pmb887x-dev, `bsp/`) — a bsp master revision; a plain
+  checkout of it is the whole tree. Each board declares an empty
   `iso7816-slot` for the card: the page and `run-native.sh` add
   `-device gsm-sim,operator=…` when the board set has that slot. qemu's
   generated `gen/` tables (pad names) must match the bsp (regenerate with
   bsp's `tools/qemu.sh` and compare).
-- pmb887x-emu `91a9b14` — master. Not built from (qemu comes from the root
+- pmb887x-emu (`pmb887x-emu/`) — master. Not built from (qemu comes from the root
   submodule); it is the source of the siemensfw library (`src/siemens`)
   that `scripts/build-recalc-wasm.sh` compiles for the page's Siemens-key
   and device-detection module. Its own runner still passes
   `-icount precise-clocks=on` and `PMB887X_SIM*` variables, which qemu no
   longer has.
-- emsdk, glib, pixman, zlib and libffi versions mirror qemu's
-  `emsdk-wasm64-cross.docker`.
+- emsdk, glib, pixman, zlib and libffi versions are set in
+  `scripts/build-deps.sh` and mirror qemu's `emsdk-wasm64-cross.docker`.
 
-Bumping: change the pin, rebuild (`build-qemu.sh` moves the submodule to
-the pin); `tests/run.mjs` is the A/B harness — it boots
+Bumping: check the new revision out in the submodule, rebuild, and commit
+the gitlink; `tests/run.mjs` is the A/B harness — it boots
 s75/el71/c81/ke800/ke970 natively and benchmarks before/after, and
 `bash scripts/gate.sh keep` is the browser-side gate.
 

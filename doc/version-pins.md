@@ -1,8 +1,11 @@
-# Version pin history
+# Submodule bump history
 
-What each `versions.env` pin moved to and why, by date, newest first.
-This was the comment block of `versions.env` until 2026-11-14; the file
-now keeps one line per pin. Figures are as measured at the time.
+What the qemu and bsp submodules were bumped to and why, by date, newest
+first. Since 2026-11-14 the gitlinks are the pins: `versions.env` is gone,
+`scripts/build-release.sh` builds exactly the gitlinks, and the toolchain
+versions live in `scripts/build-deps.sh`. Before that the pins were
+`QEMU_PMB887X_REV` and `PMB887X_BSP_REV` in `versions.env`, and these lists
+were its comment block. Figures are as measured at the time.
 
 ## The qemu source
 
@@ -12,8 +15,10 @@ The qemu source is the root-level qemu/ submodule (Azq2/qemu-pmb887x, local bran
 
 Why dsp-lle and not plain master: master alone aborts every Siemens fullflash during L1 GSM frame handling (">>EXIT<< FILE: l1bbcsg") unless it carries the "hacky AFE (LLE+HLE)" commit from dsp-stuff; dsp-lle runs the real DSP firmware instead, which also gives the Siemens boards sound.
 
-## qemu (`QEMU_PMB887X_REV`)
+## qemu (the `qemu/` gitlink; `QEMU_PMB887X_REV` before 2026-11-14)
 
+- `48858038d9` (2026-11-14) an `exit()` from a thread that holds the BQL runs the exit notifiers on that thread, as on a native host: a start-up error (an unknown option, a board without a display, error_fatal) no longer freezes the page.  From here the gitlink is the pin
+- `8fb9035755` (2026-11-13) ui/wasm: `wasm_send_key_after`, key edges spaced in guest time, for the page's typing.  The gitlink moved here while `QEMU_PMB887X_REV` stayed at d992a03bf8, so build-qemu.sh would have moved qemu back to an engine without that export
 - `d992a03bf8` (2026-11-13) merge of smh/master 3403936c99 -- the cfi-flash CFI/PRI decode and AMD command set (OTP data now without lock words), PMB627X / Bright 6PLA / HD155165BP transceivers, the TPU's RF SSC timing, the cell configurable (default DCS1800 ARFCN 512).  With bsp 191612c the CX70 gets its pmb6270, which ends its l1bbcsg panics
 - `47d1ff26aa` (2026-11-12) merge of smh/master 0539060008 -- the HD15515X transceivers, the DSP modulator per hardware version, gprscu reads.  Speed level on every scene, 8 pairs each
 - `9de7811900` (2026-11-12) ui/wasm.c gets a network port for the page, the GSM cell's IP side in the browser (site/gprs-net.js).  Idle unless the page attaches
@@ -95,8 +100,10 @@ Why dsp-lle and not plain master: master alone aborts every Siemens fullflash du
 - `25c93a1` (2026-09-15) round sixteen, 0081: a key event arriving before wasm_display_init() created its bottom half took the whole module down with "memory access out of bounds" -- qemu_bh_schedule(NULL)'s atomic lands on a valid wasm address and succeeds, so the fault surfaces three dereferences later.  It failed every board of bootcheck on every dist while looking like host memory pressure. Regression test: tools/earlykey.mjs
 - `b2fa7e8` (2026-09-15) round sixteen, 0080: wasm-diag counters that price speculation, the jump cache and arm_rebuild_hflags. Instrumentation only, all of it wasm-gated.  They exist because this round found that the wasm profile's per-function self-time names the wrong function -- see doc/lessons.md "The wasm profile names the wrong function"
 
-## bsp (`PMB887X_BSP_REV`)
+## bsp (the `bsp/` gitlink; `PMB887X_BSP_REV` before 2026-11-14)
 
+- `191612c` (2026-11-14) the same revision becomes the top-level `bsp/` submodule, which replaces the build/bsp clone that scripts/sync-bsp.sh used to check out.  pmb887x-emu's own bsp submodule pins the same commit
+- `191612c` (2026-11-13) master, with the qemu d992a03bf8 merge: every board config has an RF transceiver; the CX70's pmb6270 on TPU:RFSSC0 ends its l1bbcsg panics
 - `63b56fa` (2026-09-22) master up to the commit before the pad rename.  ebbb9c5 + 4da7eb0 "update ke970 config" give the KE970 jog dial a [peripheral.SCROLL] of type ke970-scroll, bound to NAV_UP/NAV_DOWN through the new `key = {}` block, so the wheel the page now draws as a pad (site/keyboards.js, board ke970) reaches the firmware; the board also moves M_0/M_9 onto `voltage` and remaps USB_CHG_EN/TF_DAT1.  Deliberately NOT the tip: eb4f9fc "lib: fix pad names" swaps the names of GPIO 39 and 99 (DIF_HD <-> MMCI_DAT1) and names 32/33 I2S2_RX/I2S2_TX, and rewrites five board configs against them, while qemu's own pad table — generated from bsp and committed in the submodule, gen/cpu_regs.h — still has the old names.  Those configs would bind the e71/el71/m72/s68 aliases to the wrong pin and fail the KE970 on an I2S2_RX the table does not have
 - `e79169f` (2026-09-20) master.  PR#6 landed upstream as e8d490e, so PMB887X_BSP_FIX_REV and its merge in scripts/sync-bsp.sh are gone — plain master is the whole checkout again.  New boards this round: M65, M75, ME75, SK65 and SL65 (4a18db7, 828613d, 6b2db60), CX75 reworked onto the new siemens-sgl-sirius include, WHBABCON/WHBABSTAT bits (c19c914) and USART.cfg RX pacing.  The device list (site/fullflashes.js DEVICE_RULES) grew the matching filename rules; boards.tar is re-packed from this rev by scripts/pack-boards.sh
 - `23fc945` (2026-09-17) master + PR#6.  Master's 55752c5 comments out the [peripheral.RF] hd155153np entries on the x75 and ELKA includes — the device the emulator has no table entry for, which used to abort board init with 'hardware error: Unknown device: hd155153np' and which this project carried a bsp-patches/ workaround for until now — and maps CAMERA and PLAY_PAUSE into the S75 keypad matrix, so the two side keys the page already draws finally reach the firmware.  c0cf69a adds the END_CALL mapping to the SGOLD keypad, 23fc945 the WHBABCON SETABEN/CLRABEN flags.  PR#6 (e6e73d1, "LG boards read the RTC counter as packed calendar fields") is still unmerged upstream: PMB887X_BSP_FIX_REV keeps it merged onto the master pin — scripts/sync-bsp.sh does the merge, so a fresh clone reproduces it — because the [rtc] format = "calendar" it carries is what the LG firmware needs and the companion of qemu's RTC cnt-format commit

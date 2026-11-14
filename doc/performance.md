@@ -120,8 +120,7 @@ emulator.
 ### Landing a change
 
 - Make one mechanism per qemu commit, with the measured numbers in the
-  message. Bump `QEMU_PMB887X_REV` in `versions.env` together with the
-  submodule pin.
+  message, then bump the qemu gitlink in the parent repo.
 - Run `scripts/gate.sh keep` before each commit, and `close` before the last
   commit of a session.
 - If the change did not ship, add a row to Closed ideas. Keep the patch under

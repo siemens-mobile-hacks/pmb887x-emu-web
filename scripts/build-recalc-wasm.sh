@@ -27,7 +27,7 @@ cd "$ROOT"
 EMU="$ROOT/pmb887x-emu"
 SRC="$EMU/src"
 if [ ! -f "$SRC/siemens/fullflash.cpp" ]; then
-  echo "build-recalc-wasm: pmb887x-emu submodule is not checked out at the pinned rev" >&2
+  echo "build-recalc-wasm: pmb887x-emu submodule is not checked out" >&2
   echo "  git submodule update --init pmb887x-emu" >&2
   exit 1
 fi

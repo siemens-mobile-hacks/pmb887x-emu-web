@@ -23,7 +23,6 @@ set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$WEB_DIR"
-source ./versions.env
 source scripts/build-dirs.sh
 source scripts/submodules.sh
 

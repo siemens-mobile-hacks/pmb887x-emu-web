@@ -4,12 +4,14 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
 
 ```
 .
-  qemu/                                     submodule: Azq2/qemu-pmb887x @ the pinned rev on
+  qemu/                                     submodule: Azq2/qemu-pmb887x @ its gitlink on
                                             branch wasm-browser-port: the one qemu source tree,
                                             wasm and native builds alike
   pmb887x-emu/                              submodule: the meta-repo @ master (reference; also the
                                             source of the siemensfw library the page compiles)
-  build.sh, versions.env, scripts/          build pipeline (WASM + native modes)
+  bsp/                                      submodule: Azq2/pmb887x-dev @ master, the board
+                                            configs (lib/data/board)
+  build.sh, scripts/                        build pipeline (WASM + native modes)
   site-src/recalc/                          emcc glue around pmb887x-emu's siemensfw library
                                             (src/siemens) → site/dist/siemens-recalc.wasm
                                             (Advanced ▸ Siemens keys + device detection)
@@ -48,11 +50,13 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
 1. `scripts/build-deps.sh` installs emsdk 4.0.10 into `build/deps/emsdk`
    and builds glib 2.84, pixman 0.44.2, zlib 1.3.2 and libffi headers with
    emcc for wasm64 (mirrors qemu's own
-   `tests/docker/dockerfiles/emsdk-wasm64-cross.docker`; pins in
-   `versions.env`).
-2. `scripts/build-qemu.sh` initialises the `qemu/` submodule at the
-   pinned rev (and moves it there whenever HEAD differs), checks out the bsp at its pin
-   (`scripts/sync-bsp.sh`), packs the board configs into
+   `tests/docker/dockerfiles/emsdk-wasm64-cross.docker`; the versions
+   are set in that script).
+2. `scripts/build-qemu.sh` checks the `qemu/`, `pmb887x-emu/` and `bsp/`
+   submodules out the first time (`scripts/sync-bsp.sh` does bsp) and
+   otherwise builds them as they are, with a warning for one that is not
+   at its gitlink; `scripts/build-release.sh` refuses that, and local
+   changes. It packs the board configs into
    `site/dist/boards.tar` (`scripts/pack-boards.sh`), builds the Siemens
    key module into `site/dist/siemens-recalc.wasm`
    (`scripts/build-recalc-wasm.sh`), then runs
@@ -79,7 +83,7 @@ reset). One-shot: `./build.sh`.
 
 All qemu changes are commits on the submodule branch, on top of upstream
 `smh/master` (siemens-mobile-hacks/qemu-pmb887x), which is merged in
-regularly. `versions.env` pins the tip. `git -C qemu diff <upstream>` is
+regularly. The `qemu/` gitlink pins the tip. `git -C qemu diff <upstream>` is
 the authoritative list; in outline:
 
 - **The wasm64 TCG backend** (`tcg/wasm64/` plus its hooks in `tcg/` and
