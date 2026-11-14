@@ -13,6 +13,10 @@ versatilepb perf bench + device-tax mirrors, `tools/tcgbench.mjs`); both
 build on `baremetal/` (startup, linker script, compiler flags).
 `wasm/dispatchbench.mjs` is a standalone node microbenchmark of the
 wasm64 TB-to-TB transition (no build, no page; options in its header).
+`unit/` holds `node --test` suites for the page's pure modules
+(`site/boards.js`, `exit-report.js`, `otp.js`, `ua.js`, `keyboards.js`,
+`fullflashes.js`): `node --test tests/unit/*.test.mjs`, milliseconds, also
+the gate's `unit` job.
 The lockstep harness is documented below.
 
 ## Running
