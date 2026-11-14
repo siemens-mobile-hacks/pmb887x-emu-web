@@ -5,8 +5,7 @@
 // Variants are booted in PARALLEL TABS of one browser (the old workflow ran
 // them one after another, each with a fixed 35 s wait). Named variants:
 //   fast          ?x=1                — stock build, cache-busted
-//   rewind        ?iorewind=1         — stock qemu io-recompile path
-//   key=value     any other token     — appended as a query param (e.g. iopace=20)
+//   key=value     any other token     — appended as a query param (e.g. bank=0)
 // Repeat a variant (e.g. `node ab.mjs fast fast`) to get two parallel samples
 // of the same build — replaces the old "run it twice to be sure".
 //
@@ -27,7 +26,7 @@ const PASS_FB = Number(process.env.AB_PASS_FB ?? 100);
 const PASS_INSNS = Number(process.env.AB_PASS_INSNS || 0);
 const POLL_MS = 2000;
 
-const NAMED = { fast: "x=1", rewind: "iorewind=1" };
+const NAMED = { fast: "x=1" };
 const variants = process.argv.slice(2);
 if (!variants.length) variants.push("fast");
 

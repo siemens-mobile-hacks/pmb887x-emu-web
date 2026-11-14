@@ -11,7 +11,7 @@
 // Then drive it with tools/ctl.mjs:
 //   boot [k=v ...]   fresh page (+fullflash upload, ONLINE start); waits
 //                    until the module is up. Extra args become query params
-//                    (iorewind=1, iopace=20, icount=shift=4 ...).
+//                    (bank=0, icount=shift=4, trace=dif ...).
 //   status           one compact line: uptime, insns (+rate since last call),
 //                    vclock, fb updates, serial size, page status
 //   wait <pred>      block until: exit | fb=N | insns=N | splash | secs=N
