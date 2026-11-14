@@ -101,10 +101,8 @@ both ways), and the runtime's `FS`,
 `ENV`, `HEAPU8`, `TTY`, `addFunction`/`removeFunction`. A dist built with
 `tools/perf/freerun.diff` also has `_wasm_free_run`.
 
-There are no counter exports. Tools written against the September ones
-(`_wasm_memstat`, `_wasm_tbs`, `_wasm_reg/_pc/_peek`) either fail, and are
-not listed below, or print zeros in those columns (uibench, keylag,
-serialwatch).
+There are no counter exports: the September ones (`_wasm_memstat`,
+`_wasm_tbs`, `_wasm_reg/_pc/_peek`) are gone, and no tool reads them.
 
 ## When the guest stops dead (`trackStall` in `site/app.js`)
 
@@ -133,6 +131,12 @@ completely silent. The detector clears itself if any of the three
 counters moves again, so a guest that recovers un-stalls.
 
 ## Scripts that matter
+
+Shared code for the tools is in `tools/lib/`: `boards.mjs` (the test
+fullflashes by short id, and `expectedBoard()`, the board the page's own
+filename rules give a file name), `page.mjs` (loading an own-file fullflash
+the way a user does; `bounded()` for a page that may be frozen) and
+`argv.mjs` (`--name value` options).
 
 **Gates** (correctness — parallel-safe, run them through
 `scripts/gate.sh`) and **benchmarks** (measurement — one at a time on a
@@ -170,7 +174,7 @@ knowing only for reproducing one failure:
 | `gprscheck.mjs` | EL71: boot with the built-in cell, open an 8 KB page served on this host (`gprs-host.mjs`) in the phone's browser, and check that the host gets the GET and the page shows on the LCD. Native: a slirp netdev (needs qemu with slirp); `--web`: the page's GPRS relay through `serve.mjs` to bts-emulator's `gprs-gw`, started from a checkout next to this repository ([gsm-network.md](gsm-network.md)) |
 | `gsmcheck.mjs` | boot a phone with the GSM option and check that it registers on the built-in cell (status icons against a reference picture; EL71), that the page opened no socket but its GPRS relay and that keys are answered a minute later; `--gsm 0` unticks the option, the negative control ([gsm-network.md](gsm-network.md)) |
 | `tests/run.mjs` | the native suite: five fullflashes (s75/el71/c81/ke800/ke970) booted with `run-native.sh`'s recipe, plus an insncount MIPS benchmark. Blind to every wasm-only path, which is why the browser gates exist |
-| `detect-check.mjs`, `detect-web.mjs`, `efa-web.mjs`, `preset-web.mjs`, `ui-acceptance.mjs` | page tests: device detection (headless and through the page), LG fullflash + EFA sidecar, preset download → cache → boot, the layout |
+| `detect-check.mjs`, `detect-web.mjs`, `efa-web.mjs`, `preset-web.mjs`, `engine-prefetch-web.mjs`, `ui-acceptance.mjs` | page tests: device detection (headless and through the page; each file must land on the board the page's own filename rules give its real name, a name with no model is skipped, and a board without a display must be refused with a note), LG fullflash + EFA sidecar, preset download → cache → boot, the engine's background download, the layout |
 
 Profiling:
 
@@ -181,22 +185,25 @@ Profiling:
 | `profcat.mjs`, `profjit.mjs` | categorize a saved profile by cost class; distribution of JIT-guest self time over TB functions |
 | `tools/perf/wasmgrab.mjs`, `tools/perf/wasm-bhint.mjs` | save a running page's hottest TB modules to read their TurboFan code; add a branch-hint section to a captured module |
 | `threadmap.mjs`, `syscallprobe.mjs` | thread census / syscall CPU attribution |
-| `asyncify-audit.mjs` | which frames the Asyncify onlylist still needs (`QEMU_COSTACK=1` is the evidence half) |
-| `modfloor.mjs`, `modgrow.mjs`, `modshape-probe.mjs`, `dispatch-probe.mjs`, `dispsize-probe.mjs`, `callref-probe.mjs`, `locals-probe.mjs`, `tierup-probe.mjs`, `import-probe.mjs`, `merge-probe.mjs`, `tests/wasm/dispatchbench.mjs` | synthetic V8 probes that build their own wasm modules in a page: module creation cost, dispatch mechanisms and locality, declared locals by tier, tier-up, cross-instance calls. Their September results are in performance.md (Closed ideas) and lessons.md (wasm and V8) |
+| `asyncify-audit.mjs`, `costack-suite.mjs` | which frames the Asyncify onlylist still needs (`QEMU_COSTACK=1` is the evidence half); `costack-suite.mjs [port] [dist]` collects that evidence from the op-suite page, every distinct `[qemu] COSTACK` stack |
+| `modfloor.mjs`, `modgrow.mjs`, `modshape-probe.mjs`, `dispatch-probe.mjs`, `dispsize-probe.mjs`, `callref-probe.mjs`, `locals-probe.mjs`, `tierup-probe.mjs`, `import-probe.mjs`, `merge-probe.mjs`, `bcprobe.mjs`, `tests/wasm/dispatchbench.mjs` | synthetic V8 probes that build their own wasm modules in a page: module creation cost, dispatch mechanisms and locality, declared locals by tier, tier-up, cross-instance calls, the memory bound check by memory type (`bcprobe.mjs --chrome`). Their September results are in performance.md (Closed ideas) and lessons.md (wasm and V8) |
 
 Probes and traces:
 
 | Script | Purpose |
 |---|---|
-| `smoke.mjs`, `verify-boot.mjs`, `wshot.mjs` | boot once / verify + insn rate / screenshot after the splash |
+| `smoke.mjs`, `verify-boot.mjs`, `wshot.mjs` | boot once / verify + insn rate / screenshot after the splash. `verify-boot.mjs <tag> <secs> [port]` fails on a firmware EXIT, a page error or qemu exiting; `SIEMENS_MODE=as-is` (or `recalc`, `recover-esn`) picks the Siemens keys mode, and with `TESTFLASH` set to the broken S66 image that boots it into its EXIT |
+| `compare-lcd.mjs <secs> <reference.png>` | boot the test flash to its idle screen and compare the LCD with a reference picture (`tools/test_targets/`); fails over `MAX_DIFF` percent (5) of the pixels, on a size mismatch or an EXIT |
+| `uidiff.mjs <portA> <portB>` | the keypad and side-key boxes, relative to the LCD, of two served copies of the page; prints every key that moved |
 | `serialwatch.mjs [s] [query]` | push vclock/serial/fb/insns via console every 10 s — the general-purpose probe |
 | `conlog.mjs` | capture qemu console lines matching a prefix (`MATCH=`, `SAVE_FS=` pulls MEMFS files out) |
 | `iotrace.mjs`, `tracebuf.mjs`, `tracedump.mjs`, `dsplive.mjs` | `?trace=` (`-debug-channels`) captures (buffered / live-filtered) |
+| `iotrace2.mjs` | `TRACE=<channels> iotrace2.mjs --board <s75\|el71\|ke800\|cx70>`: the same trace summarised as a ranked table of the MMIO registers the firmware touches, for "what is it spinning on" |
 | `execdump.mjs`, `iorec.mjs` | `-d exec` log dump / io_recompile frequency |
-| `exitcheck.mjs` | the Siemens EXIT path end to end: boots an image that panics (default `fullflashes/BROKEN)S66_no_recalc.bin` as `siemens-s65`, ~3 s to the dump) and checks the page stopped the guest, beeped once, dimmed the canvas and started the 30 s fade, and drew the parsed dump over it — desktop and phone layouts, screenshots in `exitcheck*.png`; `--inject` writes the recorded EL71 (x75-shaped) dump into a healthy guest's log instead, once it has drawn something, which is the leg that watches a lit screen fade |
+| `exitcheck.mjs` | the Siemens EXIT path end to end: boots an image that panics (default `fullflashes/BROKEN)S66_no_recalc.bin` as `siemens-s65`, picked once detection lands, with the Siemens keys run as is, ~5 s to the dump; the default recalculation would repair that image's keys, and it would never panic) and checks the page stopped the guest, beeped once, dimmed the canvas and started the 30 s fade, and drew the parsed dump over it — desktop and phone layouts, screenshots in `exitcheck*.png`; `--inject` writes the recorded EL71 (x75-shaped) dump into a healthy guest's log instead, once it has drawn something, which is the leg that watches a lit screen fade |
 | `audioprobe.mjs`, `recprobe.mjs` | the sound path and the video capture (README, Sound) |
 | `recalc-check.mjs`, `keysboot.mjs` | the Siemens key module without a browser; a boot through every key mode |
-| `session.mjs` + `ctl.mjs` | persistent headless-browser session and its client |
+| `session.mjs` + `ctl.mjs` | persistent headless-browser session and its client; a command that reads the page (`status`, `wait`, `rate`, `serial`) fails after 20 s on a page whose main thread is frozen |
 | `vclock.mjs`, `bootmatrix.mjs` | virtual-clock progression per `?icount=` variant; parallel boot matrix over query variants |
 
 ## Native reference runs
