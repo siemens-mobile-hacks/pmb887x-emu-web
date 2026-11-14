@@ -27,9 +27,10 @@ const classify = (fr) => {
 };
 let pick = 0, best = 0;
 profiles.forEach((p, i) => {
+  const byId = new Map(p.nodes.map((n) => [n.id, n]));
   let busy = 0;
   for (let j = 0; j < p.samples.length; j++) {
-    const n = p.nodes.find((n) => n.id === p.samples[j]);
+    const n = byId.get(p.samples[j]);
     if (!n) continue;
     const [c] = classify(n.callFrame);
     if (c !== "locks-waits" && !/idle/.test(n.callFrame.functionName)) busy += p.timeDeltas[j] || 0;
