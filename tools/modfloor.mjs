@@ -19,7 +19,6 @@
 //
 //   PORT=8080 [BUSY=1 TESTFLASH=...] node tools/modfloor.mjs
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
 
 // BUSY=1 boots a board first, so the synthetic runs against the same
 // machine load the vCPU worker's own compiles see.
@@ -30,7 +29,7 @@ const p = await b.newPage();
 await p.goto(`http://127.0.0.1:${port}/?dist=dist-jit`, { waitUntil: "domcontentloaded" });
 if (busy) {
   await p.click("#ff-mode-own");
-  await p.setInputFiles("#fullflash", fullflash);
+  await p.setInputFiles("#fullflash", (await import("./testflash.mjs")).fullflash);
   await p.click("#btn-start");
   await new Promise((r) => setTimeout(r, 8000));
 }
