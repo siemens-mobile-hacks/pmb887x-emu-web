@@ -61,3 +61,4 @@ for (const k of new Set([...Object.keys(A), ...Object.keys(B)])) {
 }
 console.log(bad ? `${bad} difference(s)`
   : `identical (${Object.keys(A).length - 2} keys, lcd ${A.__lcd} -> ${B.__lcd})`);
+if (bad) process.exitCode = 1;
