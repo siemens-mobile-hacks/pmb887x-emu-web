@@ -90,6 +90,8 @@ for (const [code, key] of Object.entries(CODE_TO_KEY)) {
 /* ------------------------------------------------------------------ */
 
 const $ = (id) => document.getElementById(id);
+// the page's query; it never changes while the page lives
+const QS = new URLSearchParams(location.search);
 let qemuModule = null;   // current emscripten module instance
 let running = false;     // a guest is live (the module object outlives it)
 let gprsNet = null;      // the GSM cell's IP side (gprs-net.js) while it runs
@@ -1143,7 +1145,7 @@ async function applyFullflashFile(file) {
  * tools/tcgisa.mjs reads the serial log up to its "# result:" line. */
 /* ?dist=<dir>: which build output to run (default dist-jit/; tools point
  * this at side-by-side builds).  boards.tar is always served from dist/. */
-const DIST = new URLSearchParams(location.search).get("dist") || null;
+const DIST = QS.get("dist") || null;
 const DIST_DEFAULT = "dist-jit";
 
 /* ---- engine prefetch ------------------------------------------------ */
@@ -1303,7 +1305,7 @@ async function bootSuite(url) {
     /* ?icount=1: the icount timing model — measures the icount
      * tax on the tcgbench workload (TB icount-capping + accounting +
      * virtual-timer runs) against the same run without it */
-    const icount = new URLSearchParams(location.search).get("icount") === "1";
+    const icount = QS.get("icount") === "1";
     qemuModule = await factory({
       arguments: [
         "-display", "wasm",
@@ -1330,7 +1332,7 @@ async function bootSuite(url) {
       preRun: (mod) => {
         modRef = mod;
         tapSerial(mod);
-        for (const kv of new URLSearchParams(location.search).getAll("env")) {
+        for (const kv of QS.getAll("env")) {
           const i = kv.indexOf("=");
           if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
         }
@@ -1391,8 +1393,7 @@ async function runEsnRecovery(identity, device) {
 async function boot() {
   // guest op-suite mode: no fullflash, no boards.tar needed
   {
-    const qsp0 = new URLSearchParams(location.search);
-    const suiteUrl = qsp0.get("suite");
+    const suiteUrl = QS.get("suite");
     if (suiteUrl) {
       await bootSuite(suiteUrl);
       return;
@@ -1437,8 +1438,7 @@ async function boot() {
     setError("Operator must be 5 or 6 digits (MCC + MNC)"); return;
   }
 
-  const qsp = new URLSearchParams(location.search);
-  const debug = qsp.get("debug") === "1";
+  const debug = QS.get("debug") === "1";
 
   errorMsg = null;
   exitCode = null;
@@ -1577,7 +1577,7 @@ async function boot() {
     // qemu stderr -> browser console, deduped (madvise/mprotect spam otherwise).
     // ?tracebuf=1 keeps the raw last lines in window.__qemulog instead (no CDP flood).
     const seenMsg = new Map();
-    const tracebuf = qsp.get("tracebuf") === "1";
+    const tracebuf = QS.get("tracebuf") === "1";
     const logBuf = tracebuf ? [] : null;
     window.__qemulog = logBuf;
     const printErr = (t) => {
@@ -1616,11 +1616,11 @@ async function boot() {
     // cross-page-links=on chains TBs across guest pages (unlinked on every
     // TLB flush): EL71 boot window -5.8 %, steady state neutral to +1 %.
     // A ?qargs= with its own -accel replaces the default one.
-    const icount = qsp.get("icount");
-    const bank = qsp.get("bank") ?? "30";
-    const idleLead = qsp.get("idlelead") ?? "2000";
-    const trace = qsp.get("trace");
-    const extraArgs = (qsp.get("qargs") ?? "").split(/\s+/).filter(Boolean);
+    const icount = QS.get("icount");
+    const bank = QS.get("bank") ?? "30";
+    const idleLead = QS.get("idlelead") ?? "2000";
+    const trace = QS.get("trace");
+    const extraArgs = (QS.get("qargs") ?? "").split(/\s+/).filter(Boolean);
     const timingArgs = icount
       ? (icount === "none" ? [] : ["-icount", icount])
       : extraArgs.includes("-accel") ? []
@@ -1629,7 +1629,7 @@ async function boot() {
     // so the worklet copies frames instead of interpolating them. ?sound=off
     // leaves the machine without an audiodev at all — the benchmark harnesses
     // use it so the audio timer never enters a measurement.
-    const audioArgs = qsp.get("sound") === "off"
+    const audioArgs = QS.get("sound") === "off"
       ? []
       : ["-audio", `wasm,out.frequency=${audioRate()},out.channels=2`];
     // the card is a device of its own, plugged into the board's empty
@@ -1719,16 +1719,16 @@ async function boot() {
         // tools/lockstep-wasm.mjs) — env-driven twin of the
         // tests/lockstep.c plugin. Extra ls-* params map to
         // W64_LOCKSTEP_* (insns, period, epoch, meminsns, mem, from, to).
-        if (qsp.get("lockstep")) {
+        if (QS.get("lockstep")) {
           mod.ENV.W64_LOCKSTEP = "1";
           for (const k of ["insns", "period", "epoch", "meminsns", "mem", "from", "to"]) {
-            const v = qsp.get("ls-" + k);
+            const v = QS.get("ls-" + k);
             if (v != null) mod.ENV["W64_LOCKSTEP_" + k.toUpperCase()] = v;
           }
         }
         // ?env=NAME=VAL (repeatable): extra environment — e.g.
         // env=QEMU_COSTACK=1 logs the stacks a coroutine switch unwinds
-        for (const kv of qsp.getAll("env")) {
+        for (const kv of QS.getAll("env")) {
           const i = kv.indexOf("=");
           if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
         }
@@ -2099,7 +2099,7 @@ let serialWork = 0, serialDraw = 0;
 function tapSerial(mod) {
   try {
     // ?serialpoll=1 exercises the fallback deliberately
-    if (new URLSearchParams(location.search).get("serialpoll") === "1") {
+    if (QS.get("serialpoll") === "1") {
       return (serialTapped = false);
     }
     const FS = mod.FS;
@@ -2922,7 +2922,7 @@ document.addEventListener("fullscreenchange", syncFsBtn);
  * and the tell was a `flex: 1` row measuring taller than its flex share,
  * which can only mean an ancestor is taller than the viewport. */
 let vpEl = null;
-const vpForced = new URLSearchParams(location.search).get("vp") === "1";
+const vpForced = QS.get("vp") === "1";
 
 function vpProbeEl() {
   if (vpEl) return vpEl;
@@ -3486,6 +3486,6 @@ boardsReady = loadBoards().catch((e) => {
 
 // ?suite= runs headlessly (tools/tcgisa.mjs): submit the boot form — the
 // same path as pressing Start. Last, so the whole UI is wired before it fires.
-if (new URLSearchParams(location.search).get("suite")) {
+if (QS.get("suite")) {
   $("boot-form").requestSubmit();
 }
