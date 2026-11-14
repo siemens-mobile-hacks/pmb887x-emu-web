@@ -35,7 +35,9 @@ function rssMB() {
 // since bsp 191612c every board has a radio, and the page's GPRS relay to
 // /gprs needs a gateway behind serve.mjs, or Firefox reports its failed
 // connection as a JavaScript error
-const gw = await startGateway({ run: fs.mkdtempSync(path.join(os.tmpdir(), "ffboot-")) });
+const run = fs.mkdtempSync(path.join(os.tmpdir(), "ffboot-"));
+process.on("exit", () => { try { fs.rmSync(run, { recursive: true, force: true }); } catch {} });
+const gw = await startGateway({ run });
 
 const launcher = which === "chromium" ? chromium : firefox;
 const b = await launcher.launch({ headless: true, args: ["--" + tag] });
