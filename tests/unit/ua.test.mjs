@@ -27,7 +27,22 @@ test("no UA-CH: parsed from the user agent string", () => {
   as("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0");
   assert.equal(buildShortUA(null), "Windows x64 · Firefox 128");
   as("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1");
-  assert.equal(buildShortUA(null), "iOS 17 · Safari 604");
+  assert.equal(buildShortUA(null), "iOS 17 · Safari 17");
   as("something odd");
   assert.equal(buildShortUA(null), "");
+});
+
+test("Safari's version is Version/, not the WebKit build", () => {
+  as("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15");
+  assert.equal(buildShortUA(null), "macOS · Safari 18");
+});
+
+test("iOS browsers are named by their own token, not Safari's", () => {
+  const ios = (token) => `Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) ${token} Mobile/15E148 Safari/604.1`;
+  as(ios("CriOS/120.0.6099.119"));
+  assert.equal(buildShortUA(null), "iOS 17 · Chrome 120");
+  as(ios("FxiOS/121.0"));
+  assert.equal(buildShortUA(null), "iOS 17 · Firefox 121");
+  as(ios("Version/17.0 EdgiOS/120.0.2210.150"));
+  assert.equal(buildShortUA(null), "iOS 17 · Edge 120");
 });

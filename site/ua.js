@@ -25,14 +25,26 @@ function uaOS(platform, platformVersion) {
 // one, and give it the name people call it by.
 const UA_BRAND = {
   "Google Chrome": "Chrome", HeadlessChrome: "Chrome", Chromium: "Chrome",
-  "Microsoft Edge": "Edge", Edg: "Edge", OPR: "Opera",
+  "Microsoft Edge": "Edge",
 };
+// Without UA-CH, the first of these tokens the string has, in this order:
+// Edge and Opera carry Chrome's token, every iOS browser carries Safari's,
+// and Safari/ is the WebKit build — Safari's own version is Version/.
+const UA_TOKENS = [
+  [/\bEdg(?:e|A|iOS)?\/(\d+)/, "Edge"], [/\bOPR\/(\d+)/, "Opera"],
+  [/\bCriOS\/(\d+)/, "Chrome"], [/\bFxiOS\/(\d+)/, "Firefox"],
+  [/\bChrome\/(\d+)/, "Chrome"], [/\bFirefox\/(\d+)/, "Firefox"],
+  [/\bVersion\/(\d+).*\bSafari\//, "Safari"],
+];
 function uaBrowser() {
   const brands = navigator.userAgentData?.brands?.filter((b) => !/not/i.test(b.brand)) ?? [];
   const pick = brands.find((b) => b.brand !== "Chromium") ?? brands[0];
   if (pick) return `${UA_BRAND[pick.brand] ?? pick.brand} ${String(pick.version).split(".")[0]}`;
-  const m = navigator.userAgent.match(/(Edg|OPR|Chrome|Firefox|Safari)\/(\d+)/);
-  return m ? `${UA_BRAND[m[1]] ?? m[1]} ${m[2]}` : null;
+  for (const [re, name] of UA_TOKENS) {
+    const m = navigator.userAgent.match(re);
+    if (m) return `${name} ${m[1]}`;
+  }
+  return null;
 }
 
 function uaModel(mobile, hiModel) {
