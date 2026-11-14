@@ -95,14 +95,14 @@ while ((Date.now() - t0) / 1000 < maxSecs) {
   await new Promise((r) => setTimeout(r, 1000));
   if (toggleAt.length && (Date.now() - t0) / 1000 >= toggleAt[0]) {
     toggleAt.shift();
-    // the button only exists while an LG device is selected — a mute
-    // cannot be clicked on anything else, so say so instead of failing
+    // the page hides the button while a recording runs — a mute cannot
+    // be clicked then, so say so instead of failing
     if (await p.locator("#btn-sound").isVisible()) {
       await p.click("#btn-sound");
       const on = await p.getAttribute("#btn-sound", "aria-pressed");
       console.log(`  -- sound ${on === "true" ? "muted" : "unmuted"} --`);
     } else {
-      console.log("  -- sound button hidden (non-LG device); not toggled --");
+      console.log("  -- sound button hidden; not toggled --");
     }
   }
   let s;
