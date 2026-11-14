@@ -501,8 +501,11 @@ async function refreshPresetUi() {
     render();
     return;
   }
-  presetState = entry ? await entryCacheState(entry)
+  const state = entry ? await entryCacheState(entry)
     : { complete: false, count: 0, totalSize: 0 };
+  // a newer selection has its own refresh under way
+  if (selectedPreset !== entry) return;
+  presetState = state;
   P.clear.hidden = !entry || presetState.count === 0;
   P.device.textContent = entry
     ? `Device: ${inferDevice(entry.files[0]) ?? "unknown"} (from preset)` : "";
