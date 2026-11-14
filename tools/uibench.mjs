@@ -24,8 +24,8 @@
 //               reference: nothing is asserted about what is drawn.
 //     --state idle|menu|both (default both, idle first).
 //   - report per state: MIPS, v/wall (icount boards; 1.0 = real time),
-//     fps (framebuffer blits/s), halts/s and the display counters per
-//     second (difTxWord, dmacBurst, ...).  The LG boards run icount=none
+//     fps (framebuffer blits/s) and halts/s (vCPU idle entries), plus the
+//     bench counters of a bench-patched build.  The LG boards run icount=none
 //     (site/app.js), so their v/wall is meaningless by construction and
 //     MIPS/fps are the numbers.
 //   - the clock is the one the page ships: vCPU timers paced to wall
@@ -95,28 +95,16 @@ p.on("console", (m) => {
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// since the 2026-09-22 review most of these exports are gone and read as 0
 async function snap() {
   return p.evaluate(() => {
     const m = window.__qemu;
     const f = (n, ...a) => (typeof m[n] === "function" ? Number(m[n](...a)) : 0);
-    const g = (i) => f("_wasm_memstat", i);
     const bench = {};
     for (let i = 0; i < 8; i++) bench["bench" + i] = f("_wasm_bench_ctr_get", i);
     return {
       ...bench,
       t: performance.now(), v: f("_wasm_vclock"), insns: f("_wasm_insns"),
-      fb: f("_wasm_fb_updates"),
-      ioLd: g(2), ioSt: g(3), fill: g(4), lookup: g(13), halts: g(29),
-      difMuxRebuild: g(59), difTxWord: g(60), dmacBurst: g(61),
-      dmacSchedTimer: g(62), dmacXlatFill: g(63), gptuTimer: g(64),
-      ioRecomp: g(65), ioBarrierEvict: g(66), ioBarrierSplit: g(67),
-      ioLdFast: g(68), vclockRead: g(69), ioStFast: g(70),
-      tpuTimer: g(71), tpuRearm: g(72),
-      mlWake: g(73), mlWakeDup: g(74),
-      tpuRamW: g(75), tpuRamSkip: g(76),
-      hflags: g(77), hflagsFast: g(78), hflagsBad: g(79),
-      tbGen: g(7), modCount: g(34), jcFlush: g(16),
+      fb: f("_wasm_fb_updates"), halts: f("_wasm_halts"),
     };
   });
 }
@@ -194,40 +182,9 @@ async function measure(name, drive) {
     vratio: +(d.v / 1e9 / wall).toFixed(3),
     fps: +(d.fb / wall).toFixed(1),
     haltsPerS: Math.round(d.halts / wall),
-    ioLdPerS: Math.round(d.ioLd / wall), ioStPerS: Math.round(d.ioSt / wall),
-    fillsPerS: Math.round(d.fill / wall), lookupsPerS: Math.round(d.lookup / wall),
-    difTxWordPerS: Math.round(d.difTxWord / wall), dmacBurstPerS: Math.round(d.dmacBurst / wall),
-    difMuxRebuildPerS: Math.round(d.difMuxRebuild / wall),
-    dmacSchedTimerPerS: Math.round(d.dmacSchedTimer / wall),
-    dmacXlatFillPerS: Math.round(d.dmacXlatFill / wall), gptuTimerPerS: Math.round(d.gptuTimer / wall),
-    // mid-TB MMIO unwinds and the io-barrier set that is meant to stop them
-    // recurring (accel/tcg/translate-all.c); the LG boards take that path
-    ioRecompPerS: Math.round(d.ioRecomp / wall),
-    ioBarrierEvictPerS: Math.round(d.ioBarrierEvict / wall),
-    ioBarrierSplitPerS: Math.round(d.ioBarrierSplit / wall),
-    ioLdFastPerS: Math.round(d.ioLdFast / wall),
-    ioStFastPerS: Math.round(d.ioStFast / wall),
-    tpuTimerPerS: Math.round(d.tpuTimer / wall),
-    tpuRearmPerS: Math.round(d.tpuRearm / wall),
-    mlWakePerS: Math.round(d.mlWake / wall),
-    mlWakeDupPerS: Math.round(d.mlWakeDup / wall),
-    tpuRamWPerS: Math.round(d.tpuRamW / wall),
-    tpuRamSkipPerS: Math.round(d.tpuRamSkip / wall),
-    hflagsPerS: Math.round(d.hflags / wall),
-    hflagsFastPerS: Math.round(d.hflagsFast / wall),
-    hflagsBad: c.hflagsBad,
-    vclockReadPerS: Math.round(d.vclockRead / wall),
-    tbGenPerS: Math.round(d.tbGen / wall), modCountPerS: Math.round(d.modCount / wall),
-    jcFlushPerS: Math.round(d.jcFlush / wall),
   };
   console.log(`UIBENCH ${boardId} ${dist} ${name} MIPS=${rec.mips} v/wall=${rec.vratio} fps=${rec.fps} ` +
-    `halts/s=${rec.haltsPerS} ioLd/s=${rec.ioLdPerS} ioSt/s=${rec.ioStPerS} difTxWord/s=${rec.difTxWordPerS} ` +
-    `dmacBurst/s=${rec.dmacBurstPerS} gptuTimer/s=${rec.gptuTimerPerS} fills/s=${rec.fillsPerS} ` +
-    `ioRecomp/s=${rec.ioRecompPerS} barrierEvict/s=${rec.ioBarrierEvictPerS} barrierSplit/s=${rec.ioBarrierSplitPerS} ` +
-    `ioLdFast/s=${rec.ioLdFastPerS} ioStFast/s=${rec.ioStFastPerS} vclock/s=${rec.vclockReadPerS} tpuTimer/s=${rec.tpuTimerPerS} tpuRearm/s=${rec.tpuRearmPerS} ` +
-    `mlWake/s=${rec.mlWakePerS} mlWakeDup/s=${rec.mlWakeDupPerS} tpuRamW/s=${rec.tpuRamWPerS} tpuRamSkip/s=${rec.tpuRamSkipPerS} ` +
-    `hflags/s=${rec.hflagsPerS} hflagsFast/s=${rec.hflagsFastPerS} hflagsBad=${rec.hflagsBad} ` +
-    `tbGen/s=${rec.tbGenPerS} mod/s=${rec.modCountPerS} jcFlush/s=${rec.jcFlushPerS} wall=${rec.wall}`);
+    `halts/s=${rec.haltsPerS} wall=${rec.wall}`);
   const bench = Object.keys(d).filter((k) => k.startsWith("bench") && d[k])
     .map((k) => `${k}=${Math.round(d[k] / wall)}`);
   if (bench.length) { console.log(`perS: ${bench.join(" ")}`); rec.benchPerS = bench.join(" "); }

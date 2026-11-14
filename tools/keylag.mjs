@@ -94,32 +94,12 @@ for (let i = 0; i < presses; i++) {
     const insns = () => Number(m._wasm_insns());
     const vclock = () => Number(m._wasm_vclock());
     const fb = () => Number(m._wasm_fb_updates());
-    // the 2026-09-22 review removed _wasm_memstat: those counters read 0
-    const ms = (i) => (typeof m._wasm_memstat === "function" ? Number(m._wasm_memstat(i)) : 0);
-    // wasm-diag indices: 7 = tb_gen_code, 34 = WebAssembly.Module created.
-    // A press that reaches code never translated before pays a synchronous
-    // wasm compile per module, which is not the same problem as being slow.
-    const tbGen = () => ms(7);
-    const mods = () => ms(34);
-    // 8 = tb_flush (code buffer full: every translation thrown away), 50 =
-    // modules re-created after the live-module cap evicted them.  Either one
-    // recurring per press would mean the press is paying for translation the
-    // emulator already did, which is a different fix from being slow.
-    const tbFlush = () => ms(8);
-    const ensureN = () => ms(50);
-    // 80..85 = w64_speculate outcomes: misses, misses whose TB recorded no
-    // goto_tb successor, edges already translated, edges the probe rejected,
-    // edges translated into the open batch, and fall-through (call return
-    // point) edges tried.  made/miss is the batch size the press actually
-    // got: at ~1 the press is paying one module compile per TB reached.
-    const spec = () => [80, 81, 82, 83, 84, 85].map((i) => ms(i));
     const tick = () => new Promise((r) => setTimeout(r, 2));
 
     const btn = document.querySelector(`[data-key="${key}"]`);
     if (!btn) return { err: "no such key button: " + key };
 
     const fb0 = fb(), v0 = vclock(), i0 = insns();
-    const g0 = tbGen(), m0 = mods(), f0 = tbFlush(), e0 = ensureN(), s0 = spec();
     const t0 = now();
     const ev = (type) => btn.dispatchEvent(
       new PointerEvent(type, { bubbles: true, pointerType: "mouse" }));
@@ -143,20 +123,14 @@ for (let i = 0; i < presses; i++) {
     }
     if (!up) ev("pointerup");
     const burst = now() - t0;
-    return { paint, burst, vms: (vclock() - v0) / 1e6, mi: (insns() - i0) / 1e6,
-             tbs: tbGen() - g0, mods: mods() - m0,
-             flush: tbFlush() - f0, ens: ensureN() - e0,
-             spec: spec().map((x, k) => x - s0[k]) };
+    return { paint, burst, vms: (vclock() - v0) / 1e6, mi: (insns() - i0) / 1e6 };
   }, { key: keys[i % keys.length], quietRate, maxBurstMs });
 
   if (r.err) { console.log("KEYLAG FAIL " + r.err); await b.close(); process.exit(1); }
   rows.push(r);
   console.log(`  press ${String(i + 1).padStart(2)}  paint=${r.paint === null ? "  none" : r.paint.toFixed(0).padStart(5) + "ms"}` +
     `  burst=${r.burst.toFixed(0).padStart(5)}ms  vms=${r.vms.toFixed(0).padStart(5)}` +
-    `  Mi=${r.mi.toFixed(1).padStart(6)}  v/wall=${(r.vms / r.burst).toFixed(2)}` +
-    `  tbs=${String(r.tbs).padStart(5)} mods=${String(r.mods).padStart(4)}` +
-    `  tbFlush=${r.flush} reMod=${r.ens}` +
-    `  spec[miss/nosucc/exists/notram/made/ret]=${r.spec.join("/")}`);
+    `  Mi=${r.mi.toFixed(1).padStart(6)}  v/wall=${(r.vms / r.burst).toFixed(2)}`);
   await sleep(gapMs);
 }
 
@@ -170,9 +144,5 @@ console.log(`KEYLAG ${boardId} ${dist}${extraQ ? " " + extraQ : ""} n=${st.lengt
   `paintMed=${med(paints).toFixed(0)}ms burstMed=${med(st.map((r) => r.burst)).toFixed(0)}ms ` +
   `vmsMed=${med(st.map((r) => r.vms)).toFixed(0)}ms MiMed=${med(st.map((r) => r.mi)).toFixed(1)} ` +
   `vwallMed=${med(st.map((r) => r.vms / r.burst)).toFixed(2)} ` +
-  `tbsMed=${med(st.map((r) => r.tbs))} modsMed=${med(st.map((r) => r.mods))} ` +
-  `tbFlush=${st.reduce((s, r) => s + r.flush, 0)} reMod=${st.reduce((s, r) => s + r.ens, 0)} ` +
-  `specMade=${med(st.map((r) => r.spec[4]))} specRet=${med(st.map((r) => r.spec[5]))} ` +
-  `madePerMiss=${(st.reduce((s, r) => s + r.spec[4], 0) / Math.max(1, st.reduce((s, r) => s + r.spec[0], 0))).toFixed(2)} ` +
-  `first=${rows[0].burst.toFixed(0)}ms/${rows[0].tbs}tbs load=${load}`);
+  `first=${rows[0].burst.toFixed(0)}ms load=${load}`);
 await b.close();
