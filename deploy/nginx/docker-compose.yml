@@ -14,6 +14,10 @@
 #
 # Or put those variables in deploy/nginx/.env (gitignored) and just run
 # `docker compose up -d --build`.
+#
+# The phone's Internet (GPRS gateway at /gprs, ../gprs-gw/README.md) is the
+# `gprs` profile: COMPOSE_PROFILES=gprs, plus a bts-emulator checkout of
+# branch gprs-gw at BTS_EMULATOR (default ../../../bts-emulator).
 services:
   pmb887x-web:
     build:
@@ -38,7 +42,63 @@ services:
       # redirect appears automatically once the cert is issued)
       LETSENCRYPT_HOST: ${LETSENCRYPT_HOST:-emu.test}
       LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-you@example.org}
+    networks:
+      - default
+      - gprs
+
+  pmb887x-gprs-gw:
+    profiles: [gprs]
+    build:
+      context: ../gprs-gw
+      additional_contexts:
+        bts: ${BTS_EMULATOR:-../../../bts-emulator}
+    image: pmb887x-gprs-gw
+    container_name: pmb887x-gprs-gw
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # node's threads plus one slirp-pipe per connection (GPRS_GW_MAX_SESSIONS);
+    # measured about 70 MB for node and 3 MB per idle slirp-pipe
+    pids_limit: 256
+    mem_limit: 1g
+    expose:
+      - "5751"
+    # An empty value leaves the gateway's default (../gprs-gw/README.md).
+    environment:
+      GPRS_GW_ORIGINS: ${GPRS_GW_ORIGINS:-https://${VIRTUAL_HOST:-emu.test}}
+      # nginx-proxy front + pmb887x-web, each appending to X-Forwarded-For
+      GPRS_GW_TRUSTED_PROXIES: ${GPRS_GW_TRUSTED_PROXIES:-2}
+      GPRS_GW_PER_IP: ${GPRS_GW_PER_IP:-}
+      GPRS_GW_DAILY_BYTES: ${GPRS_GW_DAILY_BYTES:-}
+      GPRS_GW_DOWN_RATE: ${GPRS_GW_DOWN_RATE:-}
+      GPRS_GW_DOWN_BURST: ${GPRS_GW_DOWN_BURST:-}
+      GPRS_GW_BAN_RATE: ${GPRS_GW_BAN_RATE:-}
+      GPRS_GW_BAN_FRAMES: ${GPRS_GW_BAN_FRAMES:-}
+      GPRS_GW_BAN_DAYS: ${GPRS_GW_BAN_DAYS:-}
+      GPRS_GW_IDLE: ${GPRS_GW_IDLE:-}
+      GPRS_GW_MAX_SESSIONS: ${GPRS_GW_MAX_SESSIONS:-}
+      GPRS_GW_ATTEMPTS: ${GPRS_GW_ATTEMPTS:-}
+      GPRS_GW_TCP_PORTS: ${GPRS_GW_TCP_PORTS:-}
+      GPRS_GW_NEW_FLOWS: ${GPRS_GW_NEW_FLOWS:-}
+      GPRS_GW_HOSTS: ${GPRS_GW_HOSTS:-}
+    volumes:
+      - gprs-gw-state:/var/lib/gprs-gw
+    networks:
+      - gprs
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
 networks:
   default:
     name: nginx-proxy
     external: true
+  # pmb887x-web <-> gateway only; also the gateway's way out to the Internet
+  gprs: {}
+
+volumes:
+  gprs-gw-state:

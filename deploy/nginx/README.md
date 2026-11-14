@@ -6,7 +6,7 @@ Three moving parts:
 |---|---|
 | `scripts/bundle-dist.sh` | assembles the self-contained bundle in `<repo>/dist` (gitignored) |
 | `Dockerfile` + `site.conf` | `nginx:stable-alpine` image serving that bundle with the same headers/contract as `serve.mjs` |
-| `docker-compose.yml` | runs it on the external `nginx-proxy` network with `VIRTUAL_HOST` env, so the front (jwilder/nginx-proxy + letsencrypt companion) picks it up |
+| `docker-compose.yml` | runs it on the external `nginx-proxy` network with `VIRTUAL_HOST` env, so the front (jwilder/nginx-proxy + letsencrypt companion) picks it up; with profile `gprs`, also the GPRS gateway (`../gprs-gw`) |
 
 ## 1. Bundle
 
@@ -60,12 +60,18 @@ the cert is issued.
 
 ### The phone's Internet
 
-The page relays the phone's GPRS to `wss://<host>/gprs`. That path belongs to
-bts-emulator's GPRS gateway (its `gprs-gw` service), not to this container:
-run bts-emulator with its `compose.web.yaml` and the same host name, and the
-front routes `/gprs` there (`VIRTUAL_PATH`). In bts-emulator's `.env`, set
-`GPRS_GW_ORIGINS=https://emu.example.org` and `GPRS_GW_TRUSTED_PROXIES=1`.
-Without it the emulator runs as before, only without Internet on the phone.
+The page relays the phone's GPRS to `wss://<host>/gprs`, which `site.conf`
+passes to bts-emulator's GPRS gateway in the `pmb887x-gprs-gw` container
+(`deploy/gprs-gw`). It is the compose profile `gprs`: add
+`COMPOSE_PROFILES=gprs` to `.env`, with a bts-emulator checkout of branch
+`gprs-gw` next to this repository (or at `BTS_EMULATOR`), and
+`docker compose up -d --build`. `deploy/gprs-gw/README.md` has its settings
+(origins, trusted proxies, limits), networking and security notes.
+
+The alternative is bts-emulator's full stack with its `compose.web.yaml` and
+the same host name: the front then routes `/gprs` there (`VIRTUAL_PATH`),
+past this container. Use one or the other. Without either the emulator runs
+as before, only without Internet on the phone (`/gprs` answers 502).
 
 ## 3. Standalone (no proxy mesh)
 
@@ -99,7 +105,10 @@ Plus mechanics: `gzip_static on` serves the bundle's `.gz` sidecars
 map keeps `.wasm` → `application/wasm` (required for streaming
 compilation) and `.tar`/`.mjs` correct regardless of the base image;
 `charset utf-8` for the text types; range requests on (default) for the
-big downloads.
+big downloads. `location = /gprs` proxies the WebSocket upgrade to
+`pmb887x-gprs-gw:5751` (looked up per request through Docker's DNS, so
+nginx starts without it), appends the peer to `X-Forwarded-For`, and keeps
+an idle link for 960 s, past the gateway's own 15-minute idle close.
 
 ## Re-deploys
 
