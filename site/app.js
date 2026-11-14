@@ -1537,6 +1537,9 @@ async function boot() {
     if (!/^\d{15}$/.test(imei)) { setError("IMEI must be 15 digits"); return; }
     if (!/^[0-9A-Fa-f]{8}$/.test(esn)) { setError("ESN must be 8 hex chars"); return; }
   }
+  if (sim === "virtual" && !/^\d{5,6}$/.test(operator)) {
+    setError("Operator must be 5 or 6 digits (MCC + MNC)"); return;
+  }
 
   const qsp = new URLSearchParams(location.search);
   const debug = qsp.get("debug") === "1";
