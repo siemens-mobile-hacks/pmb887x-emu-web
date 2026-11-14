@@ -167,15 +167,10 @@ for j in "${selected[@]}"; do
   [ "$srv" = yes ] && need_server=1
 done
 
-SRV=""
-if [ "$need_server" = 1 ] && ! curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
-  echo "gate: starting serve.mjs on $PORT"
-  # shellcheck source=serve-local.sh
-  . "$ROOT/scripts/serve-local.sh"
-  start_serve "$ROOT" "$PORT" || { echo "gate: no serve.mjs of its own on $PORT"; exit 1; }
-fi
 # A gate stopped half way must not leave its jobs behind: their browsers and
-# the unpaced native qemus keep running on their own otherwise.
+# the unpaced native qemus keep running on their own otherwise.  The same
+# goes for its server and for a pre-step (a native build) still running.
+SRV="" pre=""
 pids=()
 descendants() {
   local c
@@ -183,7 +178,7 @@ descendants() {
 }
 cleanup() {
   local p all=()
-  for p in "${pids[@]}"; do
+  for p in "${pids[@]}" $pre; do
     kill -0 "$p" 2>/dev/null && all+=("$p" $(descendants "$p"))
   done
   [ ${#all[@]} -eq 0 ] || kill "${all[@]}" 2>/dev/null
@@ -194,11 +189,29 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# A trap runs only once a foreground command has finished, so a step that
+# can take minutes runs in the background, where `wait` gives way to it.
+run_pre() { # <log> <command...>
+  local rc=0
+  "${@:2}" >"$1" 2>&1 &
+  pre=$!
+  wait "$pre" || rc=$?
+  pre=""
+  return "$rc"
+}
+
+if [ "$need_server" = 1 ] && ! curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+  echo "gate: starting serve.mjs on $PORT"
+  # shellcheck source=serve-local.sh
+  . "$ROOT/scripts/serve-local.sh"
+  start_serve "$ROOT" "$PORT" || { echo "gate: no serve.mjs of its own on $PORT"; exit 1; }
+fi
+
 # serve.mjs regenerates the gzip sidecar on the first request after a
 # deploy; paying that inside a gate's own boot has faked slow starts before.
 if [ "$need_server" = 1 ]; then
-  curl -s -o /dev/null -H 'Accept-Encoding: gzip' \
-    "http://127.0.0.1:$PORT/$DIST/qemu-system-arm.wasm" 2>/dev/null || true
+  run_pre /dev/null curl -s -o /dev/null -H 'Accept-Encoding: gzip' \
+    "http://127.0.0.1:$PORT/$DIST/qemu-system-arm.wasm" || true
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -221,17 +234,17 @@ for name in "${names_selected[@]}"; do
 done
 if [ "$need_jit" = 1 ]; then
   echo "gate: native reference build (scripts/build-native.sh)"
-  bash "$ROOT/scripts/build-native.sh" >"$LOGDIR/build-native.log" 2>&1 ||
+  run_pre "$LOGDIR/build-native.log" bash "$ROOT/scripts/build-native.sh" ||
     { echo "gate: native reference build failed: $LOGDIR/build-native.log"; exit 1; }
 fi
 if [ "$need_tci" = 1 ]; then
   echo "gate: native TCI build (scripts/build-native-tci.sh)"
-  bash "$ROOT/scripts/build-native-tci.sh" >"$LOGDIR/build-native-tci.log" 2>&1 ||
+  run_pre "$LOGDIR/build-native-tci.log" bash "$ROOT/scripts/build-native-tci.sh" ||
     { echo "gate: native TCI build failed: $LOGDIR/build-native-tci.log"; exit 1; }
 fi
 if [ "$need_plugins" = 1 ]; then
   echo "gate: test plugins (scripts/build-plugins.sh)"
-  bash "$ROOT/scripts/build-plugins.sh" >"$LOGDIR/build-plugins.log" 2>&1 ||
+  run_pre "$LOGDIR/build-plugins.log" bash "$ROOT/scripts/build-plugins.sh" ||
     { echo "gate: plugin build failed: $LOGDIR/build-plugins.log"; exit 1; }
 fi
 
