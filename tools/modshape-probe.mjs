@@ -22,11 +22,10 @@
 // Caveat carried from round 19 (W64_MODBENCH): back-to-back compiles run
 // cache-warm at 12-31 us where the emulator pays ~84 us in situ.  This probe
 // is therefore about SHAPE -- how cost varies with count and size -- not
-// about the absolute level.  A `--spaced` pass re-runs the sweep with
-// unrelated work between compiles to check the shape survives going cold.
+// about the absolute level.  Whether that shape survives going cold (with
+// unrelated work between compiles) is not measured here.
 import { chromium } from "playwright-core";
 
-const argv = process.argv.slice(2);
 const port = process.env.PORT || "8080";
 
 const probe = () => {
