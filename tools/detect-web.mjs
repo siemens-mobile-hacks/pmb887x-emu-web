@@ -63,7 +63,9 @@ for (const p of paths) {
   rmSync(opaque, { force: true });
   symlinkSync(resolve(p), opaque);
   await page.setInputFiles("#fullflash", opaque);
-  await page.waitForTimeout(1500);   // wasm fetch + probe (+ LG scan)
+  // wasm fetch + probe (+ LG scan): __ui.ready turns true once the page has
+  // named a device; one it cannot name is reported after the timeout
+  await page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 }).catch(() => {});
 
   const seen = await page.$eval("#ff-bin-name", (e) => e.textContent);
   const device = await page.$eval("#device", (e) => e.value);
