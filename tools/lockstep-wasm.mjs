@@ -350,6 +350,8 @@ async function runPairWasm(args, flashPath, dir, log) {
   b.poll();
   await b.quit();
   await a.quit("budget");
+  // the loop stops reading a's log once b exits, which can be first
+  a.poll();
   // the last E-line either leg can write is the last whole epoch of the budget
   const need = Math.floor(args.insns / args.epoch) * args.epoch;
   const reasons = [
