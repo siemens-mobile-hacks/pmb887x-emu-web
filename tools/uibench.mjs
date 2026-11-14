@@ -28,9 +28,10 @@
 //     second (difTxWord, dmacBurst, ...).  The LG boards run icount=none
 //     (site/app.js), so their v/wall is meaningless by construction and
 //     MIPS/fps are the numbers.
-//   - rt=off by default like idlebench's milestones: engine speed, not
-//     the shipping real-time cap's pacing.  RT=banked for the shipped
-//     configuration.
+//   - the clock is the one the page ships: vCPU timers paced to wall
+//     time, the boot's lost time caught up (?bank=, default 30 s).
+//     Another clock goes in through EXTRA_Q (bank=0, icount=…), which the
+//     JSON records.
 //
 // Results: tests/results/uibench-<ts>-<board>-<dist>.json + LCD shots.
 // Comparable only within one board: boards run different firmware.
@@ -72,7 +73,6 @@ const state = opt("state", "both");                // idle | menu | both
 const keys = opt("keys", board?.keys ?? "center,end").split(",").filter(Boolean);
 const periodMs = Number(opt("period", 2000));
 const port = process.env.PORT || "8080";
-const rt = process.env.RT || "off";
 const extraQ = process.env.EXTRA_Q || "";
 const devtools = Number(opt("devtools", 0));       // CDP port for wprof2 PROF_ATTACH
 const holdS = Number(opt("hold", 0));              // keep the page alive after measuring
@@ -130,7 +130,7 @@ const fail = async (why) => {
   process.exit(1);
 };
 
-await p.goto(`http://127.0.0.1:${port}/?dist=${dist}&rt=${rt}${extraQ ? "&" + extraQ : ""}`,
+await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ ? "&" + extraQ : ""}`,
              { waitUntil: "domcontentloaded", timeout: 120000 });
 await p.selectOption("#startup", "ONLINE");
 await p.click("#ff-mode-own");
@@ -243,7 +243,7 @@ const driveKeys = () => (async () => {
   }
 })();
 
-const out = { board: boardId, dist, rt, extraQ, stamp, tIdle: +tIdle.toFixed(1), milestones, bootTrace,
+const out = { board: boardId, dist, extraQ, stamp, tIdle: +tIdle.toFixed(1), milestones, bootTrace,
   keys, periodMs, states: [],
   loadavg: readFileSync("/proc/loadavg", "ascii").split(" ").slice(0, 3).join(" ") };
 if (state === "idle" || state === "both") out.states.push(await measure("idle", null));
