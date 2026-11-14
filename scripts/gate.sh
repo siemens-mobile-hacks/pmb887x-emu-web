@@ -197,19 +197,28 @@ echo "gate: tier=$TIER dist=$DIST jobs=${#selected[@]} concurrency=$JOBS_MAX"
 echo "gate: logs in $LOGDIR"
 t_all=$(date +%s)
 
+# The server started above is a background job of this shell too: count and
+# wait for the gate's own jobs only, or the wait never returns.
 names=()
+pids=()
+running_jobs() {
+  local n=0 p
+  for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && n=$((n + 1)); done
+  echo "$n"
+}
 for j in "${selected[@]}"; do
   IFS='|' read -r name _t _s cmd <<<"$j"
   names+=("$name")
-  while [ "$(jobs -rp | wc -l)" -ge "$JOBS_MAX" ]; do wait -n 2>/dev/null || break; done
+  while [ "$(running_jobs)" -ge "$JOBS_MAX" ]; do wait -n "${pids[@]}" 2>/dev/null || sleep 1; done
   (
     t0=$(date +%s)
     eval "$cmd" >"$LOGDIR/$name.log" 2>&1
     rc=$?
     echo "$rc $(( $(date +%s) - t0 ))" >"$LOGDIR/$name.rc"
   ) &
+  pids+=($!)
 done
-wait
+wait "${pids[@]}"
 
 echo
 printf '%-16s %-7s %7s  %s\n' JOB VERDICT TIME LOG
