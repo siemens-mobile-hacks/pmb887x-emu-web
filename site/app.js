@@ -10,7 +10,7 @@
 //     MCP `press_key` tool uses (converted to linux keycodes, which is what
 //     this qemu fork's input layer consumes).
 
-import { KBD_KEYBOARDS, DEFAULT_KEYBOARD, pickVariant, applyKbdLayout, tapTable, forDevice } from "./keyboards.js";
+import { KBD_KEYBOARDS, DEFAULT_KEYBOARD, pickVariant, applyKbdLayout, tapTable, forDevice, caseStep } from "./keyboards.js";
 import {
   PRESET_FULLFLASHES, SIDE_CAR_RE, inferDevice, detectDevice,
   cacheAvailable, entryCacheState, downloadEntry, deleteEntry, readCachedEntry,
@@ -3268,20 +3268,14 @@ async function keysTaken(m) {
 // went by) or "caps". Per guest; it takes the phone to start in lower case.
 let caseState = { m: null, state: "lower" };
 
-// The case presses round a typed character, and the state they leave. A
-// keyboard with `capital` keeps the state; one with `before`/`after` puts
-// the phone back in lower case after every capital.
+// The case presses round a typed character (keyboards.js caseStep), with
+// the state kept per guest.
 function casePresses(a, m) {
   const up = typing.upper;
-  if (!up) return { before: [], after: [] };
-  if (!up.capital) return a.upper ? { before: up.before, after: up.after } : { before: [], after: [] };
-  if (caseState.m !== m) caseState = { m, state: "lower" };
-  const s = caseState.state;
-  const before = a.upper ? up.capital[s] : a.letter ? up.small[s] ?? [] : [];
-  caseState.state = a.upper ? (s === "lower" ? "one" : "caps")
-    : a.letter ? "lower"
-    : s === "one" ? "lower" : s;
-  return { before, after: [] };
+  if (up?.capital && caseState.m !== m) caseState = { m, state: "lower" };
+  const { before, after, state } = caseStep(up, caseState.state, a);
+  if (up?.capital) caseState.state = state;
+  return { before, after };
 }
 
 async function pumpTyping() {

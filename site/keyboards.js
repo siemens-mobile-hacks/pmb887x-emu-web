@@ -389,6 +389,23 @@ const LG_PICKER = {
   pages: [" .,?!:;-@+*(", ")'\"_#&€£$¥%/", "<>¿¡§|~\\[]^=", "ΦΓΛΩΠΨΣΘΞΔ¤{", "}`¶"],
 };
 
+// The case presses round a typed character a ({ upper, letter }) on a
+// keyboard whose upper-case rule is `up`, in case state `state` ("lower",
+// "one": a capital for one letter just went by, or "caps"), and the state
+// they leave. A keyboard with `capital` keeps the state; one with
+// `before`/`after` puts the phone back in lower case after every capital.
+export function caseStep(up, state, a) {
+  if (!up) return { before: [], after: [], state };
+  if (!up.capital) {
+    return a.upper ? { before: up.before, after: up.after, state } : { before: [], after: [], state };
+  }
+  const before = a.upper ? up.capital[state] : a.letter ? up.small[state] ?? [] : [];
+  const next = a.upper ? (state === "lower" ? "one" : "caps")
+    : a.letter ? "lower"
+    : state === "one" ? "lower" : state;
+  return { before, after: [], state: next };
+}
+
 // the presses that type `ch` through a picker, or null when it has none
 function pickerPresses(picker, ch) {
   if (!picker) return null;
