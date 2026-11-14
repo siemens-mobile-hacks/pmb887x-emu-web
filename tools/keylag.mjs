@@ -20,8 +20,9 @@
 //   <1    the emulator is behind real time for the length of the burst -
 //         this is emulator slowness and it is ours to fix
 //
-// Run it at RT=off and RT=banked: off is engine speed, banked is what the
-// page ships and what the user feels.
+// It runs the clock the page ships, which is what the user feels: vCPU
+// timers paced to wall time, with the boot's lost time caught up (?bank=,
+// default 30 s). Another clock goes in through EXTRA_Q (bank=0, icount=…).
 import { chromium } from "playwright-core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -49,7 +50,6 @@ const quietRate = Number(opt("quietrate", 3));  // M insns/s: below = idle
 const maxBurstMs = Number(opt("maxburst", 8000));
 const keys = opt("keys", board.key).split(",").filter(Boolean);
 const port = process.env.PORT || "8080";
-const rt = process.env.RT || "off";
 const extraQ = process.env.EXTRA_Q || "";
 
 const FLASH = here + "../fullflashes/" + board.flash;
@@ -65,7 +65,7 @@ const guestExit = () => p.evaluate(() => {
 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-await p.goto(`http://127.0.0.1:${port}/?dist=${dist}&rt=${rt}${extraQ ? "&" + extraQ : ""}`,
+await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ ? "&" + extraQ : ""}`,
              { waitUntil: "domcontentloaded", timeout: 120000 });
 await p.selectOption("#startup", "ONLINE");
 await p.click("#ff-mode-own");
@@ -82,7 +82,7 @@ while ((Date.now() - t0) / 1000 < settleS) {
     await b.close(); process.exit(1);
   }
 }
-console.log(`[keylag] ${boardId} ${dist} rt=${rt}: settled at ${settleS}s, ${presses} presses`);
+console.log(`[keylag] ${boardId} ${dist}${extraQ ? " " + extraQ : ""}: settled at ${settleS}s, ${presses} presses`);
 
 // The whole press-and-watch cycle runs inside the page: a CDP round trip per
 // poll would be a large part of the number being measured.
@@ -166,7 +166,7 @@ const med = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? s
 const st = rows.slice(1);
 const paints = st.map((r) => r.paint).filter((x) => x !== null);
 const load = readFileSync("/proc/loadavg", "ascii").split(" ").slice(0, 3).join(" ");
-console.log(`KEYLAG ${boardId} ${dist} rt=${rt} n=${st.length} ` +
+console.log(`KEYLAG ${boardId} ${dist}${extraQ ? " " + extraQ : ""} n=${st.length} ` +
   `paintMed=${med(paints).toFixed(0)}ms burstMed=${med(st.map((r) => r.burst)).toFixed(0)}ms ` +
   `vmsMed=${med(st.map((r) => r.vms)).toFixed(0)}ms MiMed=${med(st.map((r) => r.mi)).toFixed(1)} ` +
   `vwallMed=${med(st.map((r) => r.vms / r.burst)).toFixed(2)} ` +
