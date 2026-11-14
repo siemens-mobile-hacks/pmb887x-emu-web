@@ -29,7 +29,7 @@ import {
 } from "./boards.js";
 
 /* ------------------------------------------------------------------ */
-/* phone key tables (mirrors pmb887x-emu-mcp/src/keys.ts + otp.ts)      */
+/* phone key tables (mirrors pmb887x-emu-mcp/src/keys.ts)               */
 /* ------------------------------------------------------------------ */
 
 // phone key -> linux keycode (qemu converts lnx->qcode internally)
