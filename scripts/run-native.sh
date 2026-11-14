@@ -57,6 +57,8 @@ fi
 
 IMEI="${IMEI:-490154203237518}"
 ESN="${ESN:-12345678}"
+[[ "$IMEI" =~ ^[0-9]{15}$ ]] || { echo "IMEI must be 15 digits: $IMEI" >&2; exit 1; }
+[[ "$ESN" =~ ^[0-9A-Fa-f]{8}$ ]] || { echo "ESN must be 8 hex chars: $ESN" >&2; exit 1; }
 STARTUP="${STARTUP:-ONLINE}"
 SIM="${SIM:-virtual}"
 OPERATOR="${OPERATOR:-00101}"
