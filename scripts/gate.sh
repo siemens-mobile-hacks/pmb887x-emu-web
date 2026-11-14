@@ -157,8 +157,25 @@ if [ "$need_server" = 1 ] && ! curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&
     sleep 0.5
   done
 fi
-cleanup() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; }
+# A gate stopped half way must not leave its jobs behind: their browsers and
+# the unpaced native qemus keep running on their own otherwise.
+pids=()
+descendants() {
+  local c
+  for c in $(pgrep -P "$1"); do echo "$c"; descendants "$c"; done
+}
+cleanup() {
+  local p all=()
+  for p in "${pids[@]}"; do
+    kill -0 "$p" 2>/dev/null && all+=("$p" $(descendants "$p"))
+  done
+  [ ${#all[@]} -eq 0 ] || kill "${all[@]}" 2>/dev/null
+  [ -z "$SRV" ] || kill "$SRV" 2>/dev/null
+  return 0
+}
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # serve.mjs regenerates the gzip sidecar on the first request after a
 # deploy; paying that inside a gate's own boot has faked slow starts before.
@@ -200,7 +217,6 @@ t_all=$(date +%s)
 # The server started above is a background job of this shell too: count and
 # wait for the gate's own jobs only, or the wait never returns.
 names=()
-pids=()
 running_jobs() {
   local n=0 p
   for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && n=$((n + 1)); done
