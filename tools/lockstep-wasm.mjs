@@ -29,6 +29,7 @@ import { Side, compareDigestLogs, FLASHES, claimRunStamp } from "./lockstep.mjs"
 import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+fs.mkdirSync(path.join(ROOT, "tests", "results"), { recursive: true });
 
 function parseArgs() {
   const a = {
