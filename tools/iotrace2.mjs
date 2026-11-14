@@ -33,7 +33,7 @@ const b = await chromium.launch({ headless: true });
 const p = await b.newPage();
 // ?tracebuf=1 keeps the raw lines in window.__qemulog (the console path
 // de-duplicates, which loses the rate -- and the rate is the question).
-await p.goto(`http://127.0.0.1:${port}/?trace=${spec}&tracebuf=1&dist=${dist}&rt=off`,
+await p.goto(`http://127.0.0.1:${port}/?trace=${spec}&tracebuf=1&dist=${dist}`,
              { waitUntil: "domcontentloaded", timeout: 120000 });
 await p.selectOption("#startup", "ONLINE");
 await p.click("#ff-mode-own");
