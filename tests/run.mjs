@@ -158,6 +158,7 @@ class Instance {
     this.serial = path.join(runDir, "serial.log");
     this.monitor = path.join(runDir, "monitor.sock");
     this.insnFile = path.join(runDir, "insns.txt");
+    this.serialPos = 0;
     this.events = []; // {t, ev, value}
     this.stderrTail = "";
     this.verdicts = {};
@@ -242,15 +243,18 @@ class Instance {
   }
 
   async poll(shotFile) {
-    const out = { serialBytes: 0, serialTail: "", stats: null, pc: null };
+    // serialNew: everything written since the last poll, plus a few bytes
+    // before it so a marker split across two polls is still seen
+    const out = { serialBytes: 0, serialNew: "", stats: null, pc: null };
     try { out.serialBytes = fs.statSync(this.serial).size; } catch {}
-    if (out.serialBytes) {
+    if (out.serialBytes > this.serialPos) {
+      const from = Math.max(0, this.serialPos - 16);
       const fd = fs.openSync(this.serial, "r");
-      const len = Math.min(out.serialBytes, 4096);
-      const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, out.serialBytes - len);
+      const buf = Buffer.alloc(out.serialBytes - from);
+      fs.readSync(fd, buf, 0, buf.length, from);
       fs.closeSync(fd);
-      out.serialTail = buf.toString("latin1");
+      out.serialNew = buf.toString("latin1");
+      this.serialPos = out.serialBytes;
     }
     try {
       await this.hmp(`screendump ${shotFile}`);
@@ -322,8 +326,8 @@ async function runInstance(flash, runDir, log) {
     }
 
     // failure detection (highest priority)
-    if (/>>EXIT<</.test(s.serialTail)) {
-      inst.mark("guestExit", (s.serialTail.match(/>>EXIT<<[\s\S]{0,120}/) || [""])[0].replace(/[\r\n]+/g, " "));
+    if (/>>EXIT<</.test(s.serialNew)) {
+      inst.mark("guestExit", (s.serialNew.match(/>>EXIT<<[\s\S]{0,120}/) || [""])[0].replace(/[\r\n]+/g, " "));
       fail("boot-init", "guest exited during init");
       fail("boot-progress", `firmware abort: ${inst.events.at(-1).value}`);
       fail("no-exit", `firmware abort @${elapsed.toFixed(0)}s`);
