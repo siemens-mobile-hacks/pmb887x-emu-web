@@ -259,7 +259,9 @@ const server = net.createServer((conn) => {
       if (!line) continue;
       (async () => {
         try {
-          const [cmd, ...args] = line.split(/\s+/);
+          // ctl.mjs sends its argv as a JSON array, so an argument keeps
+          // its spaces; a plain line (nc, older clients) splits on them
+          const [cmd, ...args] = line.startsWith("[") ? JSON.parse(line).map(String) : line.split(/\s+/);
           const fn = commands[cmd];
           if (!fn) throw new Error(`unknown command: ${cmd}`);
           const r = await fn(args);

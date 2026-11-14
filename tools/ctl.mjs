@@ -36,5 +36,5 @@ sock.on("data", (d) => {
     process.exit(1);
   }
 });
-sock.on("connect", () => sock.write([cmd, ...args].join(" ") + "\n"));
+sock.on("connect", () => sock.write(JSON.stringify([cmd, ...args]) + "\n"));
 setTimeout(() => { console.error("ctl: timeout"); process.exit(1); }, 10 * 60 * 1000).unref();
