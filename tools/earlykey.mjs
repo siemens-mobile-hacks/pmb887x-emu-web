@@ -18,9 +18,11 @@
 // exactly like host memory pressure.
 //
 // Exit 0 iff the guest survives a key event fired at the earliest instant
-// the export exists, and a normal press afterwards still reaches the guest.
+// the export exists: no page error or wasm abort, and 20 s later the export
+// still takes a normal press and the guest is still executing 5 s after it.
+// Whether the firmware acted on that press is not checked.
 import { chromium } from "playwright-core";
-import { existsSync } from "node:fs";
+import fs from "node:fs";
 import { parseArgs } from "./lib/argv.mjs";
 import { flashFiles } from "./lib/boards.mjs";
 import { bootOwnFlash, bounded, pageCall } from "./lib/page.mjs";
@@ -35,6 +37,9 @@ const BOARDS = { s75: "s75-v40", el71: "el71", ke800: "ke800", ke970: "ke970", c
 const boardId = opt("board", "cx70");
 const flash = BOARDS[boardId];
 if (!flash) { console.error(`unknown --board ${boardId}`); process.exit(2); }
+const files = flashFiles(flash);
+const missing = files.filter((f) => !fs.existsSync(f));
+if (missing.length) { console.error(`fullflash not found: ${missing.join(", ")}`); process.exit(2); }
 const dist = opt("dist", "dist-jit");
 const port = opt("port", process.env.PORT || "8080");
 
@@ -50,7 +55,7 @@ p.on("console", (m) => { const t = m.text(); if (/RuntimeError|Aborted\(/.test(t
 const extraQ = process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : "";
 await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ}`, { waitUntil: "domcontentloaded", timeout: 120000 });
 // an LG flash goes in with its EFA block, as the page's user loads it
-await bootOwnFlash(p, flashFiles(flash).filter((f) => existsSync(f)), { startup: "ONLINE" });
+await bootOwnFlash(p, files, { startup: "ONLINE" });
 
 // Fire as close to instantiation as the event loop allows.  A key-up is the
 // shape a spurious pointerleave sends: a release for a key never pressed.
