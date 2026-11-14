@@ -1,4 +1,6 @@
 // Boot with ?trace=<spec> (-debug-channels) and capture the console trace.
+// ?debug=1 makes the page print every stderr line as "[qemu] …"; without it
+// repeated lines are folded and printed as "[qemu xN] …" every 500th time.
 import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
 const port = process.env.PORT || "8080";
@@ -8,7 +10,7 @@ const b = await chromium.launch({ headless: true });
 const p = await b.newPage();
 const lines = [];
 p.on("console", m => { const t = m.text(); if (t.startsWith("[qemu]")) lines.push(t.slice(7)); });
-await p.goto(`http://127.0.0.1:${port}/?trace=${spec}&dist=${process.env.DIST || "dist-jit"}${process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : ""}`, { waitUntil: "domcontentloaded" });
+await p.goto(`http://127.0.0.1:${port}/?trace=${spec}&debug=1&dist=${process.env.DIST || "dist-jit"}${process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : ""}`, { waitUntil: "domcontentloaded" });
 await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
 await p.click("#btn-start");
