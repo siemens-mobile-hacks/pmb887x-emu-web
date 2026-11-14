@@ -98,10 +98,23 @@ echo "fullflash: $FLASH$([ "${RW:-0}" = 1 ] && echo ' (writable)')"
 echo "serial:   $SERIAL   monitor: $MONITOR   display: $DISPLAY_MODE"
 echo
 
+# does the board's config, or a file it `extends`, contain this text?
+board_has() {
+  local f="$BOARDS/$BOARD.toml" ext depth
+  for depth in 0 1 2 3 4; do
+    [ -f "$f" ] || return 1
+    grep -qF -- "$1" "$f" && return 0
+    ext="$(sed -nE 's/^[ \t]*extends[ \t]*=[ \t]*"([^"]+)".*/\1/p' "$f" | head -n 1)"
+    [ -n "$ext" ] || return 1
+    f="$BOARDS/$ext"
+  done
+  return 1
+}
+
 # the card is a device of its own, plugged into the board's empty
 # "iso7816-slot"; a board without one runs with no SIM
 SIM_ARGS=()
-if [ "$SIM" = virtual ] && grep -rqs '"iso7816-slot"' "$BOARDS"; then
+if [ "$SIM" = virtual ] && board_has '"iso7816-slot"'; then
   SIM_ARGS=(-device "gsm-sim,operator=$OPERATOR")
 fi
 
