@@ -9,7 +9,7 @@ Pixel over adb is used instead.** The page ran about 80x slower than in
 desktop Chromium on the same host. This file records what was built, what
 was measured and what stopped where, so the attempt need not be repeated.
 
-Everything is in `scripts/setup-android-emu.sh` and `build/android-emu/`
+Everything is in `scripts/setup-android-emu.sh` and `build/android-emu/` (`$WEB_BUILD/android-emu/`)
 (7.1 GB, of which 1.3 GB are the pinned downloads).
 
 ## Choice

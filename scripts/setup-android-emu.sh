@@ -2,7 +2,8 @@
 # Android arm64 emulator with a current Chromium, for profiling the page in
 # Android's V8 configuration without a phone (doc/android-emulator.md).
 # Pure software emulation: needs no KVM, no root beyond apt, no kernel
-# modules.  Everything lives under build/android-emu/.
+# modules.  Everything lives under $WEB_BUILD/android-emu/ (build/android-emu/,
+# scripts/build-dirs.sh).
 #
 #   scripts/setup-android-emu.sh install        download + verify the pinned packages, patch one
 #                                               byte of the emulator (see the doc), create the AVD
@@ -37,7 +38,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASE="$ROOT/build/android-emu"
+WEB_DIR="$ROOT"
+source "$ROOT/scripts/build-dirs.sh"
+BASE="$BUILD/android-emu"
 DL="$BASE/dl"
 SDK="$BASE/sdk"
 AVD=pmb-arm64
@@ -85,7 +88,15 @@ export ANDROID_SDK_ROOT="$SDK" ANDROID_HOME="$SDK"
 export ANDROID_AVD_HOME="$BASE/avd" ANDROID_EMULATOR_HOME="$BASE/emu-home"
 
 adb() { "$ADB" -s "$SERIAL" "$@"; }
-emu_pid() { pgrep -x qemu-system-aar || true; }
+# the emulator's qemu from this SDK only: another emulator on the host is
+# not this script's to report or kill
+emu_pid() {
+  local p sdk
+  sdk="$(realpath -m -- "$SDK")"
+  for p in $(pgrep -x qemu-system-aar); do
+    case "$(readlink "/proc/$p/exe" 2>/dev/null)" in "$sdk"/*) echo "$p" ;; esac
+  done
+}
 
 fetch() {  # fetch <url> <file> <sha256>
   local url=$1 out=$2 sha=$3
@@ -446,7 +457,8 @@ cmd_stop() {
   [ -n "$(emu_pid)" ] || { echo "emulator: not running"; return 0; }
   timeout 20 "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
   for _ in $(seq 1 30); do [ -z "$(emu_pid)" ] && break; sleep 1; done
-  [ -z "$(emu_pid)" ] || pkill -9 -x qemu-system-aar || true
+  # shellcheck disable=SC2046
+  [ -z "$(emu_pid)" ] || kill -9 $(emu_pid) 2>/dev/null || true
   "$ADB" kill-server >/dev/null 2>&1 || true
   echo "emulator stopped"
 }
