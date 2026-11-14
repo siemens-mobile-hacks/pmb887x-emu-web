@@ -1,7 +1,14 @@
 # Diagnostics toolkit
 
-Everything here lives in `tools/` (playwright-core + the
-playwright-downloaded Chromium; `npm i` in that dir once). Most tools
+Everything here lives in `tools/` and drives the page with playwright-core.
+`npm ci` in that dir installs the package (pinned in its lockfile), not the
+browsers; they live in `tools/chrome`, put there once with
+`PLAYWRIGHT_BROWSERS_PATH=$PWD/chrome npx playwright-core install
+chromium-headless-shell firefox` (run in `tools/`), and every tool needs
+`PLAYWRIGHT_BROWSERS_PATH` pointing there. `scripts/gate.sh`,
+`scripts/run-tcg-isa.sh` and `tools/parbench.sh` set it themselves; for
+any other tool, `export PLAYWRIGHT_BROWSERS_PATH=$PWD/tools/chrome` from
+the repo root. Most tools
 take the test fullflash from `tools/testflash.local.json` (copy the
 `.example`) and the server port from `PORT` (default 8080). Four take the
 port as an argument instead: `costack-suite.mjs [port] [dist]`,
@@ -177,7 +184,7 @@ knowing only for reproducing one failure:
 
 | Script | Purpose |
 |---|---|
-| `bootcheck.mjs` | the five-fullflash browser gate: boots s75/el71/ke800/ke970/cx70 on one dist and judges progress in executed instructions; on a firmware EXIT dump (`>>EXIT<<` on x75/x85, the bare `EXIT: <code>` line on the x65 CX70) or a page that went back to idle it fails the board, waits for the panic text and saves the serial tail (`tests/results/bootcheck-<dist>-<board>-serial.txt`); `--query "trace=dsp,scu&tracebuf=1"` adds page parameters to every board and saves the buffered stderr/device trace per board (`…-trace.txt`); `--flash s75,el71` boots the boards in that order as consecutive pages of one browser, which is its own test condition (the second page starts from cache at full speed) |
+| `bootcheck.mjs` | the five-fullflash browser gate: boots s75/el71/ke800/ke970/cx70 on one dist and judges progress in executed instructions; on a firmware EXIT dump (`>>EXIT<<` on x75/x85, the bare `EXIT: <code>` line on the x65 CX70) or a page that went back to idle it fails the board, waits for the panic text and saves the serial tail (`tests/results/bootcheck-<dist>-<board>-serial.txt`); `--query "trace=dsp,scu&tracebuf=1"` adds page parameters to every board and saves the buffered stderr/device trace per board (`…-trace.txt`); `--flash s75,el71` boots just those boards as consecutive pages of one browser, always in the tool's own order (s75, el71, ke800, ke970, cx70, whatever order `--flash` lists them in), and no `--flash` boots all five that way: consecutive pages are their own test condition (the second page starts from cache at full speed) |
 | `earlykey.mjs` | a key event delivered at the earliest instant the export exists must not take the module down. One board per invocation |
 | `tcgisa.mjs` | drives the guest op-suite on one page leg: `node tcgisa.mjs [port] [dist] [out] [ENV=VAL…]`. `scripts/run-tcg-isa.sh` is the gate and compares each built dist against the native JIT serial log |
 | `lockstep.mjs`, `lockstep-wasm.mjs` | cross-backend value-equality drivers — native JIT vs native TCI (plugin) / native JIT vs the wasm page (built-in fold); `scripts/run-lockstep.sh` is the native gate. `lockstep-wasm.mjs` refuses a reference whose `qemu-source.txt` is missing or names other qemu sources than the dist's (`--no-ref-check` skips that, `--a-bin` picks another native build). Both remove their `/tmp/lockstep-<label>-<stamp>` run dirs when every run was clean (`--keep` keeps them). The wasm leg's register and SDRAM digests are sampled at other instructions than the native leg's, so they hardly ever match; why, and what the gate checks meanwhile: performance.md, What lockstep-wasm compares |
@@ -185,7 +192,7 @@ knowing only for reproducing one failure:
 | `gprscheck.mjs` | EL71: boot with the built-in cell, open an 8 KB page served on this host (`gprs-host.mjs`) in the phone's browser, and check that the host gets the GET and the page shows on the LCD. Native: a slirp netdev (needs qemu with slirp); `--web`: the page's GPRS relay through `serve.mjs` to bts-emulator's `gprs-gw`, started from a checkout next to this repository ([gsm-network.md](gsm-network.md)) |
 | `gsmcheck.mjs` | boot a phone with the GSM option and check that it registers on the built-in cell (status icons against a reference picture; EL71), that the page opened no socket but its GPRS relay and that keys are answered a minute later; `--gsm 0` unticks the option, the negative control ([gsm-network.md](gsm-network.md)) |
 | `tests/run.mjs` | the native suite: five fullflashes (s75/el71/c81/ke800/ke970) booted with `run-native.sh`'s recipe, plus an insncount MIPS benchmark. Blind to every wasm-only path, which is why the browser gates exist |
-| `detect-check.mjs`, `detect-web.mjs`, `efa-web.mjs`, `preset-web.mjs`, `engine-prefetch-web.mjs`, `ui-acceptance.mjs` | page tests: device detection (headless and through the page; each file must land on the board the page's own filename rules give its real name, a name with no model is skipped, and a board without a display must be refused with a note), LG fullflash + EFA sidecar, preset download → cache → boot, the engine's background download, the layout |
+| `detect-check.mjs`, `detect-web.mjs`, `efa-web.mjs`, `preset-web.mjs`, `engine-prefetch-web.mjs`, `ui-acceptance.mjs` | page tests: device detection (headless and through the page: each file, under an opaque name, must land on the board the page's own filename rules give its real name, and a name with no model is skipped; detect-web also checks that a board without a display is refused with a note), LG fullflash + EFA sidecar, preset download → cache → boot, the engine's background download, the layout |
 
 Profiling:
 
