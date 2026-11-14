@@ -20,6 +20,7 @@
 // Exit 0 iff the guest survives a key event fired at the earliest instant
 // the export exists, and a normal press afterwards still reaches the guest.
 import { chromium } from "playwright-core";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
@@ -49,7 +50,9 @@ const extraQ = process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : "";
 await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ}`, { waitUntil: "domcontentloaded", timeout: 120000 });
 await p.selectOption("#startup", "ONLINE");
 await p.click("#ff-mode-own");
-await p.setInputFiles("#fullflash", [here + "../fullflashes/" + flash]);
+// an LG flash goes in with its EFA block, as the page's user loads it
+const flashPath = here + "../fullflashes/" + flash;
+await p.setInputFiles("#fullflash", [flashPath, flashPath + ".cfi-efa"].filter((f) => existsSync(f)));
 await p.click("#btn-start");
 
 // Fire as close to instantiation as the event loop allows.  A key-up is the
