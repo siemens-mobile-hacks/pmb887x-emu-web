@@ -591,7 +591,11 @@ let baseline = null;
 try { baseline = JSON.parse(readFileSync(baselinePath, "utf8")); } catch {}
 const outPath = here + `../tests/results/idlebench-${stamp}.json`;
 writeFileSync(outPath, JSON.stringify(out, null, 2));
-if (!knobRun) copyFileSync(outPath, latestPath);
+// a run where every boot crashed measured nothing and must not become the
+// baseline the next run is compared with
+const allCrashed = results.every((r) => r.cls === "CRASH");
+const updateLatest = !knobRun && !allCrashed;
+if (updateLatest) copyFileSync(outPath, latestPath);
 console.log("\n=== summary ===");
 for (const [dist, s] of Object.entries(summary)) {
   const ms = Object.entries(s.tInsns).map(([k, m]) => `${k}:${m.median}`).join(" ");
@@ -636,4 +640,5 @@ if (baseline && baseline.flashSha === out.flashSha && baseline.config?.startup =
 } else if (baseline) {
   console.log(`\n(no baseline comparison: ${path.basename(baselinePath)} uses a different flash/protocol)`);
 }
-console.log(`results: ${outPath}` + (knobRun ? " (knob run: latest alias NOT updated)" : ` (+ ${path.basename(latestPath)})`));
+console.log(`results: ${outPath}` + (knobRun ? " (knob run: latest alias NOT updated)"
+  : allCrashed ? " (every run crashed: latest alias NOT updated)" : ` (+ ${path.basename(latestPath)})`));
