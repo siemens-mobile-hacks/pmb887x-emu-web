@@ -23,7 +23,7 @@ if [ ! -x "$DEPS_ROOT/emsdk/emsdk" ]; then
     https://github.com/emscripten-core/emsdk.git "$DEPS_ROOT/emsdk"
   (cd "$DEPS_ROOT/emsdk" && ./emsdk install "$EMSDK_VERSION" && ./emsdk activate "$EMSDK_VERSION")
 fi
-source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null 2>&1
+use_emsdk
 
 export CPATH="$TARGET/include"
 export PKG_CONFIG_PATH="$TARGET/lib/pkgconfig"

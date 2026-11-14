@@ -24,7 +24,7 @@ TARGET="$DEPS_ROOT/target"
 BUILD_DIR="$BUILD/qemu-wasm64"
 DIST="${WEB_DIST:-$WEB_DIR/site/dist-jit}"
 
-source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null 2>&1
+use_emsdk
 export PATH="$HOME/.local/bin:$PATH"
 export CPATH="$TARGET/include"
 export PKG_CONFIG_PATH="$TARGET/lib/pkgconfig"
