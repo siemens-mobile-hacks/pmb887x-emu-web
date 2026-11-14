@@ -216,12 +216,23 @@ class Instance {
     }
   }
 
-  async hmp(cmd, waitMs = 1200) {
+  // The reply is complete when the monitor prints its prompt again; on a
+  // loaded host that can take seconds, so wait for it rather than a fixed
+  // time.
+  async hmp(cmd, timeoutMs = 15000) {
     if (!this.conn || this.dead) return "";
     this.buf = "";
     this.conn.write(cmd + "\n");
-    await new Promise((r) => setTimeout(r, waitMs));
+    const until = Date.now() + timeoutMs;
+    while (!this.dead && Date.now() < until && !/\(qemu\) $/.test(this.buf)) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
     return this.buf;
+  }
+
+  async readPc() {
+    const regs = await this.hmp("info registers");
+    return (regs.match(/R15=([0-9A-Fa-f]{8})/) || [])[1] || null;
   }
 
   async poll(shotFile) {
@@ -236,11 +247,10 @@ class Instance {
       out.serialTail = buf.toString("latin1");
     }
     try {
-      await this.hmp(`screendump ${shotFile}`, 800);
+      await this.hmp(`screendump ${shotFile}`);
       out.stats = ppmStats(shotFile);
     } catch {}
-    const regs = await this.hmp("info registers", 600);
-    out.pc = (regs.match(/R15=([0-9A-Fa-f]{8})/) || [])[1] || null;
+    out.pc = await this.readPc();
     out.cpuSecs = procCpuSecs(this.child.pid);
     const ic = readInsnFile(this.insnFile);
     if (ic) out.insns = ic.insns;
@@ -320,6 +330,7 @@ async function runInstance(flash, runDir, log) {
     // boot-init verdict at INIT_SECS
     if (!initDone && elapsed >= INIT_SECS) {
       initDone = true;
+      for (let i = 0; i < 3 && s.pc === null && !inst.dead; i++) s.pc = await inst.readPc();
       const insns = s.insns ?? 0n;
       inst.mark("initSample", { insns: insns.toString(), cpu: s.cpuSecs });
       // Two conditions, and the message must say which one went: reporting
