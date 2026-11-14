@@ -17,7 +17,7 @@ void t_blit(void);
 
 int tcgisa_main(void)
 {
-    uart_puts("# tcg-isa op-suite v1 (doc/wasm-tcg-backend-plan.md, phase 0a)\n");
+    uart_puts("# tcg-isa op-suite v1\n");
 
     t_arith();
     t_logic();

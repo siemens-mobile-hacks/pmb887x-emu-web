@@ -1,4 +1,4 @@
-# Bare-metal ARM926EJ-S op-suite image (doc/wasm-tcg-backend-plan.md, phase 0a).
+# Bare-metal ARM926EJ-S op-suite image (README.md).
 #
 #   make            -> tcgisa.bin (semihosting SYS_EXIT -> qemu exit code
 #                      mirrors the suite verdict; native JIT/TCI legs)

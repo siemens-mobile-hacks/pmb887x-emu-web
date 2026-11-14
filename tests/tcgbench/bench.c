@@ -1,8 +1,8 @@
 /* tcgbench — bare-metal ARM926EJ-S backend benchmark (versatilepb).
  *
- * Fast iteration for the wasm64 TCG backend (doc/wasm-tcg-backend-plan.md,
- * phase 3+): fixed hot-loop phases that hit the backend's per-op paths
- * directly, on the same machine/boot path as the phase-0a op-suite
+ * Fast iteration for the wasm64 TCG backend: fixed hot-loop phases that
+ * hit the backend's per-op paths directly, on the same machine/boot path
+ * as the op-suite in tests/tcg-isa
  * (-M versatilepb, -kernel, PL011 UART0, seconds per run) instead of the
  * 80 s+ phone-firmware boots, which stay the final gates.
  *

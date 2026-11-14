@@ -1,14 +1,15 @@
 /*
  * lockstep.c — TCG plugin: guest-state digests on an executed-insn grid.
  *
- * Phase 0b of doc/wasm-tcg-backend-plan.md §5: value-level comparison of
- * guest state between two TCG backends (native JIT vs native TCI today;
- * the wasm64 backend replaces one side from phase 1 on) over whole boots.
+ * Value-level comparison of guest state between two TCG backends over
+ * whole boots: native JIT vs native TCI (scripts/run-lockstep.sh), or the
+ * native JIT vs the wasm64 page (tools/lockstep-wasm.mjs, whose page side
+ * folds the same digests itself).
  * The old wasm32 port died on a data divergence that PC traces could not
  * see; this plugin folds *values*.
  *
  * Three qemu properties shape the design (all learned the hard way,
- * 2026-09-10 — see the phase-0b status note in the plan):
+ * 2026-09-10):
  *
  * 1. TB partitioning is TCG-internal state, not guest state. With
  *    -icount, accel/tcg/cpu-exec.c retranslates deadline-capped TBs
