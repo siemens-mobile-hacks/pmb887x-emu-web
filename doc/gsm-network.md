@@ -72,7 +72,14 @@ gateway, `gprs-gw` (branch `gprs-gw` of
   EDGE).
 - **Hosting.** In the deployment nginx-proxy routes `/gprs` of the page's
   host to the gateway (bts-emulator's `compose.web.yaml`). `serve.mjs`
-  passes `/gprs` to `GPRS_GW` (default 127.0.0.1:5751).
+  passes `/gprs` to `GPRS_GW` (default 127.0.0.1:5751), and only from its
+  own pages: an upgrade whose `Origin` does not name the host it was sent
+  to (`Host`, or `X-Forwarded-Host` behind a proxy that rewrites `Host`)
+  gets a 403. The scheme is not compared, so a page served through a TLS
+  front still gets through. `serve.mjs` sends the gateway its peer's
+  address as `X-Forwarded-For` and connects from loopback itself, so a
+  gateway behind it needs `GPRS_GW_TRUSTED_PROXIES=1`; without it every
+  phone counts as 127.0.0.1 against the per-address limits above.
 
 `node tools/gprscheck.mjs --web` checks it end to end: it builds the helper
 and starts the gateway from a bts-emulator checkout next to this repository

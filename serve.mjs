@@ -263,11 +263,33 @@ if (httpsEnabled) {
 // The phone's GPRS goes to a GPRS gateway (bts-emulator's gprs-gw) over a
 // WebSocket at /gprs, as nginx passes it in the deployment.
 const [gwHost, gwPort] = (process.env.GPRS_GW || "127.0.0.1:5751").split(":");
+
+// Is the upgrade from a page of this server? Its Origin must name the host
+// the request was sent to: the Host header, or X-Forwarded-Host behind a
+// proxy that rewrites Host (a page can set neither on a WebSocket). The
+// scheme is not compared: behind a TLS front the page is https and this
+// listener http. A Host without a port means the origin scheme's default.
+function sameOrigin(req) {
+  let o;
+  try { o = new URL(req.headers.origin); } catch { return false; }
+  if (o.protocol !== "http:" && o.protocol !== "https:") return false;
+  const port = o.port || (o.protocol === "https:" ? "443" : "80");
+  const hosts = [req.headers.host, ...String(req.headers["x-forwarded-host"] ?? "").split(",")];
+  return hosts.some((h) => {
+    const m = String(h ?? "").trim().toLowerCase().match(/^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/);
+    return !!m && m[1] === o.hostname && (m[2] ?? port) === port;
+  });
+}
+
+const refuse = (socket, status) => socket.end(`HTTP/1.1 ${status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+
 // An upgrade listener that throws ends the process (an upgrade to "//" did):
 // whatever goes wrong here only drops that connection.
 const proxyGprs = (req, socket, head) => {
   try {
     if (new URL(req.url, "http://x").pathname !== "/gprs") return socket.destroy();
+    // another site's page must not use this host's gateway
+    if (!sameOrigin(req)) return refuse(socket, "403 Forbidden");
     const gw = net.connect(Number(gwPort), gwHost, () => {
       const headers = { ...req.headers, "x-forwarded-for": req.socket.remoteAddress };
       gw.write(`GET /gprs HTTP/1.1\r\n` +
