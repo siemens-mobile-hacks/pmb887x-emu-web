@@ -36,23 +36,12 @@ BOARDS="${BOARDS_DIR:-$ROOT/build/bsp/lib/data/board}"
 FLASH="$(realpath "$1")"; shift
 [ -f "$FLASH" ] || { echo "fullflash not found: $FLASH" >&2; exit 1; }
 
-# device inference from filename (same rules as the web page)
+# device inference from filename: the web page's own rules (DEVICE_RULES in
+# site/fullflashes.js)
 BOARD="${BOARD:-}"
 if [ -z "$BOARD" ]; then
-  UP="$(basename "$FLASH" | tr '[:lower:]' '[:upper:]')"
-  for rule in "KE800 lg-ke800" "KE970 lg-ke970" \
-              "EL71 siemens-el71" "E71 siemens-e71" "C81 siemens-c81" \
-              "S75 siemens-s75" "S65 siemens-s65" "SK65 siemens-sk65" "CX75 siemens-cx75" \
-              "CX70 siemens-cx70" "CX65 siemens-cx65" "SL75 siemens-sl75" \
-              "SL65 siemens-sl65" \
-              "CL61A siemens-cl61a" "CL61 siemens-cl61" "SL98 siemens-sl98" \
-              "C75 siemens-c75" "C72 siemens-c72" \
-              "C65 siemens-c65" "S68 siemens-s68" "M81 siemens-m81" \
-              "M72 siemens-m72" "ME75 siemens-me75" "M75 siemens-m75" "M65 siemens-m65" \
-              "705P panasonic-705p" "VS7 panasonic-vs7"; do
-    pat="${rule%% *}"; dev="${rule##* }"
-    if [[ "$UP" == *"$pat"* ]]; then BOARD="$dev"; break; fi
-  done
+  BOARD="$(node -e 'import(process.argv[1]).then((m) => console.log(m.inferDevice(process.argv[2]) ?? ""))' \
+    "$ROOT/site/fullflashes.js" "$(basename "$FLASH")")"
   BOARD="${BOARD:-siemens-s75}"
 fi
 [ -f "$BOARDS/$BOARD.toml" ] || { echo "unknown board: $BOARD (no $BOARDS/$BOARD.toml)" >&2; exit 1; }
