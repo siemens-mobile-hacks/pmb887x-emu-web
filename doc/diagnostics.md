@@ -185,7 +185,7 @@ Probes and traces:
 
 | Script | Purpose |
 |---|---|
-| `smoke.mjs`, `verify-boot.mjs`, `wshot.mjs`, `screenshot.mjs` | boot once / verify + insn rate / screenshot after the splash |
+| `smoke.mjs`, `verify-boot.mjs`, `wshot.mjs` | boot once / verify + insn rate / screenshot after the splash |
 | `serialwatch.mjs [s] [query]` | push vclock/serial/fb/insns via console every 10 s — the general-purpose probe |
 | `conlog.mjs` | capture qemu console lines matching a prefix (`MATCH=`, `SAVE_FS=` pulls MEMFS files out) |
 | `iotrace.mjs`, `tracebuf.mjs`, `tracedump.mjs`, `dsplive.mjs` | `?trace=` (`-debug-channels`) captures (buffered / live-filtered) |
