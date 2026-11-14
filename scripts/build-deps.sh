@@ -54,10 +54,37 @@ c_link_args = ['-sMEMORY64=1', '-sWASM_BIGINT', '-sASYNCIFY=1', '-L$TARGET/lib']
 cpp_link_args = ['-sMEMORY64=1', '-sWASM_BIGINT', '-sASYNCIFY=1', '-L$TARGET/lib']
 EOF
 
+# fetch <file> <sha256> <url>...: the first URL that answers, checked
+# against its pinned sha256 before anything unpacks it
+fetch() {
+  local out="$1" sum="$2" url
+  shift 2
+  for url in "$@"; do
+    curl -fsSL -o "$out.part" "$url" && break
+    rm -f "$out.part"
+  done
+  if [ ! -f "$out.part" ]; then
+    echo "build-deps: could not download $(basename "$out") from: $*" >&2
+    exit 1
+  fi
+  if ! echo "$sum  $out.part" | sha256sum -c --quiet - >/dev/null 2>&1; then
+    rm -f "$out.part"
+    echo "build-deps: $(basename "$out") does not match its sha256 in versions.env" >&2
+    exit 1
+  fi
+  mv -f "$out.part" "$out"
+}
+
 # --- zlib ---
 if [ ! -f "$TARGET/lib/libz.a" ]; then
   cd "$SRCDIR"
-  curl -Ls "https://zlib.net/zlib-$ZLIB_VERSION.tar.xz" | tar xJ
+  # zlib.net moves a release to fossils/ once the next one is out, and has
+  # dropped 1.3.2 from both: GitHub's release asset is the last resort
+  fetch "zlib-$ZLIB_VERSION.tar.xz" "$ZLIB_SHA256" \
+    "https://zlib.net/zlib-$ZLIB_VERSION.tar.xz" \
+    "https://zlib.net/fossils/zlib-$ZLIB_VERSION.tar.xz" \
+    "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.xz"
+  tar xJf "zlib-$ZLIB_VERSION.tar.xz"
   cd "zlib-$ZLIB_VERSION"
   emconfigure ./configure --prefix="$TARGET" --static
   emmake make install
@@ -108,7 +135,9 @@ fi
 # --- glib ---
 if [ ! -f "$TARGET/lib/libglib-2.0.a" ]; then
   cd "$SRCDIR"
-  curl -Lks "https://download.gnome.org/sources/glib/${GLIB_VERSION%.*}/glib-$GLIB_VERSION.tar.xz" | tar xJ
+  fetch "glib-$GLIB_VERSION.tar.xz" "$GLIB_SHA256" \
+    "https://download.gnome.org/sources/glib/${GLIB_VERSION%.*}/glib-$GLIB_VERSION.tar.xz"
+  tar xJf "glib-$GLIB_VERSION.tar.xz"
   cd "glib-$GLIB_VERSION"
   CFLAGS="$CFLAGS -Wno-incompatible-function-pointer-types" \
   meson setup _build --prefix="$TARGET" --cross-file="$SRCDIR/cross.meson" \
