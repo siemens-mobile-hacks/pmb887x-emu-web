@@ -5,6 +5,8 @@
 //   t_module  window.__qemu appears (fetch+compile+instantiate+runtime init)
 //   t_v05/2   wall secs from page load until guest virtual time crosses
 //             0.5 / 2.0 — time-to-first-guest-work, the user-facing number
+//   compile   secs of the page's compileStreaming of the engine — where
+//             Chromium's wasm code cache shows on a warm visit
 //   wasm      resource-timing for qemu-system-arm.wasm (transferSize,
 //             encodedBodySize, fetch duration) — shows 304/cache reuse
 //
@@ -35,19 +37,21 @@ const lat = Number(process.env.LAT_MS || 0);
 
 const ctx = await chromium.launchPersistentContext(profile, { headless: true });
 const p = await ctx.newPage();
-let instantiateSecs = null;
+let compileSecs = null;
 p.on("console", (m) => {
-  const match = m.text().match(/^WB_INSTANTIATE ([\d.]+)$/);
-  if (match) instantiateSecs = Number(match[1]);
+  const match = m.text().match(/^WB_COMPILE ([\d.]+)$/);
+  if (match) compileSecs = Number(match[1]);
 });
-// time the streaming compile+instantiate of the big module precisely —
+// time the page's streaming compile of the engine (its prefetch) precisely —
 // this is where Chromium's wasm code cache (warm visits) shows up
 await p.addInitScript(() => {
-  const orig = WebAssembly.instantiateStreaming.bind(WebAssembly);
-  WebAssembly.instantiateStreaming = async (resp, imports) => {
+  const orig = WebAssembly.compileStreaming.bind(WebAssembly);
+  WebAssembly.compileStreaming = async (source) => {
+    const res = await source;
+    if (!/qemu-system-arm\.wasm$/.test(new URL(res.url).pathname)) return orig(res);
     const t0 = performance.now();
-    const r = await orig(resp, imports);
-    console.log("WB_INSTANTIATE " + ((performance.now() - t0) / 1000).toFixed(2));
+    const r = await orig(res);
+    console.log("WB_COMPILE " + ((performance.now() - t0) / 1000).toFixed(2));
     return r;
   };
 });
@@ -117,7 +121,7 @@ console.log(
     t_v2: f(tV2),
     lastV: lastV === null ? null : +lastV.toFixed(2),
     status: lastStatus || undefined,
-    instantiate: instantiateSecs,
+    compile: compileSecs,
     wasm,
   })}`,
 );
