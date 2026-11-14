@@ -17,7 +17,8 @@
 #   EFA_FILE=path        explicit EFA block for FLASH0 (default: derived
 #                        as <fullflash>.cfi-efa, e.g. the LG EEPROM block)
 #   DISPLAY_MODE=none    none | vnc=[:display] | sdl | gtk
-#   SERIAL=path          serial log file     (default /tmp/pmb887x-serial.log)
+#   SERIAL=path          serial log file     (default: a new
+#                        $TMPDIR/pmb887x-serial.XXXXXX.log per run)
 #   MONITOR=stdio        stdio | unix:path | none
 #   ICOUNT=<spec>        -icount value; "none" omits it, "vt" runs the web
 #                        page's vcpu-timers clock instead (default
@@ -63,7 +64,7 @@ STARTUP="${STARTUP:-ONLINE}"
 SIM="${SIM:-virtual}"
 OPERATOR="${OPERATOR:-00101}"
 DISPLAY_MODE="${DISPLAY_MODE:-none}"
-SERIAL="${SERIAL:-/tmp/pmb887x-serial.log}"
+SERIAL="${SERIAL:-$(mktemp --suffix=.log "${TMPDIR:-/tmp}/pmb887x-serial.XXXXXX")}"
 MONITOR="${MONITOR:-stdio}"
 # Timing model: an instruction-driven virtual clock — stock icount, fixed
 # shift, deterministic sleep=off — for every board.
