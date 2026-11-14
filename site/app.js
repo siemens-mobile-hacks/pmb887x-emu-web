@@ -1407,7 +1407,9 @@ async function bootSuite(url) {
   setEmuState("booting");
   showOverlay("Loading suite…");
   try {
-    const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
     const engineWasmMod = await ensureEngine();
     const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
     let modRef = null; // FS access in onExit (qemuModule not yet assigned)
