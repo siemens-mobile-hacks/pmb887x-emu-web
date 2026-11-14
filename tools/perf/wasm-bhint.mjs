@@ -1,7 +1,7 @@
 // Add a metadata.code.branch_hint section to a captured batch module:
 // every `if` right after an `i64.eq` (the inline TLB probe's hit test) is
 // hinted likely-true, so its else arm (the *_mmu helper call) is cold.
-//   node bhint.mjs in.wasm out.wasm
+//   node tools/perf/wasm-bhint.mjs in.wasm out.wasm
 import fs from "node:fs";
 
 const b = fs.readFileSync(process.argv[2]);
