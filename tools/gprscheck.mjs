@@ -36,6 +36,7 @@ import { fileURLToPath } from "node:url";
 import { startGateway } from "./gprs-gateway.mjs";
 import { startHostPage } from "./gprs-host.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
+import { NATIVE_JIT_BIN } from "./lib/build-dirs.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const argv = process.argv.slice(2);
@@ -70,7 +71,7 @@ const log = (s) => console.log(`[gprs] t=${((Date.now() - t0) / 1000).toFixed(0)
 // (the phone browser's GET as the host saw it, or null), exited(),
 // serial() and close(). Key names are HMP's.
 async function nativeBackend() {
-  const QEMU = process.env.QEMU_BIN || path.join(ROOT, "build", "qemu-native-build", "qemu-system-arm");
+  const QEMU = process.env.QEMU_BIN || NATIVE_JIT_BIN;
   if (!/^user$/m.test(spawnSync(QEMU, ["-machine", "pmb887x", "-netdev", "help"], { encoding: "utf8" }).stdout ?? ""))
     throw new Error(`${QEMU} has no slirp (-netdev user): install libslirp-dev, rebuild with scripts/build-native.sh`);
 

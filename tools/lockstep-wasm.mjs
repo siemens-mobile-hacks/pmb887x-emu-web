@@ -28,6 +28,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Side, compareDigestLogs, FLASHES, claimRunStamp, PLUGIN } from "./lockstep.mjs";
 import { loadOwnFlash } from "./lib/page.mjs";
+import { NATIVE_JIT_BIN } from "./lib/build-dirs.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -46,7 +47,7 @@ function parseArgs() {
     // default out — the M-digest reads were the first full-gate timeout
     mem: "800000+18000:a8000000+100000",
     port: process.env.PORT || "8080", dist: "dist-jit",
-    aBin: path.join(ROOT, "build/qemu-native-build/qemu-system-arm"),
+    aBin: NATIVE_JIT_BIN,
     label: "wasm",
     env: [],
     refCheck: true,

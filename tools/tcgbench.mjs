@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { NATIVE_JIT_BIN, NATIVE_TCI_BIN } from "./lib/build-dirs.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = path.resolve(here, "..");
@@ -37,8 +38,8 @@ const suite = process.env.SUITE === "quick" ? "tcgbench-quick" : "tcgbench";
 // the quick image has ~0.3–1.2 s phases on wasm64, so poll faster there
 const pollMs = Number(process.env.POLL_MS || (suite === "tcgbench" ? 150 : 40));
 const bins = {
-  "native-jit": process.env.QEMU_JIT || `${ROOT}/build/qemu-native-build/qemu-system-arm`,
-  "native-tci": process.env.QEMU_TCI || `${ROOT}/build/qemu-native-tci-build/qemu-system-arm`,
+  "native-jit": process.env.QEMU_JIT || NATIVE_JIT_BIN,
+  "native-tci": process.env.QEMU_TCI || NATIVE_TCI_BIN,
 };
 
 const stamp = () => Number(process.hrtime.bigint() / 1000000n) / 1000; // s, µs res

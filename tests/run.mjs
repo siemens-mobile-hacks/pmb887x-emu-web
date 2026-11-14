@@ -17,8 +17,10 @@
 //                      [--poll-ms MS] [--out FILE] [--flash id[,id...]]
 //                      [--keep]   (keep run dirs under /tmp)
 //
-// Env: QEMU_BIN + BOARDS_DIR are forwarded to run-native.sh (defaults:
-// build/qemu-native-build + the bsp/ submodule of this workspace).
+// Env: QEMU_BIN + BOARDS_DIR are forwarded to run-native.sh (defaults: the
+// JIT build of tools/lib/build-dirs.mjs, build/qemu-native-build unless
+// WEB_BUILD or QEMU_NATIVE_BUILD moves it, + the bsp/ submodule of this
+// workspace). The insncount plugin comes from TEST_PLUGINS_DIR likewise.
 //
 // Screenshots: the first LCD-content screendump (boot-progress proof) and
 // the final screendump are saved per flash to
@@ -30,6 +32,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ppmFileToPng } from "../tools/ppm2png.mjs";
+import { NATIVE_JIT_BIN, testPlugin } from "../tools/lib/build-dirs.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url)) + "/..";
 const resultsDir = path.join(ROOT, "tests", "results");
@@ -86,7 +89,7 @@ for (const f of FLASHES) {
   }
 }
 
-const PLUGIN = path.join(ROOT, "tests", "insncount.so");
+const PLUGIN = testPlugin("insncount");
 if (!fs.existsSync(PLUGIN)) {
   console.error(`plugin missing: ${PLUGIN} (scripts/build-plugins.sh builds it)`);
   process.exit(2);
@@ -454,7 +457,7 @@ async function runInstance(flash, runDir, log) {
 }
 
 // --- main ------------------------------------------------------------------
-const QEMU_BIN = process.env.QEMU_BIN || path.join(ROOT, "build/qemu-native-build/qemu-system-arm");
+const QEMU_BIN = process.env.QEMU_BIN || NATIVE_JIT_BIN;
 if (!fs.existsSync(QEMU_BIN)) {
   console.error(`qemu not found: ${QEMU_BIN} (build it: scripts/build-native.sh)`);
   process.exit(2);

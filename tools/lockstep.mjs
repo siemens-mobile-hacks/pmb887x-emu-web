@@ -32,10 +32,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ppmFileToPng } from "./ppm2png.mjs";
 import { flashPath } from "./lib/boards.mjs";
+import { NATIVE_JIT_BIN, NATIVE_TCI_BIN, testPlugin } from "./lib/build-dirs.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const RUN_NATIVE = path.join(ROOT, "scripts", "run-native.sh");
-export const PLUGIN = path.join(ROOT, "tests", "lockstep.so");
+export const PLUGIN = testPlugin("lockstep");
 export const RTC_ARGS = ["-rtc", "base=2000-01-01T00:00:00,clock=vm"];
 export const OIPT_ARGS = ["-accel", "tcg,one-insn-per-tb=on"];
 
@@ -53,8 +54,8 @@ function parseArgs() {
   const a = {
     runs: 1, par: 1, flash: "s75", insns: 2.5e9, secs: 2700,
     period: 1 << 16, epoch: 1 << 20, meminsns: 1 << 23, mem: null,
-    aBin: path.join(ROOT, "build/qemu-native-build/qemu-system-arm"),
-    bBin: path.join(ROOT, "build/qemu-native-tci-build/qemu-system-arm"),
+    aBin: NATIVE_JIT_BIN,
+    bBin: NATIVE_TCI_BIN,
     self: false, localize: true, label: "lockstep",
     denseFrom: null, denseTo: null, corrupt: null, keep: false,
   };
