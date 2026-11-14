@@ -463,6 +463,8 @@ if (!fs.existsSync(QEMU_BIN)) {
 fs.mkdirSync(resultsDir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 const runsRoot = fs.mkdtempSync(path.join(os.tmpdir(), `pmb887x-tests-${LABEL}-`));
+// also on SIGINT/SIGTERM, whose handler calls process.exit
+if (!KEEP) process.on("exit", () => fs.rmSync(runsRoot, { recursive: true, force: true }));
 
 console.log(`suite: label=${LABEL} qemu=${QEMU_BIN}`);
 console.log(`  timeout=${TIMEOUT}s bench-window=${BENCH_SECS}s flashes=${FLASHES.map((f) => f.id).join(",")}`);
@@ -530,6 +532,4 @@ const report = {
 const outFile = OUT || path.join(resultsDir, `${LABEL}-${stamp}.json`);
 fs.writeFileSync(outFile, JSON.stringify(report, null, 2));
 console.log(`\nresults: ${outFile}   (${report.wallS}s wall)`);
-if (!KEEP) fs.rmSync(runsRoot, { recursive: true, force: true });
-
 process.exit(allPass ? 0 : 1);
