@@ -393,7 +393,14 @@ async function runOnce(spec, run) {
     }
     result.tIdle = +((Date.now() - t0) / 1000 - 4).toFixed(1);
     await wait(10000);   // the network search banner and first redraws settle
-    while (sc.startAt && (await p.evaluate(SNAP)).v / 1e9 < sc.startAt) await sleep(1000);
+    const startBy = Date.now() + 300000;
+    while (sc.startAt && (await p.evaluate(SNAP)).v / 1e9 < sc.startAt) {
+      // a guest that stopped keeps its clock where it was
+      const ui = await p.evaluate(() => window.__ui);
+      if (pageErr || ui?.exit || ui?.state === "idle") fail(`guest stopped before ${sc.startAt} s of guest time`);
+      if (Date.now() > startBy) fail(`guest time did not reach ${sc.startAt} s`);
+      await sleep(1000);
+    }
 
     // The idle screen's soft-key row tells it apart from any menu and the
     // dialer; captured once the first presses have cleared any popup.
