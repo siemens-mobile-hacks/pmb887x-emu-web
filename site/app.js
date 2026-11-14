@@ -779,6 +779,9 @@ function captionText() {
 function render() {
   const locked = emuState === "booting" || emuState === "running" || emuState === "paused";
   const live = emuState === "running" || emuState === "paused";
+  // a download or ESN recovery works on the choice made at Start; the
+  // pill's Cancel, outside the panel, stays live
+  const panelLocked = locked || emuState === "downloading" || emuState === "recovering";
 
   statusEl.dataset.state = emuState;
   statusEl.className = "status"
@@ -794,17 +797,17 @@ function render() {
   // attribute goes on every control too, and the two things a `disabled`
   // fieldset cannot reach (the disclosure, the roving segmented tabindex)
   // lose their tab stop by hand.
-  fwFieldset.disabled = locked;
-  for (const el of fwFieldset.querySelectorAll("input, select, button")) el.disabled = locked;
+  fwFieldset.disabled = panelLocked;
+  for (const el of fwFieldset.querySelectorAll("input, select, button")) el.disabled = panelLocked;
   // the blanket re-enable above would undo the IMEI/ESN lock that
   // "Brute-force ESN" needs (their values come from the image there)
-  if (!locked) refreshSiemensKeys();
+  if (!panelLocked) refreshSiemensKeys();
   if (!cacheAvailable()) P.sel.disabled = true;
   for (const b of segButtons) {
-    b.tabIndex = locked ? -1 : (b.getAttribute("aria-checked") === "true" ? 0 : -1);
+    b.tabIndex = panelLocked ? -1 : (b.getAttribute("aria-checked") === "true" ? 0 : -1);
   }
-  $("ff-lock-note").hidden = !locked;
-  advSummary.tabIndex = locked ? -1 : 0;
+  $("ff-lock-note").hidden = !panelLocked;
+  advSummary.tabIndex = panelLocked ? -1 : 0;
 
   // The exports need a guest image to read: live, or the one the last run
   // left behind. The EFA block only exists on LG phones, so the button for
@@ -1517,6 +1520,7 @@ async function boot() {
   }
 
   const device = currentDevice();
+  const preset = selectedPreset;
   // "as-is" wherever the radio is not offered: a non-Siemens board (only
   // Siemens firmware binds itself to the flash ESN) or a preset, which the
   // inventory publishes already recalculated
@@ -1546,7 +1550,7 @@ async function boot() {
   ranDevice = device;
   ranFlashName = ffMode === "own"
     ? ownBin?.name ?? null
-    : selectedPreset?.files[0] ?? null;
+    : preset?.files[0] ?? null;
   setEmuState("booting");
   showOverlay("Loading…");
 
@@ -1562,24 +1566,24 @@ async function boot() {
     if (ffMode === "preset") {
       // First Start with this preset: download it into the browser cache
       // (live progress; later boots come straight from the cache).
-      const st = await entryCacheState(selectedPreset);
+      const st = await entryCacheState(preset);
       if (!st.complete) {
         presetBusy = true;
         // a 64 MiB fullflash is a long wait — Cancel stops it (the catch
         // below turns the AbortError into a plain "cancelled")
         downloadAbort = new AbortController();
         dlLoaded = 0;
-        dlTotal = selectedPreset.size;
+        dlTotal = preset.size;
         dlWhat = "fullflash";
         setEmuState("downloading");
         await refreshPresetUi(); // say so on the preset line before byte one
         let doneBytes = 0, curFile = null, curTotal = 0;
         try {
-          await downloadEntry(selectedPreset, (name, loaded, total) => {
+          await downloadEntry(preset, (name, loaded, total) => {
             if (name !== curFile) { doneBytes += curTotal; curFile = name; }
             curTotal = total;
             dlLoaded = doneBytes + loaded;
-            dlTotal = selectedPreset.size || (doneBytes + total);
+            dlTotal = preset.size || (doneBytes + total);
             const pct = dlTotal ? Math.round((dlLoaded / dlTotal) * 100) : null;
             // straight to the three elements that move: this fires once per
             // stream chunk, far too often for a cache-state refresh
@@ -1599,7 +1603,7 @@ async function boot() {
         await refreshPresetUi();
       }
       showOverlay("Reading fullflash…");
-      const cached = await readCachedEntry(selectedPreset); // main .bin first
+      const cached = await readCachedEntry(preset); // main .bin first
       const shim = (f) => ({ name: f.name, arrayBuffer: async () => f.bytes.buffer });
       file = shim(cached[0]);
       sidecars = cached.slice(1).map(shim);
