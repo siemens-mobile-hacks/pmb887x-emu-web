@@ -5,7 +5,7 @@
 //                           [--modes recalc,recover-esn,as-is] [--secs 60]
 //
 // A mode PASSes when the LCD drew something and the guest kept executing
-// without the firmware's own ">>EXIT<<", and the exit status is 0 iff every
+// without a firmware EXIT (window.__ui.exit), and the exit status is 0 iff every
 // mode did. Read the table, not just the status, on a fullflash built for
 // another phone: "as-is" FAILing there is the whole point of the other two
 // modes, so a run over such an image is expected to come back non-zero.
@@ -25,12 +25,11 @@ const secs = Number(arg("secs", 60));
 
 const probe = () => {
   const m = window.__qemu;
-  let ser = "";
-  try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch {}
+  const x = window.__ui?.exit;
   return {
     fb: m?._wasm_fb_updates ? Number(m._wasm_fb_updates()) : 0,
     insns: m?._wasm_insns ? Number(m._wasm_insns()) : 0,
-    exit: (ser.match(/>>EXIT<<[^\x00]{0,120}/) || [""])[0],
+    exit: x ? [x.type, x.code].filter(Boolean).join(" ") || "no details" : "",
   };
 };
 
@@ -71,7 +70,7 @@ for (const mode of modes) {
     last = await page.evaluate(probe);
     if (last.exit) break;
     // same bar as tools/bootcheck.mjs: the LCD drew and the guest is still
-    // executing. A key check the firmware fails ends in ">>EXIT<<", which is
+    // executing. A key check the firmware fails ends in an EXIT, which is
     // what the modes are here to avoid — not in a dark screen.
     if (last.fb > 0 && last.insns > 5e8) break;
   }
