@@ -10,8 +10,6 @@
 
 import { loadSiemensFW } from "./siemensfw.js";
 
-const load = loadSiemensFW;
-
 // PapuaUtils' service key. Only internal consistency matters to an emulated
 // phone, so pmb887x-emu pins it and so do we — see its main.cpp.
 const SKEY = 12345678;
@@ -52,7 +50,7 @@ const esnHex = (esn) => (esn >>> 0).toString(16).padStart(8, "0");
 // Stages the image in the module's own heap. Both operations work on it
 // there, so a 64 MiB fullflash crosses the boundary once.
 async function stage(flashBytes) {
-  const M = await load();
+  const M = await loadSiemensFW();
   const ptr = M._sr_flash_alloc(flashBytes.length);
   M.HEAPU8.set(flashBytes, ptr);
   return M;
@@ -102,7 +100,7 @@ export async function recalc(flashBytes, imei, esn) {
 
 // One forward derivation: does this ESN produce the key the image stores?
 export async function verify(identity, esn) {
-  const M = await load();
+  const M = await loadSiemensFW();
   const ptr = M._malloc(16);
   try {
     M.HEAPU8.set(identity.key, ptr);
