@@ -20,10 +20,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+WEB_DIR="$ROOT"
+source scripts/build-dirs.sh
 
-source build/deps/emsdk/emsdk_env.sh >/dev/null
-export CPATH="$ROOT/build/deps/target/include"
-export PKG_CONFIG_PATH="$ROOT/build/deps/target/lib/pkgconfig"
+source "$DEPS_ROOT/emsdk/emsdk_env.sh" >/dev/null
+export CPATH="$DEPS_ROOT/target/include"
+export PKG_CONFIG_PATH="$DEPS_ROOT/target/lib/pkgconfig"
 # emconfigure overwrites PKG_CONFIG_PATH with EM_PKG_CONFIG_PATH, empty if
 # unset (emscripten tools/building.py, get_building_env), so the line above is
 # invisible to configure on its own.
@@ -42,13 +44,13 @@ SRC="$ROOT/qemu"
 #
 # The build dir is never reconfigured once it exists (the configure guard
 # below), so a flags change means wiping build/qemu-wasm64 first.
-BUILD="build/qemu-wasm64"
+BUILD_DIR="$BUILD/qemu-wasm64"
 DIST="site/dist-jit"
 
-if [ ! -f "$BUILD/build.ninja" ] || [ ! -f "$BUILD/meson-private/coredata.dat" ]; then
-  echo "== configuring $BUILD"
-  mkdir -p "$BUILD"
-  ( cd "$BUILD" && emconfigure "$SRC/configure" \
+if [ ! -f "$BUILD_DIR/build.ninja" ] || [ ! -f "$BUILD_DIR/meson-private/coredata.dat" ]; then
+  echo "== configuring $BUILD_DIR"
+  mkdir -p "$BUILD_DIR"
+  ( cd "$BUILD_DIR" && emconfigure "$SRC/configure" \
       --static \
       --cpu=wasm64 \
       --wasm64-32bit-address-limit \
@@ -69,8 +71,8 @@ fi
 # builds, in emscripten's slower JS setjmp or in the legacy EH
 # instructions that Firefox deprecates.
 if grep -q -- "-wasm-use-legacy-eh=0" "$SRC/configure" &&
-   ! grep -q -- "-wasm-use-legacy-eh=0" "$BUILD/config-meson.cross"; then
-  echo "build-qemu-wasm64: $BUILD predates wasm-EH setjmp (configure CPU_CFLAGS);" \
+   ! grep -q -- "-wasm-use-legacy-eh=0" "$BUILD_DIR/config-meson.cross"; then
+  echo "build-qemu-wasm64: $BUILD_DIR predates wasm-EH setjmp (configure CPU_CFLAGS);" \
        "remove it and rerun" >&2
   exit 1
 fi
@@ -98,23 +100,23 @@ LA="['-O3','-pthread','-sGLOBAL_BASE=262144','--emit-symbol-map','-sASYNCIFY=1',
 # (qemu's configure pins meson's optimization to -O2 through the same
 # built-in option; -O3 was measured a tie in round thirty-seven and
 # rejected — see doc/performance-handoff.md (git history) § Open items.)
-( cd "$BUILD" && meson configure -Dc_link_args="$LA" -Dcpp_link_args="$LA" -Dqom_cast_debug=false >/dev/null )
+( cd "$BUILD_DIR" && meson configure -Dc_link_args="$LA" -Dcpp_link_args="$LA" -Dqom_cast_debug=false >/dev/null )
 
 echo "== ninja qemu-system-arm.js"
 # taken before the build, so an edit made while it runs cannot be claimed
-SRC_ID="$(bash scripts/qemu-source-id.sh "$BUILD")"
-ninja -C "$BUILD" qemu-system-arm.js
+SRC_ID="$(bash scripts/qemu-source-id.sh "$BUILD_DIR")"
+ninja -C "$BUILD_DIR" qemu-system-arm.js
 
 echo "== deploy -> $DIST (atomic: temp name + rename — the server may
    be serving the previous artifact; a plain cp can serve a torn 45 MB file)"
 mkdir -p "$DIST"
 for f in qemu-system-arm.js qemu-system-arm.wasm; do
-  cp "$BUILD/$f" "$DIST/.$f.tmp"
+  cp "$BUILD_DIR/$f" "$DIST/.$f.tmp"
   mv -f "$DIST/.$f.tmp" "$DIST/$f"
 done
 # Refresh the symbol-map sidecar too (stale maps poison wprof2 profiles —
 # the 2026-09-11 session burned a whole profile round on this).
-for f in "$BUILD"/qemu-system-arm.js.symbols; do
+for f in "$BUILD_DIR"/qemu-system-arm.js.symbols; do
   [ -f "$f" ] && cp "$f" "$DIST/" && break
 done
 # what tools/lockstep-wasm.mjs matches the native reference against
