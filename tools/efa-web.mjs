@@ -7,6 +7,8 @@
 // ?tracebuf=1: the flash trace fills that ring buffer, and the line the test
 // is looking for is printed before the first poll could read it.)
 import { chromium } from "playwright-core";
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { bounded, pageCall } from "./lib/page.mjs";
 
@@ -50,12 +52,16 @@ while (Date.now() - t0 < 60000) {
   };
   if (s.hwError || s.efaLoaded || (s.status.includes("EFA block") && s.state === "running")) break;
 }
-await bounded(page.screenshot({ path: `efa-web-${withSidecar ? "with" : "no"}.png` }), null);
+const results = fileURLToPath(new URL("../tests/results/", import.meta.url));
+fs.mkdirSync(results, { recursive: true });
+const shot = path.join(results, `efa-web-${withSidecar ? "with" : "no"}.png`);
+await bounded(page.screenshot({ path: shot }), null);
 await bounded(browser.close(), null, { ms: 30000 });
 
 console.log("inferred device:", dev);
 console.log(JSON.stringify(s));
 console.log("page errors:", errors.length ? errors : "none");
+console.log("screenshot:", shot);
 const pass = !!s && (withSidecar
   ? dev === "lg-ke800" && s.efaLoaded && !s.hwError && !errors.length
   : dev === "lg-ke800" && !s.efaLoaded && s.status.includes("No EFA block") && !errors.length);
