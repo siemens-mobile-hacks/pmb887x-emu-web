@@ -1305,12 +1305,14 @@ async function ensureEngine() {
 // Module.instantiateWasm for a factory call: hand it the prefetched,
 // already-compiled module. The success callback takes (instance, module)
 // — the module is what emscripten keeps and posts to the pthread workers.
-const engineInstantiate = (mod) => mod ? {
+// The loader gives instantiateWasm no way to fail, so a failure goes to
+// fail(), which startQemu() turns into a rejection.
+const engineInstantiate = (mod, fail) => mod ? {
   instantiateWasm: (imports, receive) => {
     // instantiate(Module, imports) resolves to the Instance itself (the
     // {module, instance} shape is the bytes overload)
     WebAssembly.instantiate(mod, imports)
-      .then((instance) => receive(instance, mod), noteFatal);
+      .then((instance) => receive(instance, mod), fail);
   },
 } : {};
 
@@ -1345,12 +1347,34 @@ function releaseHeap(mod) {
 // module factory and its prefetched module, opts more Module settings,
 // setup(mod) fills MEMFS and the environment before main(), and
 // report(read, code) hands logs out on exit — read(path) gives a MEMFS file
-// or null — before the page's own exit handling.
-function launch({ factory, engine, args, opts, setup, report }) {
+// or null — before the page's own exit handling. A prefetched module that
+// does not instantiate (one fetched before a deploy no longer fits the
+// loader) is dropped, and the factory is called once more without it, so
+// the loader fetches the engine itself.
+class EngineInstantiateError extends Error {}
+
+async function launch(spec) {
+  if (!spec.engine) return startQemu(spec);
+  try {
+    return await startQemu(spec);
+  } catch (e) {
+    if (!(e instanceof EngineInstantiateError)) throw e;
+    console.warn("[engine] the prefetched engine did not instantiate — fetching it at boot instead:", e.cause);
+    if (engineMod === spec.engine) engineMod = null;
+    checkCancel();
+    return startQemu({ ...spec, engine: null });
+  }
+}
+
+function startQemu({ factory, engine, args, opts, setup, report }) {
   let modRef = null; // FS access in onExit (qemuModule not yet assigned)
-  return factory({
+  let fail = null;
+  const failed = new Promise((_, reject) => {
+    fail = (e) => reject(new EngineInstantiateError(String(e), { cause: e }));
+  });
+  const started = factory({
     arguments: args,
-    ...engineInstantiate(engine),
+    ...engineInstantiate(engine, fail),
     ...opts,
     onExit: (code) => {
       // before the runtime tears the page down
@@ -1376,6 +1400,7 @@ function launch({ factory, engine, args, opts, setup, report }) {
       }
     },
   });
+  return engine ? Promise.race([started, failed]) : started;
 }
 
 let exitCode = null;
