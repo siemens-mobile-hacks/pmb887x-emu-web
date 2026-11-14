@@ -2670,7 +2670,8 @@ function presentPendingExit(quit = true) {
 // read back from the file here.)
 function finalExitCheck() {
   if (exitReport || !ranDevice?.startsWith("siemens-")) return;
-  if (!serialText) {
+  // without the tap serialText is the last poll's, up to a second old
+  if (!serialText || !serialTapped) {
     const bytes = serialBytes();
     if (bytes) serialText = new TextDecoder("latin1").decode(bytes);
   }
