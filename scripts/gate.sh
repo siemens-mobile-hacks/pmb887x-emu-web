@@ -66,6 +66,9 @@ PORT_TCG=$((PORT + 13))
   { echo "gate.sh: --jobs must be 1 or more, not '$JOBS_MAX'" >&2; exit 2; }
 # bootcheck and earlykey take the server from the environment only
 export PORT
+# the playwright browsers are downloaded into tools/chrome; default to
+# them, as tools/parbench.sh does
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$ROOT/tools/chrome}"
 
 # name | tiers | needs the browser server | time limit (s) | command
 #

@@ -23,6 +23,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$ROOT/tests/tcg-isa"
 WEB_DIR="$ROOT"
 source "$ROOT/scripts/build-dirs.sh"
+# the playwright browsers are downloaded into tools/chrome; default to
+# them, as tools/parbench.sh does
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$ROOT/tools/chrome}"
 JIT="${QEMU_JIT:-$NATIVE_BUILD/qemu-system-arm}"
 TCI="${QEMU_TCI:-$NATIVE_TCI_BUILD/qemu-system-arm}"
 T="$(mktemp -d)"
