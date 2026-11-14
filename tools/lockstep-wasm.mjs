@@ -12,9 +12,10 @@
 // Requires: the wasm64 dist served on --port (see serve.mjs),
 // scripts/build-qemu-wasm64.sh output copied to site/dist-jit/, and the
 // native reference build from scripts/build-native.sh, up to date with the
-// qemu source the dist was built from (checked through the dist's
-// qemu-source.txt; --a-bin picks another build dir, --no-ref-check skips
-// the check for a deliberate cross-version comparison).  Both legs boot
+// qemu source the dist was built from (checked through the
+// qemu-source.txt the server serves for the dist; --a-bin picks another
+// build dir, --no-ref-check skips the check for a deliberate cross-version
+// comparison).  Both legs boot
 // the same fullflash with -accel tcg,one-insn-per-tb=on and the RTC
 // pinned (determinism prerequisites from phase 0b).
 //
@@ -420,13 +421,18 @@ if (args.refCheck) {
     if (!fs.existsSync(file)) refFail(`${file} missing — ${hint}`);
     return fs.readFileSync(file, "utf8").trim();
   };
-  const distSrc = stamp(path.join(ROOT, "site", args.dist, "qemu-source.txt"),
-    "redeploy the dist (scripts/ninja-fast.sh)");
+  // the dist the page will run is the one the server serves, which need not
+  // be this checkout's
+  const servedUrl = `http://127.0.0.1:${args.port}/${args.dist}/qemu-source.txt`;
+  const res = await fetch(servedUrl, { signal: AbortSignal.timeout(15000) })
+    .catch((e) => refFail(`cannot read ${servedUrl}: ${e.cause?.code || e.message}`));
+  if (!res.ok) refFail(`${servedUrl}: HTTP ${res.status} — redeploy the dist (scripts/ninja-fast.sh)`);
+  const distSrc = (await res.text()).trim();
   const refSrc = stamp(path.join(path.dirname(args.aBin), "qemu-source.txt"),
     "rebuild the reference (scripts/build-native.sh)");
   if (refSrc !== distSrc)
-    refFail(`${args.dist} is built from qemu ${distSrc}, the reference from ${refSrc}` +
-      " (scripts/build-native.sh builds qemu/ as checked out)");
+    refFail(`the ${args.dist} served on ${args.port} is built from qemu ${distSrc.slice(0, 80)},` +
+      ` the reference from ${refSrc} (scripts/build-native.sh builds qemu/ as checked out)`);
   log(`native reference: ${args.aBin} (qemu ${refSrc})`);
 }
 
