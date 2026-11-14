@@ -78,6 +78,7 @@ try {
   let nextId = 1;
   const handlers = new Map();
   const profiles = []; // one Profiler.stop result per worker session
+  const labels = [];   // and the thread it came from
   const attached = [];
   function send(method, params = {}, sessionId) {
     const id = nextId++;
@@ -109,27 +110,27 @@ try {
     await new Promise((r) => setTimeout(r, delayS * 1000));
   }
   // profile the page main thread too (the client-side glue: rAF LCD paint,
-  // serial poll, console handlers) — it is the first session in the list
+  // serial poll, console handlers)
   const sendT = (cmd, params, sid) => Promise.race([
     send(cmd, params, sid), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 5000))]);
   try {
     await sendT("Profiler.enable", {}, pageSession);
     await sendT("Profiler.setSamplingInterval", { interval: sampleUs }, pageSession);
     await sendT("Profiler.start", {}, pageSession);
-    sessions.push(pageSession);
+    sessions.push({ sid: pageSession, label: "page main thread" });
   } catch (e) { console.log("(page main thread unresponsive: " + e.message.slice(0,60) + ")"); }
-  for (const w of workers) {
+  for (const [k, w] of workers.entries()) {
     const sid = w.sessionId;
     await send("Profiler.enable", {}, sid);
     await send("Profiler.setSamplingInterval", { interval: sampleUs }, sid);
     await send("Profiler.start", {}, sid);
-    sessions.push(sid);
+    sessions.push({ sid, label: "worker #" + k });
   }
   console.log("profiling " + sessions.length + " session(s) for " + secs + "s @ " + sampleUs + "us...");
   await new Promise((r) => setTimeout(r, secs * 1000));
-  for (const sid of sessions) {
+  for (const { sid, label } of sessions) {
     const st = await send("Profiler.stop", {}, sid);
-    if (st.result && st.result.profile) profiles.push(st.result.profile);
+    if (st.result && st.result.profile) { profiles.push(st.result.profile); labels.push(label); }
   }
 
   const totals = new Map();
@@ -165,9 +166,11 @@ try {
       }
     }
     for (const [k, v] of wtotals) totals.set(k, (totals.get(k) || 0) + v);
-    perWorker.push({ idx: i++, sum: wsum, totals: wtotals });
+    perWorker.push({ idx: i, label: labels[i], sum: wsum, totals: wtotals });
+    i++;
   }
   const topN = Number(process.env.PROF_TOP || 40);
+  const workerLabel = (w) => w === "main" ? "page main thread" : "worker #" + Number(w);
   // Which module a frame belongs to, which is the only attribution here
   // that is trustworthy.  A dynamically instantiated TB module has no
   // symbol table, so V8 reports the nearest name from the main module's
@@ -181,8 +184,7 @@ try {
     return "page JS + browser";
   };
   for (const w of perWorker) {
-    const label = w.idx === 0 ? "page main thread" : "worker #" + (w.idx - 1);
-    console.log("\n=== " + label + " self-time (total " + (w.sum / 1000).toFixed(0) + "ms) ===");
+    console.log("\n=== " + w.label + " self-time (total " + (w.sum / 1000).toFixed(0) + "ms) ===");
     for (const [k, v] of [...w.totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN)) {
       console.log((v / 1000).toFixed(0).padStart(8) + "ms", (100 * v / w.sum).toFixed(1).padStart(5) + "%", k);
     }
@@ -210,8 +212,8 @@ try {
   // module compile / lookup" without hunting through the self-time tail.
   // PROF_INCL=0 disables; PROF_WORKER selects the worker as above.
   if (process.env.PROF_INCL !== "0") {
-    let pick = 1;
-    if (process.env.PROF_WORKER !== undefined) pick = process.env.PROF_WORKER === "main" ? 0 : Number(process.env.PROF_WORKER) + 1;
+    let pick = labels.indexOf("worker #0");
+    if (process.env.PROF_WORKER !== undefined) pick = labels.indexOf(workerLabel(process.env.PROF_WORKER));
     else {
       let best = 0;
       for (const w of perWorker) {
@@ -241,8 +243,7 @@ try {
           cur = parent.get(cur);
         }
       }
-      const label = pick === 0 ? "page main thread" : "worker #" + (pick - 1);
-      console.log("\n=== " + label + " INCLUSIVE time (total " + (sum / 1000).toFixed(0) + "ms) ===");
+      console.log("\n=== " + labels[pick] + " INCLUSIVE time (total " + (sum / 1000).toFixed(0) + "ms) ===");
       for (const [k, v] of [...incl.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN)) {
         console.log((v / 1000).toFixed(0).padStart(8) + "ms", (100 * v / sum).toFixed(1).padStart(5) + "%", k);
       }
@@ -252,9 +253,9 @@ try {
   console.log("\n=== caller stacks for a target fn (env PROF_FN) ===");
   const want = process.env.PROF_FN || "throw_longjmp";
   const tstacks = new Map();
-  const wantWorker = process.env.PROF_WORKER;   // "0" = worker #0 (profiles[1]), "main" = page
+  const wantWorker = process.env.PROF_WORKER;   // "0" = worker #0, "main" = page
   for (const [pi, profile] of profiles.entries()) {
-    if (wantWorker !== undefined && (wantWorker === "main" ? pi !== 0 : pi !== Number(wantWorker) + 1)) continue;
+    if (wantWorker !== undefined && labels[pi] !== workerLabel(wantWorker)) continue;
     const byId = new Map(profile.nodes.map((n) => [n.id, n]));
     const parent = new Map();
     for (const n of profile.nodes) for (const c of n.children || []) parent.set(c, n.id);
