@@ -3,7 +3,7 @@
 ENTRY(bench_entry)
 SECTIONS {
   . = 0x00010000;
-  .text    : { *(.text .text.*) *(.glue_7) *(.glue_7t) }
+  .text    : { *(.text.entry) *(.text .text.*) *(.glue_7) *(.glue_7t) }
   .rodata  : { *(.rodata .rodata.*) }
   .data    : { *(.data .data.*) }
   .bss (NOLOAD) : { __bss_start = .; *(.bss .bss.*) *(COMMON) __bss_end = .; }

@@ -7,13 +7,21 @@
 extern int tcgisa_main(void);
 extern uint32_t __bss_start[], __bss_end[];
 
-void suite_entry(void)
-{
-    /* SVC mode, IRQ+FIQ masked (no vector table installed), ARM state */
-    __asm__ volatile ("msr cpsr_c, #0xd3" ::: "memory", "cc");
-    /* stack top inside the 128 MiB SDRAM, far above the image */
-    __asm__ volatile ("ldr sp, =0x00800000");
+void suite_run(void) __attribute__((noreturn));
 
+/* naked: a compiled prologue would push through the boot stub's sp (0) */
+__attribute__((naked, section(".text.entry"))) void suite_entry(void)
+{
+    __asm__ volatile (
+        /* SVC mode, IRQ+FIQ masked (no vector table installed), ARM state */
+        "msr cpsr_c, #0xd3\n"
+        /* stack top inside the 128 MiB SDRAM, far above the image */
+        "ldr sp, =0x00800000\n"
+        "b suite_run\n");
+}
+
+void suite_run(void)
+{
     for (uint32_t *p = __bss_start; p < __bss_end; p++) {
         *p = 0;
     }

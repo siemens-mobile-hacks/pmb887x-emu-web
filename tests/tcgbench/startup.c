@@ -9,11 +9,19 @@
 extern int bench_main(void);
 extern uint32_t __bss_start[], __bss_end[];
 
-void bench_entry(void)
-{
-    __asm__ volatile ("msr cpsr_c, #0xd3" ::: "memory", "cc");
-    __asm__ volatile ("ldr sp, =0x00800000");
+void bench_run(void) __attribute__((noreturn));
 
+/* naked: a compiled prologue would push through the boot stub's sp (0) */
+__attribute__((naked, section(".text.entry"))) void bench_entry(void)
+{
+    __asm__ volatile (
+        "msr cpsr_c, #0xd3\n"
+        "ldr sp, =0x00800000\n"
+        "b bench_run\n");
+}
+
+void bench_run(void)
+{
     for (uint32_t *p = __bss_start; p < __bss_end; p++) {
         *p = 0;
     }
