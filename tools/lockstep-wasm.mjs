@@ -26,6 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Side, compareDigestLogs, FLASHES, claimRunStamp, PLUGIN } from "./lockstep.mjs";
+import { bootOwnFlash } from "./lib/page.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -132,13 +133,9 @@ class WasmSide {
     });
     await this.page.goto(`http://127.0.0.1:${port}/?${q}`,
       { waitUntil: "domcontentloaded", timeout: 120000 });
-    await this.page.selectOption("#startup", "ONLINE");
     // nor with the GSM cell, which the page adds by default on a board with
     // a radio
-    await this.page.setChecked("#gsm", false);
-    await this.page.click("#ff-mode-own");
-    await this.page.setInputFiles("#fullflash", flashPath);
-    await this.page.click("#btn-start");
+    await bootOwnFlash(this.page, flashPath, { startup: "ONLINE", gsm: false });
   }
 
   poll() {
