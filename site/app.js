@@ -1268,7 +1268,7 @@ const DIST = new URLSearchParams(location.search).get("dist") || null;
 const DIST_DEFAULT = "dist-jit";
 
 /* ---- engine prefetch ------------------------------------------------ */
-/* The qemu wasm (~28 MiB, ~4 on the wire) is the long pole of a first
+/* The qemu wasm (~12 MB, ~4 on the wire) is the long pole of a first
  * Start, so it is fetched and compiled in the background once the page
  * itself is up (kick-off lives in the startup section at the bottom). A
  * Start that lands before the download is over rides the very same
