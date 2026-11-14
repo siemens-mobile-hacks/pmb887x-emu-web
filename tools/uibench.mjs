@@ -23,11 +23,9 @@
 //               display-path meter (fps/MIPS), and it needs no per-flash
 //               reference: nothing is asserted about what is drawn.
 //     --state idle|menu|both (default both, idle first).
-//   - report per state: MIPS, v/wall (icount boards; 1.0 = real time),
-//     fps (framebuffer blits/s) and halts/s (vCPU idle entries), plus the
-//     bench counters of a bench-patched build.  The LG boards run icount=none
-//     (site/app.js), so their v/wall is meaningless by construction and
-//     MIPS/fps are the numbers.
+//   - report per state: MIPS, v/wall (1.0 = real time), fps (framebuffer
+//     blits/s) and halts/s (vCPU idle entries), plus the bench counters
+//     of a bench-patched build.
 //   - the clock is the one the page ships: vCPU timers paced to wall
 //     time, the boot's lost time caught up (?bank=, default 30 s).
 //     Another clock goes in through EXTRA_Q (bank=0, icount=…), which the
