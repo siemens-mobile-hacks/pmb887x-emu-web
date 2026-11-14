@@ -86,6 +86,7 @@ const nowNs = (typeof process !== 'undefined' && process.hrtime)
     ? () => Number(process.hrtime.bigint())
     : () => performance.now() * 1e6;
 const SIG = 0;                  /* (i64,i64,i64)->i32, the backend's type 0 */
+const LEAF_SIG = 1;             /* (i64,i64,i64)->i64, a leaf's whole state */
 
 /* ------------------------------------------------------------ encoding */
 
@@ -143,25 +144,27 @@ function localsDecl(extra) {
 }
 
 /* local 0 = countdown, local 1 = index state, local 2 = unused (arg 3) */
-const DEC_AND_MAYBE_RETURN = [
-    0x20, 0,                    /* local.get 0 */
-    0x42, ...sleb(1),           /* i64.const 1 */
-    0x7d,                       /* i64.sub */
-    0x22, 0,                    /* local.tee 0 */
-    0x50,                       /* i64.eqz */
-    0x04, 0x40,                 /* if (void) */
-    0x41, ...sleb(0),           /* i32.const 0 */
-    0x0f,                       /* return */
-    0x0b,                       /* end */
-];
+function decAndMaybeReturn(zeroConst) {
+    return [
+        0x20, 0,                    /* local.get 0 */
+        0x42, ...sleb(1),           /* i64.const 1 */
+        0x7d,                       /* i64.sub */
+        0x22, 0,                    /* local.tee 0 */
+        0x50,                       /* i64.eqz */
+        0x04, 0x40,                 /* if (void) */
+        zeroConst, ...sleb(0),      /* i32.const 0 / i64.const 0 */
+        0x0f,                       /* return */
+        0x0b,                       /* end */
+    ];
+}
+const DEC_AND_MAYBE_RETURN = decAndMaybeReturn(0x41);
 
 /*
- * Next index.  `rand` runs an LCG so the indirect target is unpredictable,
- * which is what a guest interpreter's dispatch looks like; `seq` strides by 7
- * so the branch predictor sees a pattern.  Both leave the state in local 1
- * and an i32 table index on the stack.
+ * Next state, left in local 1.  `rand` runs an LCG so the indirect target is
+ * unpredictable, which is what a guest interpreter's dispatch looks like;
+ * `seq` strides by 7 so the branch predictor sees a pattern.
  */
-function nextIndex(rand) {
+function nextState(rand) {
     if (rand) {
         return [
             0x20, 1,
@@ -170,12 +173,6 @@ function nextIndex(rand) {
             0x42, ...sleb(1442695040888963407n),
             0x7c,                               /* i64.add */
             0x21, 1,                            /* local.set 1 */
-            0x20, 1,
-            0x42, ...sleb(33),
-            0x88,                               /* i64.shr_u */
-            0x42, ...sleb(NFUNC - 1),
-            0x83,                               /* i64.and */
-            0xa7,                               /* i32.wrap_i64 */
         ];
     }
     return [
@@ -185,9 +182,26 @@ function nextIndex(rand) {
         0x42, ...sleb(NFUNC - 1),
         0x83,
         0x21, 1,
-        0x20, 1,
-        0xa7,
     ];
+}
+
+/* the i64 state on the stack -> its i32 table index */
+function toIndex(rand) {
+    if (rand) {
+        return [
+            0x42, ...sleb(33),
+            0x88,                               /* i64.shr_u */
+            0x42, ...sleb(NFUNC - 1),
+            0x83,                               /* i64.and */
+            0xa7,                               /* i32.wrap_i64 */
+        ];
+    }
+    return [0xa7];
+}
+
+/* next state in local 1 and its i32 table index on the stack */
+function nextIndex(rand) {
+    return [...nextState(rand), 0x20, 1, ...toIndex(rand)];
 }
 
 /*
@@ -223,12 +237,17 @@ function tailBody(rand, extraLocals, seed = 0) {
     return [...locals, ...code];
 }
 
-/* returns the next index instead of going there; the driver loop calls back */
+/*
+ * Returns the next state instead of going there; the driver loop reduces it
+ * to an index and calls back.  The whole state has to come back: an LCG fed
+ * its own masked index walks a short cycle, not the table.
+ */
 function leafBody(rand, seed = 0) {
     const code = [
-        ...DEC_AND_MAYBE_RETURN,
+        ...decAndMaybeReturn(0x42),
         ...pad(seed),
-        ...nextIndex(rand),
+        ...nextState(rand),
+        0x20, 1,
         0x0b,
     ];
     return [...localsDecl(0), ...code];
@@ -247,20 +266,19 @@ function directBody(succ, seed = 0, extra = 0) {
 }
 
 /*
- * The driver: decrement, call the current index, take its answer as the next
- * index.  Same transition count and same index arithmetic as the tail
- * variants, but a call/return pair instead of a tail call.
+ * The driver: decrement, call the current state's index, take its answer as
+ * the next state.  Same transition count and same index arithmetic as the
+ * tail variants, but a call/return pair instead of a tail call.
  */
-function driverBody() {
+function driverBody(rand) {
     const code = [
         0x03, 0x40,                         /* loop (void) */
         0x20, 0, 0x50,                      /* local.get 0; i64.eqz */
         0x04, 0x40, 0x41, ...sleb(0), 0x0f, 0x0b,
         0x20, 0, 0x42, ...sleb(1), 0x7d, 0x21, 0,
         0x20, 0, 0x20, 1, 0x20, 2,
-        0x20, 1, 0xa7,
-        0x11, ...uleb(SIG), 0x00,           /* call_indirect sig, table 0 */
-        0xac,                               /* i64.extend_i32_s */
+        0x20, 1, ...toIndex(rand),
+        0x11, ...uleb(LEAF_SIG), 0x00,      /* call_indirect sig, table 0 */
         0x21, 1,
         0x0c, 0,                            /* br loop */
         0x0b,                               /* end loop */
@@ -327,18 +345,19 @@ function mergedBody(rand, extraLocals) {
 
 const TYPE_SEC = section(1, vec([
     [0x60, ...vec([[I64], [I64], [I64]]), ...vec([[I32]])],
+    [0x60, ...vec([[I64], [I64], [I64]]), ...vec([[I64]])],
 ]));
 
 const IMPORT_TABLE = section(2, vec([
     [...name('e'), ...name('t'), 0x01, 0x70, 0x00, ...uleb(NFUNC)],
 ]));
 
-function moduleOf(bodies, withGlobal) {
+function moduleOf(bodies, withGlobal, sigs = bodies.map(() => SIG)) {
     return Uint8Array.from([
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
         ...TYPE_SEC,
         ...IMPORT_TABLE,
-        ...section(3, vec(bodies.map(() => uleb(SIG)))),
+        ...section(3, vec(sigs.map((s) => uleb(s)))),
         ...(withGlobal
             ? section(6, vec([[I32, 0x01, 0x41, ...sleb(0), 0x0b]]))
             : []),
@@ -391,14 +410,15 @@ function build(variant, rand) {
                 bodies.push(variant === 'xloop' ? leafBody(rand, j)
                                                 : tailBody(rand, extra, j));
             }
+            const sigs = bodies.map(() => variant === 'xloop' ? LEAF_SIG : SIG);
             const inst = new WebAssembly.Instance(
-                new WebAssembly.Module(moduleOf(bodies)), imports);
+                new WebAssembly.Module(moduleOf(bodies, false, sigs)), imports);
             for (let k = 0; k < bodies.length; k++) {
                 fns.push(inst.exports['f' + k]);
             }
         }
         if (variant === 'xloop') {
-            const d = new WebAssembly.Module(moduleOf([driverBody()]));
+            const d = new WebAssembly.Module(moduleOf([driverBody(rand)]));
             fns.push(new WebAssembly.Instance(d, imports).exports.f0);
         }
     } else if (variant === 'xstub' || variant === 'sstub') {
@@ -441,11 +461,13 @@ function build(variant, rand) {
                       : variant === 'loop' ? leafBody(rand, i)
                       : directBody((i + 1) % NFUNC, i, extra));
         }
+        const sigs = bodies.map(() => variant === 'loop' ? LEAF_SIG : SIG);
         if (variant === 'loop') {
-            bodies.push(driverBody());
+            bodies.push(driverBody(rand));
+            sigs.push(SIG);
         }
         const inst = new WebAssembly.Instance(
-            new WebAssembly.Module(moduleOf(bodies)), imports);
+            new WebAssembly.Module(moduleOf(bodies, false, sigs)), imports);
         for (let i = 0; i < NFUNC; i++) {
             fns.push(inst.exports['f' + i]);
         }
