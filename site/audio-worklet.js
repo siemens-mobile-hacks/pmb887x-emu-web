@@ -117,7 +117,6 @@ class QemuAudio extends AudioWorkletProcessor {
         }
         this.hdr = new Int32Array(d.buffer, d.ptr, HDR_WORDS);
         const cap = this.hdr[H_CAP];
-        this.cap = cap;
         this.mask = cap - 1;
         this.pcm = new Int16Array(d.buffer, d.ptr + HDR_BYTES, cap * 2);
         this.gen = -1;
@@ -1081,7 +1080,6 @@ QemuAudio.prototype.warmUp = function () {
     const freq = 2800 + 200 * voice;
     const buf = new Buffer(HDR_BYTES + 4 * len);
     const hdr = this.hdr = new Int32Array(buf, 0, HDR_WORDS);
-    this.cap = len;
     this.mask = len - 1;
     const pcm = this.pcm = new Int16Array(buf, HDR_BYTES, 2 * len);
     this.gen = -1;
