@@ -141,6 +141,8 @@ let rafHandle = 0;
 let serialTimer = 0;
 let boards = [];         // [{id, file}] parsed from boards.tar
 let boardsBuf = null;
+let bootCancelled = false; // Stop pressed before boot() had a live guest
+const BOOT_CANCELLED = Symbol("boot cancelled");
 let boardsReady = null;   // loadBoards() promise — boot() awaits it
 let pendingDevice = null; // device inferred from a fullflash picked before
                           // boards.tar finished loading (slow links)
@@ -1558,11 +1560,13 @@ async function boot() {
   ranFlashName = ffMode === "own"
     ? ownBin?.name ?? null
     : preset?.files[0] ?? null;
+  bootCancelled = false;
   setEmuState("booting");
   showOverlay("Loading…");
 
   // [[".cfi-efa", bytes], ...] — filled below, checked again after the boot
   let sidecarBytes = [];
+  const checkCancel = () => { if (bootCancelled) throw BOOT_CANCELLED; };
   let gsm = false;
 
   try {
@@ -1625,13 +1629,16 @@ async function boot() {
     // background download starts once the page is up); a Start that beat
     // it waits the rest of the download out inside ensureEngine.
     const engineWasmMod = await ensureEngine();
+    checkCancel();
     // Compile the factory fresh per boot (the emscripten ES6 factory is
     // single-use once main() has run through exit()).
     showOverlay("Loading emulator…");
     const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
+    checkCancel();
     showOverlay("Booting…", device);
 
     const flashBytes = new Uint8Array(await file.arrayBuffer());
+    checkCancel();
 
     // Advanced ▸ Siemens keys. The image only ever lives in this run's
     // MEMFS, so "recalculate" changes this copy and the one Export ▸ Flash
@@ -1665,6 +1672,7 @@ async function boot() {
       refreshSiemensKeys();
       showOverlay("Booting…", device);
     }
+    checkCancel();
 
     const otp0 = esnToOtp0(esn);
     const otp1 = imeiToOtp1(imei);
@@ -1674,6 +1682,7 @@ async function boot() {
       if (sidecarBytes.some(([s]) => s === suffix)) continue; // first one wins
       sidecarBytes.push([suffix, new Uint8Array(await sc.arrayBuffer())]);
     }
+    checkCancel();
 
     // qemu stderr -> browser console, deduped (madvise/mprotect spam otherwise).
     // ?tracebuf=1 keeps the raw last lines in window.__qemulog instead (no CDP flood).
@@ -1835,7 +1844,9 @@ async function boot() {
     });
   } catch (e) {
     setEmuState("idle");
-    if (e?.name === "AbortError" || engineCancelled) {
+    if (e === BOOT_CANCELLED) {
+      showOverlay("Ready to boot", "Start cancelled");
+    } else if (e?.name === "AbortError" || engineCancelled) {
       // a cancelled preset keeps whatever files finished; the engine's
       // partial fetch leaves nothing behind
       showOverlay("Ready to boot", engineCancelled
@@ -1869,6 +1880,8 @@ async function boot() {
     window.__gprsNet = gprsNet; // debugging and tools/gprscheck.mjs --web
     gprsNet.start();
   }
+  // Stop came while the factory was starting the guest: stop it the usual way
+  if (bootCancelled) stop();
 }
 
 // only trouble is shown: an online phone needs no caption
@@ -1914,6 +1927,13 @@ function stop() {
   // a capture in flight is finished and saved first — the frames stop
   // arriving the moment the guest goes away
   finishRecording(() => {
+    // a Start still on its way to a live guest: boot() checks for this
+    // between its steps
+    if (emuState === "booting" && !running) {
+      bootCancelled = true;
+      showOverlay("Stopping…");
+      return;
+    }
     // flushing the capture takes a moment, in which the guest can exit on its
     // own — then there is nothing left to stop, and onGuestExit already
     // put the page back to idle
