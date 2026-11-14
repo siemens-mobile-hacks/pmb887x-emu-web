@@ -11,14 +11,13 @@
 //
 //   node tools/bootcheck.mjs [--dist dist-jit] [--secs 150] [--flash id,id]
 //
-// PASS for a board = no firmware EXIT dump on the serial log (">>EXIT<<"
-// on x75/x85, a bare "EXIT: <code>" line on the x65 CX70 — the gate only
-// knew the first form and passed a CX70 that had panicked) and the guest
-// still running as far as the page is concerned, no page error / wasm
-// abort, the LCD drew something, and the guest kept executing.  Progress is measured in instructions, not framebuffer
-// updates: EL71 stops at a "set time and date?" wizard (a static screen
-// that never redraws) and is perfectly healthy there, while a KE800 stuck
-// on a device poll it can never satisfy stops executing altogether.
+// PASS for a board, after --secs:
+// - no firmware EXIT dump on the serial log (">>EXIT<<" on x75/x85, a bare
+//   "EXIT: <code>" line on the x65 CX70) and the page not back at idle;
+// - no page error, crash or wasm abort, and the page answered every probe;
+// - the guest never stopped: instructions, vCPU halts (_wasm_halts) and
+//   framebuffer updates were never all frozen for STALL_S (below);
+// - the LCD drew something, and the board reached its minInsns, if any.
 // Exit 0 iff every board passed.
 import { chromium } from "playwright-core";
 import fs from "node:fs";
@@ -69,14 +68,15 @@ if (unknown.length) {
   process.exit(2);
 }
 
-// Progress = executed instructions or a framebuffer update.  A board is
-// only failed when *neither* moves for this long: KE800 spends minutes
-// around its GSM L1 sync mostly halted, executing well under a million
-// instructions per poll while it waits on radio-frame timing, and that is
-// healthy — what is not is a guest wedged on a device poll it can never
-// satisfy (both counters pinned, as KE800 was before 0035/0037/0038).
-const STALL_S = 150;
-const STALL_INSNS = 1e6;
+// A stopped guest, as the page's own detector (trackStall in site/app.js)
+// calls one: instructions, halts and framebuffer updates all unchanged for
+// this long, counted from the first sample in which any of them has moved.
+// One counter alone cannot tell idle from dead: EL71 waits at a static
+// "set time and date?" screen, and KE800 spends minutes mostly halted around
+// its GSM L1 sync, but their instruction and halt counts keep moving.  In the
+// close gates of 2026-11-12 to 14 no board added fewer than 8M instructions
+// in any 10 s sample; the page itself calls a stall after 15 s.
+const STALL_S = 40;
 
 // both dump openings the page's own EXIT parser knows (site/app.js)
 // (the x65 line is padded, so it is the code's shape that marks it)
@@ -93,6 +93,7 @@ const probe = (src) => {
   return {
     fb: m?._wasm_fb_updates ? Number(m._wasm_fb_updates()) : 0,
     insns: m?._wasm_insns ? Number(m._wasm_insns()) : 0,
+    halts: m?._wasm_halts ? Number(m._wasm_halts()) : 0,
     vclock: m?._wasm_vclock && ui.state !== "idle" ? Number(m._wasm_vclock()) / 1e9 : null,
     exit: (ser.match(new RegExp(src)) || [""])[0].trim()
       || (ui.exit ? `EXIT ${[ui.exit.type, ui.exit.code].filter(Boolean).join(" ")}` : "") || ended,
@@ -124,8 +125,10 @@ for (const board of BOARDS) {
                   { waitUntil: "domcontentloaded" });
   await bootOwnFlash(page, files, { startup: "ONLINE" });
 
-  let last = { fb: 0, insns: 0, exit: "" };
-  let lastProgress = { t: Date.now(), insns: 0 };
+  let last = { fb: 0, insns: 0, halts: 0, exit: "" };
+  // when the counters last moved; null until they first have
+  let lastMove = null;
+  const stalledS = () => (lastMove ? (Date.now() - lastMove) / 1000 : 0);
   const t0 = Date.now();
   while ((Date.now() - t0) / 1000 < SECS && !last.exit && !errors.length) {
     await new Promise((r) => setTimeout(r, 10000));
@@ -134,14 +137,14 @@ for (const board of BOARDS) {
     const mx = await pageCall(page.evaluate(probe, EXIT_RE.source), "probe")
       .catch((e) => ({ err: String(e.message || e).slice(0, 120) }));
     if (mx.err) { errors.push(mx.err); break; }
-    if (mx.insns - lastProgress.insns >= STALL_INSNS || mx.fb !== last.fb) {
-      lastProgress = { t: Date.now(), insns: mx.insns };
+    if (mx.insns !== last.insns || mx.halts !== last.halts || mx.fb !== last.fb) {
+      lastMove = Date.now();
     }
     last = { ...mx, vclock: mx.vclock ?? last.vclock };
     console.log(`[${board.id}] t=${((Date.now() - t0) / 1000).toFixed(0)}s ` +
-                `insns=${(mx.insns / 1e6).toFixed(0)}M fb=${mx.fb}` +
+                `insns=${(mx.insns / 1e6).toFixed(0)}M halts=${mx.halts} fb=${mx.fb}` +
                 `${mx.vclock != null ? ` guest=${mx.vclock.toFixed(1)}s` : ""}${mx.exit ? " *** EXIT ***" : ""}`);
-    if ((Date.now() - lastProgress.t) / 1000 > STALL_S) break;
+    if (stalledS() >= STALL_S) break;
   }
 
   if (last.exit) {
@@ -170,12 +173,13 @@ for (const board of BOARDS) {
     console.log(`[${board.id}] trace: ${lines.length} lines -> ${tracePath}`);
   }
 
-  const stalled = (Date.now() - lastProgress.t) / 1000 > STALL_S;
+  const stalled = stalledS() >= STALL_S;
   const blank = last.fb < 2;
   const why = last.exit.startsWith("guest ended") ? last.exit
     : last.exit ? `firmware exit: ${last.exit.replace(/[\x00-\x1f\xfe\xff]/g, " ")}`
     : errors.length ? errors[0]
-    : stalled ? `no progress for ${STALL_S}s (<${STALL_INSNS / 1e6}M insns, no fb update)`
+    : stalled ? `guest stopped: insns, halts and fb all unchanged for ${stalledS().toFixed(0)}s` +
+                ` (${(last.insns / 1e6).toFixed(0)}M insns, ${last.halts} halts, fb ${last.fb})`
     : blank ? "LCD never drew anything"
     : board.minInsns && last.insns < board.minInsns ? `only ${(last.insns / 1e6).toFixed(0)}M insns (need ${board.minInsns / 1e6}M)`
     : "";
