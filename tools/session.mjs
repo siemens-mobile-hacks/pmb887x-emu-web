@@ -31,6 +31,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { fullflash, files as fullflashFiles } from "./testflash.mjs";
+import { pageCall } from "./lib/page.mjs";
 
 const TOOLS = path.dirname(fileURLToPath(import.meta.url));
 const SOCK = path.join(TOOLS, ".session.sock");
@@ -130,36 +131,34 @@ async function boot(params = []) {
   return { booted: true, url: URL_() + q };
 }
 
+// Before Start, and on a page whose guest never came up, there is no
+// module: the counters read null and the rest still answers.
 const PROBE = `(() => {
-  const m = window.__qemu; if (!m) return { noModule: true };
-  const g = (f) => { try { return Number(m[f]()); } catch { return -1; } };
-  let ser = "", serErr = "";
-  try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch (e) { serErr = String(e); }
+  const m = window.__qemu;
+  const g = (f) => { try { return m && m[f] ? Number(m[f]()) : null; } catch { return null; } };
+  let ser = "";
+  try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch {}
+  const ui = window.__ui || {};
   const vclockNs = g("_wasm_vclock");
-  return { insns: g("_wasm_insns"), vclockMs: vclockNs < 0 ? -1 : vclockNs / 1e6,
+  return { module: !!m, insns: g("_wasm_insns"), vclockMs: vclockNs == null ? null : vclockNs / 1e6,
            fb: g("_wasm_fb_updates"), serLen: ser.length, ser,
            // window.__ui is the page's own run state (site/app.js): the pill
-           // text alone no longer says whether the guest exited
-           state: window.__ui?.state || "", exitCode: window.__ui?.exitCode ?? null,
+           // text alone no longer says whether the guest exited, and its
+           // parsed EXIT report covers the x65 dump that has no >>EXIT<<
+           state: ui.state || "", exitCode: ui.exitCode ?? null,
+           exitReport: ui.exit ? ["EXIT", ui.exit.type, ui.exit.code].filter(Boolean).join(" ") : "",
            status: document.querySelector("#status-text")?.textContent || "" };
 })()`;
 
 // a page whose main thread is stuck never answers an evaluate, and wait
 // would poll it forever
-const PROBE_TIMEOUT_MS = 20000;
-
 async function probe() {
   if (!page) throw new Error("no page — run: node ctl.mjs boot");
-  let timer;
-  const stuck = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`the page did not answer in ${PROBE_TIMEOUT_MS / 1000} s (main thread frozen?)`)), PROBE_TIMEOUT_MS);
-  });
-  try {
-    return await Promise.race([page.evaluate(PROBE), stuck]);
-  } finally {
-    clearTimeout(timer);
-  }
+  return pageCall(page.evaluate(PROBE), "probe");
 }
+
+// the firmware's EXIT dump: the serial marker, else the page's report
+const exitOf = (s) => (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || s.exitReport;
 
 const fmtM = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : String(n));
 
@@ -171,9 +170,12 @@ async function status() {
     rate = ` rate=${fmtM(Math.round((s.insns - lastSample.insns) / ((now - lastSample.t) / 1000)))}/s`;
   if (s.insns > 0) lastSample = { t: now, insns: s.insns };
   const up = bootAt ? ((now - bootAt) / 1000).toFixed(0) : "?";
-  const exit = (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || "";
+  const exit = exitOf(s);
+  const counters = s.module
+    ? `insns=${fmtM(s.insns ?? 0)}${rate} vclock=${s.vclockMs == null ? "?" : s.vclockMs.toFixed(1)}ms fb=${s.fb ?? "?"}`
+    : "no module";
   return {
-    line: `up=${up}s insns=${fmtM(s.insns)}${rate} vclock=${s.vclockMs.toFixed(1)}ms fb=${s.fb} serlen=${s.serLen} state=${s.state}${s.exitCode != null ? `(${s.exitCode})` : ""}${exit ? " EXIT: " + exit : ""}`,
+    line: `up=${up}s ${counters} serlen=${s.serLen} state=${s.state}${s.exitCode != null ? `(${s.exitCode})` : ""}${exit ? " EXIT: " + exit : ""}`,
     raw: { uptimeS: Number(up), insns: s.insns, vclockMs: s.vclockMs, fb: s.fb, serLen: s.serLen, state: s.state, exitCode: s.exitCode, status: s.status, exit },
   };
 }
@@ -188,7 +190,7 @@ async function wait(pred, timeoutMs = Number(process.env.WAIT_TIMEOUT || 300000)
     const t = (Date.now() - t0) / 1000;
     let done = false, why = "";
     if (kind === "exit") {
-      const exit = (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || "";
+      const exit = exitOf(s);
       done = !!exit || s.exitCode != null;
       why = exit || (s.exitCode != null ? `exited (${s.exitCode})` : s.status);
     } else if (kind === "splash") { done = s.fb > 100; why = `fb=${s.fb}`; }
@@ -217,6 +219,7 @@ const commands = {
     const a = await probe();
     await new Promise((r) => setTimeout(r, secs * 1000));
     const b = await probe();
+    if (!a.module || !b.module) throw new Error("rate: the page has no module (is a guest running?)");
     return { line: `${fmtM(Math.round((b.insns - a.insns) / secs))} insns/s over ${secs}s (insns ${fmtM(a.insns)} -> ${fmtM(b.insns)}, fb ${a.fb} -> ${b.fb})` };
   },
   serial: async (args) => {
