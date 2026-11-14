@@ -170,7 +170,9 @@ async function handler(req, res) {
   if (servePath !== path) headers["content-encoding"] = "gzip";
   headers["content-length"] = statSync(servePath).size;
   res.writeHead(200, headers);
-  createReadStream(servePath).pipe(res);
+  // headers are out by now: a file that fails to open or read mid-request
+  // (a deploy replacing it) can only cut the response short
+  createReadStream(servePath).on("error", () => res.destroy()).pipe(res);
 }
 
 // A rejected handler would otherwise be an unhandled rejection, which ends
