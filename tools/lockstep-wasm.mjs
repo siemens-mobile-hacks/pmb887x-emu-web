@@ -26,11 +26,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Side, compareDigestLogs, FLASHES, claimRunStamp, PLUGIN } from "./lockstep.mjs";
-import { bootOwnFlash } from "./lib/page.mjs";
+import { loadOwnFlash } from "./lib/page.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 fs.mkdirSync(path.join(ROOT, "tests", "results"), { recursive: true });
+const { inferDevice } = await import(path.join(ROOT, "site", "fullflashes.js"));
+
+// scripts/run-native.sh's choice: BOARD, else the page's filename rules
+const nativeBoard = (flash) =>
+  process.env.BOARD || inferDevice(path.basename(flash)) || "siemens-s75";
 
 function parseArgs() {
   const a = {
@@ -135,7 +140,18 @@ class WasmSide {
       { waitUntil: "domcontentloaded", timeout: 120000 });
     // nor with the GSM cell, which the page adds by default on a board with
     // a radio
-    await bootOwnFlash(this.page, flashPath, { startup: "ONLINE", gsm: false });
+    await loadOwnFlash(this.page, flashPath, { startup: "ONLINE", gsm: false });
+    // The board run-native.sh boots, picked once detection has landed, and
+    // the image as is: the native leg never recalculates the Siemens keys.
+    const board = nativeBoard(flashPath);
+    await this.page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 }).catch(() => {});
+    await this.page.selectOption("#device", board);
+    const asIs = await this.page.$('input[name="siemens-mode"][value="as-is"]');
+    if (asIs) await asIs.check();
+    await this.page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 });
+    const device = await this.page.evaluate(() => window.__ui.device);
+    if (device !== board) throw new Error(`the page picked ${device}, the native leg boots ${board}`);
+    await this.page.click("#btn-start");
   }
 
   poll() {
