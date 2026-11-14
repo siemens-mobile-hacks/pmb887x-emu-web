@@ -1130,11 +1130,11 @@ function gsmFor(device) {
 }
 
 // What a run boots with: the board's own default accessory, the data cable.
-// Every board has a transceiver since bsp 191612c, and with anything else
-// plugged in at boot the firmware goes into a deep sleep the SCCU model does
-// not bring it back from: an EL71 with the music cable, GSM or not, stops
-// answering keys at its first wizard (doc/gsm-network.md). Sound plays with
-// the data cable too, and the Accessory control plugs anything else in.
+// Every phone board has a transceiver since bsp 191612c, and with anything
+// else plugged in at boot the firmware goes into a deep sleep the SCCU model
+// does not bring it back from: an EL71 with the music cable, GSM or not,
+// stops answering keys at its first wizard (doc/gsm-network.md). Sound plays
+// with the data cable too, and the Accessory control plugs anything else in.
 function bootAccessory(conf) {
   return conf?.default ?? null;
 }
