@@ -52,9 +52,9 @@ instruction-count plugin.
 
 1. **boot-init** (15 s) — board config parses, no `hardware error:` on
    stderr, guest executes ≥ 10M instructions, monitor answers.
-2. **boot-progress** (deadline) — LCD lights up **and** shows content
-   (≥ 300 saturated pixels in screendumps — splash/menu), or serial
-   output; no firmware `>>EXIT<<` abort.
+2. **boot-progress** (deadline) — the LCD shows content (≥ 300
+   saturated pixels in screendumps — splash/menu), or serial output
+   together with a lit LCD; no firmware `>>EXIT<<` abort.
 3. **no-exit** — no `>>EXIT<<` / hw_error / early process death during
    the whole observation window (catches regressions that only abort
    after early milestones).
