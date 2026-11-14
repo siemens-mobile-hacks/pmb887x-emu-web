@@ -13,8 +13,9 @@
 // Verdict per variant (exit code 1 only if some variant FAILs):
 //   PASS   first splash drawn (fb updates > AB_PASS_FB, default 100 — the
 //          proven "booted" signal) or insns >= AB_PASS_INSNS (default off)
-//   FAIL   '>>EXIT<<' appears in the guest serial log (early boot-ROM abort
-//          shows up within seconds), or the qemu process exits
+//   FAIL   the page reports a firmware EXIT (early boot-ROM abort shows up
+//          within seconds), an error, or qemu exiting; the module never
+//          starting within AB_TIMEOUT; the page failing to set up
 //   TIMEOUT no verdict within AB_TIMEOUT s (default 90) — treated as PASS,
 //          like the old "OK(35s)" (survived, splash just hadn't arrived)
 import { chromium } from "playwright-core";
@@ -54,6 +55,7 @@ async function runVariant(browser, tag, q) {
     await page.click("#btn-start");
   } catch (e) {
     console.log(`[${tag}] FAIL: page setup: ${String(e).slice(0, 200)}`);
+    process.exitCode = 1;
     return;
   }
 
@@ -70,18 +72,23 @@ async function runVariant(browser, tag, q) {
         try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch {}
         return {
           insns: g("_wasm_insns"), tbs: g("_wasm_tbs"), fb: g("_wasm_fb_updates"),
-          ser, status: document.querySelector("#status-text")?.textContent || "",
+          ser, ui: window.__ui ?? {},
         };
       })
       .catch((e) => ({ evalErr: String(e).slice(0, 150) }));
     const t = (Date.now() - t0) / 1000;
 
-    if (s.noModule || s.evalErr) continue; // module still loading
+    if (s.noModule || s.evalErr) {
+      // module still loading, or a page that does not answer
+      if (t >= TIMEOUT) { verdict = "FAIL"; detail = s.evalErr ?? "the emulator module never started"; }
+      continue;
+    }
     lastInsns = s.insns;
 
-    const exit = (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || "";
-    if (exit) { verdict = "FAIL"; detail = exit; }
-    else if (/exited/.test(s.status)) { verdict = "FAIL"; detail = `qemu exited (${s.status})`; }
+    const { ui } = s;
+    if (ui.exit) { verdict = "FAIL"; detail = `firmware EXIT ${[ui.exit.type, ui.exit.code].filter(Boolean).join(" ")}`; }
+    else if (ui.error) { verdict = "FAIL"; detail = ui.error; }
+    else if (ui.state === "idle" && ui.exitCode != null) { verdict = "FAIL"; detail = `qemu exited (${ui.exitCode})`; }
     else if (s.fb > PASS_FB) { verdict = "PASS"; detail = `splash fb=${s.fb}`; }
     else if (PASS_INSNS && s.insns >= PASS_INSNS) { verdict = "PASS"; detail = `insns=${fmtM(s.insns)}`; }
     else if (t >= TIMEOUT) { verdict = "TIMEOUT"; detail = `still running, insns=${fmtM(s.insns)} fb=${s.fb}`; }
