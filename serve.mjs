@@ -179,7 +179,8 @@ async function handler(req, res) {
 // the process: one malformed URL took the whole server down.
 function serve(req, res) {
   handler(req, res).catch((e) => {
-    if (!res.headersSent) res.writeHead(e instanceof URIError ? 400 : 500);
+    const bad = e instanceof URIError || e?.code === "ERR_INVALID_URL";
+    if (!res.headersSent) res.writeHead(bad ? 400 : 500);
     res.end();
   });
 }
@@ -211,17 +212,23 @@ if (httpsEnabled) {
 // The phone's GPRS goes to a GPRS gateway (bts-emulator's gprs-gw) over a
 // WebSocket at /gprs, as nginx passes it in the deployment.
 const [gwHost, gwPort] = (process.env.GPRS_GW || "127.0.0.1:5751").split(":");
+// An upgrade listener that throws ends the process (an upgrade to "//" did):
+// whatever goes wrong here only drops that connection.
 const proxyGprs = (req, socket, head) => {
-  if (new URL(req.url, "http://x").pathname !== "/gprs") return socket.destroy();
-  const gw = net.connect(Number(gwPort), gwHost, () => {
-    const headers = { ...req.headers, "x-forwarded-for": req.socket.remoteAddress };
-    gw.write(`GET /gprs HTTP/1.1\r\n` +
-      Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join("") + "\r\n");
-    gw.write(head);
-    socket.pipe(gw).pipe(socket);
-  });
-  gw.on("error", () => socket.destroy());
-  socket.on("error", () => gw.destroy());
+  try {
+    if (new URL(req.url, "http://x").pathname !== "/gprs") return socket.destroy();
+    const gw = net.connect(Number(gwPort), gwHost, () => {
+      const headers = { ...req.headers, "x-forwarded-for": req.socket.remoteAddress };
+      gw.write(`GET /gprs HTTP/1.1\r\n` +
+        Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join("") + "\r\n");
+      gw.write(head);
+      socket.pipe(gw).pipe(socket);
+    });
+    gw.on("error", () => socket.destroy());
+    socket.on("error", () => gw.destroy());
+  } catch {
+    socket.destroy();
+  }
 };
 
 const httpServer = http.createServer((req, res) => {
