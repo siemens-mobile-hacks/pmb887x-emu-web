@@ -53,7 +53,12 @@ gateway, `gprs-gw` (branch `gprs-gw` of
 - **The page.** `site/gprs-net.js` relays the cell's Ethernet frames over a
   WebSocket to the page's own `/gprs`, one frame a message, both ways. It
   looks at none of them. Under Advanced ▸ GSM network a caption says why
-  there is no Internet when the gateway refuses or cannot be reached.
+  there is no Internet when the gateway refuses or cannot be reached. A
+  link that closes (the gateway's 15-minute idle close, a restart) is
+  dialled again when the phone next sends a frame, after a backoff of 1 s
+  doubling to 30 s; after a refusal that may clear (4001, 4002, 4029) it
+  waits a minute, and after one that will not (4003 banned, 4004 quota,
+  4009 origin) it stays offline for the run.
 - **The gateway.** Every connection gets a slirp of its own
   (`gprs-gw/slirp-pipe.c`, libslirp), QEMU's `-netdev user`: the phone is
   10.0.2.15, its DNS 10.0.2.3. It runs in bts-emulator's network namespace,
