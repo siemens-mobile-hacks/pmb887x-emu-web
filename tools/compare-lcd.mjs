@@ -1,6 +1,8 @@
 // Boots ONLINE, soaks to the idle screen, then compares the live LCD canvas
 // against a reference LCD dump (tools/final-lcd.png) pixel-wise.
 //   PORT=8080 node compare-lcd.mjs [secs] [reference.png]
+// Exits 1 when more than MAX_DIFF percent of the pixels differ (default 5),
+// when the sizes do not match, or when the guest EXITed.
 import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
 import fs from "node:fs";
@@ -71,3 +73,5 @@ if (res.blocks) for (const b of res.blocks) console.log("|" + b + "|");
 console.log("exitSeen:", exitSeen);
 await page.screenshot({ path: "compare-lcd-live.png" });
 await browser.close();
+const maxDiff = Number(process.env.MAX_DIFF ?? 5);
+if (!res.pct || Number(res.pct) > maxDiff || exitSeen) process.exitCode = 1;
