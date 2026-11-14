@@ -23,7 +23,8 @@
 #                one).  Note lockstep-full runs its three comparisons
 #                with --par 3 internally, so it is worth ~3 slots and
 #                ~6 GB on its own -- it is not counted as such here.
-#   --only a,b   run just these jobs;  --skip a,b  drops them
+#   --only a,b   run just these jobs;  --skip a,b  drops them (a name that
+#                is no job of any tier exits 2)
 #   --list       print the jobs of each tier and exit
 #
 # Why this can be parallel at all: a gate asks whether the guest reaches a
@@ -123,6 +124,17 @@ gate_firefox() {
 }
 
 in_list() { case ",$2," in *,"$1",*) return 0 ;; *) return 1 ;; esac; }
+
+all_names=""
+for j in "${JOBS[@]}"; do
+  IFS='|' read -r name _rest <<<"$j"
+  all_names+="$name,"
+done
+IFS=, read -ra asked <<<"$ONLY,$SKIP"
+for name in "${asked[@]}"; do
+  [ -z "$name" ] || in_list "$name" "$all_names" ||
+    { echo "gate.sh: no job named '$name' (gate.sh --list prints them)" >&2; exit 2; }
+done
 
 if [ "$LIST" = 1 ]; then
   for t in quick keep close; do
