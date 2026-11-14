@@ -51,8 +51,13 @@ export async function startGateway({ dir = GATEWAY_DIR, run, listen = "127.0.0.1
   process.on("exit", stop);
   for (const sig of ["SIGINT", "SIGTERM"]) if (!process.listenerCount(sig)) process.once(sig, () => process.exit(1));
   gw.unref();
-  while (!fs.readFileSync(log, "utf8").includes("listening") && gw.exitCode == null)
+  const deadline = Date.now() + 60000;
+  while (!fs.readFileSync(log, "utf8").includes("listening") && gw.exitCode == null && Date.now() < deadline)
     await new Promise((r) => setTimeout(r, 100));
   if (gw.exitCode != null) throw new Error(`the gateway exited: ${fs.readFileSync(log, "utf8")}`);
+  if (!fs.readFileSync(log, "utf8").includes("listening")) {
+    stop();
+    throw new Error(`the gateway did not start listening within 60 s: ${fs.readFileSync(log, "utf8")}`);
+  }
   return { log, close() { process.off("exit", stop); stop(); } };
 }
