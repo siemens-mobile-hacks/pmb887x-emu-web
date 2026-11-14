@@ -10,7 +10,7 @@
 //     MCP `press_key` tool uses (converted to linux keycodes, which is what
 //     this qemu fork's input layer consumes).
 
-import { KBD_KEYBOARDS, DEFAULT_KEYBOARD, pickVariant, applyKbdLayout, tapTable } from "./keyboards.js";
+import { KBD_KEYBOARDS, DEFAULT_KEYBOARD, pickVariant, applyKbdLayout, tapTable, forDevice } from "./keyboards.js";
 import {
   PRESET_FULLFLASHES, SIDE_CAR_RE, inferDevice, detectDevice,
   cacheAvailable, entryCacheState, downloadEntry, deleteEntry, readCachedEntry,
@@ -3326,7 +3326,7 @@ function fillSelect(sel, entries, value) {
 // so the option is greyed out there rather than silently doing nothing.
 // On wherever there is a table, unless it was turned off.
 const typeChk = $("kbd-typing");
-let typing = { chars: new Map(), pause: 0 };
+let typing = { chars: new Map() };
 typeChk.checked = localStorage.getItem("kbd-typing") !== "0";
 typeChk.addEventListener("change", () => {
   localStorage.setItem("kbd-typing", typeChk.checked ? "1" : "0");
@@ -3389,11 +3389,12 @@ hintsChk.addEventListener("change", () => {
 
 /* ---- typing: a character becomes its digit key, pressed N times ---- */
 
-// Each tap is held and then let go for this long, and a character on the
-// key just used first waits out typing.pause. All of it is guest time: the
-// firmware times its multi-tap window on the guest clock, which falls behind
-// the wall clock on a slow host.
-const TAP_HOLD_MS = 100, TAP_GAP_MS = 100;
+// Each tap is held and then let go for as long as the phone needs
+// (keyboards.js *_TIMING), and a character on the key just used first waits
+// out its multi-tap timeout. All of it is guest time: the firmware times its
+// multi-tap window on the guest clock, which falls behind the wall clock on
+// a slow host.
+const tapTiming = () => forDevice(typing.timing, ranDevice ?? currentDevice());
 
 // Typed characters and the physical keys pressed among them, in order:
 // { key, count } is a character's taps, { keys, settle, after } a character's
@@ -3437,12 +3438,13 @@ async function pumpTyping() {
   if (typeBusy) return;
   typeBusy = true;
   const m = liveModule();
+  const { hold, gap, pause } = tapTiming();
   try {
     run: while (m && typeQueue.length) {
       const a = typeQueue.shift();
       if ("down" in a) {
         sendKey(a.key, a.down);
-        if (!(await guestWait(m, a.down ? TAP_HOLD_MS : TAP_GAP_MS))) break;
+        if (!(await guestWait(m, a.down ? hold : gap))) break;
         continue;
       }
       const { before, after } = casePresses(a, m);
@@ -3452,7 +3454,7 @@ async function pumpTyping() {
       // "ACC").
       const pending = before.length ? /^\d$/.test(lastRelease?.key) : lastRelease?.key === a.key;
       if ((a.count || before.length) && pending && lastRelease.m === m
-          && !(await guestWait(m, typing.pause, lastRelease.at))) break;
+          && !(await guestWait(m, pause, lastRelease.at))) break;
       // a phone that swallows the first key after a quiet spell (keyboards.js
       // LG_WAKE) gets a harmless one first
       const quiet = typing.wake && !(lastRelease?.m === m
@@ -3464,12 +3466,12 @@ async function pumpTyping() {
       const taken = keys.length - after.length - 1;
       for (let i = 0; i < keys.length; i++) {
         sendKey(keys[i], true);
-        if (!(await guestWait(m, TAP_HOLD_MS))) break run;
+        if (!(await guestWait(m, hold))) break run;
         sendKey(keys[i], false);
         const settle = i === opener ? a.settle ?? 0
           : i === keys.length - 1 ? a.after ?? 0
-          : i === taken && after.length ? typing.pause : 0;
-        if (!(await guestWait(m, TAP_GAP_MS + settle))) break run;
+          : i === taken && after.length ? pause : 0;
+        if (!(await guestWait(m, gap + settle))) break run;
       }
     }
   } finally {
@@ -3520,9 +3522,7 @@ const typingOwns = (e) => typeChk.checked && !typeChk.disabled && !!liveModule()
 function eraseKey(e) {
   if (e.code !== "Backspace" || e.ctrlKey || e.altKey || e.metaKey) return null;
   if (!typeChk.checked || typeChk.disabled || !liveModule()) return null;
-  const erase = typing.erase;
-  return typeof erase === "string" ? erase
-    : erase?.[ranDevice ?? currentDevice()] ?? erase?.default ?? null;
+  return forDevice(typing.erase, ranDevice ?? currentDevice()) ?? null;
 }
 
 // Fields that take text keep their keys. A checkbox does not take any, and

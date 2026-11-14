@@ -422,6 +422,30 @@ const SIEMENS_ERASE = {
   ...Object.fromEntries(SIEMENS_X65.map((dev) => [dev, "left_soft"])),
 };
 
+// How fast typing taps, in guest ms: each tap is held `hold` and let go for
+// `gap`, and a character on the key just used waits `pause` after the last
+// release, the multi-tap timeout after which the firmware takes the letter.
+// Measured per phone by typing the same text over and over at shorter and
+// shorter times (doc/lessons.md); the values keep a margin over the
+// shortest that never failed. The x75 Siemens miss taps that come quicker
+// than ~70 ms apart (S75, C81, EL71: 40+30 typed, 40+20 lost taps), the x65
+// ones and the LGs took 15+15. Timeouts: x75 and KE800 0.9-1.0 s, CX70 and
+// SL65 0.7-0.8 s, KE970 0.6-0.7 s. A Siemens device not known to be x65
+// gets the slower x75 times.
+const SIEMENS_X75_TIMING = { hold: 60, gap: 40, pause: 1100 };
+const SIEMENS_X65_TIMING = { hold: 30, gap: 30, pause: 900 };
+const SIEMENS_TIMING = {
+  default: SIEMENS_X75_TIMING,
+  ...Object.fromEntries(SIEMENS_X65.map((dev) => [dev, SIEMENS_X65_TIMING])),
+};
+
+// a per-device keyboard setting (erase, timing): the device's own, else the
+// default; a setting that is not per device is the same for all
+export function forDevice(setting, dev) {
+  return setting && typeof setting === "object" && "default" in setting
+    ? setting[dev] ?? setting.default : setting;
+}
+
 // Capital letters. Siemens: # once in lower case gives a capital for one
 // letter. After it the indicator shows abc again but # goes on to ABC, and
 // a non-letter (a space) ends that, so a # then gives one capital again;
@@ -439,6 +463,11 @@ const SIEMENS_UPPER = {
 // ABc Ok"). The presses after wait for the letter to be taken, as a # on a
 // pending letter changes the letter instead.
 const LG_UPPER = { before: ["hash"], after: ["hash", "hash", "hash"] };
+// The KE970 goes through its T9 modes on the way, ABC -> T9 Abc -> T9 abc
+// -> T9 ABC -> 123 -> Abc -> abc, and with the capital just typed beside the
+// cursor that takes one press more than the six it shows, however slowly
+// they come: typed through the page, 6 stopped in Abc and 8 in ABC.
+const KE970_UPPER = { before: ["hash"], after: Array(7).fill("hash") };
 
 // a "keyboard" = a board + one variant per letter set engraved on it; a
 // variant carries the sub-labels (keyed by data-key) printed under the
@@ -446,15 +475,11 @@ const LG_UPPER = { before: ["hash"], after: ["hash", "hash", "hash"] };
 // with. Add a variant here — or a whole new keyboard, with its own board
 // when the phone's keys/arrangement differ — and the two dropdowns pick it
 // up automatically. The first variant of a keyboard is its default.
-// tapPause is the keyboard's multi-tap timeout in guest ms: how long the
-// firmware waits after a tap before it takes the letter and a new tap on the
-// same key starts the next one. Measured from the release, with some margin:
-// S75 and SL65 ~0.8 s, EL71 ~1 s, KE970 ~0.6 s.
 export const KBD_KEYBOARDS = {
   siemens: {
     name: "Siemens Generic",
     board: "generic",
-    tapPause: 1400,
+    timing: SIEMENS_TIMING,
     picker: SIEMENS_PICKER_X65,
     erase: SIEMENS_ERASE,
     upper: SIEMENS_UPPER,
@@ -465,7 +490,7 @@ export const KBD_KEYBOARDS = {
   s75: {
     name: "Siemens S75",
     board: "s75",
-    tapPause: 1400,
+    timing: SIEMENS_X75_TIMING,
     picker: SIEMENS_PICKER_X75,
     erase: "right_soft",
     upper: SIEMENS_UPPER,
@@ -476,7 +501,7 @@ export const KBD_KEYBOARDS = {
   ke800: {
     name: "LG KE800",
     board: "ke800",
-    tapPause: 1000,
+    timing: { hold: 30, gap: 30, pause: 1100 },
     picker: LG_PICKER,
     wake: LG_WAKE,
     erase: "clear",
@@ -491,11 +516,11 @@ export const KBD_KEYBOARDS = {
   ke970: {
     name: "LG KE970",
     board: "ke970",
-    tapPause: 1000,
+    timing: { hold: 30, gap: 30, pause: 800 },
     picker: LG_PICKER,
     wake: LG_WAKE,
     erase: "clear",
-    upper: LG_UPPER,
+    upper: KE970_UPPER,
     variants: {
       en: {
         name: "English",
@@ -517,7 +542,7 @@ export function pickVariant(keyboardId, variantId) {
 
 // What typing a character on the computer's keyboard presses on the phone,
 // for a keyboard + variant: char -> { key, count } (press `key` `count`
-// times), plus the keyboard's tapPause. A variant's taps maps a key to the
+// times), plus the keyboard's timing. A variant's taps maps a key to the
 // characters it cycles through, in the firmware's order; a key whose cycle
 // depends on the phone's input language gives one string per language, and
 // a character counts from the one it comes earliest in — the language it is
@@ -526,8 +551,9 @@ export function pickVariant(keyboardId, variantId) {
 // cycle but in the keyboard's picker maps to { keys, settle, after }
 // instead: those keys, one press each, waiting settle ms once the first has
 // opened the picker and after ms once the last has closed it. erase is the
-// keyboard's erase key: a key name, or one per device with a default, and
-// upper the presses around a capital letter's taps. The lookup is by lower
+// keyboard's erase key and timing its tap times, each the same for every
+// device or one per device with a default (forDevice), and upper the
+// presses around a capital letter's taps. The lookup is by lower
 // case; a capital is a letter whose lower case is on a cycle.
 export function tapTable(keyboardId, variantId) {
   const id = keyboardId in KBD_KEYBOARDS ? keyboardId : DEFAULT_KEYBOARD;
@@ -547,7 +573,7 @@ export function tapTable(keyboardId, variantId) {
       chars.set(ch, { keys: pickerPresses(picker, ch), settle: picker.settle ?? 0, after: picker.after ?? 0 });
     }
   }
-  return { chars, pause: kbd.tapPause, wake: kbd.wake, erase: kbd.erase, upper: kbd.upper };
+  return { chars, timing: kbd.timing, wake: kbd.wake, erase: kbd.erase, upper: kbd.upper };
 }
 
 function keyButton(def, sub) {

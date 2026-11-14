@@ -577,3 +577,32 @@ The binding method is in performance.md. These are the traps behind it.
   tapped key's whole cycle in a bar along the bottom; an LG one shows
   none, so tap the key 1, 2, 3… times with a tap of another key between
   the groups and read the text.
+- **Tap speed is per phone, and the thresholds are sharp.** Typing the same
+  two strings ("szvo lif yr", all different keys; "cab ba ll", same-key
+  letters) over and over through `_wasm_send_key`, erasing between runs and
+  comparing a hash of the LCD's text area with a slow reference, gives
+  all-pass or all-fail per setting (2–3 runs each, 2026-11-13). Hold × gap:
+  the x75 Siemens (S75, C81, EL71) lose taps that come less than ~70 ms
+  apart (60+10 and 40+30 type, 40+20 does not), while the x65 ones (SL65,
+  CX70) and both LGs still type at 15+15. Multi-tap timeout, from the
+  release: x75 and KE800 0.9–1.0 s, SL65 and CX70 0.7–0.8 s, KE970
+  0.6–0.7 s. The S75's had been put at ~0.8 s by eye, which was wrong. A
+  key that takes the pending letter at once would beat the timeout, but
+  joystick right is not one: at the end of the text the S75 and the LGs
+  add a space with it, and in the middle of the text the EL71 and C81
+  take the letter and step over the next one. The harness is plain:
+  hash only the rows below the title bar (counters and case indicators
+  change after a run), erase by count after a passing run, and keep the
+  phone busy, as a Siemens editor left alone for ~3 minutes falls back to
+  idle.
+- The EL71 and C81 end in a firmware EXIT in `modeman_sm` (code 0x0009)
+  when the red key is pressed at idle; the CX70 ends in `camera_asic`
+  when joystick left opens the camera there. Neither is the typing's
+  doing; tools should not press those keys at idle.
+- The KE970's `#` goes abc → ABC → T9 Abc → T9 abc → T9 ABC → 123 → Abc →
+  abc, unlike the KE800's, and right after a capital one more press than
+  that is needed to get back to abc (7, typed through the page). Every
+  phone opens a new message in sentence case (Abc), and the KE970 goes back
+  to it after "! "; the page's case tracking takes the phone to be in lower
+  case, so a capital typed there comes out wrong (Siemens x75: `#` lands in
+  123 and the letters become digits).

@@ -269,8 +269,19 @@ ok("3.1 capitals and erase", await page.evaluate(async () => {
   const s75 = tapTable("s75", "en"), ke = tapTable("ke800", "en"), gen = tapTable("siemens", "en");
   return s75.upper.capital.lower.join() === "hash" && s75.upper.small.caps.join() === "hash"
     && ke.upper.before.join() === "hash" && ke.upper.after.join() === "hash,hash,hash"
+    && tapTable("ke970", "en").upper.after.length === 7
     && s75.erase === "right_soft" && ke.erase === "clear"
     && gen.erase["siemens-sl65"] === "left_soft" && gen.erase.default === "right_soft";
+}));
+// tap speed is the phone's own: the generic Siemens keyboard goes by the
+// device (x65 quicker than x75, and an unknown one gets the slower x75)
+ok("3.1 tap timing per phone", await page.evaluate(async () => {
+  const { tapTable, forDevice } = await import("./keyboards.js");
+  const t = (kbd, dev) => { const x = forDevice(tapTable(kbd, "en").timing, dev); return `${x.hold}/${x.gap}/${x.pause}`; };
+  return t("siemens", "siemens-sl65") === "30/30/900" && t("siemens", "siemens-el71") === "60/40/1100"
+    && t("siemens", "siemens-pmb8876") === "60/40/1100" && t("s75", "siemens-s75") === "60/40/1100"
+    && t("ke800", "lg-ke800") === "30/30/1100" && t("ke970", "lg-ke970") === "30/30/800"
+    && forDevice(tapTable("siemens", "en").erase, "siemens-cx70") === "left_soft";
 }));
 ok("3.1 HUD label has no parenthetical, tooltip instead", await page.$eval("#opt-hud", (e) =>
   e.parentElement.textContent.trim() === "Performance HUD" && !!e.parentElement.title));

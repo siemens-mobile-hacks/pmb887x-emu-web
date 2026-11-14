@@ -38,7 +38,12 @@ symbol picker; a capital is typed with the phone's `#` case key, and
 Backspace presses the phone's erase key. While typing is on, `-` `=` `/` and `` ` `` type their
 characters; volume, `#` and `*` stay on the numpad. The tables and pickers
 are read off the firmware and kept with the keypads in `site/keyboards.js`,
-per keyboard and language. The phone itself is the same view everywhere and
+per keyboard and language, along with how fast each phone takes taps
+(measured per phone: the x65 Siemens and the LGs take a tap every 60 ms, the
+x75 Siemens every 100 ms, and the multi-tap timeout runs 0.7–1 s). A capital
+assumes the phone is in lower case; where the phone capitalises by itself
+(the start of a new message, and on the KE970 after "! "), type that letter
+in lower case. The phone itself is the same view everywhere and
 fills whatever it is given: the screen takes the board's own aspect ratio and
 the keypad scales with it, on a phone and on a desktop alike. From 900px wide
 the two panels flank it; below that they are bottom sheets, and a window that
