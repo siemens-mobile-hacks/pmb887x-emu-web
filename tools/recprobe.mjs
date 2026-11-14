@@ -8,7 +8,7 @@
 // Needs ffmpeg/ffprobe on PATH.  Exit 0 iff the file has a video and an
 // audio stream and the audio is not silence.
 import { chromium } from "playwright-core";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,8 +68,8 @@ try {
   let maxDb = null;
   if (hasAudio) {
     // volumedetect reports on stderr
-    const r = execFileSync("sh", ["-c", `ffmpeg -hide_banner -nostats -i "${file}" -map 0:a -af volumedetect -f null - 2>&1`],
-      { encoding: "utf8" });
+    const r = spawnSync("ffmpeg", ["-hide_banner", "-nostats", "-i", file, "-map", "0:a", "-af", "volumedetect", "-f", "null", "-"],
+      { encoding: "utf8" }).stderr ?? "";
     const max = /max_volume: (-?[\d.]+) dB/.exec(r), mean = /mean_volume: (-?[\d.]+) dB/.exec(r);
     maxDb = max ? Number(max[1]) : null;
     console.log(`[recprobe] audio mean=${mean?.[1]} dB max=${max?.[1]} dB`);
