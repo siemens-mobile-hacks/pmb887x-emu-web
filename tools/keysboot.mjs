@@ -44,9 +44,11 @@ for (const mode of modes) {
 
   await page.click("#ff-mode-own");
   await page.setInputFiles("#fullflash", flash);
-  await page.waitForTimeout(400);
+  // the page names the device from the image asynchronously (an LG image is
+  // read whole) and __ui.ready turns true once it has one; an image it
+  // cannot name never gets there, and --device settles that
+  await page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 }).catch(() => {});
   if (device) await page.selectOption("#device", device);
-  await page.waitForTimeout(200);
 
   const dev = await page.$eval("#device", (e) => e.value);
   if (!dev.startsWith("siemens-")) {
