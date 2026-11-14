@@ -7,9 +7,10 @@
  *                                       known words {r1-r3, r12}
  *   blk_stm8(base)                   -> 8 words {r2-r9}, r0 = new base
  *   blk_ldm4_<mode>(src, res)        -> res[0..3] loaded, res[4] = new base
- *   blk_ldm8(src, res)               -> res[0..7] loaded, res[8] = new base
+ *   blk_ldm8(res, src)               -> res[0..7] loaded, res[8] = new base
  *   blk_ldrd[_off|_wb](addr, res)    -> res[0..1] loaded (off/wb variants)
- *   blk_strd[_wb](addr, lo, hi)      -> stores the pair (+8 writeback)
+ *   blk_strd[_wb](addr, lo, hi)      -> hi at addr+4, lo at addr+8; _wb
+ *                                       returns the written-back addr+4
  *   op_swp(addr, newval)             -> returns old, stores new
  *   op_swpb(addr, newval)            -> byte form */
 .syntax unified
@@ -164,9 +165,9 @@ blk_strd:                            @ r0 = addr, r1 = lo, r2 = hi
     bx    lr
 
 .global blk_strd_wb
-blk_strd_wb:                         @ r0 = addr, r1 = lo, r2 = hi; r0 <- +8
+blk_strd_wb:                         @ r0 = addr, r1 = lo, r2 = hi; r0 <- +4
     mov   r3, r1
-    strd  r2, r3, [r0, #4]!          @ pair at addr+4, base <- addr+8
+    strd  r2, r3, [r0, #4]!          @ pair at addr+4, base <- addr+4
     bx    lr
 
 .global op_swp
