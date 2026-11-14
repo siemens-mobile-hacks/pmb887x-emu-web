@@ -215,7 +215,9 @@ try {
     else {
       let best = 0;
       for (const w of perWorker) {
-        const busy = w.sum - (w.totals.get("emscripten_futex_wait jit/qemu-system-arm.wasm") || 0) - (w.totals.get("(idle) ") || 0);
+        let busy = w.sum;
+        for (const [k, v] of w.totals)
+          if (k.startsWith("emscripten_futex_wait ") || k === "(idle) ") busy -= v;
         if (busy > best) { best = busy; pick = w.idx; }
       }
     }
