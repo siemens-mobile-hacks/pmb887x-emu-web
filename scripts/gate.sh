@@ -15,7 +15,9 @@
 # / 904 s, boot-ordered 753 s.
 #
 #   --dist D     dist under site/ to gate (default dist-jit)
-#   --port P     server port for the browser gates (default 8080)
+#   --port P     server port for the browser gates (default 8080).  opsuite
+#                starts a server of its own on P+13 (8093 by default), so
+#                gates that run at the same time need ports 14 or more apart
 #   --jobs N     max concurrent jobs (default 6; each browser gate peaks
 #                around 2 GB RSS, so this is a memory bound, not a CPU
 #                one).  Note lockstep-full runs its three comparisons
@@ -56,6 +58,9 @@ while [ $# -gt 0 ]; do
     *) echo "gate.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
+[[ "$PORT" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$PORT" -le 65522 ] ||
+  { echo "gate.sh: --port must be 1..65522, not '$PORT'" >&2; exit 2; }
+PORT_TCG=$((PORT + 13))
 # bootcheck and earlykey take the server from the environment only
 export PORT
 
@@ -75,7 +80,7 @@ export PORT
 # throttle does not reach the guest's workers.
 JOBS=(
   "unit|quick keep close|no|node --test '$ROOT'/tests/unit/*.test.mjs"
-  "opsuite|quick keep close|no|WASM=1 TCGISA_DIST=$DIST bash '$ROOT/scripts/run-tcg-isa.sh'"
+  "opsuite|quick keep close|no|PORT_TCG=$PORT_TCG WASM=1 TCGISA_DIST=$DIST bash '$ROOT/scripts/run-tcg-isa.sh'"
   "boot-s75|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash s75"
   "boot-el71|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash el71"
   "boot-ke800|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke800"

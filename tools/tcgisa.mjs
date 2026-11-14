@@ -2,9 +2,10 @@
 //
 //   node tcgisa.mjs [port] [dist] [outfile] [ENV=VAL ...]
 //
-// The suite *image* always comes from site/dist/tcgisa.bin; the *engine*
-// is whichever dist the page is pointed at (`dist-jit`, the wasm64
-// backend, by default).  scripts/run-tcg-isa.sh's wasm leg runs this.
+// The suite *image* comes from site/dist/tcgisa.bin, or TCGISA_IMAGE (a
+// path under site/); the *engine* is whichever dist the page is pointed
+// at (`dist-jit`, the wasm64 backend, by default).
+// scripts/run-tcg-isa.sh's wasm leg runs this, with an image of its own.
 //
 // The suite boots -M versatilepb, prints TAP + value dumps into
 // /serial.log and then parks: the wasm pthread runtime cannot take the
@@ -26,6 +27,7 @@ const port = process.argv[2] || "8080";
 const dist = process.argv[3] || "dist-jit";
 const outFile = process.argv[4] || null;
 const envs = process.argv.slice(5);
+const image = process.env.TCGISA_IMAGE || "dist/tcgisa.bin";
 // The suite runs in well under a minute per backend; a longer wait only
 // means a hang, and a gate that waits ten minutes for one gets skipped.
 const timeoutMs = Number(process.env.TCGISA_TIMEOUT || 180) * 1000;
@@ -55,7 +57,7 @@ page.on("pageerror", (e) => {
   if (/RuntimeError|Aborted\(|out of memory/i.test(s)) fatal ??= s.slice(0, 200);
 });
 
-await page.goto(`http://127.0.0.1:${port}/?suite=dist/tcgisa.bin&dist=${dist}${envQ}${extraQ}`,
+await page.goto(`http://127.0.0.1:${port}/?suite=${image}&dist=${dist}${envQ}${extraQ}`,
                 { waitUntil: "networkidle", timeout: 120000 });
 
 let serial = "";
