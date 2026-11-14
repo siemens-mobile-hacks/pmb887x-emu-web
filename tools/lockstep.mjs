@@ -213,6 +213,7 @@ export async function runPair(args, flash, dir, stopAtInsns, log) {
 
   const t0 = Date.now();
   let warned = false;
+  let timedOut = false;
   const throttled = { a: false, b: false };
   for (;;) {
     a.poll(); b.poll();
@@ -234,12 +235,17 @@ export async function runPair(args, flash, dir, stopAtInsns, log) {
     if (a.progress.insns >= stopAtInsns && b.progress.insns >= stopAtInsns) break;
     if (Date.now() - t0 > args.secs * 1000) {
       log(`!! wall timeout ${args.secs}s (a insns=${a.progress.insns}, b insns=${b.progress.insns})`);
+      timedOut = true;
       break;
     }
     await sleep(500);
   }
-  const reasons = [a.dead ? `a exited(${a.exitCode})` : null,
-                   b.dead ? `b exited(${b.exitCode})` : null].filter(Boolean);
+  const reasons = [timedOut ? `wall timeout ${args.secs}s` : null,
+                   a.dead ? `a exited(${a.exitCode})` : null,
+                   b.dead ? `b exited(${b.exitCode})` : null,
+                   ...[a, b].filter((s) => s.progress.insns < stopAtInsns)
+                     .map((s) => `${s.name} stopped at ${fmt(s.progress.insns)} insns, short of ${fmt(stopAtInsns)}`),
+  ].filter(Boolean);
   await a.quit("budget");
   await b.quit("budget");
   return { a, b, reasons, wallS: (Date.now() - t0) / 1000 };
@@ -403,6 +409,10 @@ export function claimRunStamp(label) {
   }
 }
 
+function cleanRun(r) {
+  return !r.cmp.diverged && r.cmp.commonEpochs > 0 && r.serialIdentical === true && !r.earlyExit.length;
+}
+
 // --- main ----------------------------------------------------------------------
 export async function main() {
   const args = parseArgs();
@@ -462,7 +472,18 @@ export async function main() {
                      diverged: cmp.diverged && { ...cmp.diverged, lineA: undefined, lineB: undefined } };
       log(`   a: ${fmt(a.progress.insns)} insns / epoch ${a.progress.epoch}` +
           `   b: ${fmt(b.progress.insns)} insns / epoch ${b.progress.epoch}` +
-          `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical" : "DIFFERS"}`);
+          `   wall ${wallS.toFixed(0)}s   serial ${runRes.serialIdentical ? "identical"
+            : runRes.serialIdentical === false ? "DIFFERS" : "UNREADABLE"}`);
+      if (runRes.serialIdentical !== true) {
+        fail = true;
+        log(runRes.serialIdentical === false
+          ? `!! SERIAL DIVERGENCE run ${r + 1}: the two sides' serial output differs`
+          : `!! run ${r + 1}: a side's serial log could not be read, so serial was not compared`);
+      }
+      if (reasons.length) {
+        fail = true;
+        log(`!! run ${r + 1} did not run the whole budget: ${reasons.join("; ")}`);
+      }
       if (cmp.diverged) {
         fail = true;
         log(`!! DIVERGENCE run ${r + 1}: ${cmp.diverged.kind}` +
@@ -481,7 +502,7 @@ export async function main() {
         log(`!! no comparable epochs (plugin output missing?) — ${dir}`);
         log(`   a stderr tail: ${(a.errTail || "").split("\n").slice(-5).join("\n")}`);
         log(`   b stderr tail: ${(b.errTail || "").split("\n").slice(-5).join("\n")}`);
-      } else {
+      } else if (runRes.serialIdentical === true && !reasons.length) {
         log(`   clean: ${cmp.commonEpochs} epochs + ${cmp.commonMem} mem digests identical` +
             `${cmp.truncated ? " (tail truncated by stop point)" : ""}`);
       }
@@ -498,13 +519,13 @@ export async function main() {
     aBin: args.aBin, bBin: args.self ? args.aBin : args.bBin,
     insns: args.insns, period: args.period, epoch: args.epoch,
     meminsns: args.meminsns, mem: args.mem,
-    runs: results.length, clean: results.filter((r) => !r.cmp.diverged).length,
+    runs: results.length, clean: results.filter(cleanRun).length,
     results,
   };
   const resFile = path.join(ROOT, "tests", "results", `lockstep-${args.label}-${stamp}.json`);
   fs.mkdirSync(path.dirname(resFile), { recursive: true });
   fs.writeFileSync(resFile, JSON.stringify(summary, null, 1) + "\n");
-  log(`== ${results.filter((r) => !r.cmp.diverged).length}/${results.length} runs clean; results: ${resFile}`);
+  log(`== ${results.filter(cleanRun).length}/${results.length} runs clean; results: ${resFile}`);
   log(`== run dirs under ${baseDir} (tmp — remove when done)`);
 
   return fail ? 1 : 0;
