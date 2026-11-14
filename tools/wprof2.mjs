@@ -80,12 +80,18 @@ try {
   const profiles = []; // one Profiler.stop result per worker session
   const labels = [];   // and the thread it came from
   const attached = [];
-  function send(method, params = {}, sessionId) {
+  function send(method, params = {}, sessionId, timeoutMs = 30000) {
     const id = nextId++;
     const msg = { id, method, params };
     if (sessionId) msg.sessionId = sessionId;
     ws.send(JSON.stringify(msg));
-    return new Promise((res) => handlers.set(id, res));
+    return new Promise((res, rej) => {
+      const timer = setTimeout(() => {
+        handlers.delete(id);
+        rej(new Error(`${method} timed out after ${timeoutMs / 1000} s`));
+      }, timeoutMs);
+      handlers.set(id, (m) => { clearTimeout(timer); res(m); });
+    });
   }
   ws.on("message", (d) => {
     const m = JSON.parse(d.toString());
@@ -111,25 +117,23 @@ try {
   }
   // profile the page main thread too (the client-side glue: rAF LCD paint,
   // serial poll, console handlers)
-  const sendT = (cmd, params, sid) => Promise.race([
-    send(cmd, params, sid), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 5000))]);
-  try {
-    await sendT("Profiler.enable", {}, pageSession);
-    await sendT("Profiler.setSamplingInterval", { interval: sampleUs }, pageSession);
-    await sendT("Profiler.start", {}, pageSession);
-    sessions.push({ sid: pageSession, label: "page main thread" });
-  } catch (e) { console.log("(page main thread unresponsive: " + e.message.slice(0,60) + ")"); }
-  for (const [k, w] of workers.entries()) {
-    const sid = w.sessionId;
-    await send("Profiler.enable", {}, sid);
-    await send("Profiler.setSamplingInterval", { interval: sampleUs }, sid);
-    await send("Profiler.start", {}, sid);
-    sessions.push({ sid, label: "worker #" + k });
-  }
+  const startProfiler = async (sid, label, ms) => {
+    try {
+      await send("Profiler.enable", {}, sid, ms);
+      await send("Profiler.setSamplingInterval", { interval: sampleUs }, sid, ms);
+      await send("Profiler.start", {}, sid, ms);
+      sessions.push({ sid, label });
+    } catch (e) { console.log("(" + label + " unresponsive: " + e.message.slice(0, 60) + ")"); }
+  };
+  await startProfiler(pageSession, "page main thread", 5000);
+  for (const [k, w] of workers.entries()) await startProfiler(w.sessionId, "worker #" + k, 30000);
   console.log("profiling " + sessions.length + " session(s) for " + secs + "s @ " + sampleUs + "us...");
   await new Promise((r) => setTimeout(r, secs * 1000));
   for (const { sid, label } of sessions) {
-    const st = await send("Profiler.stop", {}, sid);
+    const st = await send("Profiler.stop", {}, sid, 60000).catch((e) => {
+      console.log("(" + label + ": " + e.message + ")");
+      return {};
+    });
     if (st.result && st.result.profile) { profiles.push(st.result.profile); labels.push(label); }
   }
 
