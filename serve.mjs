@@ -90,7 +90,14 @@ function ensureCert() {
   return { key: readFileSync(keyPath), cert: readFileSync(certPath) };
 }
 
-const isLoopback = (addr) => !addr || /^(127\.|::1$|::ffff:127\.)/.test(addr);
+const isLoopbackAddr = (addr) => !addr || /^(127\.|::1$|::ffff:127\.)/.test(addr);
+// A Host the browser treats as a secure context over plain http: localhost,
+// its subdomains, 127/8 and [::1]. Behind a port mapping (Docker) the
+// socket's peer is the bridge, so the name the browser used is what counts.
+function isLoopbackHost(host) {
+  const name = host.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  return name === "localhost" || name.endsWith(".localhost") || /^127\./.test(name) || name === "::1";
+}
 
 // The ~12 MB wasm dominates page-load time on slow links (phone/LAN use),
 // so keep a pre-gzip'd sidecar next to it (~4 MB, ~3x smaller) and
@@ -236,7 +243,7 @@ function etagOf(st) {
 
 const redirectNonLoopbackToHttps = (req, res) => {
   const host = (req.headers.host || "").replace(/:\d+$/, "");
-  if (host && !isLoopback(req.socket.remoteAddress) && !isLoopback(host)) {
+  if (host && !isLoopbackAddr(req.socket.remoteAddress) && !isLoopbackHost(host)) {
     res.writeHead(302, { location: `https://${host}:${httpsPort}${req.url}` });
     res.end();
     return true;
