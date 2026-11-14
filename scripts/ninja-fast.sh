@@ -95,20 +95,7 @@ if [ "${NO_DEPLOY:-0}" = "1" ]; then
   exit 0
 fi
 
-mkdir -p "$DIST"
-for f in qemu-system-arm.js qemu-system-arm.wasm qemu-system-arm.worker.js qemu-system-arm.wasm.map qemu-system-arm.js.symbols; do
-  [ -f "$f" ] && cp -f "$f" "$DIST/"
-done
-rm -f "$DIST/qemu-system-arm.wasm.gz" "$DIST/qemu-system-arm.js.gz"
-# what tools/lockstep-wasm.mjs matches the native reference against
-echo "$SRC_ID" > "$DIST/qemu-source.txt"
-# board configs live outside the ninja graph (build/bsp), and the page always
-# reads site/dist/boards.tar — repack on every deploy so iterating here can
-# never run a fresh qemu against yesterday's board configs
-bash "$WEB_DIR/scripts/pack-boards.sh"
-# likewise the Siemens key module: it comes from the pmb887x-emu submodule,
-# so a qemu-only rebuild would otherwise leave an old one next to a new dist
-bash "$WEB_DIR/scripts/build-recalc-wasm.sh"
+bash "$WEB_DIR/scripts/deploy-dist.sh" "$BUILD_DIR" "$DIST" "$SRC_ID"
 if [ "${GZ:-0}" = "1" ] && command -v gzip >/dev/null; then
   gzip -9 -k "$DIST/qemu-system-arm.wasm"
 fi
