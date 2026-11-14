@@ -1,12 +1,8 @@
 /* msr/mrs flag round-trips (cpu-context moves) + CPSR mode sanity.
- * The full-CPSR capture line doubles as the cross-backend canary: the
- * dump prints the whole masked CPSR, so any I/F/E/T divergence between
- * backends shows up in the byte-diff even though the assert only covers
- * mode + the NZCV round-trip. */
+ * psr/full asserts the whole CPSR below the flags, so an I/F/E/T/A
+ * divergence fails on every backend, not only in the byte-diff. */
 #include "harness.h"
 #include "ops.h"
-
-static uint32_t psr_ref;
 
 static uint32_t op_msr_mrs(uint32_t f4)
 {
@@ -66,16 +62,10 @@ void t_psr(void)
         check_v("psr/tbit", (cpsr >> 5) & 1u, 0u);
     }
 
-    /* full CPSR: first read captured as the reference, later reads must
-     * be identical (flags zeroed by the last round-trip above) */
-    {
-        uint32_t full = ops_get_cpsr();
-
-        if (psr_ref == 0) {
-            psr_ref = full & 0x0FFFFFFFu;
-        }
-        check_v("psr/full", full & 0x0FFFFFFFu, psr_ref);
-    }
+    /* full CPSR below the flags: SVC, I and F masked, ARM state from the
+     * startup's `msr cpsr_c, #0xd3`, plus the A bit (0x100) that qemu sets
+     * at reset and the control-byte write leaves alone */
+    check_v("psr/full", ops_get_cpsr() & 0x0FFFFFFFu, 0x1d3u);
 
     t_psr_bank();
 }
