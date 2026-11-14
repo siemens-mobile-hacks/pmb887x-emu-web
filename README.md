@@ -179,7 +179,8 @@ env: `BOARD= STARTUP= SIM= OPERATOR= IMEI= ESN= EFA_FILE=`
 `RW=1 DISPLAY_MODE=vnc=[:N] MONITOR=unix:/tmp/pmb.sock SERIAL=path`,
 extra qemu args as positional args. Headless by default, the flash is
 opened read-only unless `RW=1`, the monitor is on stdio and the serial log
-lands in a new `/tmp/pmb887x-serial.XXXXXX.log` per run (printed at start).
+lands in a new `/tmp/pmb887x-serial.XXXXXX.log` per run (printed at start),
+removed when qemu exits; `SERIAL=path` keeps it.
 
 `build-native.sh` builds `qemu/` as it is checked out — the same tree the
 wasm builds compile — and writes `qemu-source.txt` (HEAD plus a hash of

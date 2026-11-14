@@ -18,8 +18,9 @@
 #   EFA_FILE=path        explicit EFA block for FLASH0 (default: derived
 #                        as <fullflash>.cfi-efa, e.g. the LG EEPROM block)
 #   DISPLAY_MODE=none    none | vnc=[:display] | sdl | gtk
-#   SERIAL=path          serial log file     (default: a new
-#                        $TMPDIR/pmb887x-serial.XXXXXX.log per run)
+#   SERIAL=path          serial log file, kept (default: a new
+#                        $TMPDIR/pmb887x-serial.XXXXXX.log per run, removed
+#                        when qemu exits)
 #   MONITOR=stdio        stdio | unix:path | none
 #   ICOUNT=<spec>        -icount value; "none" omits it, "vt" runs the web
 #                        page's vcpu-timers clock instead (default
@@ -56,7 +57,11 @@ STARTUP="${STARTUP:-ONLINE}"
 SIM="${SIM:-virtual}"
 OPERATOR="${OPERATOR:-00101}"
 DISPLAY_MODE="${DISPLAY_MODE:-none}"
-SERIAL="${SERIAL:-$(mktemp --suffix=.log "${TMPDIR:-/tmp}/pmb887x-serial.XXXXXX")}"
+SERIAL_TMP=""
+if [ -z "${SERIAL:-}" ]; then
+  SERIAL="$(mktemp --suffix=.log "${TMPDIR:-/tmp}/pmb887x-serial.XXXXXX")"
+  SERIAL_TMP="$SERIAL"
+fi
 MONITOR="${MONITOR:-stdio}"
 # Timing model: an instruction-driven virtual clock — stock icount, fixed
 # shift, deterministic sleep=off — for every board.
@@ -122,12 +127,31 @@ elif [ "$ICOUNT" != "none" ]; then
 fi
 
 : > "$SERIAL"
-exec "$QEMU" \
-  -machine pmb887x \
-  "${ICOUNT_ARGS[@]}" \
-  -display "$DISPLAY_MODE" \
-  -drive "if=pflash,format=raw,file=$FLASH${READONLY:+,$READONLY}" \
-  -serial "file:$SERIAL" \
-  -monitor "$MONITOR" \
-  "${SIM_ARGS[@]}" \
+QEMU_ARGS=(
+  -machine pmb887x
+  "${ICOUNT_ARGS[@]}"
+  -display "$DISPLAY_MODE"
+  -drive "if=pflash,format=raw,file=$FLASH${READONLY:+,$READONLY}"
+  -serial "file:$SERIAL"
+  -monitor "$MONITOR"
+  "${SIM_ARGS[@]}"
   "$@"
+)
+# the tools pass SERIAL and signal this pid as qemu's
+[ -n "$SERIAL_TMP" ] || exec "$QEMU" "${QEMU_ARGS[@]}"
+
+# The log is this script's own: qemu runs as a child so that the log can go
+# when it ends.  It is a background job only so that a signal reaches the
+# traps at once; it keeps the terminal (-monitor stdio).
+"$QEMU" "${QEMU_ARGS[@]}" <&0 &
+QPID=$!
+trap 'rm -f "$SERIAL_TMP"' EXIT
+trap 'kill "$QPID" 2>/dev/null' INT TERM HUP
+rc=0
+wait "$QPID" || rc=$?
+# a signal ends the first wait early; qemu has been told to stop by then
+if kill -0 "$QPID" 2>/dev/null; then
+  rc=0
+  wait "$QPID" || rc=$?
+fi
+exit "$rc"
