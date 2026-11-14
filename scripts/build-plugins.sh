@@ -24,6 +24,9 @@ API="$HDR/plugins/qemu-plugin.h"
 [ -f "$API" ] || { echo "!! $API missing — git submodule update --init qemu" >&2; exit 2; }
 GLIB_CFLAGS="$(pkg-config --cflags glib-2.0)"
 mkdir -p "$PLUGINS_DIR"
+# gates running at the same time: one build at a time
+exec 9>"$PLUGINS_DIR/.build.lock"
+flock 9
 
 for name in insncount lockstep; do
   src="$ROOT/tests/$name.c" so="$PLUGINS_DIR/$name.so"

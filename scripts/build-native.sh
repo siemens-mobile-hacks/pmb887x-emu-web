@@ -40,6 +40,13 @@ esac
 
 [ -e "$SRC/.git" ] || git -C "$ROOT" submodule update --init qemu
 
+# Gates running at the same time each bring this build up to date: one at a
+# time, or two ninjas write the same objects.  The lock sits beside the
+# build dir, which the check below may delete.
+mkdir -p "$(dirname "$OUT")"
+exec 9>"$OUT.lock"
+flock 9
+
 # a build dir configured from another tree (the old pinned worktree) is
 # rebuilt from scratch: meson cannot move a build dir between sources
 INFO="$OUT/meson-info/meson-info.json"
@@ -73,8 +80,10 @@ ID="$(bash "$ROOT/scripts/qemu-source-id.sh" "$SRC")"
 # first run can fail on a generated-qapi-header race (dsp_core.cpp compiled
 # before qapi-types-error.h existed) — a second ninja pass resolves it
 ninja -j"$(nproc)" qemu-system-arm || ninja -j"$(nproc)" qemu-system-arm
-# what tools/lockstep-wasm.mjs matches against the dist's qemu-source.txt
-echo "$ID" > qemu-source.txt
+# what tools/lockstep-wasm.mjs matches against the dist's qemu-source.txt;
+# by rename, so a reader never sees it half written
+echo "$ID" > qemu-source.txt.tmp
+mv -f qemu-source.txt.tmp qemu-source.txt
 
 if [ "$MODE" = tci ]; then
   if "$OUT/qemu-system-arm" -plugin help 2>&1 | grep -q "plugin interface not enabled"; then
