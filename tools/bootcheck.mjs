@@ -150,17 +150,22 @@ for (const board of BOARDS) {
     if ((Date.now() - lastProgress.t) / 1000 > STALL_S) break;
   }
 
+  // a page that stopped answering (a frozen main thread) never settles an
+  // evaluate or a screenshot: give up on those after a while
+  const bounded = (pr, fallback) => Promise.race([pr.catch(() => fallback),
+    new Promise((r) => setTimeout(() => r(fallback), 15000))]);
+
   if (last.exit) {
     // The firmware's panic text trails the marker and is usually still
     // in the guest's UART FIFO when the marker is first seen: wait, then
     // keep the serial tail next to the screenshot for the post-mortem.
     await new Promise((r) => setTimeout(r, 3000));
-    const tail = await page.evaluate(() => {
+    const tail = await bounded(page.evaluate(() => {
       try {
         const s = new TextDecoder("latin1").decode(window.__qemu.FS.readFile("/serial.log"));
         return s.slice(-4096);
       } catch { return ""; }
-    }).catch(() => "");
+    }), "");
     const serPath = path.join(ROOT, "tests", "results", `bootcheck-${DIST}-${board.id}-serial.txt`);
     fs.writeFileSync(serPath, tail);
     const printable = tail.replace(/[\x00-\x09\x0b-\x1f\x7f-\xff]/g, " ");
@@ -170,7 +175,7 @@ for (const board of BOARDS) {
   }
 
   if (/(^|&)tracebuf=1/.test(QUERY)) {
-    const lines = await page.evaluate(() => (window.__qemulog || []).slice(-30000)).catch(() => []);
+    const lines = await bounded(page.evaluate(() => (window.__qemulog || []).slice(-30000)), []);
     const tracePath = path.join(ROOT, "tests", "results", `bootcheck-${DIST}-${board.id}-trace.txt`);
     fs.writeFileSync(tracePath, lines.join("\n") + "\n");
     console.log(`[${board.id}] trace: ${lines.length} lines -> ${tracePath}`);
@@ -188,9 +193,9 @@ for (const board of BOARDS) {
   results.push({ id: board.id, pass: !why, why, fb: last.fb, insns: last.insns, vclock: last.vclock });
 
   const shot = path.join(ROOT, "tests", "results", `bootcheck-${DIST}-${board.id}.png`);
-  const lcd = await page.$("#lcd");
-  if (lcd) await lcd.screenshot({ path: shot }).catch(() => {});
-  await page.close();
+  const lcd = await bounded(page.$("#lcd"), null);
+  if (lcd) await bounded(lcd.screenshot({ path: shot, timeout: 15000 }), null);
+  await bounded(page.close(), null);
 }
 
 await browser.close();
