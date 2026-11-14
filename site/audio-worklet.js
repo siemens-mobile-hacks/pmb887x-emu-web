@@ -81,6 +81,7 @@ class QemuAudio extends AudioWorkletProcessor {
   constructor(options) {
     super();
     this.hdr = null;
+    this.dead = false;
     // How much has to be banked before playback starts, and after every
     // dropout. A guest that renders slower than real time would otherwise
     // spend its whole life one frame short. Times are in output seconds.
