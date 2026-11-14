@@ -131,7 +131,7 @@ ok("verify rejects its neighbour",
 /* ---- scan: a bounded window around the answer, one worker's worth ---- */
 {
   const WORKERS = 4, WINDOW = 1 << 22;
-  const base = Math.max(0, ((trueEsn - WINDOW) & ~(BATCH - 1)) >>> 0);
+  const base = trueEsn > WINDOW ? ((trueEsn - WINDOW) & ~(BATCH - 1)) >>> 0 : 0;
   let found = null;
   const t0 = Date.now();
   let scanned = 0;
