@@ -90,17 +90,29 @@ async function nativeBackend() {
   let exited = false;
   qemu.on("exit", () => { exited = true; });
 
+  const qemuLog = path.join(run, "qemu.log");
   while (!fs.existsSync(monitor) && !exited) await sleep(200);
+  if (exited) throw new Error(`qemu exited before its monitor came up: see ${qemuLog}`);
   const sock = net.connect(monitor);
   let out = "";
-  let waiter = null;
+  let waiter = null, broken = null;
+  const fail = (e) => {
+    broken = broken || e;
+    if (waiter) { waiter.reject(broken); waiter = null; }
+  };
+  sock.on("error", (e) => fail(new Error(`qemu monitor: ${e.message} (see ${qemuLog})`)));
+  sock.on("close", () => fail(new Error(`qemu monitor closed${exited ? ", qemu exited" : ""} (see ${qemuLog})`)));
   sock.on("data", (d) => {
     out += d;
-    if (waiter && out.includes("(qemu) ")) { waiter(); waiter = null; }
+    if (waiter && out.includes("(qemu) ")) { waiter.resolve(); waiter = null; }
   });
-  const hmp = (line) => new Promise((resolve) => {
+  const HMP_TIMEOUT_MS = 60000;
+  const hmp = (line) => new Promise((resolve, reject) => {
+    if (broken) return reject(broken);
     out = "";
-    waiter = resolve;
+    const timer = setTimeout(() => fail(new Error(`qemu monitor: no prompt ${HMP_TIMEOUT_MS / 1000} s after "${line}"`)),
+      HMP_TIMEOUT_MS);
+    waiter = { resolve: () => { clearTimeout(timer); resolve(); }, reject: (e) => { clearTimeout(timer); reject(e); } };
     if (line) sock.write(line + "\n");
   });
   await hmp("");
