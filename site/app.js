@@ -1255,7 +1255,7 @@ async function applyFullflashFile(file) {
 /* boot / stop                                                          */
 /* ------------------------------------------------------------------ */
 
-/* ?suite=<url>: the phase-0a guest op-suite (doc/wasm-tcg-backend-plan.md) —
+/* ?suite=<url>: the guest op-suite (tests/tcg-isa) —
  * boot -M versatilepb with the raw image fetched from <url> (built by
  * tests/tcg-isa, installed to dist/tcgisa.bin) instead of a phone: the
  * suite prints TAP + value dumps on the PL011 and exits via semihosting
@@ -1508,7 +1508,7 @@ async function runEsnRecovery(identity, device) {
 }
 
 async function boot() {
-  // guest op-suite mode (phase 0a): no fullflash, no boards.tar needed
+  // guest op-suite mode: no fullflash, no boards.tar needed
   {
     const qsp0 = new URLSearchParams(location.search);
     const suiteUrl = qsp0.get("suite");
@@ -1834,8 +1834,8 @@ async function boot() {
         mod.ENV.PMB887X_STARTUP = startup;
         mod.ENV.PMB887X_FLASH0_OTP0 = otp0;
         mod.ENV.PMB887X_FLASH0_OTP1 = otp1;
-        // ?lockstep=1: built-in guest-state fold (wasm64 backend,
-        // doc/wasm-tcg-backend-plan.md §5) — env-driven twin of the
+        // ?lockstep=1: built-in guest-state fold (wasm64 backend; read by
+        // tools/lockstep-wasm.mjs) — env-driven twin of the
         // tests/lockstep.c plugin. Extra ls-* params map to
         // W64_LOCKSTEP_* (insns, period, epoch, meminsns, mem, from, to).
         if (qsp.get("lockstep")) {
@@ -3733,8 +3733,8 @@ boardsReady = loadBoards().catch((e) => {
   else addEventListener("load", () => idle(kick), { once: true });
 }
 
-// ?suite= runs headlessly (phase-0a runner): submit the boot form — the same
-// path as pressing Start. Last, so the whole UI is wired before it fires.
+// ?suite= runs headlessly (tools/tcgisa.mjs): submit the boot form — the
+// same path as pressing Start. Last, so the whole UI is wired before it fires.
 if (new URLSearchParams(location.search).get("suite")) {
   $("boot-form").requestSubmit();
 }
