@@ -390,7 +390,8 @@
       </div>
     </div>
 
-    <!-- unhidden by the serial poller as soon as the guest prints something -->
+    <!-- unhidden as soon as the guest prints something (app.js drawSerial,
+         fed by the serial tap) -->
     <details class="serial-box" id="serial-box" open hidden>
       <summary>Serial log</summary>
       <!-- the <pre> only holds the last 16 KiB; Download writes the whole
