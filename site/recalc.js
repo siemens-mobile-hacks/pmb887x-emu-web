@@ -70,9 +70,10 @@ export async function readIdentity(flashBytes) {
   }
 }
 
-// Rewrites the keys in place for imei/esn. Returns how many items changed
-// (0 when the image already matched), or throws when the layout is not a
-// Siemens fullflash. `flashBytes` is updated in place.
+// Rewrites the keys in place for imei/esn. Returns { changed, complete, log }
+// (changed: false when the image already matched; sr_recalc says whether,
+// not how many), or throws when the layout is not a Siemens fullflash.
+// `flashBytes` is updated in place.
 export async function recalc(flashBytes, imei, esn) {
   const M = await stage(flashBytes);
   const LOG_CAP = 4096;
@@ -81,17 +82,18 @@ export async function recalc(flashBytes, imei, esn) {
   const completePtr = M._malloc(4);
   try {
     M.stringToUTF8(imei, imeiPtr, 16);
-    const replaced = M._sr_recalc(imeiPtr, esn >>> 0, SKEY, completePtr, logPtr, LOG_CAP);
+    const rc = M._sr_recalc(imeiPtr, esn >>> 0, SKEY, completePtr, logPtr, LOG_CAP);
     const log = M.UTF8ToString(logPtr);
-    if (replaced < 0) {
+    if (rc < 0) {
       const e = new Error("Not a recognizable Siemens fullflash layout");
       e.recalcLog = log;
       throw e;
     }
     const complete = new Int32Array(M.HEAPU8.buffer, completePtr, 1)[0] === 1;
-    if (replaced > 0) flashBytes.set(M.HEAPU8.subarray(M._sr_flash_ptr(),
+    const changed = rc > 0;
+    if (changed) flashBytes.set(M.HEAPU8.subarray(M._sr_flash_ptr(),
       M._sr_flash_ptr() + flashBytes.length));
-    return { replaced, complete, log };
+    return { changed, complete, log };
   } finally {
     M._free(imeiPtr);
     M._free(logPtr);

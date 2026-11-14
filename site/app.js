@@ -1618,12 +1618,12 @@ async function boot() {
     if (keyMode === "recalc") {
       showOverlay("Recalculating keys…", device);
       const r = await recalc(flashBytes, imei, parseInt(esn, 16));
-      keyReport = { mode: keyMode, replaced: r.replaced, complete: r.complete };
+      keyReport = { mode: keyMode, changed: r.changed, complete: r.complete };
       if (!r.complete) {
         say("Some EEPROM key blocks were not found — booting anyway");
         console.warn("[recalc]", r.log);
       }
-      if (r.replaced) say(`Recalculated ${r.replaced} key items for ESN ${esn}`);
+      if (r.changed) say(`Recalculated the keys for ESN ${esn}`);
     } else if (keyMode === "recover-esn") {
       showOverlay("Reading fullflash keys…", device);
       const identity = await readIdentity(flashBytes);

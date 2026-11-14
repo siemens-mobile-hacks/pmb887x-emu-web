@@ -31,7 +31,7 @@ servers. `lockstep-wasm.mjs` takes `--port`, defaulting to `PORT`.
 Fullflash, device, IMEI/ESN, SIM, operator, startup and the Siemens key mode
 are form controls in the Firmware panel, not params. **Copy diagnostics**
 carries the last of those as `siemensMode`, and what it did to this run's
-image as `siemensKeys` (`replaced`/`complete` for a recalculation, the
+image as `siemensKeys` (`changed`/`complete` for a recalculation, the
 recovered `esn` and whether it came from the cache for a sweep).
 The pflash drive is always writable — the image only lives in this run's
 MEMFS, and **Export ▸ Flash** in the Run panel hands that copy back. The
