@@ -284,6 +284,8 @@ class WasmSide {
   }
 }
 
+class StartError extends Error {}
+
 async function runPairWasm(args, flashPath, dir, log) {
   fs.mkdirSync(dir, { recursive: true });
   const common = { period: args.period, epoch: args.epoch,
@@ -293,7 +295,14 @@ async function runPairWasm(args, flashPath, dir, log) {
   const b = new WasmSide("b", path.join(dir, "b"),
                          { ...common, insns: args.insns, env: args.env });
   await a.start(flashPath);
-  await b.start(flashPath, args.port, args.dist);
+  try {
+    await b.start(flashPath, args.port, args.dist);
+  } catch (e) {
+    await b.quit();
+    await a.quit("page leg failed to start");
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw new StartError(String(e.message || e).split("\n")[0]);
+  }
 
   const t0 = Date.now();
   let stopped = false;
@@ -383,7 +392,17 @@ const worker = async (wi) => {
   for (let r = wi; r < args.runs; r += args.par) {
     const dir = path.join(baseDir, `run${r}`);
     log(`== run ${r + 1}/${args.runs}: JIT(native) vs wasm64(browser) flash=${args.flash} budget=${fmt(args.insns)} insns`);
-    const { a, b, reasons, wallS } = await runPairWasm(args, flash, dir, log);
+    let pair;
+    try {
+      pair = await runPairWasm(args, flash, dir, log);
+    } catch (e) {
+      if (!(e instanceof StartError)) throw e;
+      fail = true;
+      log(`!! run ${r + 1}: the page leg did not start: ${e.message}`);
+      results.push({ run: r + 1, startError: e.message, earlyExit: [], cmp: null, serialIdentical: null });
+      continue;
+    }
+    const { a, b, reasons, wallS } = pair;
     // end-state screenshots -> tests/results: the wasm leg's page + LCD
     // crop, plus the native leg's screendump when it's still around at
     // quit time (the plugin's stop_at normally self-exits it first)
@@ -492,6 +511,7 @@ const resFile = path.join(ROOT, "tests", "results", `lockstep-${args.label}-${st
 fs.mkdirSync(path.dirname(resFile), { recursive: true });
 fs.writeFileSync(resFile, JSON.stringify(summary, null, 1) + "\n");
 log(`== ${results.filter(cleanRun).length}/${results.length} runs clean; results: ${resFile}`);
-log(`== run dirs under ${baseDir} (tmp — remove when done)`);
+try { fs.rmdirSync(baseDir); } catch {}
+if (fs.existsSync(baseDir)) log(`== run dirs under ${baseDir} (tmp — remove when done)`);
 
 process.exit(fail ? 1 : 0);
