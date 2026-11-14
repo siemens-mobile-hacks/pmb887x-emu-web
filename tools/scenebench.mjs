@@ -435,6 +435,9 @@ async function runOnce(spec, run) {
     let minFill = Infinity, maxFill = 0, prev = a;
     const underrunAt = [];
     const playing = sc.play ? sc.play({ key: s.tap }, Date.now() + measureS * 1000) : null;
+    // awaited after the loop; if the loop throws first, the run fails with
+    // the loop's error instead of an unhandled rejection ending the process
+    playing?.catch(() => {});
     for (let el = 0; el < measureS * 1000; el += 1000) {
       await sleep(1000);
       const c = await p.evaluate(SNAP);
