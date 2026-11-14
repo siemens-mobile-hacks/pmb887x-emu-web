@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  untar, boardText, boardChain, readPanel, readBoardName, readAccessories, boardCpu, gsmBoardHasRadio,
+  untar, boardText, boardChain, readPanel, readBoardName, readAccessories, boardCpu, gsmBoardHasRadio, boardHasDisplay,
 } from "../../site/boards.js";
 
 // a minimal ustar archive: one 512-byte header per file, data padded to 512
@@ -73,6 +73,18 @@ test("readers take the first file of the chain that answers", () => {
   assert.equal(gsmBoardHasRadio("bare"), false);
   assert.equal(readPanel("bare.toml"), null);
   assert.equal(readBoardName("nope.toml"), null);
+});
+
+test("boardHasDisplay: an LCD0 panel anywhere in the chain, with or without a size", () => {
+  load({
+    "phone.toml": 'extends = "include/sg2.toml"\n[board]\nmodel = "S75"\n',
+    "include/sg2.toml": '[peripheral.LCD0]\ntype = "ssd1286"\nbus = "DIF"\n',
+    "chip.toml": '[board]\ncpu.type = "pmb8876"\n[peripheral.GIMMICK]\ntype = "s1d13732"\n# [peripheral.LCD0]\n',
+  });
+  assert.equal(boardHasDisplay("phone"), true);
+  assert.equal(readPanel("phone.toml"), null);
+  assert.equal(boardHasDisplay("chip"), false);
+  assert.equal(boardHasDisplay("missing"), false);
 });
 
 test("readAccessories: the profile names one brace deep, default and unplugged", () => {

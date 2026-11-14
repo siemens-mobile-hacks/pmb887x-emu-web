@@ -25,7 +25,7 @@ import { esnToOtp0, imeiToOtp1 } from "./otp.js";
 import { serialMessages, parseExit } from "./exit-report.js";
 import {
   untar, boardText, readPanel, readBoardName, readAccessories, boardChain,
-  boardCpu, gsmBoardHasRadio,
+  boardCpu, gsmBoardHasRadio, boardHasDisplay,
 } from "./boards.js";
 
 /* ------------------------------------------------------------------ */
@@ -1031,9 +1031,11 @@ async function loadBoards() {
   for (const f of files) {
     if (f.name.endsWith(".toml")) boardText.set(f.name, dec.decode(f.data));
   }
+  // only what the page can run: a board without a display stops at start-up
   boards = files
     .filter((f) => /^[^/]+\.toml$/.test(f.name))
-    .map((f) => ({ id: f.name.replace(/\.toml$/, ""), file: f }));
+    .map((f) => ({ id: f.name.replace(/\.toml$/, ""), file: f }))
+    .filter((b) => boardHasDisplay(b.id));
   const sel = O.device;
   // the placeholder stays selected — no device is picked for the user
   const placeholder = sel.querySelector('option[value=""]');
@@ -1051,9 +1053,10 @@ async function loadBoards() {
     }));
   // A fullflash picked before boards.tar arrived (slow link) could not set
   // the device — apply the deferred inference now that the options exist.
-  if (pendingDevice && boards.some((b) => b.id === pendingDevice)) {
-    sel.value = pendingDevice;
+  if (pendingDevice) {
+    const dev = pendingDevice;
     pendingDevice = null;
+    applyDevice(dev);
     renderOwn();
   }
   acc = null; // drawn before the configs were here
@@ -1097,13 +1100,21 @@ function applyFullflashName(name) {
   return !!dev;
 }
 
+// false when the device is a board the page cannot run
 function applyDevice(dev) {
   if (dev) {
     if (boards.some((b) => b.id === dev)) O.device.value = dev;
-    else if (boardsReady) pendingDevice = dev; // boards.tar still loading
+    else if (boardText.has(dev + ".toml")) {
+      O.device.value = "";
+      setNote(O.devNote, "warn",
+        `${boardLabel(dev)} has no display in its board config, so it cannot run here.`);
+      refreshSiemensKeys();
+      return false;
+    } else if (boardsReady) pendingDevice = dev; // boards.tar still loading
   }
   syncKeyboardToDevice(dev);
   refreshSiemensKeys();
+  return true;
 }
 
 // The filename is the cheap answer; when it gives nothing away (dump.bin,
@@ -1123,7 +1134,7 @@ async function applyFullflashFile(file) {
       `Detected ${hit.model}, which has no board yet — please choose the closest device below.`);
     return;
   }
-  applyDevice(hit.device);
+  if (!applyDevice(hit.device)) { render(); return; }
   // the sidecar warning outranks a detection note: it is about a mistake
   if (!warnEfaDevice()) {
     setNote(O.devNote, hit.exact ? null : "warn",

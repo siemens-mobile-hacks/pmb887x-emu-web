@@ -90,6 +90,15 @@ export function boardChain(file, depth = 0) {
 }
 
 
+// The page shows the phone's LCD panel, the one console qemu's wasm display
+// listens on, and every board with a screen declares it as LCD0. The bare
+// chip boards (apoxi-, generic-, siemens-pmb8875/6) and the Panasonics have
+// none, so qemu stops at once with "wasm display: no console found".
+const LCD0_RE = /^\[peripheral\.LCD0\]/m;
+export function boardHasDisplay(device) {
+  return boardChain(device + ".toml").some(([, txt]) => LCD0_RE.test(txt));
+}
+
 // the chip a board runs on, its config's cpu.type (keyboards.js settings go by it)
 export const CPU_TYPE_RE = /^[ \t]*cpu\.type[ \t]*=[ \t]*"([^"]+)"/m;
 export function boardCpu(device) {
