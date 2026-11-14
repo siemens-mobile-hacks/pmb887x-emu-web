@@ -60,7 +60,7 @@ if (!board && !opt("flash", null)) {
   console.error(`unknown --board ${boardId} (${Object.keys(BOARDS).join(", ")})`);
   process.exit(2);
 }
-const FLASH = opt("flash", here + "../fullflashes/" + board.flash);
+const FLASH = opt("flash", null) ?? here + "../fullflashes/" + board.flash;
 const SIDECARS = opt("flash") ? [] : board.sidecars.map((f) => here + "../fullflashes/" + f);
 
 const dist = opt("dist", "dist-jit");
