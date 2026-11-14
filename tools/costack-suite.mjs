@@ -19,9 +19,9 @@ await page.goto(
   { waitUntil: "networkidle", timeout: 120000 });
 
 const t0 = Date.now();
+let done = false;
 for (;;) {
   await new Promise((r) => setTimeout(r, 1000));
-  let done = false;
   try {
     done = await page.evaluate(() => {
       const m = window.__qemu;
@@ -29,8 +29,10 @@ for (;;) {
         return /^# result:/m.test(new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")));
       } catch (e) { return false; }
     });
-  } catch (e) { break; }
+  } catch (e) { console.error("page unresponsive:", String(e).slice(0, 200)); break; }
   if (done) break;
   if (Date.now() - t0 > timeoutMs) { console.error("TIMEOUT"); break; }
 }
 await browser.close();
+// a suite that never printed its result has not listed every stack
+if (!done) process.exitCode = 1;
