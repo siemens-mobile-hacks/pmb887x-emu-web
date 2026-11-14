@@ -851,10 +851,17 @@ function render() {
   };
 }
 
+const STATE_SAY = {
+  idle: "Emulator stopped", downloading: "Downloading", recovering: "Recovering the ESN",
+  booting: "Booting", running: "Running", paused: "Paused",
+};
+
 function setEmuState(next) {
   // every run gets its own metrics window: wall, virtual time and the slow
   // warning all start counting from the moment the guest does
   if (next === "booting" && emuState !== "booting") hudReset();
+  // an EXIT report has just said that the emulator stopped
+  if (next !== emuState && !(next === "idle" && exitReport)) say(STATE_SAY[next]);
   emuState = next;
   if (next === "running" || next === "paused") startUptime();
   else stopUptime();
@@ -877,6 +884,7 @@ function setError(msg, { block = false } = {}) {
   if (block) startBlocked = true;
   showOverlay("Failed", msg);
   render();
+  say(`Error: ${msg}`);
 }
 
 /* ------------------------------------------------------------------ */
