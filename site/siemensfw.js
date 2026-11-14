@@ -17,10 +17,16 @@
 const MODULE_URL = "./dist/siemens-recalc.js";
 
 let modPromise = null;
+let failures = 0;
 
 export function loadSiemensFW() {
   if (!modPromise) {
-    modPromise = import(MODULE_URL).then((m) => m.default());
+    // one failed request must not leave the module failed until a reload;
+    // the browser keeps a failed import() for its URL, so a retry asks for
+    // the file under another one
+    const url = failures ? `${MODULE_URL}?retry=${failures}` : MODULE_URL;
+    modPromise = import(url).then((m) => m.default());
+    modPromise.catch(() => { modPromise = null; failures++; });
   }
   return modPromise;
 }
