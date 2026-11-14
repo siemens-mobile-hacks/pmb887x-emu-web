@@ -49,8 +49,18 @@ def signal_all(pgids, sig):
         except ProcessLookupError:
             pass
 
+class Interrupted(Exception):
+    pass
+
+def interrupted(sig, frame):
+    raise Interrupted(sig)
+
+signal.signal(signal.SIGINT, interrupted)
+signal.signal(signal.SIGTERM, interrupted)
+
 print(f"dutyhost: run {run*1000:g} ms, stop {stop*1000:g} ms (~{100*run/(run+stop):.0f} % of each core)", file=sys.stderr)
 pgids, refreshed = groups(), time.monotonic()
+caught = None
 try:
     nxt = time.monotonic()
     while child.poll() is None:
@@ -62,7 +72,17 @@ try:
         nxt += stop
         time.sleep(max(0, nxt - time.monotonic()))
         signal_all(pgids, signal.SIGCONT)
+except Interrupted as e:
+    caught = e.args[0]
 finally:
-    signal_all(groups() | pgids, signal.SIGCONT)
-sys.exit(child.wait())
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    everyone = groups() | pgids
+    signal_all(everyone, signal.SIGCONT)
+    if caught is not None:
+        signal_all(everyone, caught)
+rc = child.wait()
+if caught is not None:
+    os.kill(os.getpid(), caught)
+sys.exit(rc)
 EOF
