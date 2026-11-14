@@ -79,11 +79,15 @@ async function ensureServer() {
     } catch { return false; }
   };
   if (await up()) return;
-  log("serve.mjs not reachable — starting it");
+  log("serve.mjs not reachable — starting it (its output follows in this log)");
+  // http only: the https port is fixed, and another serve.mjs (the one on
+  // 8080, say) may hold it
+  const out = fs.openSync(LOG, "a");
   const serve = serveChild = spawn(process.execPath, [path.join(TOOLS, "..", "serve.mjs")], {
-    detached: true, stdio: "ignore",
-    env: { ...process.env, PORT: String(PORT) },
+    detached: true, stdio: ["ignore", out, out],
+    env: { ...process.env, PORT: String(PORT), HTTPS: "0" },
   });
+  fs.closeSync(out);
   serve.unref();
   for (let i = 0; i < 20 && !(await up()); i++) await new Promise((r) => setTimeout(r, 500));
   if (!(await up())) throw new Error(`serve.mjs did not come up on :${PORT}`);
