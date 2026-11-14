@@ -1,25 +1,56 @@
 // Board configs: the ustar reader for boards.tar and the readers over the
 // boards' TOML text. Pure code; app.js fills boardText from boards.tar.
 
-// tiny ustar reader
+// Tiny ustar reader: regular files only, through writeFn(name, bytes).
+// A pax extended header ('x') or GNU long name ('L') is not a file but the
+// full name of the next one; pax globals ('g') and macOS's AppleDouble
+// "._*" companions are skipped. Throws on a header without the ustar magic
+// (POSIX "ustar\0" or GNU "ustar  "): that is no archive this can read.
 export function untar(buf, writeFn) {
-  const dv = new DataView(buf);
   const dec = new TextDecoder();
+  const str = (bytes) => dec.decode(bytes).replace(/\0.*$/s, "");
   let off = 0;
+  let longName = null;
   while (off + 512 <= buf.byteLength) {
-    let name = dec.decode(new Uint8Array(buf, off, 100)).replace(/\0.*$/, "");
-    const size = parseInt(dec.decode(new Uint8Array(buf, off + 124, 12)).replace(/[\0 ].*$/, ""), 8) || 0;
-    const type = String.fromCharCode(dv.getUint8(off + 156));
+    const h = new Uint8Array(buf, off, 512);
+    let name = str(h.subarray(0, 100));
     if (!name) break;
-    if (name.startsWith("./")) name = name.slice(2);
-    // ustar prefix field
-    const prefix = dec.decode(new Uint8Array(buf, off + 345, 155)).replace(/\0.*$/, "");
-    if (prefix) name = prefix.replace(/\/$/, "") + "/" + name;
-    if (type === "0" || type === "\0") {
-      writeFn(name, new Uint8Array(buf, off + 512, size));
-    }
+    const magic = String.fromCharCode(...h.subarray(257, 263));
+    if (magic !== "ustar\0" && magic !== "ustar ")
+      throw new Error(`not a ustar archive (header at ${off})`);
+    const size = parseInt(str(h.subarray(124, 136)).replace(/ .*$/, ""), 8) || 0;
+    const type = String.fromCharCode(h[156]);
+    const data = new Uint8Array(buf, off + 512, Math.min(size, buf.byteLength - off - 512));
     off += 512 + Math.ceil(size / 512) * 512;
+    if (type === "x") { longName = paxPath(data) ?? longName; continue; }
+    if (type === "L") { longName = str(data); continue; }
+    if (longName != null) {
+      name = longName;
+      longName = null;
+    } else if (magic === "ustar\0") {
+      // POSIX only: GNU keeps other fields there
+      const prefix = str(h.subarray(345, 500));
+      if (prefix) name = prefix.replace(/\/$/, "") + "/" + name;
+    }
+    if (name.startsWith("./")) name = name.slice(2);
+    if (name.split("/").pop().startsWith("._")) continue;
+    if (type === "0" || type === "\0") writeFn(name, data);
   }
+}
+
+// the `path` record of a pax extended header: "<len> path=<value>\n" records,
+// <len> counting bytes
+function paxPath(data) {
+  const dec = new TextDecoder();
+  for (let i = 0; i < data.length;) {
+    const sp = data.indexOf(0x20, i);
+    const len = sp > i ? parseInt(dec.decode(data.subarray(i, sp)), 10) : NaN;
+    if (!(len > sp - i)) break;
+    const rec = dec.decode(data.subarray(sp + 1, i + len - 1));
+    if (rec.startsWith("path=")) return rec.slice(5);
+    i += len;
+  }
+  return null;
 }
 
 export const boardText = new Map();   // "siemens-s75.toml" -> file contents

@@ -14,6 +14,7 @@ function tar(files) {
     put(0, opts.name ?? name);
     put(124, data.length.toString(8).padStart(11, "0") + " ");
     put(156, opts.type ?? "0");
+    put(257, opts.magic ?? "ustar\u000000");
     if (opts.prefix) put(345, opts.prefix);
     blocks.push(h, data, new Uint8Array((512 - (data.length % 512)) % 512));
   }
@@ -42,6 +43,36 @@ test("untar: names, contents, ./ and the ustar prefix, directories skipped", () 
 
 test("untar: an empty archive yields nothing", () => {
   assert.deepEqual(read(new ArrayBuffer(1024)), []);
+});
+
+// "<len> key=value\n", len counting its own digits and the bytes
+function paxRecord(key, value) {
+  const body = ` ${key}=${value}\n`;
+  const bytes = (n) => new TextEncoder().encode(String(n) + body).length;
+  let n = bytes(0);
+  while (bytes(n) !== n) n = bytes(n);
+  return String(n) + body;
+}
+
+test("untar: pax and GNU long names name the next file; globals and ._* skipped", () => {
+  const long = "include/" + "d".repeat(70) + "/" + "e".repeat(70) + "/плата.toml";
+  const buf = tar([
+    ["pax_global_header", paxRecord("comment", "x"), { type: "g" }],
+    ["./PaxHeaders/x", paxRecord("mtime", "1") + paxRecord("path", long), { type: "x" }],
+    [long.slice(0, 99), "pax"],
+    ["././@LongLink", long.replace("плата", "gnu") + "\0", { type: "L", magic: "ustar  \0" }],
+    [long.slice(0, 99), "gnu", { magic: "ustar  \0" }],
+    ["._a.toml", "apple"],
+    ["include/._b.toml", "apple"],
+    ["a.toml", "a"],
+  ]);
+  assert.deepEqual(read(buf), [[long, "pax"], [long.replace("плата", "gnu"), "gnu"], ["a.toml", "a"]]);
+});
+
+test("untar: no ustar magic, no archive", () => {
+  assert.throws(() => read(tar([["a.toml", "a", { magic: "\0".repeat(8) }]])), /not a ustar archive/);
+  const junk = new Uint8Array(2048).fill(0x41);
+  assert.throws(() => read(junk.buffer), /not a ustar archive/);
 });
 
 function load(files) {
