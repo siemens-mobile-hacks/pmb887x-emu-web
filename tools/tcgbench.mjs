@@ -83,7 +83,7 @@ async function runWasm(dist, browser, icount) {
   }
   const phases = [];
   const serial = [];
-  let insns = null, tbs = null;
+  let insns = null, tbs = null, done = false;
   const t0 = stamp();
   try {
     await page.goto(`http://127.0.0.1:${port}/?${q}`, { waitUntil: "domcontentloaded", timeout: 120000 });
@@ -108,6 +108,7 @@ async function runWasm(dist, browser, icount) {
         if (m && m[1] !== "done" && m[1] !== "DONE") phases.push([m[1], t]);
       }
       if (/^BENCH DONE$/m.test(s)) {
+        done = true;
         try {
           insns = await page.evaluate(() => Number(window.__qemu._wasm_insns()));
           tbs = await page.evaluate(() => Number(window.__qemu._wasm_tbs()));
@@ -119,7 +120,8 @@ async function runWasm(dist, browser, icount) {
   } finally {
     try { await page.close(); } catch {}
   }
-  return { phases, serial, rc: 0, insns, tbs };
+  // a page that died or hit the cap did not finish the bench
+  return { phases, serial, rc: done ? 0 : 1, insns, tbs };
 }
 
 // phases -> per-phase seconds (a phase's line lands when it completes)
@@ -231,9 +233,13 @@ if (ref) {
   }
 }
 const cksums = new Set(results.map((e) => e.cksum));
-console.log(cksums.size === 1 && !cksums.has(null)
+const cksumOk = cksums.size === 1 && !cksums.has(null);
+console.log(cksumOk
   ? `checksums identical across legs (${[...cksums][0]})`
   : `!! CHECKSUM MISMATCH: ${[...cksums].join(" ")}`);
+const failed = results.filter((e) => e.rc !== 0);
+for (const e of failed) console.log(`!! ${e.leg}${e.icount ? "+icount" : ""} run${e.run} did not finish (rc ${e.rc})`);
+if (!cksumOk || failed.length) process.exitCode = 1;
 
 const out = {
   ts: new Date().toISOString(),
