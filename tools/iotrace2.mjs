@@ -1,7 +1,7 @@
 // Boot any board with ?trace=<spec> (-debug-channels) and summarise the trace by
 // register: which MMIO registers the firmware touches, and how often.
 //
-//   PORT=8080 TRACE=scu,dif,ssc node tools/iotrace2.mjs --board cx70 [--secs 60]
+//   PORT=8080 TRACE=scu,dif,ssc node tools/iotrace2.mjs --board cx70 [--from 30] [--window 2]
 //
 // iotrace.mjs dumps the raw lines for one fixed fullflash; this takes a
 // --board and prints a ranked table instead, which is what you want when the
@@ -23,7 +23,6 @@ const BOARDS = {
 const board = BOARDS[opt("board", "cx70")];
 if (!board) { console.error("unknown --board"); process.exit(2); }
 
-const secs = Number(opt("secs", 60));
 const from = Number(opt("from", 30));   // ignore the boot: count only after this
 const spec = process.env.TRACE || "scu,dif,ssc,dmac,gptu,tpu,vic";
 const dist = opt("dist", "dist-jit");
