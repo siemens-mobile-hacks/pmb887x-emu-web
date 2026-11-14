@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  untar, boardText, boardChain, readPanel, readBoardName, readAccessories, boardCpu, gsmBoardHasRadio, boardHasDisplay,
+  untar, boardText, boardChain, readPanel, readBoardName, readAccessories, boardCpu, gsmBoardHasRadio, boardHasDisplay, boardHasSimSlot,
 } from "../../site/boards.js";
 
 // a minimal ustar archive: one 512-byte header per file, data padded to 512
@@ -124,6 +124,17 @@ test("boardHasDisplay: an LCD0 panel anywhere in the chain, with or without a si
   assert.equal(readPanel("phone.toml"), null);
   assert.equal(boardHasDisplay("chip"), false);
   assert.equal(boardHasDisplay("missing"), false);
+});
+
+test("boardHasSimSlot: a slot in the board or an include, not in a comment", () => {
+  load({
+    "phone.toml": 'extends = "include/sg2.toml"\n[board]\nmodel = "S75"\n',
+    "include/sg2.toml": '[peripheral.SIM]\ntype = "iso7816-slot"\n',
+    "noslot.toml": '[board]\n# [peripheral.SIM]\n# type = "iso7816-slot"\n',
+  });
+  assert.equal(boardHasSimSlot("phone"), true);
+  assert.equal(boardHasSimSlot("noslot"), false);
+  assert.equal(boardHasSimSlot("missing"), false);
 });
 
 test("readAccessories: the profile names one brace deep, default and unplugged", () => {

@@ -154,3 +154,9 @@ export function boardCpu(device) {
 export function gsmBoardHasRadio(device) {
   return boardChain(device + ".toml").some(([, txt]) => RADIO_TYPE_RE.test(txt));
 }
+
+// Does the board have a SIM slot for a -device gsm-sim to sit in?
+export const SIM_SLOT_RE = /^[ \t]*type[ \t]*=[ \t]*"iso7816-slot"/m;
+export function boardHasSimSlot(device) {
+  return boardChain(device + ".toml").some(([, txt]) => SIM_SLOT_RE.test(txt));
+}

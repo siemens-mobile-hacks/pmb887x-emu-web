@@ -24,8 +24,8 @@ import { buildShortUA } from "./ua.js";
 import { esnToOtp0, imeiToOtp1 } from "./otp.js";
 import { serialMessages, parseExit } from "./exit-report.js";
 import {
-  untar, boardText, readPanel, readBoardName, readAccessories, boardChain,
-  boardCpu, gsmBoardHasRadio, boardHasDisplay,
+  untar, boardText, readPanel, readBoardName, readAccessories,
+  boardCpu, gsmBoardHasRadio, boardHasDisplay, boardHasSimSlot,
 } from "./boards.js";
 
 /* ------------------------------------------------------------------ */
@@ -1793,7 +1793,7 @@ async function boot() {
       : ["-audio", `wasm,out.frequency=${audioRate()},out.channels=2`];
     // the card is a device of its own, plugged into the board's empty
     // "iso7816-slot"; a board without one runs with no SIM
-    const simSlot = boardChain(device + ".toml").some(([, t]) => t.includes('"iso7816-slot"'));
+    const simSlot = boardHasSimSlot(device);
     const simArgs = simSlot && sim === "virtual"
       ? ["-device", `gsm-sim,operator=${operator}`]
       : [];
