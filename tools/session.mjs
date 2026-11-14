@@ -130,7 +130,8 @@ const PROBE = `(() => {
   const g = (f) => { try { return Number(m[f]()); } catch { return -1; } };
   let ser = "", serErr = "";
   try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch (e) { serErr = String(e); }
-  return { insns: g("_wasm_insns"), vclockMs: g("_wasm_vclock"),
+  const vclockNs = g("_wasm_vclock");
+  return { insns: g("_wasm_insns"), vclockMs: vclockNs < 0 ? -1 : vclockNs / 1e6,
            fb: g("_wasm_fb_updates"), serLen: ser.length, ser,
            // window.__ui is the page's own run state (site/app.js): the pill
            // text alone no longer says whether the guest exited
@@ -155,7 +156,7 @@ async function status() {
   const up = bootAt ? ((now - bootAt) / 1000).toFixed(0) : "?";
   const exit = (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || "";
   return {
-    line: `up=${up}s insns=${fmtM(s.insns)}${rate} vclock=${(s.vclockMs / 1e6).toFixed(1)}ms fb=${s.fb} serlen=${s.serLen} state=${s.state}${s.exitCode != null ? `(${s.exitCode})` : ""}${exit ? " EXIT: " + exit : ""}`,
+    line: `up=${up}s insns=${fmtM(s.insns)}${rate} vclock=${s.vclockMs.toFixed(1)}ms fb=${s.fb} serlen=${s.serLen} state=${s.state}${s.exitCode != null ? `(${s.exitCode})` : ""}${exit ? " EXIT: " + exit : ""}`,
     raw: { uptimeS: Number(up), insns: s.insns, vclockMs: s.vclockMs, fb: s.fb, serLen: s.serLen, state: s.state, exitCode: s.exitCode, status: s.status, exit },
   };
 }
