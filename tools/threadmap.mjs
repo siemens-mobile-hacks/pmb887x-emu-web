@@ -85,6 +85,9 @@ try {
     });
   });
   await new Promise((r) => setTimeout(r, 5000));
+} catch (e) {
+  console.error("threadmap:", e);
+  process.exitCode = 1;
 } finally {
-  process.exit(0); // server.close() can hang on busy workers
+  process.exit(process.exitCode ?? 0); // server.close() can hang on busy workers
 }
