@@ -67,7 +67,14 @@ PORT_TCG=$((PORT + 13))
 # bootcheck and earlykey take the server from the environment only
 export PORT
 
-# name | tiers | needs the browser server | command
+# name | tiers | needs the browser server | time limit (s) | command
+#
+# The time limit stops a job that hangs (a frozen page that never answers,
+# a qemu that never exits) so that the gate still ends.  Each is about four
+# times the job's time in the close gates of 2026-11-14 (boot-* 152 s,
+# key-* 27 s, boot-ordered 754 s, lockstep-native 491 s, lockstep-full
+# 348 s, firefox 131 s, native 61 s, lockstep-wasm 67 s, ui 55 s), so a
+# loaded host does not reach it; a job that does is a FAIL marked TIMEOUT.
 #
 # bootcheck and earlykey are one job per board rather than one job that
 # loops: the loop is what made this gate a ten-minute step.  The ORDERED
@@ -82,27 +89,27 @@ export PORT
 # rots -- its slow-warning check failed unnoticed because a page-level CPU
 # throttle does not reach the guest's workers.
 JOBS=(
-  "unit|quick keep close|no|node --test '$ROOT'/tests/unit/*.test.mjs"
-  "opsuite|quick keep close|no|PORT_TCG=$PORT_TCG WASM=1 TCGISA_DIST=$DIST bash '$ROOT/scripts/run-tcg-isa.sh'"
-  "boot-s75|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash s75"
-  "boot-el71|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash el71"
-  "boot-ke800|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke800"
-  "boot-cx70|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash cx70"
-  "boot-ke970|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke970"
-  "key-s75|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board s75"
-  "key-el71|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board el71"
-  "key-ke800|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board ke800"
-  "key-cx70|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board cx70"
-  "key-ke970|keep close|yes|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board ke970"
-  "native|keep close|no|node '$ROOT/tests/run.mjs' --label gate --timeout 240"
-  "lockstep-wasm|keep close|yes|node '$ROOT/tools/lockstep-wasm.mjs' --port $PORT --dist $DIST --insns 250e6 --runs 1 --label gate-wasm"
-  "boot-ordered|close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150"
-  "lockstep-native|close|no|bash '$ROOT/scripts/run-lockstep.sh'"
-  "lockstep-full|close|yes|node '$ROOT/tools/lockstep-wasm.mjs' --port $PORT --dist $DIST --insns 2.5e9 --runs 3 --par 3 --label gate-close"
-  "firefox|close|yes|gate_firefox"
-  "detect|close|no|node '$ROOT/tools/detect-check.mjs'"
-  "efa-web|close|yes|PORT=$PORT node '$ROOT/tools/efa-web.mjs' && PORT=$PORT node '$ROOT/tools/efa-web.mjs' noefa"
-  "ui|close|yes|PORT=$PORT node '$ROOT/tools/ui-acceptance.mjs'"
+  "unit|quick keep close|no|120|node --test '$ROOT'/tests/unit/*.test.mjs"
+  "opsuite|quick keep close|no|600|PORT_TCG=$PORT_TCG WASM=1 TCGISA_DIST=$DIST bash '$ROOT/scripts/run-tcg-isa.sh'"
+  "boot-s75|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash s75"
+  "boot-el71|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash el71"
+  "boot-ke800|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke800"
+  "boot-cx70|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash cx70"
+  "boot-ke970|quick keep close|yes|600|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke970"
+  "key-s75|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board s75"
+  "key-el71|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board el71"
+  "key-ke800|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board ke800"
+  "key-cx70|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board cx70"
+  "key-ke970|keep close|yes|300|node '$ROOT/tools/earlykey.mjs' --dist $DIST --board ke970"
+  "native|keep close|no|900|node '$ROOT/tests/run.mjs' --label gate --timeout 240"
+  "lockstep-wasm|keep close|yes|600|node '$ROOT/tools/lockstep-wasm.mjs' --port $PORT --dist $DIST --insns 250e6 --runs 1 --label gate-wasm"
+  "boot-ordered|close|yes|2400|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150"
+  "lockstep-native|close|no|1800|bash '$ROOT/scripts/run-lockstep.sh'"
+  "lockstep-full|close|yes|1500|node '$ROOT/tools/lockstep-wasm.mjs' --port $PORT --dist $DIST --insns 2.5e9 --runs 3 --par 3 --label gate-close"
+  "firefox|close|yes|600|gate_firefox"
+  "detect|close|no|300|node '$ROOT/tools/detect-check.mjs'"
+  "efa-web|close|yes|300|PORT=$PORT node '$ROOT/tools/efa-web.mjs' && PORT=$PORT node '$ROOT/tools/efa-web.mjs' noefa"
+  "ui|close|yes|600|PORT=$PORT node '$ROOT/tools/ui-acceptance.mjs'"
 )
 
 # ffboot reports in text, not an exit code: the Firefox module budget is
@@ -122,6 +129,9 @@ gate_firefox() {
   [ "$progress" = "ok" ] || { echo "gate: ffboot progress=$progress"; return 1; }
   return 0
 }
+# a job runs in a bash of its own under timeout
+export -f gate_firefox
+export ROOT DIST
 
 in_list() { case ",$2," in *,"$1",*) return 0 ;; *) return 1 ;; esac; }
 
@@ -140,7 +150,7 @@ if [ "$LIST" = 1 ]; then
   for t in quick keep close; do
     printf '%-7s' "$t:"
     for j in "${JOBS[@]}"; do
-      IFS='|' read -r name tiers _s _c <<<"$j"
+      IFS='|' read -r name tiers _rest <<<"$j"
       [[ " $tiers " == *" $t "* ]] && printf ' %s' "$name"
     done
     echo
@@ -151,7 +161,7 @@ fi
 selected=()
 names_selected=()
 for j in "${JOBS[@]}"; do
-  IFS='|' read -r name tiers _srv _cmd <<<"$j"
+  IFS='|' read -r name tiers _rest <<<"$j"
   [[ " $tiers " == *" $TIER "* ]] || continue
   [ -z "$ONLY" ] || in_list "$name" "$ONLY" || continue
   [ -z "$SKIP" ] || ! in_list "$name" "$SKIP" || continue
@@ -163,7 +173,7 @@ done
 # ---- the browser gates need a server; start one only if nothing answers --
 need_server=0
 for j in "${selected[@]}"; do
-  IFS='|' read -r _n _t srv _c <<<"$j"
+  IFS='|' read -r _n _t srv _rest <<<"$j"
   [ "$srv" = yes ] && need_server=1
 done
 
@@ -267,14 +277,21 @@ reap_one() {
   fi
 }
 for j in "${selected[@]}"; do
-  IFS='|' read -r name _t _s cmd <<<"$j"
+  IFS='|' read -r name _t _s limit cmd <<<"$j"
   names+=("$name")
   while [ "${#live[@]}" -ge "$JOBS_MAX" ]; do reap_one; done
   (
     t0=$(date +%s)
-    eval "$cmd" >"$LOGDIR/$name.log" 2>&1
+    # timeout signals the job's whole process group; -k for one that
+    # ignores the TERM
+    timeout -k 30 "$limit" bash -c "$cmd" >"$LOGDIR/$name.log" 2>&1
     rc=$?
-    echo "$rc $(( $(date +%s) - t0 ))" >"$LOGDIR/$name.rc"
+    secs=$(( $(date +%s) - t0 ))
+    if { [ "$rc" = 124 ] || [ "$rc" = 137 ]; } && [ "$secs" -ge "$limit" ]; then
+      echo "gate: $name timed out after ${limit}s" >>"$LOGDIR/$name.log"
+      rc=timeout
+    fi
+    echo "$rc $secs" >"$LOGDIR/$name.rc"
   ) &
   live[$!]=1
 done
@@ -285,7 +302,11 @@ printf '%-16s %-7s %7s  %s\n' JOB VERDICT TIME LOG
 fail=0
 for name in "${names[@]}"; do
   read -r rc secs <"$LOGDIR/$name.rc" 2>/dev/null || { rc=99; secs=0; }
-  if [ "$rc" = 0 ]; then verdict=PASS; else verdict=FAIL; fail=1; fi
+  case "$rc" in
+    0) verdict=PASS ;;
+    timeout) verdict=TIMEOUT; fail=1 ;;
+    *) verdict=FAIL; fail=1 ;;
+  esac
   printf '%-16s %-7s %6ss  %s\n' "$name" "$verdict" "$secs" "$LOGDIR/$name.log"
 done
 
