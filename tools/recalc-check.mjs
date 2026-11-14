@@ -16,11 +16,10 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { fullflash } from "./testflash.mjs";
 
 const toolsDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(toolsDir, "..");
-const flashPath = process.argv[2] || fullflash;
+const flashPath = process.argv[2] || (await import("./testflash.mjs")).fullflash;
 
 let fails = 0, count = 0;
 function ok(name, cond, extra = "") {
