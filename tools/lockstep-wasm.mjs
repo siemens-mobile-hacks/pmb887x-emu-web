@@ -93,6 +93,8 @@ class WasmSide {
       // the page's default vcpu-timers clock is not deterministic
       "icount=" + encodeURIComponent("shift=3,sleep=off"),
       "lockstep=1",
+      // the native leg (scripts/run-native.sh) boots with no audiodev
+      "sound=off",
       `ls-insns=${this.args.insns}`,
       `ls-period=${this.args.period}`,
       `ls-epoch=${this.args.epoch}`,
@@ -129,6 +131,9 @@ class WasmSide {
     await this.page.goto(`http://127.0.0.1:${port}/?${q}`,
       { waitUntil: "domcontentloaded", timeout: 120000 });
     await this.page.selectOption("#startup", "ONLINE");
+    // nor with the GSM cell, which the page adds by default on a board with
+    // a radio
+    await this.page.setChecked("#gsm", false);
     await this.page.click("#ff-mode-own");
     await this.page.setInputFiles("#fullflash", flashPath);
     await this.page.click("#btn-start");
