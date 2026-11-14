@@ -672,15 +672,16 @@ What the job's verdict rests on today:
 - **Budget and config line.** Both legs must reach the budget, with the
   same `C` line.
 
-Fixing this needs a qemu change, which is the owner's call:
+Fixing this would need a qemu change:
 
 - the prologue charge must not count a TB that leaves at its start
   (charge after the exit check, or tell the TB-start exit from the
   back-edge exit);
 - DSP block prologues must not call the lockstep fold.
 
-Until then, a hard E or SDRAM criterion would fail every run on the
-counting alone. Removed setup differences, which did not change the
+The owner decided on 2026-11-14 not to make it, to keep the fork no further
+from upstream than necessary. The E and SDRAM checks stay soft: a hard
+criterion would fail every run on the counting alone. Removed setup differences, which did not change the
 numbers: the page leg now boots the native leg's board, with the keys run
 as is (recalculating changes 0 bytes of the s75, s75-v40 and el71 images).
 The other option differences were not seen to reach the guest, since the
