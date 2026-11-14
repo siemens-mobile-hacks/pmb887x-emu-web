@@ -21,16 +21,15 @@
 // the export exists, and a normal press afterwards still reaches the guest.
 import { chromium } from "playwright-core";
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { opt as argOpt } from "./lib/argv.mjs";
+import { flashFiles } from "./lib/boards.mjs";
+import { bootOwnFlash } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
-const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
-const here = fileURLToPath(new URL(".", import.meta.url));
+const opt = (n, d) => argOpt(argv, n, d);
 
-const BOARDS = {
-  s75: "S75v40lg1.bin", el71: "rr_ff_el71_stock.bin",
-  ke800: "KE800-v11b.bin", ke970: "KE970v10d.bin", cx70: "CX70_FW56_clean.bin",
-};
+// --board -> tools/lib/boards.mjs id (this check boots the other S75 image)
+const BOARDS = { s75: "s75-v40", el71: "el71", ke800: "ke800", ke970: "ke970", cx70: "cx70" };
 const boardId = opt("board", "cx70");
 const flash = BOARDS[boardId];
 if (!flash) { console.error(`unknown --board ${boardId}`); process.exit(2); }
@@ -48,12 +47,8 @@ p.on("console", (m) => { const t = m.text(); if (/RuntimeError|Aborted\(/.test(t
 
 const extraQ = process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : "";
 await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ}`, { waitUntil: "domcontentloaded", timeout: 120000 });
-await p.selectOption("#startup", "ONLINE");
-await p.click("#ff-mode-own");
 // an LG flash goes in with its EFA block, as the page's user loads it
-const flashPath = here + "../fullflashes/" + flash;
-await p.setInputFiles("#fullflash", [flashPath, flashPath + ".cfi-efa"].filter((f) => existsSync(f)));
-await p.click("#btn-start");
+await bootOwnFlash(p, flashFiles(flash).filter((f) => existsSync(f)), { startup: "ONLINE" });
 
 // Fire as close to instantiation as the event loop allows.  A key-up is the
 // shape a spurious pointerleave sends: a release for a key never pressed.
