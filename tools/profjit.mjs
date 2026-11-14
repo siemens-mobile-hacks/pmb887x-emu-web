@@ -10,6 +10,10 @@ for (const p of profiles) {
   for (const nd of p.nodes) if ((nd.callFrame.url || "").startsWith("wasm://")) n++;
   if (n > bestN) { bestN = n; best = p; }
 }
+if (!best) {
+  console.log("no profile has JIT module (wasm://) frames");
+  process.exit(1);
+}
 const p = best;
 const byId = new Map(p.nodes.map((n) => [n.id, n]));
 const fn = new Map(), mod = new Map();
