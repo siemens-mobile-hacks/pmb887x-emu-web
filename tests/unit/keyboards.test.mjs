@@ -46,3 +46,21 @@ test("caseStep: Siemens keeps the case it left; LG wraps every capital", () => {
   assert.deepEqual(caseStep(lg, "lower", l), { before: [], after: [], state: "lower" });
   assert.deepEqual(caseStep(undefined, "one", U), { before: [], after: [], state: "one" });
 });
+
+// The legend is what the user reads off the key, the taps what pressing it
+// types: every Cyrillic letter printed on a key must come from that key
+// (the taps may type more than the key prints, ё on 3 say).
+test("legends: a key's Cyrillic letters are typed by that key", () => {
+  const bad = [];
+  for (const [id, kbd] of Object.entries(KBD_KEYBOARDS)) {
+    for (const [v, { subs, taps }] of Object.entries(kbd.variants)) {
+      if (!subs || !taps) continue;
+      for (const key of Object.keys(subs)) {
+        const typed = [taps[key] ?? ""].flat().join("");
+        const missing = [...subs[key]].filter((c) => /[Ѐ-ӿ]/.test(c) && !typed.includes(c));
+        if (missing.length) bad.push(`${id}/${v} ${key}: ${missing.join("")} is not typed by its key`);
+      }
+    }
+  }
+  assert.deepEqual(bad, []);
+});

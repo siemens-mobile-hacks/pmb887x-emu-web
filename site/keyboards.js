@@ -294,7 +294,7 @@ const SIEMENS_VARIANTS = {
     subs: {
       1: `␣ ${KBD_ICONS.voicemail}`,
       2: "abc абвг", 3: "def дежз", 4: "ghi ийкл", 5: "jkl мно",
-      6: "mno прс", 7: "pqrs туфх", 8: "tuv цчшщь", 9: "wxyz ъыэюя",
+      6: "mno прс", 7: "pqrs туфх", 8: "tuv цчшщъ", 9: "wxyz ыьэюя",
       0: "+", star: KBD_ICONS.bell, hash: KBD_ICONS.key,
     },
     taps: SIEMENS_TAPS_RU,
