@@ -32,5 +32,18 @@ for bin in "$NATIVE_BUILD/qemu-system-arm" "$NATIVE_TCI_BUILD/qemu-system-arm"; 
   [ -x "$bin" ] || { echo "!! $bin not built — scripts/build-native.sh + scripts/build-native-tci.sh"; exit 2; }
 done
 
+# the two sides must be one source on two backends, or a divergence (or an
+# agreement) says nothing about the backends; their qemu-source.txt stamps
+# (scripts/qemu-source-id.sh) must match
+if [ -z "${SELF:-}" ]; then
+  JIT_ID="$(cat "$NATIVE_BUILD/qemu-source.txt" 2>/dev/null || true)"
+  TCI_ID="$(cat "$NATIVE_TCI_BUILD/qemu-source.txt" 2>/dev/null || true)"
+  if [ -z "$JIT_ID" ] || [ "$JIT_ID" != "$TCI_ID" ]; then
+    echo "!! the JIT build is from qemu ${JIT_ID:-<no qemu-source.txt>}, the TCI build from" \
+         "${TCI_ID:-<no qemu-source.txt>}; rebuild both: scripts/build-native.sh + scripts/build-native-tci.sh"
+    exit 2
+  fi
+fi
+
 node "$ROOT/tools/lockstep.mjs" --runs "$RUNS" --par "$RUNS" \
   --insns "$INSNS" --label "${LABEL:-gate}" "${EXTRA[@]+"${EXTRA[@]}"}"
