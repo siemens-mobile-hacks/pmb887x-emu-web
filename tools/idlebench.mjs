@@ -348,7 +348,7 @@ async function runOne(dist, hashes, r) {
     let crashed = null;
     p.on("console", (m) => {
       const t = m.text();
-      if (/^W64|^WASM_DIAG/.test(t)) {
+      if (/^\[qemu(?: x\d+)?\] (?:w64|WASM_DIAG)/i.test(t)) {
         w64lines.push(t.slice(0, 200));
         if (w64lines.length <= 40) console.log(`  [${tag}] [page] ${t.slice(0, 160)}`);
       }

@@ -43,7 +43,7 @@ const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
 const errs = [];
 p.on("console", (m) => {
   const t = m.text();
-  if (m.type() === "error" || m.type() === "warning" || /^W64|out of memory|OOM/i.test(t)) {
+  if (m.type() === "error" || m.type() === "warning" || /^\[qemu(?: x\d+)?\] w64|out of memory|OOM/i.test(t)) {
     errs.push(`[${m.type()}] ${t.slice(0, 200)}`);
     console.log(`  [console.${m.type()}] ${t.slice(0, 200)}`);
   }
