@@ -46,6 +46,16 @@ engines="dist-jit"
 for f in $page $images; do
   [ -f "$SITE/$f" ] || fail "site/$f missing"
 done
+# a page file added to site/ but not to the lists above would only be
+# missed in production
+if git -C "$WEB_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  while IFS= read -r f; do
+    case " $page $images " in
+      *" $f "*) ;;
+      *) fail "site/$f is tracked but not in this script's page or image list" ;;
+    esac
+  done < <(git -C "$WEB_DIR" ls-files site | grep -v '^site/dist' | sed 's#^site/##')
+fi
 # app.js fetches "dist/boards.tar" unconditionally, whatever ?dist= selects
 [ -f "$SITE/dist/boards.tar" ] ||
   fail "site/dist/boards.tar missing — run scripts/build-qemu.sh (or scripts/pack-boards.sh)"
