@@ -27,7 +27,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Side, compareDigestLogs, FLASHES, claimRunStamp, PLUGIN } from "./lockstep.mjs";
-import { loadOwnFlash } from "./lib/page.mjs";
+import { bounded, loadOwnFlash, pageCall, PageUnresponsive } from "./lib/page.mjs";
 import { NATIVE_JIT_BIN } from "./lib/build-dirs.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
 
@@ -93,7 +93,24 @@ class WasmSide {
     this.dead = false;
     this.exitCode = null;
     this.grabbed = false;
+    // set once a page call has gone unanswered: no further calls are made
+    this.unresponsive = false;
     this.progress = { epoch: -1, insns: 0 };
+  }
+
+  // a page call bounded by pageCall(); one that times out marks the page
+  // unresponsive, any failure gives fallback
+  async call(fn, what, fallback = null, ms) {
+    if (this.unresponsive) return fallback;
+    try {
+      return await pageCall(this.page.evaluate(fn), what, ms);
+    } catch (e) {
+      if (e instanceof PageUnresponsive) {
+        this.unresponsive = true;
+        this.errTail = (this.errTail || "") + e.message + "\n";
+      }
+      return fallback;
+    }
   }
 
   async start(flashPath, port, dist) {
@@ -227,28 +244,26 @@ class WasmSide {
   // writes from the program thread are visible on the main thread).  This
   // is what makes a wall-timeout diagnosable instead of a blind 45-min hole.
   async pollPage() {
-    if (this.grabbed || !this.page) return;
-    try {
-      const p = this.page.evaluate(() => {
-        const m = window.__qemu;
-        if (!m || !m.FS) return null;
-        try {
-          const bytes = m.FS.readFile("/lockstep.log");
-          return new TextDecoder("latin1")
-            .decode(bytes.subarray(Math.max(0, bytes.length - 4096)));
-        } catch { return null; }
-      });
-      // never let a busy page stall the driver loop
-      const tail = await Promise.race([p, new Promise((r) => setTimeout(() => r(null), 5000))]);
-      if (tail != null) this.absorb(tail);
-    } catch { /* page mid-teardown */ }
+    if (this.grabbed || !this.page || this.unresponsive) return;
+    // never let a busy page stall the driver loop; waitExited() is what
+    // calls a page that stays silent unresponsive
+    const tail = await bounded(this.page.evaluate(() => {
+      const m = window.__qemu;
+      if (!m || !m.FS) return null;
+      try {
+        const bytes = m.FS.readFile("/lockstep.log");
+        return new TextDecoder("latin1")
+          .decode(bytes.subarray(Math.max(0, bytes.length - 4096)));
+      } catch { return null; }
+    }), null, { ms: 5000 });
+    if (tail != null) this.absorb(tail);
   }
 
   // grab the finished logs out of the page FS (works while the runtime
   // is torn down but the page is still up; the onExit hook is a backup)
   async grab() {
     if (this.grabbed) return;
-    const rd = await this.page.evaluate(() => {
+    const rd = await this.call(() => {
       const m = window.__qemu;
       if (!m || !m.FS) return null;
       const f = (p) => {
@@ -256,7 +271,7 @@ class WasmSide {
         catch { return null; }
       };
       return { serial: f("/serial.log"), ls: f("/lockstep.log") };
-    }).catch(() => null);
+    }, "the log grab");
     if (rd) {
       this.grabbed = true;
       if (rd.ls != null) fs.writeFileSync(this.log, rd.ls, "latin1");
@@ -266,14 +281,14 @@ class WasmSide {
 
   async waitExited() {
     for (;;) {
-      const st = await this.page.evaluate(() => {
+      const st = await this.call(() => {
         const el = document.querySelector("#status");
         return el ? { exitCode: window.__ui?.exitCode ?? null, cls: el.className || "" } : null;
-      }).catch(() => null);
+      }, "the status read");
       if (!st || st.exitCode != null || /error/i.test(st.cls)) break;
       await new Promise((r) => setTimeout(r, 500));
     }
-    for (let i = 0; i < 40 && !this.grabbed; i++) {
+    for (let i = 0; i < 40 && !this.grabbed && !this.unresponsive; i++) {
       await this.grab();
       if (!this.grabbed) await new Promise((r) => setTimeout(r, 250));
     }
@@ -282,23 +297,17 @@ class WasmSide {
   }
 
   async quit() {
-    if (this.page) {
-      // final screenshot of the wasm leg (page may be wedged — race it so a
-      // frozen renderer can never stall the driver; saved into the run dir,
-      // the driver copies it to tests/results next to the JSON)
-      try {
-        await Promise.race([
-          (async () => {
-            await this.page.screenshot({ path: path.join(this.dir, "final.png") });
-            const lcd = await this.page.$("#lcd");
-            if (lcd) await lcd.screenshot({ path: path.join(this.dir, "final-lcd.png") });
-          })(),
-          new Promise((r) => setTimeout(r, 10000)),
-        ]);
-      } catch {}
+    if (this.page && !this.unresponsive) {
+      // final screenshot of the wasm leg (saved into the run dir, the
+      // driver copies it to tests/results next to the JSON)
+      await bounded((async () => {
+        await this.page.screenshot({ path: path.join(this.dir, "final.png") });
+        const lcd = await this.page.$("#lcd");
+        if (lcd) await lcd.screenshot({ path: path.join(this.dir, "final-lcd.png") });
+      })(), null, { ms: 10000 });
     }
     if (this.browser) {
-      await this.browser.close().catch(() => {});
+      await bounded(this.browser.close(), null, { ms: 30000 });
     }
   }
 }
@@ -359,6 +368,7 @@ async function runPairWasm(args, flashPath, dir, log) {
   const need = Math.floor(args.insns / args.epoch) * args.epoch;
   const reasons = [
     timedOut ? `wall timeout ${args.secs}s` : null,
+    b.unresponsive ? "the page stopped answering (main thread frozen?)" : null,
     ...[a, b].filter((s) => s.progress.insns < need)
       .map((s) => `${s.name} stopped at ${fmt(s.progress.insns)} insns, short of ${fmt(need)}`),
   ].filter(Boolean);

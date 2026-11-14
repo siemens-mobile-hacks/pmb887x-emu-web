@@ -26,7 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { opt as argOpt } from "./lib/argv.mjs";
 import { flashFiles } from "./lib/boards.mjs";
-import { bootOwnFlash, bounded } from "./lib/page.mjs";
+import { bootOwnFlash, bounded, pageCall } from "./lib/page.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 fs.mkdirSync(path.join(ROOT, "tests", "results"), { recursive: true });
@@ -131,10 +131,8 @@ for (const board of BOARDS) {
     await new Promise((r) => setTimeout(r, 10000));
     // A frozen page (the pre-0034 KE800 deadlocked the renderer) makes
     // evaluate hang forever, so bound it and treat a timeout as a failure.
-    const mx = await Promise.race([
-      page.evaluate(probe, EXIT_RE.source).catch((e) => ({ err: String(e).slice(0, 120) })),
-      new Promise((r) => setTimeout(() => r({ err: "page unresponsive" }), 20000)),
-    ]);
+    const mx = await pageCall(page.evaluate(probe, EXIT_RE.source), "probe")
+      .catch((e) => ({ err: String(e.message || e).slice(0, 120) }));
     if (mx.err) { errors.push(mx.err); break; }
     if (mx.insns - lastProgress.insns >= STALL_INSNS || mx.fb !== last.fb) {
       lastProgress = { t: Date.now(), insns: mx.insns };
@@ -189,7 +187,7 @@ for (const board of BOARDS) {
   await bounded(page.close(), null);
 }
 
-await browser.close();
+await bounded(browser.close(), null, { ms: 30000 });
 
 console.log(`\n| board | ${DIST} | fb | insns | guest s | note |`);
 console.log("| ----- | ------- | -- | ----- | ------- | ---- |");

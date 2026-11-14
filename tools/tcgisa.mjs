@@ -22,6 +22,7 @@
 // Exit code: 0 = suite green, 1 = failure/timeout (the log is still
 // printed + written to outfile if given).
 import { chromium } from "playwright-core";
+import { bounded, pageCall } from "./lib/page.mjs";
 
 const port = process.argv[2] || "8080";
 const dist = process.argv[3] || "dist-jit";
@@ -67,18 +68,19 @@ for (;;) {
   if (bridge) { serial = bridge.text; break; }
   if (fatal) { console.error(`[tcgisa] ${dist}: page died: ${fatal}`); break; }
   try {
-    const s = await page.evaluate(() => {
+    const s = await pageCall(page.evaluate(() => {
       const m = window.__qemu;
       try {
         return new TextDecoder("latin1").decode(m.FS.readFile("/serial.log"));
       } catch (e) {
         return "";
       }
-    });
+    }), "serial read");
     serial = s;
     if (/^# result:.*\n/m.test(serial)) break; // whole verdict line printed
   } catch (e) {
-    // page closed mid-run without the bridge: keep whatever we have
+    // page closed mid-run without the bridge, or frozen: keep whatever we have
+    console.error(`[tcgisa] ${dist}: ${String(e.message || e).split("\n")[0]}`);
     break;
   }
   if (Date.now() - t0 > timeoutMs) {
@@ -98,7 +100,7 @@ const notOk = (serial.match(/^not ok /gm) || []).length;
 if (qemuLog.length) {
   console.error(`[tcgisa] qemu stderr tail:\n  ` + qemuLog.slice(-(Number(process.env.TCGISA_TAIL) || 6)).join("\n  "));
 }
-await browser.close();
+await bounded(browser.close(), null, { ms: 30000 });
 
 if (!result) {
   console.error(`[tcgisa] ${dist}: no suite result line — boot/exit failure?`);

@@ -7,6 +7,7 @@
 // TESTFLASH=) and a built site/dist-jit; everything else is pure UI.
 import { chromium } from "playwright-core";
 import { readFile } from "node:fs/promises";
+import { pageCall } from "./lib/page.mjs";
 
 const PORT = process.env.PORT || "8080";
 const URL_ = `http://127.0.0.1:${PORT}/`;
@@ -24,6 +25,11 @@ function ok(name, cond, extra = "") {
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1770, height: 1000 } });
 page.on("pageerror", (e) => { fails++; console.log("PAGEERROR", String(e).slice(0, 300)); });
+// a frozen page ends the run with an error instead of hanging it
+const evaluate = (fn, arg) => pageCall(page.evaluate(fn, arg), "evaluate");
+const $eval = (sel, fn, arg) => pageCall(page.$eval(sel, fn, arg), `$eval ${sel}`);
+const $$eval = (sel, fn, arg) => pageCall(page.$$eval(sel, fn, arg), `$$eval ${sel}`);
+const setViewportSize = (size) => pageCall(page.setViewportSize(size), "setViewportSize");
 await page.goto(URL_, { waitUntil: "networkidle" });
 
 // A host too slow to keep up, as the page sees one: the guest's workers held
@@ -56,13 +62,13 @@ async function slowHost() {
   return () => all("Debugger.resume", "Debugger.disable");
 }
 
-const has = (sel) => page.$eval("body", (b, s) => !!b.querySelector(s), sel);
-const text = (sel) => page.$eval(sel, (e) => e.textContent.trim()).catch(() => null);
-const ui = () => page.evaluate(() => window.__ui);
+const has = (sel) => $eval("body", (b, s) => !!b.querySelector(s), sel);
+const text = (sel) => $eval(sel, (e) => e.textContent.trim()).catch(() => null);
+const ui = () => evaluate(() => window.__ui);
 
 // in-page drop of synthesized files — the real DataTransfer path
 async function drop(sel, names) {
-  await page.evaluate(({ sel, names }) => {
+  await evaluate(({ sel, names }) => {
     const dt = new DataTransfer();
     for (const n of names) dt.items.add(new File([new Uint8Array(32)], n));
     document.querySelector(sel).dispatchEvent(
@@ -73,33 +79,33 @@ async function drop(sel, names) {
 /* ---------------- Firmware panel ---------------- */
 
 ok("1.1 legend is Firmware", (await text("#firmware-panel legend")) === "Firmware");
-ok("1.1 no Boot/Fullflash heading", await page.evaluate(() => {
+ok("1.1 no Boot/Fullflash heading", await evaluate(() => {
   const head = [...document.querySelectorAll("legend, h1, h2, h3, .group-title, .sheet-title")];
   return !head.some((e) => /^(boot|fullflash)$/i.test(e.textContent.trim()));
 }));
 
-ok("1.2 radiogroup", await page.evaluate(() => {
+ok("1.2 radiogroup", await evaluate(() => {
   const g = document.querySelector('[role="radiogroup"]');
   return !!g && g.querySelectorAll('[role="radio"]').length === 2;
 }));
-ok("1.2 default is Preset", await page.$eval("#ff-mode-preset", (e) => e.getAttribute("aria-checked") === "true"));
+ok("1.2 default is Preset", await $eval("#ff-mode-preset", (e) => e.getAttribute("aria-checked") === "true"));
 ok("1.2 preset mode has no file input", !(await has('#firmware-panel input[type="file"]')));
 ok("1.3 preset dropdown present", await has("#ff-preset"));
 
 // order of the preset body
-ok("1.3 render order", await page.evaluate(() => {
+ok("1.3 render order", await evaluate(() => {
   const ids = [...document.querySelector("#ff-preset").parentElement.children].map((e) => e.id || e.className);
   return ids[0] === "ff-preset" && ids[1].includes("ff-status-row")
     && ids[2] === "ff-preset-bar" && ids[3] === "ff-preset-device";
-}), await page.evaluate(() => [...document.querySelector("#ff-preset").parentElement.children].map((e) => e.id || e.className).join(",")));
+}), await evaluate(() => [...document.querySelector("#ff-preset").parentElement.children].map((e) => e.id || e.className).join(",")));
 
 const st0 = await text("#ff-preset-status");
 ok("1.3 status line", /^(Not downloaded · fetches \d+ MiB on Start|✓ Cached · [\d.]+ MiB|Partly downloaded)/.test(st0), st0);
-ok("1.3 clear cache hidden when uncached", await page.$eval("#ff-preset-delete", (e, cached) =>
+ok("1.3 clear cache hidden when uncached", await $eval("#ff-preset-delete", (e, cached) =>
   e.hidden === !cached, /Cached|Partly/.test(st0)));
 ok("1.3 device line", /^Device: [a-z0-9-]+ \(from preset\)$/.test(await text("#ff-preset-device")),
   await text("#ff-preset-device"));
-ok("1.3 no trash button", await page.$eval("#ff-preset-delete", (e) => e.tagName === "BUTTON" && !e.querySelector("svg")));
+ok("1.3 no trash button", await $eval("#ff-preset-delete", (e) => e.tagName === "BUTTON" && !e.querySelector("svg")));
 
 // selecting another preset updates both lines without a reload
 await page.selectOption("#ff-preset", "ke800v11b");
@@ -115,12 +121,12 @@ await page.focus("#ff-mode-preset");
 await page.keyboard.press("ArrowRight");
 ok("1.2 arrow key selects Own file", (await ui()).mode === "own");
 ok("1.2 own mode has no preset dropdown", !(await has("#ff-preset")));
-ok("1.4 own mode file input", await page.$eval("#fullflash", (e) => e.accept === ".bin,.cfi-efa" && e.multiple));
+ok("1.4 own mode file input", await $eval("#fullflash", (e) => e.accept === ".bin,.cfi-efa" && e.multiple));
 ok("1.4 drop zone copy", (await text("#ff-bin-zone")) === "Choose file or drop here");
-ok("1.4 device placeholder", await page.$eval("#device", (e) =>
+ok("1.4 device placeholder", await $eval("#device", (e) =>
   e.value === "" && e.selectedOptions[0].disabled && e.selectedOptions[0].textContent === "Select a device"));
 ok("1.4 no EFA block for no device", !(await has("#ff-efa-block")));
-ok("2.2 Start disabled without firmware", await page.$eval("#btn-start", (e) => e.disabled));
+ok("2.2 Start disabled without firmware", await $eval("#btn-start", (e) => e.disabled));
 ok("2.2 caption names what is missing",
   (await text("#status-caption")) === "Choose a file and device to start");
 
@@ -134,10 +140,10 @@ ok("1.5r4 sidecar alone with no .bin rejected",
   (await text("#ff-bin-note")) === "Choose one .bin and, optionally, one .cfi-efa.");
 
 await drop("#ff-bin-slot", ["S75-one.bin", "note.txt", "x.cfi-otp0"]);
-ok("1.5r2 one .bin + others", (await page.$eval("#ff-bin-name", (e) => e.textContent)) === "S75-one.bin"
+ok("1.5r2 one .bin + others", (await $eval("#ff-bin-name", (e) => e.textContent)) === "S75-one.bin"
   && (await text("#ff-bin-note")) === "Ignored 2 other file(s).");
-ok("1.4 chip replaced the drop zone", await page.$eval("#ff-bin-zone", (e) => e.hidden));
-ok("1.4/1.5 device inferred from the name", await page.$eval("#device", (e) => e.value) === "siemens-s75");
+ok("1.4 chip replaced the drop zone", await $eval("#ff-bin-zone", (e) => e.hidden));
+ok("1.4/1.5 device inferred from the name", await $eval("#device", (e) => e.value) === "siemens-s75");
 ok("1.5 EFA block absent for siemens-s75", !(await has("#ff-efa-block")));
 
 // a sidecar dropped onto a non-LG device: kept, warned about, not sent
@@ -148,48 +154,48 @@ ok("1.5r1 non-LG sidecar warning",
 
 await page.selectOption("#device", "lg-ke800");
 ok("1.4.5 EFA block appears for LG", await has("#ff-efa-block"));
-ok("1.4.5 remembered sidecar came back", await page.$eval("#ff-efa-name", (e) => e.textContent) === "a.cfi-efa");
+ok("1.4.5 remembered sidecar came back", await $eval("#ff-efa-name", (e) => e.textContent) === "a.cfi-efa");
 ok("1.4.5 EFA helper text",
   (await text("#ff-efa-block .hint")) === "LG phones keep their EEPROM in the EFA block.");
 await drop("#ff-efa-slot", ["wrong.bin"]);
 ok("1.5 .bin into the EFA zone rejected", (await text("#ff-efa-note")) === "Expected a .cfi-efa file."
-  && (await page.$eval("#ff-efa-name", (e) => e.textContent)) === "a.cfi-efa");
+  && (await $eval("#ff-efa-name", (e) => e.textContent)) === "a.cfi-efa");
 await page.selectOption("#device", "siemens-s75");
 ok("1.4.5 EFA block gone again", !(await has("#ff-efa-block")));
 
 // case-insensitive matching
 await drop("#ff-bin-slot", ["KE800.BIN", "KE800.CFI-EFA"]);
 ok("1.5 case-insensitive extensions",
-  (await page.$eval("#ff-bin-name", (e) => e.textContent)) === "KE800.BIN"
-  && (await page.$eval("#device", (e) => e.value)) === "lg-ke800");
+  (await $eval("#ff-bin-name", (e) => e.textContent)) === "KE800.BIN"
+  && (await $eval("#device", (e) => e.value)) === "lg-ke800");
 
 /* values survive a mode switch */
 await page.click("#ff-mode-preset");
 await page.click("#ff-mode-own");
 ok("1.2 own-file values survived the round trip",
-  (await page.$eval("#ff-bin-name", (e) => e.textContent)) === "KE800.BIN"
-  && (await page.$eval("#device", (e) => e.value)) === "lg-ke800");
+  (await $eval("#ff-bin-name", (e) => e.textContent)) === "KE800.BIN"
+  && (await $eval("#device", (e) => e.value)) === "lg-ke800");
 
 /* Advanced ▸ Siemens keys — Own file + a siemens-* device only */
 ok("keys block absent for LG", !(await has("#siemens-keys-block")));
 await page.selectOption("#device", "siemens-s75");
 ok("keys block appears for Siemens", await has("#siemens-keys-block"));
 ok("keys default is recalculate",
-  (await page.$eval('input[name="siemens-mode"]:checked', (e) => e.value)) === "recalc");
-ok("keys block sits above IMEI/ESN", await page.$eval(".adv-grid", (g) =>
+  (await $eval('input[name="siemens-mode"]:checked', (e) => e.value)) === "recalc");
+ok("keys block sits above IMEI/ESN", await $eval(".adv-grid", (g) =>
   [...g.children].map((c) => c.id || c.querySelector("input,select")?.id).join(",")
     === "sim,operator,startup,gsm,siemens-keys-block,imei,esn"));
 ok("GSM network is a checkbox, ticked by default",
-  await page.$eval("#gsm", (e) => e.type === "checkbox" && e.checked));
+  await $eval("#gsm", (e) => e.type === "checkbox" && e.checked));
 ok("IMEI/ESN editable in recalc mode",
-  !(await page.$eval("#imei", (e) => e.disabled)) && !(await page.$eval("#esn", (e) => e.disabled)));
+  !(await $eval("#imei", (e) => e.disabled)) && !(await $eval("#esn", (e) => e.disabled)));
 
 await page.check('input[name="siemens-mode"][value="recover-esn"]');
 ok("brute-force takes over IMEI/ESN",
-  (await page.$eval("#imei", (e) => e.disabled)) && (await page.$eval("#esn", (e) => e.disabled))
+  (await $eval("#imei", (e) => e.disabled)) && (await $eval("#esn", (e) => e.disabled))
   && (await text("#siemens-keys-note")) === "IMEI and ESN come from the fullflash in this mode.");
 ok("the other Advanced fields stay editable",
-  !(await page.$eval("#operator", (e) => e.disabled)));
+  !(await $eval("#operator", (e) => e.disabled)));
 ok("the key mode is not named on the Advanced summary",
   !(await text("#adv-summary")).includes("keys"));
 
@@ -198,52 +204,52 @@ ok("the key mode is not named on the Advanced summary",
 await page.click("#ff-mode-preset");
 ok("keys block absent in Preset mode", !(await has("#siemens-keys-block")));
 ok("IMEI/ESN unlocked again in Preset mode",
-  !(await page.$eval("#imei", (e) => e.disabled)) && !(await page.$eval("#esn", (e) => e.disabled)));
+  !(await $eval("#imei", (e) => e.disabled)) && !(await $eval("#esn", (e) => e.disabled)));
 await page.click("#ff-mode-own");
 ok("the mode came back with the block",
-  (await page.$eval('input[name="siemens-mode"]:checked', (e) => e.value)) === "recover-esn");
+  (await $eval('input[name="siemens-mode"]:checked', (e) => e.value)) === "recover-esn");
 await page.check('input[name="siemens-mode"][value="recalc"]');
 
 ok("1.6 no Start/Stop inside the panel",
   !(await has("#firmware-panel #btn-start")) && !(await has("#firmware-panel #btn-stop")));
 ok("1.6 last child is Advanced",
-  await page.$eval("#firmware-panel", (e) => e.lastElementChild.id === "advanced"));
+  await $eval("#firmware-panel", (e) => e.lastElementChild.id === "advanced"));
 
 /* ---------------- status pill ---------------- */
 ok("2.1 the action lives in the pill", await has("#status #pill-action #btn-start"));
-ok("2.1 capture buttons follow the pill", await page.evaluate(() => {
+ok("2.1 capture buttons follow the pill", await evaluate(() => {
   const row = document.querySelector(".status-row");
   return row.children[0].id === "status" && row.children[1].id === "btn-shot"
     && row.children[2].id === "btn-record";
 }));
-ok("2.2 exactly one action button", await page.evaluate(() =>
+ok("2.2 exactly one action button", await evaluate(() =>
   [...document.querySelectorAll("button")].filter((b) => /^(Start|Stop|Cancel)$/.test(b.textContent.trim())).length === 1));
 ok("2.2 idle dot + text", (await text("#status-text")) === "Idle"
-  && (await page.$eval("#status", (e) => e.dataset.state)) === "idle");
+  && (await $eval("#status", (e) => e.dataset.state)) === "idle");
 ok("2.3 screen placeholder", (await text("#ov-msg")) === "Ready to boot");
 
 /* ---------------- Run panel ---------------- */
-ok("3.1 groups", await page.evaluate(() =>
+ok("3.1 groups", await evaluate(() =>
   [...document.querySelectorAll("#post-panel .group-title")].map((e) => e.textContent).join() === "Accessory,Keyboard,Export"));
 ok("3.1 no Run legend", !(await has("#post-panel legend")));
-ok("3.1 accessory group contents", await page.evaluate(() => {
+ok("3.1 accessory group contents", await evaluate(() => {
   const g = document.querySelectorAll("#post-panel .group")[0];
   return !!g.querySelector("select#acc-select") && g.querySelectorAll("button").length === 1
     && /^(Connect|Disconnect)$/.test(g.querySelector("#btn-accessory").textContent.trim());
 }));
-ok("3.1 keyboard group contents", await page.evaluate(() => {
+ok("3.1 keyboard group contents", await evaluate(() => {
   const g = document.querySelectorAll("#post-panel .group")[1];
   return !!g.querySelector("#kbd-keyboard") && !!g.querySelector("#kbd-variant")
     && !!g.querySelector("#kbd-hints") && !!g.querySelector("#kbd-typing") && !!g.querySelector("#opt-hud");
 }));
 ok("3.1 shortcut checkbox copy",
-  (await page.$eval("#kbd-hints", (e) => e.parentElement.textContent.trim())) === "Show shortcuts on keys");
-ok("3.1 typing checkbox copy, on by default", await page.$eval("#kbd-typing", (e) =>
+  (await $eval("#kbd-hints", (e) => e.parentElement.textContent.trim())) === "Show shortcuts on keys");
+ok("3.1 typing checkbox copy, on by default", await $eval("#kbd-typing", (e) =>
   e.parentElement.textContent.trim() === "Type letters on the phone" && e.checked));
 // multi-tap: a character is the key it is on, pressed as often as the
 // firmware cycles to it; on a Russian table each script counts from its own
 // input language
-ok("3.1 multi-tap tables", await page.evaluate(async () => {
+ok("3.1 multi-tap tables", await evaluate(async () => {
   const { tapTable } = await import("./keyboards.js");
   const at = (kbd, v, ch) => { const t = tapTable(kbd, v).chars.get(ch); return t && `${t.key}x${t.count}`; };
   return at("s75", "en", "s") === "7x4" && at("s75", "en", " ") === "1x1" && at("s75", "en", "?") === "0x3"
@@ -254,7 +260,7 @@ ok("3.1 multi-tap tables", await page.evaluate(async () => {
 // a character on no cycle goes through the * picker: Siemens walks its
 // circular grid from the "*" it opens on, LG turns pages and presses the
 // symbol's key; LG also wakes a phone that has been quiet
-ok("3.1 symbol pickers", await page.evaluate(async () => {
+ok("3.1 symbol pickers", await evaluate(async () => {
   const { tapTable } = await import("./keyboards.js");
   const keys = (kbd, ch) => tapTable(kbd, "en").chars.get(ch)?.keys?.join();
   return keys("siemens", "$") === "star,right,right,right,right,right,right,center"
@@ -266,7 +272,7 @@ ok("3.1 symbol pickers", await page.evaluate(async () => {
 }));
 // capitals: Siemens keeps the case it left the phone in, LG switches back
 // after every capital; Backspace is the model's erase key
-ok("3.1 capitals and erase", await page.evaluate(async () => {
+ok("3.1 capitals and erase", await evaluate(async () => {
   const { tapTable } = await import("./keyboards.js");
   const s75 = tapTable("s75", "en"), ke = tapTable("ke800", "en"), gen = tapTable("siemens", "en");
   return s75.upper.capital.lower.join() === "hash" && s75.upper.small.caps.join() === "hash"
@@ -278,7 +284,7 @@ ok("3.1 capitals and erase", await page.evaluate(async () => {
 // tap speed is the phone's own: the generic Siemens keyboard goes by the
 // board's chip (PMB8875 quicker than PMB8876, and an unknown one gets the
 // slower times)
-ok("3.1 tap timing per phone", await page.evaluate(async () => {
+ok("3.1 tap timing per phone", await evaluate(async () => {
   const { tapTable, forDevice } = await import("./keyboards.js");
   const t = (kbd, dev, cpu) => { const x = forDevice(tapTable(kbd, "en").timing, dev, cpu); return `${x.hold}/${x.gap}/${x.pause}`; };
   return t("siemens", "siemens-sl65", "pmb8875") === "30/30/900" && t("siemens", "siemens-el71", "pmb8876") === "60/40/1100"
@@ -288,19 +294,19 @@ ok("3.1 tap timing per phone", await page.evaluate(async () => {
 }));
 // ... the chip as the board configs give it, through an include (C75) and
 // an extends (S66, on the S65's)
-ok("3.1 typing goes by the board's chip", await page.evaluate(() =>
+ok("3.1 typing goes by the board's chip", await evaluate(() =>
   ["siemens-c75", "siemens-cx75", "siemens-s66", "siemens-sk65"].every((d) => window.__boardCpu(d) === "pmb8875")
   && ["siemens-s75", "siemens-e71", "siemens-m81"].every((d) => window.__boardCpu(d) === "pmb8876")));
-ok("3.1 HUD label has no parenthetical, tooltip instead", await page.$eval("#opt-hud", (e) =>
+ok("3.1 HUD label has no parenthetical, tooltip instead", await $eval("#opt-hud", (e) =>
   e.parentElement.textContent.trim() === "Performance HUD" && !!e.parentElement.title));
-ok("3.1 export buttons", await page.evaluate(() =>
+ok("3.1 export buttons", await evaluate(() =>
   [...document.querySelectorAll(".export-row .btn")].map((b) => b.textContent.trim()).join() === "Flash,EFA"
   && document.querySelectorAll(".export-row .btn svg").length === 2));
-ok("3.2 exports disabled before any run", await page.evaluate(() =>
+ok("3.2 exports disabled before any run", await evaluate(() =>
   document.getElementById("btn-save-flash").disabled && document.getElementById("btn-save-efa").disabled
   && !document.getElementById("export-caption").hidden
   && document.getElementById("export-caption").textContent === "Available once running"));
-ok("EFA export is only offered for an LG phone", await page.evaluate(async () => {
+ok("EFA export is only offered for an LG phone", await evaluate(async () => {
   document.getElementById("ff-mode-preset").click(); // the dropdown only
   const sel = document.getElementById("ff-preset");  // exists in preset mode
   const efa = document.getElementById("btn-save-efa");
@@ -317,7 +323,7 @@ ok("EFA export is only offered for an LG phone", await page.evaluate(async () =>
 }));
 
 /* every disabled control states its reason within 8px */
-ok("6.1 caption sits within 8px of the pill", await page.evaluate(() => {
+ok("6.1 caption sits within 8px of the pill", await evaluate(() => {
   const pill = document.querySelector(".status-row").getBoundingClientRect();
   const cap = document.getElementById("status-caption");
   if (cap.hidden) return true;
@@ -327,7 +333,7 @@ ok("6.1 caption sits within 8px of the pill", await page.evaluate(() => {
 }));
 // the reason comes and goes with the mode; on desktop it must cost the page
 // above the screen nothing at all
-ok("6.1 switching modes moves nothing above the screen", await page.evaluate(async () => {
+ok("6.1 switching modes moves nothing above the screen", await evaluate(async () => {
   const snap = () => {
     const p = document.getElementById("status").getBoundingClientRect();
     return [Math.round(p.left), Math.round(p.top),
@@ -346,15 +352,15 @@ ok("6.1 switching modes moves nothing above the screen", await page.evaluate(asy
   return document.getElementById("status-caption").textContent === "Choose a file and device to start"
     && String(withoutCaption) === String(withCaption);
 }));
-ok("6.1 export caption within 8px", await page.evaluate(() => {
+ok("6.1 export caption within 8px", await evaluate(() => {
   const row = document.querySelector(".export-row").getBoundingClientRect();
   return document.getElementById("export-caption").getBoundingClientRect().top - row.bottom <= 8;
 }));
-ok("6.2 exactly one filled primary button", await page.evaluate(() =>
+ok("6.2 exactly one filled primary button", await evaluate(() =>
   document.querySelectorAll(".pill-btn.primary").length === 1));
 
 /* ---------------- the performance HUD ---------------- */
-ok("v4.1 nothing above the panels carries performance text", await page.evaluate(() => {
+ok("v4.1 nothing above the panels carries performance text", await evaluate(() => {
   for (let n = document.querySelector("main").previousElementSibling; n; n = n.previousElementSibling) {
     if (/MIPS|fps|halt|isolated|Mozilla|GB/i.test(n.textContent)) return false;
   }
@@ -362,28 +368,28 @@ ok("v4.1 nothing above the panels carries performance text", await page.evaluate
 }));
 // one place at every width: an overlay on the screen box, so turning it on
 // costs the column no height and cannot move the keypad
-ok("v4.5 the strip is an overlay on the screen box", await page.evaluate(() => {
+ok("v4.5 the strip is an overlay on the screen box", await evaluate(() => {
   const h = document.getElementById("hud");
   return h.parentElement === document.querySelector(".lcd-wrap")
     && getComputedStyle(h).position === "absolute";
 }));
-ok("v4.5 hidden until the toggle is on", await page.$eval("#hud", (e) => e.hidden));
-ok("v4.G the strip is aria-hidden", await page.$eval("#hud", (e) => e.getAttribute("aria-hidden") === "true"));
-ok("v4.2 Copy diagnostics is in the Keyboard/Export panel", await page.evaluate(() =>
+ok("v4.5 hidden until the toggle is on", await $eval("#hud", (e) => e.hidden));
+ok("v4.G the strip is aria-hidden", await $eval("#hud", (e) => e.getAttribute("aria-hidden") === "true"));
+ok("v4.2 Copy diagnostics is in the Keyboard/Export panel", await evaluate(() =>
   document.querySelector("#post-panel #btn-diag")?.textContent.trim() === "Copy diagnostics"));
-ok("v4.2 short user agent: " + await page.evaluate(() => window.__hud.shortUserAgent()),
-  new RegExp(`^${UA_OS} · Chrome \\d+$`).test(await page.evaluate(() => window.__hud.shortUserAgent())));
+ok("v4.2 short user agent: " + await evaluate(() => window.__hud.shortUserAgent()),
+  new RegExp(`^${UA_OS} · Chrome \\d+$`).test(await evaluate(() => window.__hud.shortUserAgent())));
 ok("v4.2 nothing missing shows up as undefined",
-  !/undefined/.test(await page.evaluate(() => window.__hud.shortUserAgent())));
-ok("v4.2 it is built once per page load", await page.evaluate(() =>
+  !/undefined/.test(await evaluate(() => window.__hud.shortUserAgent())));
+ok("v4.2 it is built once per page load", await evaluate(() =>
   window.__hud.shortUserAgent() === window.__hud.shortUserAgent()));
-ok("v4.2 diagnostics keeps the full user agent and the 10 s averages", await page.evaluate(() => {
+ok("v4.2 diagnostics keeps the full user agent and the 10 s averages", await evaluate(() => {
   const d = window.__hud.diagnostics();
   return d.ua === navigator.userAgent && d.uaShort === window.__hud.shortUserAgent()
     && !!d.avg10s && "mips" in d.avg10s && "vratio" in d.avg10s && Array.isArray(d.samples);
 }));
 
-const panelTops = () => page.evaluate(() => [
+const panelTops = () => evaluate(() => [
   Math.round(document.getElementById("pre-panel").getBoundingClientRect().top),
   Math.round(document.getElementById("post-panel").getBoundingClientRect().top)]);
 const tops0 = await panelTops();
@@ -392,17 +398,17 @@ await page.waitForTimeout(250);
 // the strip waits for a guest to sample — it sits on the screen, and there is
 // nothing to put on an idle one — so render it by hand for the shape checks
 // that need no guest
-await page.evaluate(() => {
+await evaluate(() => {
   document.getElementById("hud").hidden = false;
   window.__hud.drawHud();
 });
-ok("v4.3 exactly two lines, and they are the whole strip", await page.evaluate(() => {
+ok("v4.3 exactly two lines, and they are the whole strip", await evaluate(() => {
   const h = document.getElementById("hud");
   const lines = [...h.children].filter((e) => e.classList.contains("hud-line"));
   return lines.length === 2
     && h.getBoundingClientRect().height <= 3 * lines[0].getBoundingClientRect().height;
 }));
-ok("v4.3 monospace, tabular figures, never wrapped", await page.evaluate(() =>
+ok("v4.3 monospace, tabular figures, never wrapped", await evaluate(() =>
   [...document.querySelectorAll(".hud-line")].every((e) => {
     const s = getComputedStyle(e);
     return /mono/i.test(s.fontFamily) && s.fontVariantNumeric.includes("tabular-nums")
@@ -411,7 +417,7 @@ ok("v4.3 monospace, tabular figures, never wrapped", await page.evaluate(() =>
 ok("v4.3 line 2 is the environment: " + await text("#hud-env"),
   new RegExp(`^${UA_OS} · Chrome \\d+ · \\d+c( · \\d+ GB)?( · isolated)?$`).test(await text("#hud-env")));
 ok("v4.3 no 10 s averages in the strip", !/10s|avg/i.test(await text("#hud")));
-ok("v4.5 legible over the screen, muted line 2", await page.evaluate(() => {
+ok("v4.5 legible over the screen, muted line 2", await evaluate(() => {
   const bg = getComputedStyle(document.getElementById("hud")).backgroundColor;
   const l1 = getComputedStyle(document.getElementById("hud-metrics")).color;
   const l2 = getComputedStyle(document.getElementById("hud-env")).color;
@@ -421,22 +427,22 @@ ok("v4.5 turning it on does not move the side panels",
   JSON.stringify(await panelTops()) === JSON.stringify(tops0), JSON.stringify([tops0, await panelTops()]));
 await page.uncheck("#opt-hud");
 await page.waitForTimeout(200);
-ok("v4.5 turning it off hides it again", await page.$eval("#hud", (e) => e.hidden));
+ok("v4.5 turning it off hides it again", await $eval("#hud", (e) => e.hidden));
 
 /* ---------------- desktop layout ---------------- */
 // the tracks stretch: the phone column is the height of the window, and a
 // panel taller than that scrolls inside itself rather than growing the row
-ok("4 three columns", await page.evaluate(() => {
+ok("4 three columns", await evaluate(() => {
   const cs = getComputedStyle(document.querySelector("main"));
   const cols = cs.gridTemplateColumns.split(" ").map(parseFloat);
   return cols.length === 3 && Math.round(cols[0]) === 420 && Math.round(cols[2]) === 420
     && cs.alignItems === "stretch";
-}), await page.evaluate(() => getComputedStyle(document.querySelector("main")).gridTemplateColumns));
-ok("4 panels top-align with the pill", await page.evaluate(() => {
+}), await evaluate(() => getComputedStyle(document.querySelector("main")).gridTemplateColumns));
+ok("4 panels top-align with the pill", await evaluate(() => {
   const t = (s) => Math.round(document.querySelector(s).getBoundingClientRect().top);
   return t("#pre-panel") === t(".status-row") && t("#post-panel") === t(".status-row");
 }));
-ok("4 the phone column fills the window height", await page.evaluate(() => {
+ok("4 the phone column fills the window height", await evaluate(() => {
   const main = document.querySelector("main");
   const cs = getComputedStyle(main);
   const inner = main.getBoundingClientRect().height
@@ -445,18 +451,18 @@ ok("4 the phone column fills the window height", await page.evaluate(() => {
   const kp = document.getElementById("keypad").getBoundingClientRect();
   return Math.abs(p.height - inner) < 1 && Math.abs(kp.bottom - p.bottom) < 1
     && p.bottom <= window.innerHeight + 1;
-}), await page.evaluate(() =>
+}), await evaluate(() =>
   `panel ${Math.round(document.querySelector(".phone-panel").getBoundingClientRect().height)}`));
 // no zoom, no transform: what is on screen is what was laid out, so a resize
 // is a reflow and the browser's own zoom is left to the user
-ok("4 nothing in the phone column is scaled after layout", await page.evaluate(() =>
+ok("4 nothing in the phone column is scaled after layout", await evaluate(() =>
   [document.querySelector(".phone-panel"), document.getElementById("keypad"),
     document.querySelector(".lcd-wrap")].every((e) => {
     const s = getComputedStyle(e);
     return (s.zoom === "1" || s.zoom === "" || s.zoom === "normal")
       && (s.transform === "none" || s.transform === "");
   })));
-ok("4 phone column centred", await page.evaluate(() => {
+ok("4 phone column centred", await evaluate(() => {
   const main = document.querySelector("main").getBoundingClientRect();
   const lcd = document.getElementById("lcd").getBoundingClientRect();
   return Math.abs((lcd.left + lcd.right) / 2 - (main.left + main.right) / 2) < 2;
@@ -467,22 +473,22 @@ ok("4 phone column centred", await page.evaluate(() => {
 // below are for the board the page opens on
 await page.click("#ff-mode-preset");
 await page.selectOption("#ff-preset", "s75v40lg1");
-await page.setViewportSize({ width: 390, height: 844 });
+await setViewportSize({ width: 390, height: 844 });
 await page.waitForTimeout(300);
-ok("5.1 no page scroll", await page.evaluate(() =>
+ok("5.1 no page scroll", await evaluate(() =>
   document.documentElement.scrollHeight <= window.innerHeight + 1
   && getComputedStyle(document.body).overflow === "hidden"));
-ok("5.2 order: row, screen, keypad", await page.evaluate(() => {
+ok("5.2 order: row, screen, keypad", await evaluate(() => {
   const t = (s) => document.querySelector(s).getBoundingClientRect().top;
   return t(".status-row") < t(".screen-row") && t(".screen-row") < t("#keypad");
 }));
-ok("5.2 title bar and panels are out of the view", await page.evaluate(() =>
+ok("5.2 title bar and panels are out of the view", await evaluate(() =>
   getComputedStyle(document.querySelector("header")).display === "none"
   && document.getElementById("pre-panel").closest(".sheet") !== null
   && document.getElementById("post-panel").closest(".sheet") !== null));
 
 /* ---------------- one 32px control row ---------------- */
-ok("v2.1 exactly one row above the screen", await page.evaluate(() => {
+ok("v2.1 exactly one row above the screen", await evaluate(() => {
   const top = document.querySelector(".screen-row").getBoundingClientRect().top;
   // every element box that sits entirely above the screen and is not an
   // ancestor of it must belong to the single control row
@@ -493,9 +499,9 @@ ok("v2.1 exactly one row above the screen", await page.evaluate(() => {
     return row.contains(e) || e.contains(row);
   });
 }));
-ok("v2.1 row is 32px tall", await page.$eval(".status-row", (e) =>
+ok("v2.1 row is 32px tall", await $eval(".status-row", (e) =>
   Math.round(e.getBoundingClientRect().height) === 32));
-ok("v2.1 pill + five 28px buttons", await page.evaluate(() => {
+ok("v2.1 pill + five 28px buttons", await evaluate(() => {
   const row = document.querySelector(".status-row");
   const ids = [...row.children].map((e) => e.id);
   const sq = (id) => {
@@ -510,19 +516,19 @@ ok("v2.1 pill + five 28px buttons", await page.evaluate(() => {
     && !document.getElementById("btn-sound").hidden
     && sq("btn-shot") && sq("btn-record") && sq("btn-sound") && sq("btn-fullscreen") && sq("btn-settings")
     && document.getElementById("btn-settings").getAttribute("aria-label") === "Settings";
-}), await page.evaluate(() => [...document.querySelector(".status-row").children].map((e) => e.id).join()));
+}), await evaluate(() => [...document.querySelector(".status-row").children].map((e) => e.id).join()));
 
 /* ---------------- recording, idle ---------------- */
-ok("v3.1 camcorder icon, no red circle", await page.evaluate(() => {
+ok("v3.1 camcorder icon, no red circle", await evaluate(() => {
   const b = document.getElementById("btn-record");
   return getComputedStyle(b.querySelector(".rec-cam")).display === "block"
     && getComputedStyle(b.querySelector(".rec-dot")).display === "none";
 }));
-ok("v3.1 disabled while idle, with the reason in its name", await page.evaluate(() => {
+ok("v3.1 disabled while idle, with the reason in its name", await evaluate(() => {
   const b = document.getElementById("btn-record");
   return b.disabled && b.getAttribute("aria-label") === "Start recording (emulator not running)";
 }));
-ok("v3.1 nothing in the row is danger-coloured while idle", await page.evaluate(() => {
+ok("v3.1 nothing in the row is danger-coloured while idle", await evaluate(() => {
   const bad = getComputedStyle(document.documentElement).getPropertyValue("--bad").trim();
   const rgb = (c) => { const d = document.createElement("div"); d.style.color = c; return d.style.color; };
   const target = rgb(bad);
@@ -533,15 +539,15 @@ ok("v3.1 nothing in the row is danger-coloured while idle", await page.evaluate(
       && !cs.backgroundColor.includes("74, 20, 20");
   });
 }));
-ok("v2.1 6px dot", await page.$eval(".status-dot", (e) =>
+ok("v2.1 6px dot", await $eval(".status-dot", (e) =>
   Math.round(e.getBoundingClientRect().width) === 6));
 ok("v2.1 action button is 24px tall and right-aligned in the pill",
-  await page.evaluate(() => {
+  await evaluate(() => {
     const b = document.querySelector("#pill-action button").getBoundingClientRect();
     const pill = document.getElementById("status").getBoundingClientRect();
     return Math.round(b.height) === 24 && pill.right - b.right < 8;
   }));
-ok("v2.1 idle pill names the firmware and opens the sheet", await page.evaluate(() => {
+ok("v2.1 idle pill names the firmware and opens the sheet", await evaluate(() => {
   const t = document.getElementById("status-text").textContent;
   const open = document.getElementById("status-open");
   const cs = getComputedStyle(document.getElementById("status-text"));
@@ -554,7 +560,7 @@ ok("v2.1 no locked-summary row left", !(await has("#ff-summary")) && !(await has
 /* ---------------- thin edge keys ---------------- */
 // The tabs are 40px tall with an 8px gap; their width is whatever the
 // ratio-locked screen box cannot use, between a 14px floor and a 44px ceiling.
-ok("v2.2 edge tabs are 40 tall, 14-44 wide, with an 8px gap", await page.evaluate(() => {
+ok("v2.2 edge tabs are 40 tall, 14-44 wide, with an 8px gap", await evaluate(() => {
   const b = [...document.querySelectorAll(".aux-keys-left button")].map((e) => e.getBoundingClientRect());
   const r = [...document.querySelectorAll(".aux-keys-right button")].map((e) => e.getBoundingClientRect());
   if (b.length < 2) return false;
@@ -563,15 +569,15 @@ ok("v2.2 edge tabs are 40 tall, 14-44 wide, with an 8px gap", await page.evaluat
     && r.every((x) => Math.round(x.width) === w)   // both columns match
     && w >= 14 && w <= 44
     && Math.round(b[1].top - b[0].bottom) === 8;
-}), await page.$eval(".aux-keys-left button", (e) =>
+}), await $eval(".aux-keys-left button", (e) =>
   Math.round(e.getBoundingClientRect().width) + "px wide"));
-ok("v2.2 outer-rounded corners", await page.evaluate(() => {
+ok("v2.2 outer-rounded corners", await evaluate(() => {
   const l = getComputedStyle(document.querySelector(".aux-keys-left button"));
   const r = getComputedStyle(document.querySelector(".aux-keys-right button"));
   return l.borderTopLeftRadius === "4px" && l.borderTopRightRadius === "0px"
     && r.borderTopRightRadius === "4px" && r.borderTopLeftRadius === "0px";
 }));
-ok("v2.2 column 34px below the top of the screen box", await page.evaluate(() => {
+ok("v2.2 column 34px below the top of the screen box", await evaluate(() => {
   const k = document.querySelector(".aux-keys-left button").getBoundingClientRect();
   const box = document.querySelector(".lcd-wrap").getBoundingClientRect();
   return Math.round(k.top - box.top) === 34;
@@ -579,7 +585,7 @@ ok("v2.2 column 34px below the top of the screen box", await page.evaluate(() =>
 // The row is used up: 8px page padding each side, then the box and the tabs
 // between them share the rest, so nothing is left blank beside the screen
 // unless the tabs have already reached their 44px ceiling.
-ok("v2.2 the row's width is spent on the box and the tabs", await page.evaluate(() => {
+ok("v2.2 the row's width is spent on the box and the tabs", await evaluate(() => {
   const row = document.querySelector(".screen-row").getBoundingClientRect();
   const box = document.querySelector(".lcd-wrap").getBoundingClientRect();
   const pad = parseFloat(getComputedStyle(document.querySelector("main")).paddingLeft);
@@ -591,41 +597,41 @@ ok("v2.2 the row's width is spent on the box and the tabs", await page.evaluate(
   const tabW = cols.length ? Math.round(cols[0].getBoundingClientRect().width) : 14;
   return pad === 8 && box.width <= row.width - tabs - 2 * gap + 0.5
     && spare >= -0.5 && (spare <= 2.5 || tabW === 44);
-}), await page.evaluate(() => {
+}), await evaluate(() => {
   const w = (s) => Math.round(document.querySelector(s).getBoundingClientRect().width);
   return `row ${w(".screen-row")} box ${w(".lcd-wrap")} tab ${w(".aux-keys-left")}`;
 }));
-ok("v2.2 a tap 20px outside the screen edge hits the key", await page.evaluate(() => {
+ok("v2.2 a tap 20px outside the screen edge hits the key", await evaluate(() => {
   const box = document.querySelector(".lcd-wrap").getBoundingClientRect();
   const key = document.querySelector('.aux-keys-left button[data-key]');
   const el = document.elementFromPoint(Math.max(1, box.left - 20),
     key.getBoundingClientRect().top + 20);
   return el === key || key.contains(el);
 }));
-ok("v2.2 no shortcut labels on the edge keys", await page.evaluate(() =>
+ok("v2.2 no shortcut labels on the edge keys", await evaluate(() =>
   [...document.querySelectorAll(".aux-keys-left .key-hint, .aux-keys-right .key-hint")]
     .every((e) => getComputedStyle(e).display === "none")));
 
 /* ---------------- screen box at the device ratio ---------------- */
-ok("v2.3 no object-fit letterboxing", await page.$eval("#lcd", (e) =>
+ok("v2.3 no object-fit letterboxing", await $eval("#lcd", (e) =>
   getComputedStyle(e).objectFit !== "contain"));
 // 844 − 12 page padding − 32 control row − 2×6 gaps − the keypad's
 // 7×--key-h + 6×6 leaves the row 456 tall, and 3:4 of that is the box
-ok("v2.3 box is 342x456 at 390x844", await page.evaluate(() => {
+ok("v2.3 box is 342x456 at 390x844", await evaluate(() => {
   const r = document.querySelector(".lcd-wrap").getBoundingClientRect();
   return Math.round(r.width) === 342 && Math.round(r.height) === 456;
-}), await page.evaluate(() => {
+}), await evaluate(() => {
   const r = document.querySelector(".lcd-wrap").getBoundingClientRect();
   return `${Math.round(r.width)}x${Math.round(r.height)}`;
 }));
-ok("v2.3 box takes whichever limit is tighter", await page.evaluate(() => {
+ok("v2.3 box takes whichever limit is tighter", await evaluate(() => {
   const box = document.querySelector(".lcd-wrap").getBoundingClientRect();
   const cell = document.querySelector(".screen-cell").getBoundingClientRect();
   const fits = box.width <= cell.width + 0.5 && box.height <= cell.height + 0.5;
   const maxed = Math.abs(box.width - cell.width) < 1.5 || Math.abs(box.height - cell.height) < 1.5;
   return fits && maxed;
 }));
-ok("v2.3 ratio follows the device", await page.evaluate(async () => {
+ok("v2.3 ratio follows the device", await evaluate(async () => {
   const ar = () => {
     const r = document.querySelector(".lcd-wrap").getBoundingClientRect();
     return r.width / r.height;
@@ -642,7 +648,7 @@ ok("v2.3 ratio follows the device", await page.evaluate(async () => {
   return Math.abs(before - 0.75) < 0.01 && Math.abs(lg - 0.75) < 0.01
     && Math.abs(ar() - 0.75) < 0.01;
 }));
-ok("v2.3 canvas fills the box", await page.evaluate(() => {
+ok("v2.3 canvas fills the box", await evaluate(() => {
   const b = document.querySelector(".lcd-wrap").getBoundingClientRect();
   const c = document.getElementById("lcd").getBoundingClientRect();
   return Math.abs(b.width - c.width) < 1 && Math.abs(b.height - c.height) < 1;
@@ -651,44 +657,44 @@ ok("v2.3 canvas fills the box", await page.evaluate(() => {
 // sheets
 await page.click("#status-open");
 await page.waitForTimeout(300);
-ok("5.4 firmware sheet opens", await page.$eval("#sheet-firmware", (e) => !e.hidden && e.classList.contains("open")));
-ok("5.4 sheet covers at most 90% of the viewport", await page.evaluate(() =>
+ok("5.4 firmware sheet opens", await $eval("#sheet-firmware", (e) => !e.hidden && e.classList.contains("open")));
+ok("5.4 sheet covers at most 90% of the viewport", await evaluate(() =>
   document.getElementById("sheet-firmware").getBoundingClientRect().height <= window.innerHeight * 0.9 + 1));
-ok("5.4 handle, title, body, Done", await page.evaluate(() => {
+ok("5.4 handle, title, body, Done", await evaluate(() => {
   const s = document.getElementById("sheet-firmware");
   return !!s.querySelector(".sheet-handle") && s.querySelector(".sheet-title").textContent === "Firmware"
     && getComputedStyle(s.querySelector(".sheet-body")).overflowY === "auto"
     && s.querySelector(".sheet-done").textContent === "Done";
 }));
-ok("5.4 focus moved into the sheet", await page.evaluate(() =>
+ok("5.4 focus moved into the sheet", await evaluate(() =>
   document.getElementById("sheet-firmware").contains(document.activeElement)));
-ok("5.4 no Start/Stop in the sheet", await page.evaluate(() =>
+ok("5.4 no Start/Stop in the sheet", await evaluate(() =>
   !document.getElementById("sheet-firmware").querySelector("#btn-start, #btn-stop")));
 // change the preset in the sheet and confirm the summary follows
 await page.click("#ff-mode-preset");
 await page.selectOption("#ff-preset", "el71v41lg91");
 await page.click("#sheet-firmware .sheet-done");
 await page.waitForTimeout(300);
-ok("5.4 Done closes the sheet", await page.$eval("#sheet-firmware", (e) => e.hidden));
+ok("5.4 Done closes the sheet", await $eval("#sheet-firmware", (e) => e.hidden));
 // the pill names the preset by its short label (fullflashes.js `short`,
 // what fits one ellipsised line) and then its cache state, not the file
 ok("5.4 pill follows the sheet", (await text("#status-text")).startsWith("EL71v41"),
   await text("#status-text"));
 await page.click("#btn-settings");
 await page.waitForTimeout(300);
-ok("5.4 settings sheet body", await page.evaluate(() =>
+ok("5.4 settings sheet body", await evaluate(() =>
   [...document.querySelectorAll("#sheet-settings .group-title")].map((e) => e.textContent).join() === "Accessory,Keyboard,Export"));
 // The toggle once had no effect on a phone and was hidden there; both
 // layouts honour it now, so the sheet is where a phone reaches it
-ok("v4.4 the HUD toggle is in the mobile settings sheet", await page.evaluate(() => {
+ok("v4.4 the HUD toggle is in the mobile settings sheet", await evaluate(() => {
   const c = document.querySelector("#sheet-settings #opt-hud");
   return !!c && getComputedStyle(c.closest("label")).display !== "none";
 }));
-ok("v4.2 Copy diagnostics is in the mobile settings sheet", await page.evaluate(() => {
+ok("v4.2 Copy diagnostics is in the mobile settings sheet", await evaluate(() => {
   const b = document.querySelector("#sheet-settings #btn-diag");
   return !!b && getComputedStyle(b).display !== "none";
 }));
-ok("v4.4 the toggle cannot show it while there is no guest", await page.evaluate(async () => {
+ok("v4.4 the toggle cannot show it while there is no guest", await evaluate(async () => {
   const c = document.getElementById("opt-hud");
   c.checked = true; c.dispatchEvent(new Event("change", { bubbles: true }));
   await new Promise((r) => setTimeout(r, 100));
@@ -698,14 +704,14 @@ ok("v4.4 the toggle cannot show it while there is no guest", await page.evaluate
 }));
 await page.keyboard.press("Escape");
 await page.waitForTimeout(300);
-ok("5.4 Escape closes", await page.$eval("#sheet-settings", (e) => e.hidden));
+ok("5.4 Escape closes", await $eval("#sheet-settings", (e) => e.hidden));
 
 /* ---------------- the keypad always fits ---------------- */
 for (const [w, h] of [[320, 568], [320, 490], [360, 640], [360, 560], [390, 844],
   [390, 750], [430, 932], [430, 830]]) {
-  await page.setViewportSize({ width: w, height: h });
+  await setViewportSize({ width: w, height: h });
   await page.waitForTimeout(250);
-  const r = await page.evaluate(() => {
+  const r = await evaluate(() => {
     const kp = document.getElementById("keypad").getBoundingClientRect();
     const keys = [...document.querySelectorAll("#keypad button[data-key]")]
       .map((e) => e.getBoundingClientRect());
@@ -735,9 +741,9 @@ for (const [w, h] of [[320, 568], [320, 490], [360, 640], [360, 560], [390, 844]
 // own 6px above the keypad — the failure mode when fitScreen() sizes the box
 // from anything other than the flex-resolved row.
 for (const [w, h] of [[360, 640], [390, 750], [320, 900]]) {
-  await page.setViewportSize({ width: w, height: h });
+  await setViewportSize({ width: w, height: h });
   await page.waitForTimeout(300);
-  const r = await page.evaluate(() => {
+  const r = await evaluate(() => {
     const R = (s) => document.querySelector(s).getBoundingClientRect();
     const st = R(".status-block"), row = R(".screen-row"), kp = R("#keypad");
     return {
@@ -757,20 +763,20 @@ for (const [w, h] of [[360, 640], [390, 750], [320, 900]]) {
   // left unreset it floors the column ~80px taller than the viewport and the
   // keypad's last row goes off the bottom. This is the cheap half of that —
   // that nothing floors body above the viewport at all.
-  ok(`v5.1 ${w}x${h}: body is not floored above the viewport`, await page.evaluate(() =>
+  ok(`v5.1 ${w}x${h}: body is not floored above the viewport`, await evaluate(() =>
     (parseFloat(getComputedStyle(document.body).minHeight) || 0) <= window.innerHeight),
-    await page.$eval("body", (e) => "min-height " + getComputedStyle(e).minHeight));
+    await $eval("body", (e) => "min-height " + getComputedStyle(e).minHeight));
 }
 
-await page.setViewportSize({ width: 1770, height: 1000 });
+await setViewportSize({ width: 1770, height: 1000 });
 await page.waitForTimeout(200);
-ok("5 panels come back to the columns on desktop", await page.evaluate(() =>
+ok("5 panels come back to the columns on desktop", await evaluate(() =>
   document.getElementById("pre-panel").parentElement.tagName === "MAIN"));
 
 /* ---------------- device names, the chip, content detection ---------------- */
 await page.click("#ff-mode-own");
 await page.waitForTimeout(300);
-const devOpts = await page.$$eval("#device option",
+const devOpts = await $$eval("#device option",
   (o) => o.filter((e) => e.value).map((e) => [e.value, e.textContent]));
 const labelOf = (id) => (devOpts.find((o) => o[0] === id) ?? [])[1];
 ok("v5.2 device options read as names, values unchanged",
@@ -786,12 +792,12 @@ ok("v5.2 sorted by what is shown",
 
 // a name that says nothing sends the picker to the image itself; a 32-byte
 // stub has nothing to read, so it must come back with no device and no throw
-await page.evaluate(() => { document.getElementById("device").value = ""; });
+await evaluate(() => { document.getElementById("device").value = ""; });
 await drop("#ff-bin-slot", ["dump.bin"]);
 await page.waitForTimeout(500);
-ok("v5.3 a too-small file is not a detection", await page.evaluate(() =>
+ok("v5.3 a too-small file is not a detection", await evaluate(() =>
   document.getElementById("device").value === ""),
-  await page.$eval("#device", (e) => e.value));
+  await $eval("#device", (e) => e.value));
 
 const fc = page.waitForEvent("filechooser", { timeout: 5000 }).then(() => true, () => false);
 await page.click("#ff-bin-pick");
@@ -803,8 +809,8 @@ if (!process.env.SKIP_BOOT) {
   await page.click("#ff-mode-own");
   await page.setInputFiles("#fullflash", fullflash);
   await page.waitForFunction(() => window.__ui.ready);
-  ok("2.2 Start enabled once firmware is ready", await page.$eval("#btn-start", (e) => !e.disabled));
-  ok("2.2 no caption when Start is live", await page.$eval("#status-caption", (e) => e.hidden));
+  ok("2.2 Start enabled once firmware is ready", await $eval("#btn-start", (e) => !e.disabled));
+  ok("2.2 no caption when Start is live", await $eval("#status-caption", (e) => e.hidden));
   await page.click("#btn-start");
   await page.waitForFunction(() => window.__ui.state === "running", null, { timeout: 180000 });
 
@@ -828,11 +834,11 @@ if (!process.env.SKIP_BOOT) {
         .then(() => true).catch(() => false);
       await page.waitForTimeout(4000);      // longer than the 3 s hysteresis
       ok("v4.6 no slow warning while the clock is still banked",
-        under && await page.evaluate(() =>
+        under && await evaluate(() =>
           window.__ui.bank === "banked" && !window.__ui.slow
           && !document.getElementById("status").classList.contains("warn")
           && !/slow/.test(document.getElementById("status-text").textContent)),
-        `v/wall ${await page.evaluate(() => window.__hud.diagnostics().avg10s.vratio)}, `
+        `v/wall ${await evaluate(() => window.__hud.diagnostics().avg10s.vratio)}, `
         + `pill "${await text("#status-text")}"`);
       await recover();
     }
@@ -842,27 +848,27 @@ if (!process.env.SKIP_BOOT) {
   // been under 0.80x for three seconds
   ok("2.2 running pill", /^Running · \d+:\d\d( · slow)?$/.test(await text("#status-text")), await text("#status-text"));
   ok("2.2 Stop replaced Start", !(await has("#btn-start")) && (await has("#btn-stop")));
-  ok("2.2 exactly one action button", await page.evaluate(() =>
+  ok("2.2 exactly one action button", await evaluate(() =>
     [...document.querySelectorAll("button")].filter((b) => /^(Start|Stop|Cancel)$/.test(b.textContent.trim())).length === 1));
-  ok("1.7 every firmware control is disabled", await page.evaluate(() => {
+  ok("1.7 every firmware control is disabled", await evaluate(() => {
     const all = [...document.querySelectorAll(
       "#firmware-panel input, #firmware-panel select, #firmware-panel button")];
     return all.length > 5 && all.every((e) => e.disabled && e.matches(":disabled"));
   }));
-  ok("1.7 nothing in the panel is focusable", await page.evaluate(() => {
+  ok("1.7 nothing in the panel is focusable", await evaluate(() => {
     const f = document.querySelectorAll(
       '#firmware-panel input:not(:disabled), #firmware-panel select:not(:disabled), ' +
       '#firmware-panel button:not(:disabled), #firmware-panel summary:not([tabindex="-1"]), ' +
       '#firmware-panel [tabindex]:not([tabindex="-1"])');
     return f.length === 0;
   }));
-  ok("1.7 lock note above Advanced", await page.evaluate(() => {
+  ok("1.7 lock note above Advanced", await evaluate(() => {
     const n = document.getElementById("ff-lock-note");
     return !n.hidden && n.nextElementSibling.id === "advanced"
       && n.textContent.trim() === "Locked while running. Stop to change firmware."
       && !!n.querySelector("svg");
   }), await text("#ff-lock-note"));
-  ok("3.2 exports enabled while running", await page.evaluate(() =>
+  ok("3.2 exports enabled while running", await evaluate(() =>
     !document.getElementById("btn-save-flash").disabled
     && !document.getElementById("btn-save-efa").disabled
     && document.getElementById("export-caption").hidden));
@@ -874,15 +880,15 @@ if (!process.env.SKIP_BOOT) {
   /* ---------------- the strip with a live guest ------------- */
   await page.check("#opt-hud");
   await page.waitForTimeout(1600);   // 2 Hz — two samples make the first rate
-  ok("v4.3 line 1: speed, MIPS, fps, paint, lag, halts", await page.evaluate(() =>
+  ok("v4.3 line 1: speed, MIPS, fps, paint, lag, halts", await evaluate(() =>
     /^\d+\.\d\d× · +\d+\.\d MIPS · +\d+ fps · +\d+ ms · lag +\d+\.\ds · +\d+ halt\/s$/
       .test(document.getElementById("hud-metrics").textContent)), await text("#hud-metrics"));
-  ok("v4.3 the speed token is coloured by its value", await page.evaluate(() => {
+  ok("v4.3 the speed token is coloured by its value", await evaluate(() => {
     const s = document.querySelector(".hud-speed");
     const v = parseFloat(s.textContent);
     return s.classList.contains(v >= 0.95 ? "good" : v >= 0.8 ? "warn" : "bad");
   }), await text(".hud-speed"));
-  ok("v4.3 it updates at 2 Hz, not per frame", await page.evaluate(async () => {
+  ok("v4.3 it updates at 2 Hz, not per frame", await evaluate(async () => {
     let n = 0;
     const o = new MutationObserver(() => n++);
     o.observe(document.getElementById("hud-metrics"), { childList: true, subtree: true, characterData: true });
@@ -890,14 +896,14 @@ if (!process.env.SKIP_BOOT) {
     o.disconnect();
     return n > 0 && n < 3000 / 100;   // ~6 redraws in 3 s, nowhere near 180
   }));
-  ok("v4.3 neither line is clipped mid-token", await page.evaluate(() =>
+  ok("v4.3 neither line is clipped mid-token", await evaluate(() =>
     [...document.querySelectorAll(".hud-line")]
       .every((e) => e.scrollWidth <= e.clientWidth + 1)));
 
   /* ---------------- the phone overlay ---------------- */
-  await page.setViewportSize({ width: 390, height: 844 });
+  await setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(600);
-  ok("v4.4 the toggle governs the overlay too", await page.evaluate(async () => {
+  ok("v4.4 the toggle governs the overlay too", await evaluate(async () => {
     const c = document.getElementById("opt-hud");
     const set = async (v) => {
       c.checked = v; c.dispatchEvent(new Event("change", { bubbles: true }));
@@ -908,7 +914,7 @@ if (!process.env.SKIP_BOOT) {
     const off = await set(false), on = await set(true);
     return off && !on;
   }));
-  ok("v4.4 an overlay on the top edge of the screen box", await page.evaluate(() => {
+  ok("v4.4 an overlay on the top edge of the screen box", await evaluate(() => {
     const h = document.getElementById("hud"), wrap = document.querySelector(".lcd-wrap");
     const s = getComputedStyle(h);
     const a = h.getBoundingClientRect(), b = wrap.getBoundingClientRect();
@@ -916,11 +922,11 @@ if (!process.env.SKIP_BOOT) {
       && s.pointerEvents === "none" && s.backgroundColor === "rgba(0, 0, 0, 0.6)"
       && s.padding === "3px 6px"
       && Math.abs(a.top - b.top) < 0.5 && Math.abs(a.width - b.width) < 0.5;
-  }), await page.evaluate(() => {
+  }), await evaluate(() => {
     const s = getComputedStyle(document.getElementById("hud"));
     return `${s.position} ${s.backgroundColor} ${s.padding} ${s.pointerEvents}`;
   }));
-  ok("v4.4 it costs the column no height", await page.evaluate(() => {
+  ok("v4.4 it costs the column no height", await evaluate(() => {
     const h = document.getElementById("hud");
     const geom = () => {
       const b = document.querySelector(".lcd-wrap").getBoundingClientRect();
@@ -936,9 +942,9 @@ if (!process.env.SKIP_BOOT) {
 
   // the strip's fitting rule, at the three widths it is quoted for
   for (const [w, want] of [[390, 6], [360, 5], [320, 4]]) {
-    await page.setViewportSize({ width: w, height: 844 });
+    await setViewportSize({ width: w, height: 844 });
     await page.waitForTimeout(700);
-    const r = await page.evaluate(() => {
+    const r = await evaluate(() => {
       const m = document.getElementById("hud-metrics"), e = document.getElementById("hud-env");
       return {
         n: m.textContent.split(" · ").length, t: m.textContent, env: e.textContent,
@@ -950,18 +956,18 @@ if (!process.env.SKIP_BOOT) {
     ok(`v4.3 ${w}px (box ${r.box}px) keeps ${want} of 6 tokens`,
       r.n === want && r.fits && r.lines[0] === r.lines[1], `${r.n}: "${r.t}"`);
   }
-  ok("v4.3 the narrowest line is speed, MIPS, fps, lag", await page.evaluate(() =>
+  ok("v4.3 the narrowest line is speed, MIPS, fps, lag", await evaluate(() =>
     /^\d+\.\d\d× · +\d+\.\d MIPS · +\d+ fps · lag +\d+\.\ds$/
       .test(document.getElementById("hud-metrics").textContent)), await text("#hud-metrics"));
 
-  await page.setViewportSize({ width: 390, height: 844 });
+  await setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(400);
   {
     const wait = page.waitForEvent("download", { timeout: 20000 });
     await page.click("#btn-shot");
     const png = await readFile(await (await wait).path());
     const got = [png.readUInt32BE(16), png.readUInt32BE(20)];
-    const want = await page.evaluate(() => {
+    const want = await evaluate(() => {
       const c = document.getElementById("lcd");
       return [c.width, c.height];
     });
@@ -971,7 +977,7 @@ if (!process.env.SKIP_BOOT) {
 
   /* ---------------- the slow warning ---------------- */
   {
-    const speed = () => page.evaluate(() => window.__hud.diagnostics().avg10s.vratio);
+    const speed = () => evaluate(() => window.__hud.diagnostics().avg10s.vratio);
 
     // the warning itself, which only applies once the bank is over
     // (the boot section covers the banked half). Waiting on the
@@ -982,25 +988,25 @@ if (!process.env.SKIP_BOOT) {
     const recover = await slowHost();
     const slow = await page.waitForFunction(() => window.__ui.slow, null, { timeout: 30000 })
       .then(() => true).catch(() => false);
-    ok("v4.6 under 0.80x for 3 s turns the pill amber", slow && await page.evaluate(() =>
+    ok("v4.6 under 0.80x for 3 s turns the pill amber", slow && await evaluate(() =>
       document.getElementById("status").classList.contains("warn")
       && / · slow$/.test(document.getElementById("status-text").textContent)),
       `v/wall ${await speed()}, pill "${await text("#status-text")}"`);
     await recover();
     const back = await page.waitForFunction(() => !window.__ui.slow, null, { timeout: 40000 })
       .then(() => true).catch(() => false);
-    ok("v4.6 and back to green once it recovers", back && await page.evaluate(() =>
+    ok("v4.6 and back to green once it recovers", back && await evaluate(() =>
       !document.getElementById("status").classList.contains("warn")
       && !/slow/.test(document.getElementById("status-text").textContent)),
       `v/wall ${await speed()}, pill "${await text("#status-text")}"`);
   }
-  await page.setViewportSize({ width: 1770, height: 1000 });
+  await setViewportSize({ width: 1770, height: 1000 });
   await page.waitForTimeout(400);
 
   /* ---------------- recording, on the phone row ---------- */
-  await page.setViewportSize({ width: 390, height: 844 });
+  await setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(400);
-  const geom = () => page.evaluate(() => {
+  const geom = () => evaluate(() => {
     const r = (s) => document.querySelector(s).getBoundingClientRect();
     return {
       row: Math.round(r(".status-row").height),
@@ -1009,32 +1015,32 @@ if (!process.env.SKIP_BOOT) {
     };
   });
   const before = await geom();
-  ok("v3.1 enabled while running", await page.evaluate(() => {
+  ok("v3.1 enabled while running", await evaluate(() => {
     const b = document.getElementById("btn-record");
     return !b.disabled && b.getAttribute("aria-label") === "Start recording";
   }));
   await page.click("#btn-record");
   await page.waitForTimeout(1500);
 
-  ok("v3.2 the pill took the button's place", await page.evaluate(() => {
+  ok("v3.2 the pill took the button's place", await evaluate(() => {
     const row = [...document.querySelector(".status-row").children]
       .filter((e) => !e.hidden).map((e) => e.id);
     return row.join() === "status,btn-shot,rec-pill,btn-settings"
       && getComputedStyle(document.getElementById("rec-pill")).flexGrow === "0";
-  }), await page.evaluate(() => [...document.querySelector(".status-row").children].filter((e) => !e.hidden).map((e) => e.id).join()));
-  ok("v3.2 elapsed counter and a Finish button", await page.evaluate(() => {
+  }), await evaluate(() => [...document.querySelector(".status-row").children].filter((e) => !e.hidden).map((e) => e.id).join()));
+  ok("v3.2 elapsed counter and a Finish button", await evaluate(() => {
     const f = document.getElementById("btn-rec-finish");
     return /^\d+:\d\d$/.test(document.getElementById("rec-pill-time").textContent)
       && f.textContent.trim() === "Finish"
       && f.getAttribute("aria-label") === "Finish recording"
       && Math.round(f.getBoundingClientRect().height) === 24;
   }));
-  ok("v3.2 two pills, different colours", await page.evaluate(() => {
+  ok("v3.2 two pills, different colours", await evaluate(() => {
     const s = getComputedStyle(document.getElementById("status")).backgroundColor;
     const r = getComputedStyle(document.getElementById("rec-pill")).backgroundColor;
     return s !== r && s.includes("20, 83, 45") && r.includes("74, 20, 20");
   }));
-  ok("v3.5 exactly one Stop and one Finish in the visible row", await page.evaluate(() => {
+  ok("v3.5 exactly one Stop and one Finish in the visible row", await evaluate(() => {
     const words = [];
     for (const e of document.querySelectorAll(".status-row button")) {
       if (e.hidden || e.closest("[hidden]")) continue;
@@ -1048,7 +1054,7 @@ if (!process.env.SKIP_BOOT) {
   ok("v3.3 status pill drops the Running prefix",
     /^\d+:\d\d( · slow)?$/.test(await text("#status-text")), await text("#status-text"));
   ok("v3.3 Stop is still there and still says Stop",
-    (await page.$eval("#btn-stop", (e) => e.textContent.trim())) === "Stop");
+    (await $eval("#btn-stop", (e) => e.textContent.trim())) === "Stop");
   ok("v3.5 start was announced", (await text("#live-region")) === "Recording started");
   const during = await geom();
   ok("v3.4 no layout shift while recording",
@@ -1056,12 +1062,12 @@ if (!process.env.SKIP_BOOT) {
     && during.box[0] === before.box[0] && during.box[1] === before.box[1]
     && during.keypad === before.keypad,
     JSON.stringify({ before, during }));
-  ok("v3.4 screenshot stays enabled", await page.$eval("#btn-shot", (e) => !e.disabled));
+  ok("v3.4 screenshot stays enabled", await $eval("#btn-shot", (e) => !e.disabled));
 
   // verify: both pills plus the two icon buttons on one 32px row at 320px
-  await page.setViewportSize({ width: 320, height: 568 });
+  await setViewportSize({ width: 320, height: 568 });
   await page.waitForTimeout(400);
-  ok("v3.3 everything fits one row at 320px", await page.evaluate(() => {
+  ok("v3.3 everything fits one row at 320px", await evaluate(() => {
     const row = document.querySelector(".status-row").getBoundingClientRect();
     const kids = [...document.querySelector(".status-row").children].filter((e) => !e.hidden);
     return Math.round(row.height) === 32
@@ -1073,16 +1079,16 @@ if (!process.env.SKIP_BOOT) {
       // the uptime is still legible: not ellipsised away
       && document.getElementById("status-text").scrollWidth
          <= document.getElementById("status-text").clientWidth + 1;
-  }), await page.evaluate(() => {
+  }), await evaluate(() => {
     const t = document.getElementById("status-text");
     return `text ${Math.round(t.getBoundingClientRect().width)}px "${t.textContent}"`;
   }));
-  await page.setViewportSize({ width: 390, height: 844 });
+  await setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(300);
 
   await page.click("#btn-rec-finish");
   await page.waitForTimeout(1200);
-  ok("v3.2 idle button restored in the same place", await page.evaluate(() => {
+  ok("v3.2 idle button restored in the same place", await evaluate(() => {
     const row = [...document.querySelector(".status-row").children]
       .filter((e) => !e.hidden).map((e) => e.id);
     const b = document.getElementById("btn-record");
@@ -1095,23 +1101,23 @@ if (!process.env.SKIP_BOOT) {
   ok("v3.5 save was announced", (await text("#live-region")) === "Recording saved");
   ok("v3.3 the Running prefix comes back",
     /^Running · \d+:\d\d( · slow)?$/.test(await text("#status-text")), await text("#status-text"));
-  await page.setViewportSize({ width: 1770, height: 1000 });
+  await setViewportSize({ width: 1770, height: 1000 });
   await page.waitForTimeout(300);
 
   await page.click("#btn-stop");
   await page.waitForFunction(() => window.__ui.state === "idle", null, { timeout: 60000 });
-  ok("1.7 controls come back with their values", await page.evaluate(() =>
+  ok("1.7 controls come back with their values", await evaluate(() =>
     !document.getElementById("firmware-panel").disabled
     && document.getElementById("ff-lock-note").hidden
     && !!document.getElementById("ff-bin-name").textContent));
   ok("2.2 Start is back", await has("#btn-start"));
   // the image the run left behind is still readable, so the exports stay
-  ok("exports stay available after Stop", await page.evaluate(() =>
+  ok("exports stay available after Stop", await evaluate(() =>
     !document.getElementById("btn-save-flash").disabled
     && document.getElementById("export-caption").hidden));
-  ok("the stopped run's flash is still readable", await page.evaluate(() =>
+  ok("the stopped run's flash is still readable", await evaluate(() =>
     !!window.__qemu?.FS?.analyzePath("/data/fullflash.bin")?.exists));
-  ok("EFA export stays hidden for the siemens run", await page.$eval("#btn-save-efa", (e) => e.hidden));
+  ok("EFA export stays hidden for the siemens run", await $eval("#btn-save-efa", (e) => e.hidden));
 }
 
 console.log(`\n${count - fails}/${count} checks passed`);

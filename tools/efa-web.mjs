@@ -8,6 +8,7 @@
 // is looking for is printed before the first poll could read it.)
 import { chromium } from "playwright-core";
 import { fileURLToPath } from "node:url";
+import { bounded, pageCall } from "./lib/page.mjs";
 
 const withSidecar = process.argv[2] !== "noefa";
 const browser = await chromium.launch({ headless: true });
@@ -23,18 +24,24 @@ const files = [ff + "KE800-v11b.bin"];
 if (withSidecar) files.push(ff + "KE800-v11b.bin.cfi-efa");
 await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", files);
-const dev = await page.$eval("#device", (s) => s.value);
+const dev = await pageCall(page.$eval("#device", (s) => s.value), "the device read");
 await page.click("#btn-start");
 
 let s = null;
 const t0 = Date.now();
 while (Date.now() - t0 < 60000) {
   await new Promise((r) => setTimeout(r, 1000));
-  const page_ = await page.evaluate(() => ({
-    // the missing-EFA warning is a caption under the status pill now
-    status: document.getElementById("status-caption").textContent,
-    state: window.__ui?.state || "",
-  }));
+  let page_;
+  try {
+    page_ = await pageCall(page.evaluate(() => ({
+      // the missing-EFA warning is a caption under the status pill now
+      status: document.getElementById("status-caption").textContent,
+      state: window.__ui?.state || "",
+    })), "status read");
+  } catch (e) {
+    errors.push(String(e.message || e).slice(0, 300));
+    break;
+  }
   const text = log.join("\n");
   s = {
     efaLoaded: /loaded EFA from \S*fullflash\.bin\.cfi-efa/.test(text),
@@ -43,14 +50,14 @@ while (Date.now() - t0 < 60000) {
   };
   if (s.hwError || s.efaLoaded || (s.status.includes("EFA block") && s.state === "running")) break;
 }
-await page.screenshot({ path: `efa-web-${withSidecar ? "with" : "no"}.png` }).catch(() => {});
-await browser.close();
+await bounded(page.screenshot({ path: `efa-web-${withSidecar ? "with" : "no"}.png` }), null);
+await bounded(browser.close(), null, { ms: 30000 });
 
 console.log("inferred device:", dev);
 console.log(JSON.stringify(s));
 console.log("page errors:", errors.length ? errors : "none");
-const pass = withSidecar
+const pass = !!s && (withSidecar
   ? dev === "lg-ke800" && s.efaLoaded && !s.hwError && !errors.length
-  : dev === "lg-ke800" && !s.efaLoaded && s.status.includes("No EFA block") && !errors.length;
+  : dev === "lg-ke800" && !s.efaLoaded && s.status.includes("No EFA block") && !errors.length);
 console.log(pass ? "PASS" : "FAIL");
 process.exit(pass ? 0 : 1);

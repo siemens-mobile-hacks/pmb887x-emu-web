@@ -23,7 +23,7 @@ import { chromium } from "playwright-core";
 import { existsSync } from "node:fs";
 import { opt as argOpt } from "./lib/argv.mjs";
 import { flashFiles } from "./lib/boards.mjs";
-import { bootOwnFlash } from "./lib/page.mjs";
+import { bootOwnFlash, bounded, pageCall } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => argOpt(argv, n, d);
@@ -52,7 +52,9 @@ await bootOwnFlash(p, flashFiles(flash).filter((f) => existsSync(f)), { startup:
 
 // Fire as close to instantiation as the event loop allows.  A key-up is the
 // shape a spurious pointerleave sends: a release for a key never pressed.
-const firedAt = await p.evaluate(async () => {
+// The module may take a while to arrive on a loaded host, hence the long
+// limit for this one call.
+const firedAt = await pageCall(p.evaluate(async () => {
   for (let i = 0; i < 200000; i++) {
     const m = window.__qemu;
     if (m && m._wasm_send_key) {
@@ -63,20 +65,21 @@ const firedAt = await p.evaluate(async () => {
     await new Promise((r) => setTimeout(r, 0));
   }
   return -2;
-}).catch((e) => { errs.push("evaluate: " + String(e).slice(0, 200)); return -3; });
+}), "the early key", 120000).catch((e) => { errs.push("evaluate: " + String(e).slice(0, 200)); return -3; });
 
 // ...and the guest must still be alive and taking keys afterwards.
 await new Promise((r) => setTimeout(r, 20000));
-const after = await p.evaluate(() => {
+const after = await pageCall(p.evaluate(() => {
   const m = window.__qemu;
   const i0 = Number(m._wasm_insns());
   m._wasm_send_key(28, 1);
   m._wasm_send_key(28, 0);
   return i0;
-}).catch((e) => { errs.push("post-press: " + String(e).slice(0, 200)); return -1; });
+}), "the press").catch((e) => { errs.push("post-press: " + String(e).slice(0, 200)); return -1; });
 await new Promise((r) => setTimeout(r, 5000));
-const end = await p.evaluate(() => Number(window.__qemu._wasm_insns())).catch(() => -1);
-await b.close();
+const end = await pageCall(p.evaluate(() => Number(window.__qemu._wasm_insns())), "the insns read")
+  .catch((e) => { errs.push("after the press: " + String(e).slice(0, 200)); return -1; });
+await bounded(b.close(), null);
 
 const ok = errs.length === 0 && firedAt >= 0 && end > after && after >= 0;
 console.log(`EARLYKEY ${boardId} ${dist} ${ok ? "PASS" : "FAIL"} ` +

@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startGateway } from "./gprs-gateway.mjs";
+import { bounded, pageCall } from "./lib/page.mjs";
 
 const dist = process.argv[2] || "dist-jit";
 const extraQ = process.argv[3] || "";
@@ -67,11 +68,17 @@ while ((Date.now() - t0) / 1000 < maxSecs) {
   await new Promise(r => setTimeout(r, 2000));
   let s = null;
   try {
-    s = await p.evaluate(() => {
+    s = await pageCall(p.evaluate(() => {
       const m = window.__qemu; if (!m || !m._wasm_vclock) return null;
       return { v: Number(m._wasm_vclock()) / 1e9, insns: m._wasm_insns ? Number(m._wasm_insns()) : 0, u: m._wasm_fb_updates ? Number(m._wasm_fb_updates()) : 0 };
-    });
-  } catch (e) { console.log("  [evaluate failed]", String(e).slice(0, 120)); break; }
+    }), "sample");
+  } catch (e) {
+    // the samples so far may still look healthy: a page that stopped
+    // answering is an error of its own
+    errs.push("evaluate failed: " + String(e.message || e).slice(0, 160));
+    console.log("  [evaluate failed]", String(e.message || e).slice(0, 160));
+    break;
+  }
   const r = rssMB();
   const t = (Date.now() - t0) / 1000;
   if (s) { last = s; samples.push({ t, ...s }); console.log(`t=${t.toFixed(1)}s v=${s.v.toFixed(2)} insns=${(s.insns / 1e6).toFixed(0)}M u=${s.u} rss=${r ? r.sum + "MB (max proc " + r.max + ")" : "?"}`); }
@@ -92,5 +99,5 @@ else {
 }
 console.log(`END ${which}/${dist} last=${JSON.stringify(last)} errors=${errs.length} progress=${why.length ? "FAIL (" + why.join("; ") + ")" : "ok"}`);
 for (const e of errs.slice(0, 30)) console.log("  ERR " + e);
-await b.close();
+await bounded(b.close(), null, { ms: 30000 });
 gw.close();
