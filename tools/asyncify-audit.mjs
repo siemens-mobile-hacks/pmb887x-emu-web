@@ -26,8 +26,9 @@
 // Resolving against a later build silently maps every frame to the wrong
 // name and invents MISSING entries.  Snapshot the dist before capturing.
 import { readFileSync } from "fs";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 const log = process.argv[2];
 const dist = process.argv[3];

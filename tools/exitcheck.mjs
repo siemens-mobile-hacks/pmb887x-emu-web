@@ -13,6 +13,7 @@
 // runs without an image that happens to be broken.
 import { chromium } from "playwright-core";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 const PORT = process.env.PORT || "8080";
 // SERIAL_POLL=1 takes the page's fallback path (no FS tap) through the same
@@ -21,7 +22,7 @@ const POLL = process.env.SERIAL_POLL === "1";
 const URL_ = `http://127.0.0.1:${PORT}/` + (POLL ? "?serialpoll=1" : "");
 const INJECT = process.argv.includes("--inject");
 const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-const FLASH = args[0] ?? new URL("../fullflashes/BROKEN)S66_no_recalc.bin", import.meta.url).pathname;
+const FLASH = args[0] ?? fileURLToPath(new URL("../fullflashes/BROKEN)S66_no_recalc.bin", import.meta.url));
 const DEVICE = args[1] ?? "siemens-s65";
 const BOOT_TIMEOUT = Number(process.env.BOOT_TIMEOUT || 600) * 1000;
 

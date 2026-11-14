@@ -22,8 +22,9 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const here = new URL(".", import.meta.url).pathname;
+const here = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = path.resolve(here, "..");
 const port = process.env.PORT || "8094";
 const legs = (process.env.LEGS || "native-jit,dist-jit").split(",");
