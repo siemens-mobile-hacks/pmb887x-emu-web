@@ -20,7 +20,7 @@ ph=$1; A=$2; B=$3; n=${4:-4}
 cd "$(dirname "$0")/../.."
 source tools/perf/coresets.sh
 need_sets "$n"
-export PLAYWRIGHT_BROWSERS_PATH=$PWD/tools/chrome
+export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-$PWD/tools/chrome}
 bf=""
 [ "${BFLAGS:-0}" = 1 ] && bf="--js-flags=--wasm-enforce-bounds-checks"
 warm=""

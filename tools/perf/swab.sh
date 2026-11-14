@@ -14,7 +14,7 @@ metric=${METRIC:-vratio}
 cd "$(dirname "$0")/../.."
 source tools/perf/coresets.sh
 need_sets "$n"
-export PLAYWRIGHT_BROWSERS_PATH=$PWD/tools/chrome
+export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-$PWD/tools/chrome}
 export SCENEBENCH_AT_MEASURE="window.__qemu._wasm_free_run(1)"
 bf="--js-flags=--wasm-enforce-bounds-checks"
 [ "${BFLAGS:-1}" = 0 ] && bf=""
