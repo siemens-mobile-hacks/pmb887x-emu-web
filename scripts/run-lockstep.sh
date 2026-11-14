@@ -7,9 +7,9 @@
 #   RUNS=1 INSNS=300e6 scripts/run-lockstep.sh   # quick smoke
 #   SELF=1 scripts/run-lockstep.sh          # harness self-check (JIT vs JIT)
 #
-# Gate: 0 digest divergences (every epoch line of regs/flow/memory hashes
-# identical on both backends) and byte-identical serial logs, over the
-# whole boot. Exit 0 = gate green.
+# Gate: 0 digest divergences (every E-line register hash and M-line
+# memory digest identical on both backends) and byte-identical serial
+# logs, over the whole boot. Exit 0 = gate green.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
