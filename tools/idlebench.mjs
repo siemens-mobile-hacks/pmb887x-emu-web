@@ -211,14 +211,8 @@ const sha256 = (p) => {
   catch { return "MISSING"; }
 };
 
-const chromeVer = (() => {
-  try {
-    return execSync(
-      `"${process.env.HOME}/.cache/ms-playwright/chromium_headless_shell-"*/chrome-headless-shell-linux64/chrome-headless-shell --version`,
-      { encoding: "ascii", stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
-  } catch { return "unknown"; }
-})();
+// set from each run's browser (the build PLAYWRIGHT_BROWSERS_PATH resolves to)
+let chromeVer = "unknown";
 
 // summed RSS (MB) of the chromium process tree spawned by this run.
 // browser.process() is gone in playwright-core 1.63, so we tag each
@@ -340,6 +334,7 @@ async function runOne(dist, hashes, r) {
     console.log(`\n=== ${tag} (max ${maxSecs}s) ===`);
     const procTag = `idlebench-proc-${process.pid}-${dist}-r${r}`;
     const b = await chromium.launch({ headless: true, args: ["--" + procTag, ...(jsFlags ? [`--js-flags=${jsFlags}`] : [])] });
+    chromeVer = b.version();
     const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
     const rec = {
       board: boardId, dist, run: r, hashes, chromeVer, started: new Date().toISOString(),
