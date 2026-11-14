@@ -17,7 +17,9 @@
 #
 # The phone's Internet (GPRS gateway at /gprs, ../gprs-gw/README.md) is the
 # `gprs` profile: COMPOSE_PROFILES=gprs, plus a bts-emulator checkout of
-# branch gprs-gw at BTS_EMULATOR (default ../../../bts-emulator).
+# branch gprs-gw at BTS_EMULATOR (default ../../../bts-emulator).  The front
+# closes an idle /gprs after 60 s unless front-location.conf is installed
+# there (README.md, "Front settings").
 services:
   pmb887x-web:
     build:

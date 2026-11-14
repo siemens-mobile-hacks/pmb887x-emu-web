@@ -7,6 +7,7 @@ Three moving parts:
 | `scripts/bundle-dist.sh` | assembles the self-contained bundle in `<repo>/dist` (gitignored) |
 | `Dockerfile` + `site.conf` | `nginx:stable-alpine` image serving that bundle with the same headers/contract as `serve.mjs` |
 | `docker-compose.yml` | runs it on the external `nginx-proxy` network with `VIRTUAL_HOST` env, so the front (jwilder/nginx-proxy + letsencrypt companion) picks it up; with profile `gprs`, also the GPRS gateway (`../gprs-gw`) |
+| `front-location.conf` | not part of the image: the front's per-host location settings, installed once on the front (below) |
 
 ## 1. Bundle
 
@@ -58,6 +59,88 @@ LETSENCRYPT_EMAIL=you@example.org \
 terminated at the front; http→https redirects appear automatically once
 the cert is issued.
 
+### What the front is
+
+perk11/nginx-proxy is not a fork of nginx-proxy's code. It is a compose
+file whose image is `FROM jwilder/nginx-proxy:alpine` plus one
+`conf.d` file (`client_max_body_size 100m`), with the Let's Encrypt
+companion (`jrcs/letsencrypt-nginx-proxy-companion`) started next to it
+with `docker run --volumes-from nginx-proxy`. So the template is
+upstream's `nginx.tmpl`, and `jwilder/nginx-proxy:alpine` is a rolling
+build of upstream `main`: what runs is whatever that tag was when the
+front's image was last built (its `Dockerfile` last changed in 2025-03,
+after 1.7.0). The points below hold for upstream's template as of 2025-03
+and 2026-11; the 2018 template differs only where noted.
+
+- **Discovery:** docker-gen picks up `VIRTUAL_HOST` and `VIRTUAL_PORT`
+  (80) from `pmb887x-web` and proxies to its address on the network it
+  shares with the front, the external `nginx-proxy` network (`expose`,
+  no published port). `VIRTUAL_PROTO` stays the default `http`; no labels
+  are needed. The gateway has no `VIRTUAL_HOST` and is on the stack's
+  `gprs` network only, so the front never routes to it.
+- **TLS:** `LETSENCRYPT_HOST` and `LETSENCRYPT_EMAIL` are read by the
+  companion, not the proxy. The front then redirects http to https and
+  adds `Strict-Transport-Security: max-age=31536000`.
+- **Headers:** the front passes this nginx's response headers untouched,
+  so COOP/COEP and the others arrive once. It does not compress (`gzip` is
+  off in its `nginx.conf`; the template only sets `gzip_types`), so the
+  `.gz` sidecars and their `Content-Length` arrive as sent. Towards this
+  nginx it sends `Host` (the requested host), `Upgrade` and
+  `Connection: upgrade` for WebSockets over HTTP/1.1, and appends the
+  client to `X-Forwarded-For`, which is why the gateway counts two
+  trusted proxies (`../gprs-gw/README.md`). It forwards client-supplied
+  `X-Forwarded-Proto` and `X-Forwarded-Host` unchanged
+  (`TRUST_DOWNSTREAM_PROXY`, default true, from 2022 on); nothing here
+  reads them.
+- **HTTP/2** is on at the front by default and serves the page and its
+  downloads. nginx does not offer WebSockets over HTTP/2 (RFC 8441) or
+  HTTP/3, so browsers open `wss://<host>/gprs` as an HTTP/1.1 connection
+  of its own, which the front upgrades. `ENABLE_HTTP3=true` on the front
+  changes nothing for this site.
+- **Limits:** no request here has a body, so `client_max_body_size` does
+  not matter. The front buffers responses (nginx's default; templates
+  before 1.5.0 turned it off), which is harmless for the 4 MB wasm either
+  way; upgraded WebSockets are never buffered.
+- **Timeouts:** the front sets none, so nginx's default 60 s
+  `proxy_read_timeout` applies, and it closes a `/gprs` link after a
+  minute without traffic. The page sends nothing while the phone is
+  idle, so that drops the phone's open TCP connections long before the
+  gateway's own 15-minute idle close. Raise it on the front, as below.
+
+### Front settings (once per host)
+
+`front-location.conf` sets `proxy_read_timeout` and `proxy_send_timeout`
+to 960 s for this host. nginx-proxy includes
+`/etc/nginx/vhost.d/<VIRTUAL_HOST>_location` in the host's `location /`
+(which also serves `/gprs`), and the Let's Encrypt companion leaves
+`_location` files alone. In the front's setup `/etc/nginx/vhost.d` is an
+anonymous volume of the `nginx-proxy` container, so copy the file in:
+
+```bash
+# from deploy/nginx/ on the server; the name is exactly VIRTUAL_HOST + _location
+docker cp front-location.conf nginx-proxy:/etc/nginx/vhost.d/emu.example.org_location
+# docker-gen looks for the file only when it re-renders, which a restart of
+# this container triggers (or `docker compose up -d --build` here)
+docker restart pmb887x-web
+docker exec nginx-proxy nginx -T 2>/dev/null | grep -n -e _location -e proxy_read_timeout
+```
+
+The last command should list the `include …/emu.example.org_location`
+and `proxy_read_timeout 960s`. With several names in `VIRTUAL_HOST`, copy
+it once per name. A `vhost.d/default_location` on the front no longer
+applies to this host once the file exists, so merge anything it holds
+into the copy.
+
+The file stays when compose recreates `nginx-proxy` (anonymous volumes
+are carried over), but not across `docker compose down` there; copy it
+again after one. To keep it for good, in the front's `docker-compose.yml`
+change `- /etc/nginx/vhost.d` to a host directory, such as
+`- /data/nginx-vhost.d:/etc/nginx/vhost.d`, put the file there, and run
+the companion's `docker run` again so `--volumes-from` sees the new mount.
+The alternative in the front's own style raises the timeouts for every
+site it proxies: a `conf.d` file with the same two lines, copied in its
+`Dockerfile` like `00_client_max_body_size.conf`.
+
 ### The phone's Internet
 
 The page relays the phone's GPRS to `wss://<host>/gprs`, which `site.conf`
@@ -108,7 +191,8 @@ compilation) and `.tar`/`.mjs` correct regardless of the base image;
 big downloads. `location = /gprs` proxies the WebSocket upgrade to
 `pmb887x-gprs-gw:5751` (looked up per request through Docker's DNS, so
 nginx starts without it), appends the peer to `X-Forwarded-For`, and keeps
-an idle link for 960 s, past the gateway's own 15-minute idle close.
+an idle link for 960 s, past the gateway's own 15-minute idle close (the
+front needs the same, see "Front settings").
 
 ## Re-deploys
 
