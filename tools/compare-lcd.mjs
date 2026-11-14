@@ -56,11 +56,11 @@ const res = await page.evaluate(async (refB64) => {
       let d = 0, n = 0;
       for (let y = by * B; y < Math.min((by + 1) * B, H); y++)
         for (let x = bx * B; x < Math.min((bx + 1) * B, W); x++) {
-          const i = (y * W + x) * 4;
+          const i = (y * live.width + x) * 4, j = (y * ref.width + x) * 4;
           n++;
-          if (Math.abs(live.data[i] - ref.data[i]) > 48 ||
-              Math.abs(live.data[i + 1] - ref.data[i + 1]) > 48 ||
-              Math.abs(live.data[i + 2] - ref.data[i + 2]) > 48) d++;
+          if (Math.abs(live.data[i] - ref.data[j]) > 48 ||
+              Math.abs(live.data[i + 1] - ref.data[j + 1]) > 48 ||
+              Math.abs(live.data[i + 2] - ref.data[j + 2]) > 48) d++;
         }
       diff += d;
       row += d > n * 0.3 ? "#" : d > n * 0.08 ? "." : " ";
