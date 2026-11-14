@@ -245,6 +245,7 @@ const out = {
   suite, legs, icounts, extraQ, runs,
   results, medians: med,
 };
+fs.mkdirSync(`${ROOT}/tests/results`, { recursive: true });
 const file = `${ROOT}/tests/results/tcgbench-${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16)}.json`;
 fs.writeFileSync(file, JSON.stringify(out, null, 1));
 const latest = `tcgbench-${suite === "tcgbench" ? "" : "quick-"}latest.json`;
