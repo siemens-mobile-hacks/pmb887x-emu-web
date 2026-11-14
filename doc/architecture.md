@@ -367,12 +367,15 @@ thread is using them).
 concurrently** and prints one verdict table — a gate never reads a wall
 clock as a result, so host load cannot change a verdict. Before its jobs
 start it brings the native reference builds (`build-native.sh`, and
-`build-native-tci.sh` when a job needs TCI) up to date with `qemu/`. The
+`build-native-tci.sh` when a job needs TCI) up to date with `qemu/`, and
+rebuilds the test plugins (`build-plugins.sh`: `tests/insncount.so`,
+`tests/lockstep.so`) when their sources or qemu's plugin API are newer. The
 benchmarks at the bottom are *not* in it and must be run one at a time on
 a quiet host.
 
 | gate | what it proves | driver |
 |---|---|---|
+| unit tests | the page modules' pure logic (board configs, device rules, keyboards, OTP words, exit reports, browser names) | `node --test tests/unit/*.test.mjs` |
 | native boot suite | s75/el71/c81/ke800/ke970 boot-init/progress/no-exit | `node tests/run.mjs` |
 | browser boot gate | s75/el71/ke800/ke970/cx70 boot on a wasm dist (progress in executed insns) | `node tools/bootcheck.mjs --dist dist-jit` |
 | early key | a key delivered before the machine exists does not kill the module | `node tools/earlykey.mjs --board <b>` |

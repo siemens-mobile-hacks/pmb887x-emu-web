@@ -220,6 +220,11 @@ cover.
                         site/dist-jit/ (the wasm64 backend)
   scripts/
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
+    build-dirs.sh       the directories the build scripts share (WEB_BUILD,
+                        WASM_DEPS, PMB887X_BSP_DIR), sourced by each of them
+    submodules.sh       the gitlink helpers build-qemu.sh and
+                        build-release.sh share (a submodule's pin is its
+                        gitlink)
     build-qemu.sh       check the qemu, pmb887x-emu and bsp submodules out
                         when they are not yet, pack boards.tar, build
                         siemensfw and the wasm dist (wasm64 backend →
@@ -233,10 +238,17 @@ cover.
     build-qemu-wasm64.sh  the wasm64 backend build itself (build/qemu-wasm64;
                         configure via qemu's configure, Asyncify onlylist,
                         qom_cast_debug off, atomic deploy + symbol map)
+    deploy-dist.sh      the deploy into a page dist that build-qemu-wasm64.sh
+                        and ninja-fast.sh share (engine by temp name +
+                        rename, qemu-source.txt, boards.tar, key module)
+    check-wasm-eh.sh    stops a wasm64 build dir configured before wasm-EH
+                        setjmp (run by the two above)
     build-native.sh     native Linux JIT build of qemu/ as checked out (+ its
                         qemu-source.txt stamp)
     build-native-tci.sh native TCI build of the same tree (plugins on — the
                         lockstep b-side)
+    build-plugins.sh    the native TCG plugins the test harnesses load
+                        (tests/insncount.so, tests/lockstep.so)
     qemu-source-id.sh   names the qemu sources a build came from (HEAD + a
                         hash of the uncommitted diff); the wasm builds and
                         build-native.sh write it to qemu-source.txt and
@@ -254,12 +266,20 @@ cover.
     gate.sh             builds the native references, then every
                         correctness gate, run concurrently, one verdict
                         table: quick | keep | close
+    serve-local.sh      start_serve: the serve.mjs of its own that gate.sh
+                        and run-tcg-isa.sh start when they need one
     run-tcg-isa.sh      guest op-suite gate (every built backend,
                         byte-compared against the native JIT)
     run-lockstep.sh     native cross-backend lockstep gate
+    setup-android-emu.sh  Android arm64 emulator for profiling the page in
+                        Android's V8 (doc/android-emulator.md)
   site-src/recalc/      emcc glue around the siemensfw library
                         (the only C++ here outside the submodules)
   tests/
+    unit/               node --test unit tests of the page's modules (the
+                        gate's unit job)
+    baremetal/          startup, linker script, UART and make rules shared by
+                        the two versatilepb images, tcg-isa/ and tcgbench/
     tcg-isa/            guest op-suite (bare-metal ARM926 versatilepb image
                         asserting (value, NZCV) per op class; runs on native
                         JIT, native TCI and the wasm page, byte-compared):
@@ -272,7 +292,10 @@ cover.
                         fast-iteration perf bench on versatilepb: per-phase
                         backend A/B + the device/icount-tax mirrors
     run.mjs             native boot suite (s75/el71/c81/ke800/ke970) and the A/B
-                        harness for qemu/bsp bumps
+                        harness for qemu/bsp bumps; insncount.c is its
+                        instruction-count plugin
+    wasm/               dispatchbench.mjs: the cost of a TB-to-TB transition
+                        in the wasm64 backend, without the emulator
   site/                 the served web root — editable static page (index.html /
                         app.js / style.css / keyboards.js; fullflashes.js holds
                         the preset-fullflash inventory + Cache API handling)
