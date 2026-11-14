@@ -190,7 +190,11 @@ const commands = {
   reload: (args) => boot(args),
   status: async () => (await status()).line,
   "status-json": async () => (await status()).raw,
-  wait: async (args) => wait(args[0], args[1] ? Number(args[1]) * 1000 : undefined),
+  wait: async (args) => {
+    if (args[1] !== undefined && !Number.isFinite(Number(args[1])))
+      throw new Error(`wait: the timeout is seconds, got ${JSON.stringify(args[1])} (quote a predicate that has spaces)`);
+    return wait(args[0], args[1] ? Number(args[1]) * 1000 : undefined);
+  },
   rate: async (args) => {
     const secs = Number(args[0] || 10);
     const a = await probe();
