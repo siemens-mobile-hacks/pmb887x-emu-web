@@ -57,9 +57,12 @@ const SIDECARS = board.sidecars.map((f) => here + "../fullflashes/" + f);
 
 const b = await chromium.launch({ headless: true });
 const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
-let pageErr = null, serialExit = false;
+let pageErr = null;
 p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });
-p.on("console", (m) => { if (m.text().includes(">>EXIT<<")) serialExit = true; });
+const guestExit = () => p.evaluate(() => {
+  const x = window.__ui?.exit;
+  return x ? [x.type, x.code].filter(Boolean).join(" ") || "no details" : null;
+});
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 await p.goto(`http://127.0.0.1:${port}/?dist=${dist}&rt=${rt}${extraQ ? "&" + extraQ : ""}`,
@@ -73,8 +76,9 @@ await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });
 
 while ((Date.now() - t0) / 1000 < settleS) {
   await sleep(1000);
-  if (serialExit || pageErr) {
-    console.log(`KEYLAG FAIL ${boardId} boot: ${pageErr || "guest EXIT"}`);
+  const exit = pageErr ? null : await guestExit();
+  if (exit || pageErr) {
+    console.log(`KEYLAG FAIL ${boardId} boot: ${pageErr || "guest EXIT " + exit}`);
     await b.close(); process.exit(1);
   }
 }
