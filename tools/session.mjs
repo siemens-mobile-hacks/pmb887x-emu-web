@@ -13,7 +13,7 @@
 //                    until the module is up. Extra args become query params
 //                    (iorewind=1, iopace=20, icount=shift=4 ...).
 //   status           one compact line: uptime, insns (+rate since last call),
-//                    tbs, vclock, fb updates, serial size, page status
+//                    vclock, fb updates, serial size, page status
 //   wait <pred>      block until: exit | fb=N | insns=N | splash | secs=N
 //                    | serial=TEXT     (timeout WAIT_TIMEOUT, default 300 s)
 //   rate [secs]      measure insns/s over a window (default 10 s)
@@ -118,7 +118,7 @@ const PROBE = `(() => {
   const g = (f) => { try { return Number(m[f]()); } catch { return -1; } };
   let ser = "", serErr = "";
   try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch (e) { serErr = String(e); }
-  return { insns: g("_wasm_insns"), tbs: g("_wasm_tbs"), vclockMs: g("_wasm_vclock"),
+  return { insns: g("_wasm_insns"), vclockMs: g("_wasm_vclock"),
            fb: g("_wasm_fb_updates"), serLen: ser.length, ser,
            // window.__ui is the page's own run state (site/app.js): the pill
            // text alone no longer says whether the guest exited
@@ -143,8 +143,8 @@ async function status() {
   const up = bootAt ? ((now - bootAt) / 1000).toFixed(0) : "?";
   const exit = (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || "";
   return {
-    line: `up=${up}s insns=${fmtM(s.insns)}${rate} tbs=${fmtM(s.tbs)} vclock=${(s.vclockMs / 1e6).toFixed(1)}ms fb=${s.fb} serlen=${s.serLen} state=${s.state}${s.exitCode != null ? `(${s.exitCode})` : ""}${exit ? " EXIT: " + exit : ""}`,
-    raw: { uptimeS: Number(up), insns: s.insns, tbs: s.tbs, vclockMs: s.vclockMs, fb: s.fb, serLen: s.serLen, state: s.state, exitCode: s.exitCode, status: s.status, exit },
+    line: `up=${up}s insns=${fmtM(s.insns)}${rate} vclock=${(s.vclockMs / 1e6).toFixed(1)}ms fb=${s.fb} serlen=${s.serLen} state=${s.state}${s.exitCode != null ? `(${s.exitCode})` : ""}${exit ? " EXIT: " + exit : ""}`,
+    raw: { uptimeS: Number(up), insns: s.insns, vclockMs: s.vclockMs, fb: s.fb, serLen: s.serLen, state: s.state, exitCode: s.exitCode, status: s.status, exit },
   };
 }
 

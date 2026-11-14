@@ -15,7 +15,7 @@
 // Legs: native-jit / native-tci (spawned with -serial stdio, lines
 // timestamped as they stream) and <dist-name> (wasm page legs via
 // ?suite=dist/tcgbench.bin&dist=<name>, /serial.log polled, lines
-// timestamped on appearance; guest insns/tbs read at DONE for MIPS).
+// timestamped on appearance; guest insns read at DONE for MIPS).
 // Results -> tests/results/tcgbench-<ts>.json (+ tcgbench-latest.json).
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
@@ -83,7 +83,7 @@ async function runWasm(dist, browser, icount) {
   }
   const phases = [];
   const serial = [];
-  let insns = null, tbs = null, done = false;
+  let insns = null, done = false;
   const t0 = stamp();
   try {
     await page.goto(`http://127.0.0.1:${port}/?${q}`, { waitUntil: "domcontentloaded", timeout: 120000 });
@@ -111,7 +111,6 @@ async function runWasm(dist, browser, icount) {
         done = true;
         try {
           insns = await page.evaluate(() => Number(window.__qemu._wasm_insns()));
-          tbs = await page.evaluate(() => Number(window.__qemu._wasm_tbs()));
         } catch {}
         break;
       }
@@ -121,7 +120,7 @@ async function runWasm(dist, browser, icount) {
     try { await page.close(); } catch {}
   }
   // a page that died or hit the cap did not finish the bench
-  return { phases, serial, rc: done ? 0 : 1, insns, tbs };
+  return { phases, serial, rc: done ? 0 : 1, insns };
 }
 
 // phases -> per-phase seconds (a phase's line lands when it completes)
@@ -168,13 +167,13 @@ try {
             ? +((s * 1e9) / (ITERS[n] * ACC_PER_ITER[n])).toFixed(1)
             : undefined,
         })),
-        insns: res.insns, tbs: res.tbs,
+        insns: res.insns,
         mips: res.insns && total ? +(res.insns / total / 1e6).toFixed(1) : null,
         cksum,
       };
       results.push(entry);
       console.log(`== ${leg}${icount ? "+icount" : ""} run${r + 1}: total ${entry.total}s` +
-        (entry.mips ? ` (${entry.mips} MIPS, ${(entry.insns / 1e6).toFixed(0)}M insns, ${(entry.tbs / 1e6).toFixed(1)}M TBs, ${(entry.insns / Math.max(1, entry.tbs)).toFixed(1)} insns/TB)` : "") +
+        (entry.mips ? ` (${entry.mips} MIPS, ${(entry.insns / 1e6).toFixed(0)}M insns)` : "") +
         `  cksum=${cksum}`);
       for (const { n, s, nsPerAccess } of entry.phases) {
         console.log(`   ${n.padEnd(8)} ${s.toFixed(3)}s` +

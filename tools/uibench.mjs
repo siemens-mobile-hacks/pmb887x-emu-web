@@ -106,7 +106,7 @@ async function snap() {
     return {
       ...bench,
       t: performance.now(), v: f("_wasm_vclock"), insns: f("_wasm_insns"),
-      tbs: f("_wasm_tbs"), fb: f("_wasm_fb_updates"),
+      fb: f("_wasm_fb_updates"),
       ioLd: g(2), ioSt: g(3), fill: g(4), lookup: g(13), halts: g(29),
       difMuxRebuild: g(59), difTxWord: g(60), dmacBurst: g(61),
       dmacSchedTimer: g(62), dmacXlatFill: g(63), gptuTimer: g(64),
@@ -194,7 +194,6 @@ async function measure(name, drive) {
     vratio: +(d.v / 1e9 / wall).toFixed(3),
     fps: +(d.fb / wall).toFixed(1),
     haltsPerS: Math.round(d.halts / wall),
-    insnsPerTb: +(d.insns / (d.tbs || 1)).toFixed(2),
     ioLdPerS: Math.round(d.ioLd / wall), ioStPerS: Math.round(d.ioSt / wall),
     fillsPerS: Math.round(d.fill / wall), lookupsPerS: Math.round(d.lookup / wall),
     difTxWordPerS: Math.round(d.difTxWord / wall), dmacBurstPerS: Math.round(d.dmacBurst / wall),

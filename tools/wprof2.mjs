@@ -61,7 +61,6 @@ try {
       let sl = -1; try { sl = m.FS.readFile("/serial.log").length; } catch {}
       console.log("WATCH v=" + (Number(m._wasm_vclock())/1e9).toFixed(1) +
         " u=" + Number(m._wasm_fb_updates()) + " serial=" + sl +
-        " tbs=" + (m._wasm_tbs?Number(m._wasm_tbs()):0) +
         " insns=" + (m._wasm_insns?Number(m._wasm_insns()):0));
     }, 10000);
   `});

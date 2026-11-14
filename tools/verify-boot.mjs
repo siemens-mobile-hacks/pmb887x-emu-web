@@ -38,18 +38,18 @@ for (let t = 10; t <= secs; t += 10) {
           if (dv.getUint32(Number(ptr) + i, true) & 0xffffff) fb.nonBlack++;
       }
     } catch (e) {}
-    let insns = -1, tbs = -1;
-    try { insns = Number(m._wasm_insns()); tbs = Number(m._wasm_tbs()); } catch (e) {}
+    let insns = -1;
+    try { insns = Number(m._wasm_insns()); } catch (e) {}
     let vclock = -1;
     try { vclock = Number(m._wasm_vclock()); } catch (e) {}
-    return { ser, fb, insns, tbs, vclock, ui: window.__ui ?? {} };
+    return { ser, fb, insns, vclock, ui: window.__ui ?? {} };
   }).catch((e) => ({ err: String(e).slice(0, 200) }));
   if (s.err) { console.log(`[${tag}] t=${t}s eval err:`, s.err); continue; }
   last = s;
   const rate = lastT ? Math.round((s.insns - lastInsns) / (t - lastT)) : 0;
   lastInsns = s.insns; lastT = t;
   const exit = (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || "";
-  console.log(`[${tag}] t=${t}s insns=${s.insns} rate=${rate}/s tbs=${s.tbs} vclock=${(s.vclock / 1e6).toFixed(1)}ms fb=${s.fb.updates}upd/${s.fb.nonBlack}px${exit ? " EXIT: " + exit : ""}`);
+  console.log(`[${tag}] t=${t}s insns=${s.insns} rate=${rate}/s vclock=${(s.vclock / 1e6).toFixed(1)}ms fb=${s.fb.updates}upd/${s.fb.nonBlack}px${exit ? " EXIT: " + exit : ""}`);
   if (/FILE:\s*flash/.test(s.ser)) { verdict = "FAIL: early boot-ROM abort (FILE: flash)"; break; }
   if (s.ui.exit) { verdict = `FAIL: firmware EXIT ${[s.ui.exit.type, s.ui.exit.code].filter(Boolean).join(" ")}`; break; }
   if (s.ui.error) { verdict = `FAIL: ${s.ui.error}`; break; }

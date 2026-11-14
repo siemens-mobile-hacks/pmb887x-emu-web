@@ -22,11 +22,7 @@ await page.addScriptTag({ content: `
     } catch (e) { tail = "E"; }
     console.log("WATCH v=" + (Number(m._wasm_vclock())/1e9).toFixed(2) +
       " u=" + Number(m._wasm_fb_updates()) + " serial=" + sl +
-      " tbs=" + (m._wasm_tbs ? Number(m._wasm_tbs()) : "-") +
       " insns=" + (m._wasm_insns ? Number(m._wasm_insns()) : "-") +
-      " ex=[" + [0,1,2,3].map((i) => m._wasm_exits ? Number(m._wasm_exits(i)) : 0).join(",") + "]" +
-      " exNoReq=" + (m._wasm_exits ? Number(m._wasm_exits(8)) : 0) +
-      " irq=0x" + (m._wasm_irq_bits ? m._wasm_irq_bits().toString(16) : "?") +
       " tail=" + JSON.stringify(tail.slice(-40)));
   }, 10000);
 `});

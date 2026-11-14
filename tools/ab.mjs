@@ -71,7 +71,7 @@ async function runVariant(browser, tag, q) {
         let ser = "";
         try { ser = new TextDecoder("latin1").decode(m.FS.readFile("/serial.log")); } catch {}
         return {
-          insns: g("_wasm_insns"), tbs: g("_wasm_tbs"), fb: g("_wasm_fb_updates"),
+          insns: g("_wasm_insns"), fb: g("_wasm_fb_updates"),
           ser, ui: window.__ui ?? {},
         };
       })

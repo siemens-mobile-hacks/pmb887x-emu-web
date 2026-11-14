@@ -246,7 +246,7 @@ function rssMB(marker) {
   } catch { return null; }
 }
 
-// in-page sampler: returns {v, pct, u, insns, tbs, match} in one shot.
+// in-page sampler: returns {v, pct, u, insns, match} in one shot.
 // The reference image is decoded once and cached on the window.
 const SAMPLER = async (cfg) => {
   const { refB64, rowsCmp, pctMax, cmp } = cfg;
@@ -293,7 +293,6 @@ const SAMPLER = async (cfg) => {
     v, pct, serial: sl,
     u: Number(m._wasm_fb_updates()),
     insns: m._wasm_insns ? Number(m._wasm_insns()) : 0,
-    tbs: m._wasm_tbs ? Number(m._wasm_tbs()) : 0,
     // bench census slots of a bench-patched build, totals since boot
     ctr: m._wasm_bench_ctr_get ? Array.from({ length: 8 }, (_, i) => Number(m._wasm_bench_ctr_get(i))) : null,
     match: pct <= pctMax,
@@ -426,9 +425,7 @@ async function runOne(dist, hashes, r) {
         }
         if (s.insns - lastProgress.insns >= STALL_INSNS) lastProgress = { t, insns: s.insns };
         lastSample = s;
-        // [t, v, insns, tbEntries]: insns/tb per interval = how much
-        // each TB entry (prologue, chain hop) is amortised over
-        rec.samples.push([+t.toFixed(1), +s.v.toFixed(2), s.insns, s.tbs]);
+        rec.samples.push([+t.toFixed(1), +s.v.toFixed(2), s.insns]);
         for (const tv of T_MILESTONES) {
           if (rec.vAt[tv] === undefined && t >= tv) rec.vAt[tv] = +s.v.toFixed(1);
         }
@@ -440,7 +437,7 @@ async function runOne(dist, hashes, r) {
         if (s.match && cmpOn) {
           rec.cls = "IDLE";
           rec.tIdle = +t.toFixed(1);
-          rec.at = { v: +s.v.toFixed(1), pct: +s.pct.toFixed(3), insns: s.insns, tbs: s.tbs };
+          rec.at = { v: +s.v.toFixed(1), pct: +s.pct.toFixed(3), insns: s.insns };
           break;
         }
         if (t >= nextBeat) {
@@ -456,7 +453,7 @@ async function runOne(dist, hashes, r) {
             rec.why = `LCD settled ${bestPct.toFixed(2)}% off the reference ` +
               `for ${noConvSecs}s (need <=${pctMax}) — stale ref, or the guest ` +
               `stopped somewhere else`;
-            rec.at = { v: +s.v.toFixed(1), pct: +s.pct.toFixed(3), insns: s.insns, tbs: s.tbs };
+            rec.at = { v: +s.v.toFixed(1), pct: +s.pct.toFixed(3), insns: s.insns };
             break;
           }
         }
@@ -478,7 +475,7 @@ async function runOne(dist, hashes, r) {
     rec.rssPeakMB = rssPeak;
     rec.last = lastSample && {
       v: +lastSample.v.toFixed(1), pct: +lastSample.pct.toFixed(3),
-      u: lastSample.u, insns: lastSample.insns, tbs: lastSample.tbs, ctr: lastSample.ctr,
+      u: lastSample.u, insns: lastSample.insns, ctr: lastSample.ctr,
     };
     if (w64lines.length) rec.w64lines = w64lines;
 
