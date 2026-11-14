@@ -92,6 +92,12 @@ for (const [code, key] of Object.entries(CODE_TO_KEY)) {
 const $ = (id) => document.getElementById(id);
 // the page's query; it never changes while the page lives
 const QS = new URLSearchParams(location.search);
+// Remembered settings. With site data blocked the localStorage getter itself
+// throws; the page then runs on its defaults and remembers nothing.
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* not remembered */ } },
+};
 let qemuModule = null;   // current emscripten module instance
 let running = false;     // a guest is live (the module object outlives it)
 let gprsNet = null;      // the GSM cell's IP side (gprs-net.js) while it runs
@@ -339,7 +345,7 @@ function siemensMode() {
 // Unlike the identity fields next to it this one is remembered: it is a
 // choice about how the page should behave, not a value to boot with.
 {
-  const stored = localStorage.getItem(SIEMENS_MODE_KEY);
+  const stored = store.get(SIEMENS_MODE_KEY);
   const match = SK.radios.find((r) => r.value === stored);
   if (match) match.checked = true;
 }
@@ -376,7 +382,7 @@ function refreshSiemensKeys() {
 
 for (const r of SK.radios) {
   r.addEventListener("change", () => {
-    localStorage.setItem(SIEMENS_MODE_KEY, r.value);
+    store.set(SIEMENS_MODE_KEY, r.value);
     refreshSiemensKeys();
   });
 }
@@ -450,7 +456,7 @@ for (const entry of PRESET_FULLFLASHES) {
   P.sel.appendChild(opt);
 }
 // "was last used", else the first entry
-const lastPreset = presetById(localStorage.getItem("ff-preset") ?? "");
+const lastPreset = presetById(store.get("ff-preset") ?? "");
 selectedPreset = lastPreset ?? PRESET_FULLFLASHES[0] ?? null;
 if (selectedPreset) P.sel.value = selectedPreset.id;
 
@@ -499,7 +505,7 @@ async function refreshPresetUi() {
 P.sel.addEventListener("change", async () => {
   selectedPreset = presetById(P.sel.value);
   if (selectedPreset) {
-    localStorage.setItem("ff-preset", selectedPreset.id);
+    store.set("ff-preset", selectedPreset.id);
     syncKeyboardToDevice(inferDevice(selectedPreset.files[0]));
   }
   await refreshPresetUi();
@@ -2344,11 +2350,11 @@ for (const [chk, key, apply] of [
   [serWrap, "ser-wrap", () => $("serial").classList.toggle("nowrap", !serWrap.checked)],
   [serTail, "ser-tail", () => { if (serTail.checked) $("serial").scrollTop = $("serial").scrollHeight; }],
 ]) {
-  const stored = localStorage.getItem(key);
+  const stored = store.get(key);
   if (stored != null) chk.checked = stored === "1";
   apply();
   chk.addEventListener("change", () => {
-    localStorage.setItem(key, chk.checked ? "1" : "0");
+    store.set(key, chk.checked ? "1" : "0");
     apply();
   });
 }
@@ -2375,7 +2381,7 @@ let speaker = null;       // gain between the worklet and the device: the mute
 let recSound = null;      // MediaStreamAudioDestinationNode while a capture records
 let audioHdr = null;      // Int32Array over the ring header while attached
 let workletReady = null;  // addModule() promise, resolved once
-let soundOn = localStorage.getItem(SOUND_KEY) !== "0";
+let soundOn = store.get(SOUND_KEY) !== "0";
 
 function audioContext() {
   if (audioCtx) return audioCtx;
@@ -2478,7 +2484,7 @@ function renderSound() {
 }
 soundBtn.addEventListener("click", async () => {
   soundOn = !soundOn;
-  localStorage.setItem(SOUND_KEY, soundOn ? "1" : "0");
+  store.set(SOUND_KEY, soundOn ? "1" : "0");
   renderSound();
   const ac = audioContext();
   if (!ac) return;
@@ -3007,9 +3013,9 @@ function stopHudTimer() { clearInterval(hudTimer); hudTimer = 0; }
 // the toggle takes effect immediately, mid-run or before one; it starts off
 // — the strip is an instrument, and it covers the top of the screen box,
 // which is the one thing the page is there to show
-hudChk.checked = localStorage.getItem("opt-hud") === "1";
+hudChk.checked = store.get("opt-hud") === "1";
 hudChk.addEventListener("change", () => {
-  localStorage.setItem("opt-hud", hudChk.checked ? "1" : "0");
+  store.set("opt-hud", hudChk.checked ? "1" : "0");
   syncHud();
 });
 
@@ -3274,9 +3280,9 @@ function fillSelect(sel, entries, value) {
 // On wherever there is a table, unless it was turned off.
 const typeChk = $("kbd-typing");
 let typing = { chars: new Map() };
-typeChk.checked = localStorage.getItem("kbd-typing") !== "0";
+typeChk.checked = store.get("kbd-typing") !== "0";
 typeChk.addEventListener("change", () => {
-  localStorage.setItem("kbd-typing", typeChk.checked ? "1" : "0");
+  store.set("kbd-typing", typeChk.checked ? "1" : "0");
 });
 
 // typing paces its taps through the guest-timed key queue, which a ?dist=
@@ -3309,17 +3315,17 @@ function selectKeyboard(wanted = wantedVariant) {
   applyKbdLayout(kbdSel.value, variant, renderKeypad);
   typing = tapTable(kbdSel.value, variant);
   refreshTyping();
-  localStorage.setItem("kbd-keyboard", kbdSel.value);
-  localStorage.setItem("kbd-variant", wanted);
+  store.set("kbd-keyboard", kbdSel.value);
+  store.set("kbd-variant", wanted);
 }
 
 fillSelect(kbdSel, Object.entries(KBD_KEYBOARDS), DEFAULT_KEYBOARD);
 // the pre-split picker remembered one id per keyboard+variant ("ke800_ru")
-const legacy = localStorage.getItem("kbd-layout") ?? "";
-kbdSel.value = localStorage.getItem("kbd-keyboard")
+const legacy = store.get("kbd-layout") ?? "";
+kbdSel.value = store.get("kbd-keyboard")
   ?? (legacy.startsWith("ke800") ? "ke800" : DEFAULT_KEYBOARD);
 if (!(kbdSel.value in KBD_KEYBOARDS)) kbdSel.value = DEFAULT_KEYBOARD;
-selectKeyboard(localStorage.getItem("kbd-variant")
+selectKeyboard(store.get("kbd-variant")
   ?? (legacy.endsWith("ru") ? "ru" : "en"));
 
 kbdSel.addEventListener("change", () => selectKeyboard());
@@ -3330,7 +3336,7 @@ varSel.addEventListener("change", () => selectKeyboard(varSel.value));
 // enough to be one), off on phone-sized screens; the remembered choice wins
 // over that default
 const hintsChk = $("kbd-hints");
-const storedHints = localStorage.getItem("kbd-hints");
+const storedHints = store.get("kbd-hints");
 hintsChk.checked = storedHints == null
   ? matchMedia("(hover: hover) and (pointer: fine) and (min-width: 640px)").matches
   : storedHints === "1";
@@ -3339,7 +3345,7 @@ const showKeyHints = () =>
 showKeyHints();
 hintsChk.addEventListener("change", () => {
   showKeyHints();
-  localStorage.setItem("kbd-hints", hintsChk.checked ? "1" : "0");
+  store.set("kbd-hints", hintsChk.checked ? "1" : "0");
 });
 
 /* ---- typing: a character becomes its digit key, pressed N times ---- */
