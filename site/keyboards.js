@@ -411,9 +411,9 @@ function pickerPresses(picker, ch) {
 
 // The generic Siemens keyboard stands for every Siemens phone, and what
 // typing needs to know about the editor goes by the chip the board runs on
-// (its config's cpu.type): it held on all 14 phones measured
-// (doc/lessons.md). PMB8875 (the x65s, C72, C75, CX75, M75, ME75) and PMB8876
-// (S75, C81, M81, E71, EL71) differ in both below.
+// (its config's cpu.type): it held on all 18 phones measured
+// (doc/lessons.md). PMB8875 (the x65s, S66, C72, C75, CX75, M75, ME75) and
+// PMB8876 (S75, C81, M81, E71, EL71, S68, SL75) differ in both below.
 //
 // Backspace while typing: the key that erases the character before the
 // cursor in the phone's editor, the soft key that shows "<C" — the left one
@@ -426,9 +426,9 @@ const SIEMENS_ERASE = { default: "right_soft", pmb8875: "left_soft" };
 // Measured per phone by typing the same text over and over at shorter and
 // shorter times (doc/lessons.md); the values keep a margin over the
 // shortest that never failed. The PMB8876 Siemens miss taps that come
-// quicker than 60-70 ms apart (E71: 30+30 typed, 20+20 lost taps; S75, C81,
-// EL71, M81: 40+30 typed, 40+20 lost), the PMB8875 ones and the LGs took
-// 15+15. Timeouts: PMB8876 and KE800 0.9-1.0 s, PMB8875 0.7-0.8 s, KE970
+// quicker than 60-70 ms apart (E71, EL71, S68, SL75: 30+30 typed, 20+20
+// lost taps; S75, C81, M81: 40+30 typed, 40+20 lost), the PMB8875 ones and
+// the LGs took 15+15. Timeouts: PMB8876 and KE800 0.9-1.0 s, PMB8875 0.7-0.8 s, KE970
 // 0.6-0.7 s. A Siemens board of no known chip gets the slower times.
 const SIEMENS_SGOLD2_TIMING = { hold: 60, gap: 40, pause: 1100 };
 const SIEMENS_TIMING = { default: SIEMENS_SGOLD2_TIMING, pmb8875: { hold: 30, gap: 30, pause: 900 } };

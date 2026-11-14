@@ -582,12 +582,16 @@ The binding method is in performance.md. These are the traps behind it.
   letters) over and over through `_wasm_send_key`, erasing between runs and
   comparing a hash of the LCD's text area with a slow reference, gives
   all-pass or all-fail per setting (2–3 runs each, 2026-11-13). It goes
-  by the chip, not the generation: of 14 phones, every PMB8875 board (C65,
-  C72, C75, CX65, CX70, CX75, M75, ME75, SL65 — the C75/CX75/M75 are x75s)
-  still types at 15+15 with a multi-tap timeout of 0.7–0.8 s from the
-  release, while the PMB8876 ones lose taps that come less than 60–70 ms
-  apart (S75, C81, EL71, M81: 60+10 and 40+30 type, 40+20 does not; E71:
-  30+30 types, 20+20 does not) and time out after 0.9–1.0 s. The erase key
+  by the chip, not the generation: of 18 phones, every PMB8875 board (C65,
+  C72, C75, CX65, CX70, CX75, M75, ME75, S65, S66, SL65 — the
+  C75/CX75/M75 are x75s) still types at 15+15 with a multi-tap timeout of
+  0.7–0.8 s from the release, while the PMB8876 ones lose taps that come
+  less than 60–70 ms apart (S75, C81, M81: 60+10 and 40+30 type, 40+20
+  does not; E71, EL71, S68, SL75: 30+30 types, 20+20 does not) and time
+  out after 0.9–1.0 s. The EL71 had first come out with the S75 group:
+  that run's taps were timed on the page (next lesson), which shortened
+  some, and the retest with qemu spacing them typed 40+20 and 30+30. The
+  erase key
   follows it too: "<C" is the left soft key on every PMB8875 editor, the
   right one on every PMB8876. Both LGs type at 15+15; timeouts KE800
   0.9–1.0 s, KE970 0.6–0.7 s. The S75's had been put at ~0.8 s by eye,
@@ -608,9 +612,29 @@ The binding method is in performance.md. These are the traps behind it.
   runs at 30+30 (2026-11-13): a late hand-over had shortened a hold or a
   gap. Now the page queues a character's edges at once with their spacing
   (`wasm_send_key_after`) and a QEMU_CLOCK_VIRTUAL timer hands each one to
-  the guest; S75, SL65 and KE970 then typed 16 of 16 each under host stalls
-  and a slow host. Spacing on the page side is never exact: anything
-  between the page and the guest's clock can only add to it.
+  the guest. Side by side on equally throttled cores (tools/slowhost.sh,
+  8 spinners per core, phone at 0.4× real time) the KE970 typed 6 of 16
+  right with the old page code and 15 of 15 with the new; S75, SL65 and
+  KE970 typed 16 of 16 each with the host stalled 60 ms in every 310. A
+  slow host only shows when it is slow for the phone: alone on 4 cores at
+  25 % each the phone kept up with real time and nothing failed either
+  way. Test tools that tap with timing (the survey's sweeps) need the same
+  queue, or they measure their own lateness: the old harness had the EL71
+  losing taps at 40+20, which it types.
+- Not every model in fullflashes-untracked could be typed on (2026-11-14).
+  CF75: the board leaves the clamshell's lid hall sensor (`USART1_CTS`)
+  floating, so the firmware boots "closed" and never starts the main
+  display, and qemu has no model of either 128×160 main panel the firmware
+  picks by strap pins (S6B33-style or Epson-style); a bsp patch for the
+  sensor alone makes it draw to the bus, not the screen. CL61 and M72: the
+  page's recalc rejects their dumps ("Not a recognizable Siemens fullflash
+  layout") although tools/recalc-check.mjs reads their keys; run as is,
+  the M72 ends in `crypt_bfx` (0x0404) and the CL61 shows "Wrong
+  Software". SK65: the page stopped answering right after boot, and its
+  keypad does not work here anyway. The two benqt C81 dumps carry no
+  intact keys (`fullflashes/rrC81 .bin` is the one that boots), and the
+  fwcenter SL75 "Hydra" dump ends in `modeman_sm` before idle (the benqt
+  SW52 one boots).
 - The EL71 and C81 end in a firmware EXIT in `modeman_sm` (code 0x0009)
   when the red key is pressed at idle. The CX70 ends in `camera_asic`
   (`0007:D166`) whenever its camera starts: joystick left at idle is the
