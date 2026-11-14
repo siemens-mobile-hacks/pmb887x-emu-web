@@ -1132,7 +1132,9 @@ async function applyFullflashFile(file) {
   if (applyFullflashName(file.name)) return;
   setNote(O.devNote, null, "Detecting device…");
   const picks = devicePicks;
-  const hit = await detectDevice(file);
+  // the library's board is taken whenever boards.tar has it
+  if (boardsReady) await boardsReady;
+  const hit = await detectDevice(file, (dev) => boardText.has(dev + ".toml"));
   if (ownBin !== file) return;   // the user moved on while we were reading
   if (devicePicks !== picks) return; // the pick cleared the note already
   if (emuState !== "idle") { setNote(O.devNote, null, ""); return; }

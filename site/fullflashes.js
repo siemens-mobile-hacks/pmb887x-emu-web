@@ -27,13 +27,15 @@ export const SIDE_CAR_RE = /\.cfi-[a-z0-9]+$/i;
 // LG phones: their EEPROM lives in the NOR flash EFA block, so their
 // fullflashes need the .cfi-efa sidecar (see SIDE_CAR_RE above).
 // Longer tokens come first wherever one contains another: EL71 before E71,
-// CL61A before CL61, ME75 before M75 — the first hit wins. The M65/M75/ME75/
-// SK65/SL65 rows arrived with the bsp round that added those boards
-// (e79169f); C70 still has neither a board nor a sourced stand-in.
+// CL61A before CL61, ME75 before M75 — the first hit wins. One row per
+// board in the bsp with a model of its own (tests/unit/fullflashes.test.mjs
+// checks that against bsp/lib/data/board); C70 has neither a board nor a
+// sourced stand-in.
 const DEVICE_RULES = [
   ["KE800", "lg-ke800"], ["KE970", "lg-ke970"],
   ["EL71", "siemens-el71"], ["E71", "siemens-e71"], ["C81", "siemens-c81"],
-  ["S75", "siemens-s75"], ["S65", "siemens-s65"], ["SK65", "siemens-sk65"],
+  ["S75", "siemens-s75"], ["S65", "siemens-s65"], ["S66", "siemens-s66"],
+  ["SK65", "siemens-sk65"], ["CF75", "siemens-cf75"],
   ["CX75", "siemens-cx75"],
   ["CX70", "siemens-cx70"], ["CX65", "siemens-cx65"], ["SL75", "siemens-sl75"],
   ["SL65", "siemens-sl65"],
@@ -55,18 +57,15 @@ const DEVICE_RULES = [
 // (S65 is 01100, C65 10010), which firmware can read.
 // Deliberately absent: CL61A is *not* a CL61 (different flash part, 0x880D vs
 // 0x8819); C70 has no source that puts it on the same silicon as a board we
-// ship. (M75 and ME75 left this table for DEVICE_RULES when bsp e79169f gave
-// them boards of their own.) See doc/architecture.md.
+// ship. A model leaves this table for DEVICE_RULES when the bsp gives it a
+// board of its own: M75 and ME75 in bsp e79169f, S66 in bsp 65e63e4. See
+// doc/architecture.md.
 const MODEL_VARIANTS = [
   // upstream's own supported-hardware table (pmb887x-emu/README.md)
   ["C1F0", "siemens-el71", true],
   // ru.wikipedia.org/wiki/BenQ-Siemens_EL71 — the same phone renamed
   ["ELF1", "siemens-el71", false],
   ["ELC1", "siemens-el71", false],
-  // ru.wikipedia.org/wiki/Siemens_S65: the S66 is the Americas-band S65,
-  // "функционально ничем от своего европейского двойника не отличается".
-  // The dump agrees: 32 MiB, BC65 bootcore, the R65 family that holds s65.
-  ["S66", "siemens-s65", false],
   // en.wikipedia.org/wiki/Siemens_C65: "known in North America as the
   // Siemens C66"; CT65/CV65/CO65 are its carrier variants
   ["C66", "siemens-c65", false],
@@ -155,31 +154,32 @@ const latin1 = new TextDecoder("latin1");
  * Work out which phone a fullflash came from by reading it, for the files
  * whose name gives nothing away. Never reads the whole image: the Siemens
  * half is the library's own probe over the head, the LG half a scan for the
- * user agent. Returns { device, model, exact } — `device` is null when the
+ * user agent. `hasBoard(id)` says whether a board config of that id exists
+ * (the page asks boards.tar); without it only a board DEVICE_RULES knows
+ * counts. Returns { device, model, exact } — `device` is null when the
  * model is readable but has no board — or null when nothing could be read
  * at all.
  */
-export async function detectDevice(file) {
+export async function detectDevice(file, hasBoard = null) {
   try {
     const head = await readAt(file, 0, PROBE_HEAD);
     // not a pmb887x dump at all — worth saying differently from "no idea"
     if (field(head, CJKT_OFF, 4) !== "CJKT") return null;
 
     // Siemens: the library is the source of truth (probeFullflash). Its
-    // board name is used as-is when the model is a board of its own — which
-    // is when the page's own rules, kept for the filename path below, agree
-    // with it; a model that is not (S66, C66, ELF1…) goes through the
-    // stand-in table, and the filename rules are the last resort, the way
-    // they were the only resort before the library took over. A module that
-    // fails to load is "not a Siemens image" here, not the end of
-    // detection: the LG scan below needs no module.
+    // board name is used as-is whenever that board exists; a model that is
+    // no board (C66, ELF1…) goes through the stand-in table, and the
+    // filename rules are the last resort, the way they were the only resort
+    // before the library took over. A module that fails to load is "not a
+    // Siemens image" here, not the end of detection: the LG scan below needs
+    // no module.
     let probed = null;
     try {
       probed = await probeFullflash(head.subarray(0, Math.min(PROBE_HEAD, head.length)));
     } catch { /* the fallbacks below are still worth their chance */ }
     if (probed) {
       const { model, device } = probed;
-      if (device && inferDevice(model) === device)
+      if (device && (hasBoard ? hasBoard(device) : inferDevice(model) === device))
         return { device, model, exact: true };
       const v = variantFor(model);
       if (v) return { device: v.device, model, exact: v.exact };

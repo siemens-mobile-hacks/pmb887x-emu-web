@@ -22,6 +22,14 @@ const toolsDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(toolsDir, "..");
 
 const { detectDevice } = await import(resolve(root, "site/fullflashes.js"));
+const { untar } = await import(resolve(root, "site/boards.js"));
+
+// the boards the page knows: the configs in its boards.tar, as app.js reads them
+const tarBytes = await readFile(resolve(root, "site/dist/boards.tar"));
+const boardFiles = new Set();
+untar(tarBytes.buffer.slice(tarBytes.byteOffset, tarBytes.byteOffset + tarBytes.length),
+  (name) => boardFiles.add(name));
+const hasBoard = (dev) => boardFiles.has(dev + ".toml");
 
 let paths = process.argv.slice(2);
 if (!paths.length) {
@@ -62,7 +70,7 @@ for (const p of paths) {
   const bytes = await readFile(p);
   // an opaque name: the filename rules must contribute nothing
   const file = new File([bytes], `backup_${Date.now()}.bin`);
-  const hit = await detectDevice(file);
+  const hit = await detectDevice(file, hasBoard);
   ok(basename(p),
     hit != null && hit.device === want,
     (hit == null ? "nothing detected"

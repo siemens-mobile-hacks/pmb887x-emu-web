@@ -168,9 +168,11 @@ thread is using them).
     both `SIEMENS` and `BENQ-SIEMENS`, with the model in the 16 bytes
     before it; the page hands it the head of the image (`PROBE_HEAD` =
     `0x90000`, covering the farthest record) and it never reads further.
-    Its board name is used as-is; a model with no board of its own goes
-    through `MODEL_VARIANTS`, and the filename rules over the model string
-    are the last resort.
+    Its board name is used whenever boards.tar has that board (the page
+    passes `detectDevice()` a `hasBoard` predicate, as do the tools); a
+    model with no board of its own goes through `MODEL_VARIANTS`, and the
+    filename rules over the model string are the last resort. A board
+    without a display is refused with a note, as for a filename hit.
   - LG carries none of the Siemens structures, so the fallback is a JS
     scan: the model comes from the J2ME user agent (`LG-KE800 MIC/…`), over
     a bounded window. How far in the string sits is the phone's business —
@@ -183,11 +185,12 @@ thread is using them).
     emulates it. Sourced, never guessed — a wrong row boots someone's phone as
     the wrong hardware, so a model that cannot be placed is left to the user.
     `C1F0`→EL71 is upstream's own (`pmb887x-emu/README.md`); `ELF1`/`ELC1`→EL71
-    and `S66`→S65 come from ru.wikipedia (the S66 is the Americas-band S65, and
-    the dump agrees: 32 MiB, `BC65`, the R65 family that holds S65);
-    `C66`/`CT65`/`CV65`/`CO65`→C65 from the en.wikipedia C65 article ("known in
-    North America as the Siemens C66" plus its carrier variants); `CX66`→CX65
-    from the en.wikipedia model list. Every row but the upstream one says in
+    come from ru.wikipedia; `C66`/`CT65`/`CV65`/`CO65`→C65 from the
+    en.wikipedia C65 article ("known in North America as the Siemens C66"
+    plus its carrier variants); `CX66`→CX65 from the en.wikipedia model list.
+    A model leaves the table when the bsp gives it a board of its own (S66,
+    the Americas-band S65, in bsp 65e63e4), and `DEVICE_RULES` gets a row
+    for it; a unit test checks every bsp board has one. Every row but the upstream one says in
     the UI that it is substituting, because same-family is not the same board:
     the configs carry per-model `HW_DET_MOB_TYPE` strap bits (S65 `01100`,
     C65 `10010`) that firmware can read. Deliberately not mapped: `CL61A` is a
