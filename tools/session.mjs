@@ -140,9 +140,21 @@ const PROBE = `(() => {
            status: document.querySelector("#status-text")?.textContent || "" };
 })()`;
 
+// a page whose main thread is stuck never answers an evaluate, and wait
+// would poll it forever
+const PROBE_TIMEOUT_MS = 20000;
+
 async function probe() {
   if (!page) throw new Error("no page — run: node ctl.mjs boot");
-  return page.evaluate(PROBE);
+  let timer;
+  const stuck = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`the page did not answer in ${PROBE_TIMEOUT_MS / 1000} s (main thread frozen?)`)), PROBE_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([page.evaluate(PROBE), stuck]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const fmtM = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : String(n));
