@@ -100,15 +100,17 @@ echo "fullflash: $FLASH$([ "${RW:-0}" = 1 ] && echo ' (writable)')"
 echo "serial:   $SERIAL   monitor: $MONITOR   display: $DISPLAY_MODE"
 echo
 
-# does the board's config, or a file it `extends`, contain this text?
+# does the board's config, or a file it `extends`, contain this text outside
+# a comment line?  An `extends` path is relative to the file that names it, as
+# qemu reads it (hw/arm/pmb887x/board/board.c).
 board_has() {
   local f="$BOARDS/$BOARD.toml" ext depth
   for depth in 0 1 2 3 4; do
     [ -f "$f" ] || return 1
-    grep -qF -- "$1" "$f" && return 0
+    awk -v s="$1" '!/^[ \t]*#/ && index($0, s) { found = 1; exit } END { exit !found }' "$f" && return 0
     ext="$(sed -nE 's/^[ \t]*extends[ \t]*=[ \t]*"([^"]+)".*/\1/p' "$f" | head -n 1)"
     [ -n "$ext" ] || return 1
-    f="$BOARDS/$ext"
+    f="$(dirname "$f")/$ext"
   done
   return 1
 }

@@ -81,12 +81,22 @@ export function readAccessories(file) {
 // the transceiver models qemu has (hw/gsm): a board with one gets the cell
 export const RADIO_TYPE_RE = /^[ \t]*type[ \t]*=[ \t]*"(?:hd155153np|hd155155npeb|hd155165bp|pmb6270|pmb6272|bright-6pla)"/m;
 
-// The board's config files, the board itself first.
+// The board's config files, the board itself first. An `extends` path is
+// relative to the file that names it, as qemu reads it (board.c).
 export function boardChain(file, depth = 0) {
   const txt = boardText.get(file);
   if (!txt || depth > 4) return [];
   const ext = txt.match(/^[ \t]*extends[ \t]*=[ \t]*"([^"]+)"/m);
-  return [[file, txt], ...(ext ? boardChain(ext[1], depth + 1) : [])];
+  return [[file, txt], ...(ext ? boardChain(siblingPath(file, ext[1]), depth + 1) : [])];
+}
+
+function siblingPath(file, rel) {
+  const out = [];
+  for (const p of [...file.split("/").slice(0, -1), ...rel.split("/")]) {
+    if (p === "..") out.pop();
+    else if (p && p !== ".") out.push(p);
+  }
+  return out.join("/");
 }
 
 

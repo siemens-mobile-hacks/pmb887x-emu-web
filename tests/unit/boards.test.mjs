@@ -59,6 +59,14 @@ test("boardChain follows extends, board first, and stops at the cap and on cycle
   assert.deepEqual(boardChain("missing.toml"), []);
 });
 
+test("boardChain resolves extends from the including file's directory", () => {
+  load({
+    "p.toml": 'extends = "include/q.toml"\n', "include/q.toml": 'extends = "r.toml"\n',
+    "include/r.toml": 'extends = "../s.toml"\n', "r.toml": "wrong = 1\n", "s.toml": "s = 1\n",
+  });
+  assert.deepEqual(boardChain("p.toml").map(([f]) => f), ["p.toml", "include/q.toml", "include/r.toml", "s.toml"]);
+});
+
 test("readers take the first file of the chain that answers", () => {
   load({
     "phone.toml": 'extends = "base.toml"\n[board]\nvendor = "Siemens"\n[peripheral.LCD0]\nwidth = 132\n',
