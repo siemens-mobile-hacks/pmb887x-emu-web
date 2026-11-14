@@ -99,7 +99,6 @@ else
   PORT_TCG="${PORT_TCG:-8093}"
   # shellcheck source=serve-local.sh
   . "$ROOT/scripts/serve-local.sh"
-  start_serve "$ROOT" "$PORT_TCG" || echo "!! serve.mjs is not answering on $PORT_TCG"
   # The wasm64 leg is the point of this gate: it is the backend every perf
   # patch edits, with its own emitter, so native JIT-vs-TCI agreement says
   # nothing about it.  (Fixed 2026-09-16: it had been a KNOWN HOLE since
@@ -110,10 +109,15 @@ else
   # wired to dist-jit, which made this gate silently test the wrong binary
   # whenever a variant was under evaluation: `gate.sh --dist X` passes X to
   # every other job, so the summary read PASS for a dist nobody had run.
-  run_wasm_leg "wasm64 (page, ${TCGISA_DIST:-dist-jit})" "${TCGISA_DIST:-dist-jit}" \
-      tcgisa.mjs "$T/wasm64.log" || fail=1
-  kill "$SRV" 2>/dev/null || true
-  SRV=""
+  if ! start_serve "$ROOT" "$PORT_TCG"; then
+    echo "!! wasm leg: no serve.mjs of its own on $PORT_TCG"
+    fail=1
+  else
+    run_wasm_leg "wasm64 (page, ${TCGISA_DIST:-dist-jit})" "${TCGISA_DIST:-dist-jit}" \
+        tcgisa.mjs "$T/wasm64.log" || fail=1
+    kill "$SRV" 2>/dev/null || true
+    SRV=""
+  fi
 fi
 
 if [ "$fail" -ne 0 ]; then

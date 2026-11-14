@@ -153,7 +153,7 @@ if [ "$need_server" = 1 ] && ! curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&
   echo "gate: starting serve.mjs on $PORT"
   # shellcheck source=serve-local.sh
   . "$ROOT/scripts/serve-local.sh"
-  start_serve "$ROOT" "$PORT" || echo "gate: serve.mjs is not answering on $PORT"
+  start_serve "$ROOT" "$PORT" || { echo "gate: no serve.mjs of its own on $PORT"; exit 1; }
 fi
 # A gate stopped half way must not leave its jobs behind: their browsers and
 # the unpaced native qemus keep running on their own otherwise.
