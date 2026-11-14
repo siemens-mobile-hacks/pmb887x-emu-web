@@ -13,10 +13,10 @@
 //   - ke800: fullflashes/KE800-v11b.bin + its .cfi-efa sidecar (LG EEPROM
 //     block), reference tools/test_targets/KE800-v11b_idle.png, bottom
 //     --rows (150) rows (the widget bar and the soft keys; the clock,
-//     date and "No network" line above them change).  Since the DSP LLE
-//     the LG board runs the same icount model as the Siemens ones
-//     (site/app.js), so the v-window is reported; tIdle is still the
-//     number.  Progress/stall is judged in instructions.
+//     date and "No network" line above them change).  The page runs every
+//     board on the same vcpu-timers clock (site/app.js), so the v-window
+//     is reported here too; tIdle is still the number.  Progress/stall is
+//     judged in instructions.
 //   - startup=ONLINE, fresh browser per run, SEQUENTIAL: one browser at
 //     a time, dists interleaved (d1 r1, d2 r1, d1 r2, ...) so host-load
 //     drift hits both sides equally.  --parallel runs all dists at once
@@ -45,9 +45,9 @@
 //     tIdle — tIdle alone hid the JIT's early-phase regression.
 //   - --window LO:HI (default 2:7): wall seconds of guest work between
 //     v=LO and v=HI, interpolated from the sample series — the A/B
-//     metric that used to come from bootbench.mjs (now deprecated).
+//     metric.
 //   - --noref: skip the LCD comparison entirely (pct=100, match=false)
-//     — pure window/metrics mode, equivalent to old bootbench.
+//     — pure window/metrics mode.
 //   - --quick: = --runs 1 --max 60 --noref — ~1 min per dist, reports
 //     window + t0.1G/t0.25G/t0.5G (the phase where backend regressions
 //     show first).  Use it as the iteration loop; full runs are gates.
@@ -124,7 +124,8 @@ const dists = (positional[0] || "dist-jit").split(",");
 // (e.g. "dist-jit@env=W64_COMPACT_MEMBERS=100000000").  That makes a KNOB
 // A/B interleavable the way a two-build A/B is: EXTRA_Q applies to every
 // dist of the invocation and so can only compare across invocations, which
-// on a shared host is exactly the comparison the playbook forbids.  Like
+// on a shared host is exactly the unpaired comparison doc/performance.md
+// warns against.  Like
 // EXTRA_Q, such a run never becomes a baseline.
 const distDir = (spec) => spec.split("@")[0];
 const distQuery = (spec) => {
