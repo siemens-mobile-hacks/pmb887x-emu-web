@@ -3,9 +3,8 @@
 //   node tcgisa.mjs [port] [dist] [outfile] [ENV=VAL ...]
 //
 // The suite *image* always comes from site/dist/tcgisa.bin; the *engine*
-// is whichever dist the page is pointed at, so `dist-jit` runs it on the
-// wasm64 backend and `dist` on the TCI interpreter.  Both legs of
-// scripts/run-tcg-isa.sh use this one driver.
+// is whichever dist the page is pointed at (`dist-jit`, the wasm64
+// backend, by default).  scripts/run-tcg-isa.sh's wasm leg runs this.
 //
 // The suite boots -M versatilepb, prints TAP + value dumps into
 // /serial.log and then parks: the wasm pthread runtime cannot take the

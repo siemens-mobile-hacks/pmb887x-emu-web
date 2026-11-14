@@ -74,7 +74,7 @@ export PORT
 # rots -- its slow-warning check failed unnoticed because a page-level CPU
 # throttle does not reach the guest's workers.
 JOBS=(
-  "opsuite|quick keep close|no|TCGISA_DIST=$DIST bash '$ROOT/scripts/run-tcg-isa.sh'"
+  "opsuite|quick keep close|no|WASM=1 TCGISA_DIST=$DIST bash '$ROOT/scripts/run-tcg-isa.sh'"
   "boot-s75|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash s75"
   "boot-el71|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash el71"
   "boot-ke800|quick keep close|yes|node '$ROOT/tools/bootcheck.mjs' --dist $DIST --secs 150 --flash ke800"

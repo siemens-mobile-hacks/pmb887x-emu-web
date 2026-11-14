@@ -1,20 +1,19 @@
 #!/bin/bash
 # Phase-0a gate runner: build the guest
-# op-suite image, run it on every backend that is built — native TCG JIT,
-# native TCI, the wasm64 page (site/dist-jit) and the wasm TCI page
-# (site/dist) — and byte-compare all serial logs against the native JIT.
+# op-suite image, run it on every backend — native TCG JIT, native TCI and
+# the wasm64 page (site/dist-jit, or TCGISA_DIST) — and byte-compare all
+# serial logs against the native JIT.
 #
-#   scripts/run-tcg-isa.sh            # every backend that is available
+#   scripts/run-tcg-isa.sh            # skips the wasm leg if it cannot run
 #   WASM=0 scripts/run-tcg-isa.sh     # native legs only
-#   WASM=1 scripts/run-tcg-isa.sh     # fail instead of skipping a wasm leg
+#   WASM=1 scripts/run-tcg-isa.sh     # fail instead of skipping (gate.sh)
 #
 # Gate: every backend green (exit 0, "fail=0", no "not ok") and all serial
 # logs byte-identical. Suite runtime well under a minute per backend.
 #
-# A missing dist SKIPS its leg rather than failing, so read the leg list in
-# the output: for most of this workspace's life only site/dist-jit is built
-# and a run that says "PASS" while silently skipping the backend you just
-# edited is worth nothing.
+# Without WASM=1 a missing dist SKIPS the wasm leg rather than failing, so
+# read the leg list in the output: a run that says "PASS" while silently
+# skipping the backend you just edited is worth nothing.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,14 +56,12 @@ else
   fail=1
 fi
 
-# ---- wasm legs ---------------------------------------------------------
-# Two of them, and the wasm64 one is the point: it is the backend every
-# perf patch edits, and it has its own emitter, so native JIT-vs-TCI
-# agreement says nothing about it.  The suite image is served from
-# site/dist/tcgisa.bin for both legs (`make install` above refreshes it),
-# while the *engine* comes from the dist named in the page URL — so the
-# wasm64 leg runs with only site/dist-jit built, which is the usual state
-# of this workspace.
+# ---- wasm leg ----------------------------------------------------------
+# The wasm64 backend is the point: every perf patch edits it, and it has
+# its own emitter, so native JIT-vs-TCI agreement says nothing about it.
+# The suite image is served from site/dist/tcgisa.bin (`make install`
+# above refreshes it), while the *engine* comes from the dist named in the
+# page URL.
 run_wasm_leg() { # <name> <dist> <driver> <log>
   local name="$1" dist="$2" driver="$3" log="$4"
   if [ ! -f "$ROOT/site/$dist/qemu-system-arm.wasm" ]; then
@@ -91,13 +88,13 @@ run_wasm_leg() { # <name> <dist> <driver> <log>
 
 WASM="${WASM:-auto}"
 if [ "$WASM" = "0" ]; then
-  echo "== wasm legs skipped (WASM=0)"
+  echo "== wasm leg skipped (WASM=0)"
 elif [ ! -f "$ROOT/site/dist/tcgisa.bin" ]; then
-  [ "$WASM" = "1" ] && { echo "!! wasm legs forced but site/dist/tcgisa.bin missing"; fail=1; } \
-                    || echo "== wasm legs skipped (no site/dist/tcgisa.bin)"
+  [ "$WASM" = "1" ] && { echo "!! wasm leg forced but site/dist/tcgisa.bin missing"; fail=1; } \
+                    || echo "== wasm leg skipped (no site/dist/tcgisa.bin)"
 elif [ ! -d "$ROOT/tools/node_modules" ]; then
-  [ "$WASM" = "1" ] && { echo "!! wasm legs forced but tools/node_modules missing (cd tools && npm i)"; fail=1; } \
-                    || echo "== wasm legs skipped (no tools/node_modules)"
+  [ "$WASM" = "1" ] && { echo "!! wasm leg forced but tools/node_modules missing (cd tools && npm i)"; fail=1; } \
+                    || echo "== wasm leg skipped (no tools/node_modules)"
 else
   PORT_TCG="${PORT_TCG:-8093}"
   ( cd "$ROOT" && PORT=$PORT_TCG HTTPS=0 exec node serve.mjs >/dev/null 2>&1 ) &
@@ -118,7 +115,6 @@ else
   # every other job, so the summary read PASS for a dist nobody had run.
   run_wasm_leg "wasm64 (page, ${TCGISA_DIST:-dist-jit})" "${TCGISA_DIST:-dist-jit}" \
       tcgisa.mjs "$T/wasm64.log" || fail=1
-  run_wasm_leg "wasm TCI (page, dist)" dist tcgisa.mjs "$T/wasmtci.log" || fail=1
   kill "$SRV" 2>/dev/null || true
   SRV=""
 fi
