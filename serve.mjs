@@ -281,13 +281,17 @@ function sameOrigin(req) {
   });
 }
 
+const isWebSocket = (req) => /^websocket$/i.test(String(req.headers.upgrade ?? "").trim());
 const refuse = (socket, status) => socket.end(`HTTP/1.1 ${status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
 
 // An upgrade listener that throws ends the process (an upgrade to "//" did):
 // whatever goes wrong here only drops that connection.
 const proxyGprs = (req, socket, head) => {
   try {
-    if (new URL(req.url, "http://x").pathname !== "/gprs") return socket.destroy();
+    // only reached by a non-WebSocket upgrade on a node without
+    // shouldUpgradeCallback (below), which serves those as plain requests
+    if (!isWebSocket(req)) return refuse(socket, "400 Bad Request");
+    if (new URL(req.url, "http://x").pathname !== "/gprs") return refuse(socket, "404 Not Found");
     // another site's page must not use this host's gateway
     if (!sameOrigin(req)) return refuse(socket, "403 Forbidden");
     const gw = net.connect(Number(gwPort), gwHost, () => {
@@ -304,7 +308,9 @@ const proxyGprs = (req, socket, head) => {
   }
 };
 
-const httpServer = http.createServer((req, res) => {
+// Any other Upgrade (h2c) is ignored, as HTTP/1.1 allows: the request is
+// answered as a plain one.
+const httpServer = http.createServer({ shouldUpgradeCallback: isWebSocket }, (req, res) => {
   if (cert && redirectNonLoopbackToHttps(req, res)) return;
   serve(req, res);
 });
@@ -312,7 +318,8 @@ httpServer.on("upgrade", proxyGprs);
 httpServer.listen(port, "0.0.0.0");
 
 if (cert) {
-  const httpsServer = https.createServer({ key: cert.key, cert: cert.cert }, serve);
+  const httpsServer = https.createServer(
+    { key: cert.key, cert: cert.cert, shouldUpgradeCallback: isWebSocket }, serve);
   httpsServer.on("upgrade", proxyGprs);
   httpsServer.listen(httpsPort, "0.0.0.0");
 }
