@@ -824,9 +824,14 @@ if (!process.env.SKIP_BOOT) {
     // rather than racing it
     const banked = await page.waitForFunction(() => window.__ui.bank === "banked",
       null, { timeout: 10000 }).then(() => true).catch(() => false);
-    if (!banked) {
+    // only a page asked for no bank (bank=0, or a fixed ?icount=) boots
+    // unbanked; this tool never asks, so anything else is the regression
+    const unbankedAsked = /[?&](bank=0|icount=)/.test(page.url());
+    if (!banked && unbankedAsked) {
       console.log(`skip v4.6 banked-phase checks — bank is "${(await ui()).bank}"`
         + " (bank=0, or ?icount=)");
+    } else if (!banked) {
+      ok("v4.6 the clock is banked during the boot", false, `bank is "${(await ui()).bank}"`);
     } else {
       const recover = await slowHost();
       const under = await page.waitForFunction(
