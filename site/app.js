@@ -1284,6 +1284,42 @@ const engineInstantiate = (mod) => mod ? {
   },
 } : {};
 
+// Starts qemu for both boot paths: factory and engine are the build's
+// module factory and its prefetched module, opts more Module settings,
+// setup(mod) fills MEMFS and the environment before main(), and
+// report(read, code) hands logs out on exit — read(path) gives a MEMFS file
+// or null — before the page's own exit handling.
+function launch({ factory, engine, args, opts, setup, report }) {
+  let modRef = null; // FS access in onExit (qemuModule not yet assigned)
+  return factory({
+    arguments: args,
+    ...engineInstantiate(engine),
+    ...opts,
+    onExit: (code) => {
+      // before the runtime tears the page down
+      if (modRef) {
+        const read = (p) => {
+          try { return new TextDecoder("latin1").decode(modRef.FS.readFile(p)); }
+          catch { return null; }
+        };
+        try { report(read, code); } catch (e) { /* page going down anyway */ }
+      }
+      onGuestExit(code);
+    },
+    preRun: (mod) => {
+      modRef = mod;
+      tapSerial(mod);   // every byte the guest prints, as it prints it
+      setup(mod);
+      // ?env=NAME=VAL (repeatable): extra environment — e.g.
+      // env=QEMU_COSTACK=1 logs the stacks a coroutine switch unwinds
+      for (const kv of QS.getAll("env")) {
+        const i = kv.indexOf("=");
+        if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
+      }
+    },
+  });
+}
+
 let exitCode = null;
 
 async function bootSuite(url) {
@@ -1301,13 +1337,14 @@ async function bootSuite(url) {
     const bytes = new Uint8Array(await res.arrayBuffer());
     const engineWasmMod = await ensureEngine();
     const factory = (await import(`./${DIST || DIST_DEFAULT}/qemu-system-arm.js`)).default;
-    let modRef = null; // FS access in onExit (qemuModule not yet assigned)
     /* ?icount=1: the icount timing model — measures the icount
      * tax on the tcgbench workload (TB icount-capping + accounting +
      * virtual-timer runs) against the same run without it */
     const icount = QS.get("icount") === "1";
-    qemuModule = await factory({
-      arguments: [
+    qemuModule = await launch({
+      factory,
+      engine: engineWasmMod,
+      args: [
         "-display", "wasm",
         "-M", "versatilepb",
         "-kernel", "/data/tcgisa.bin",
@@ -1317,25 +1354,13 @@ async function bootSuite(url) {
         "-monitor", "none",
         "-parallel", "none",
       ],
-      ...engineInstantiate(engineWasmMod),
-      printErr: (t) => console.log("[qemu]", t),
-      onExit: (code) => {
-        // hand the finished serial log out before the runtime tears the
-        // page down (the headless runner installs window.__suiteReport)
-        try {
-          const ser = new TextDecoder("latin1")
-            .decode(modRef.FS.readFile("/serial.log"));
-          window.__suiteReport?.(ser, code);
-        } catch (e) { /* page going down anyway */ }
-        onGuestExit(code);
+      opts: { printErr: (t) => console.log("[qemu]", t) },
+      // the headless runner installs window.__suiteReport
+      report: (read, code) => {
+        const ser = read("/serial.log");
+        if (ser != null) window.__suiteReport?.(ser, code);
       },
-      preRun: (mod) => {
-        modRef = mod;
-        tapSerial(mod);
-        for (const kv of QS.getAll("env")) {
-          const i = kv.indexOf("=");
-          if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
-        }
+      setup: (mod) => {
         mod.FS.mkdirTree("/data");
         mod.FS.writeFile("/data/tcgisa.bin", bytes);
       },
@@ -1675,32 +1700,21 @@ async function boot() {
       ...extraArgs,
     ];
 
-    let modRef = null; // FS access in onExit (qemuModule not yet assigned)
-    qemuModule = await factory({
-      arguments: args,
+    qemuModule = await launch({
+      factory,
       // the prefetched module, when there is one: instantiation only —
       // no download, no re-compile
-      ...engineInstantiate(engineWasmMod),
-      printErr,
-      onAbort: noteFatal,
-      log: debug ? (t) => console.log("[log]", t) : undefined,
-      onExit: (code) => {
-        // hand the finished logs out before the runtime tears the page
-        // down (the lockstep driver installs window.__lockstepReport)
-        if (window.__lockstepReport && modRef) {
-          try {
-            const rd = (p) => {
-              try { return new TextDecoder("latin1").decode(modRef.FS.readFile(p)); }
-              catch { return null; }
-            };
-            window.__lockstepReport(rd("/serial.log"), rd("/lockstep.log"), code);
-          } catch (e) { /* page going down anyway */ }
-        }
-        onGuestExit(code);
+      engine: engineWasmMod,
+      args,
+      opts: {
+        printErr,
+        onAbort: noteFatal,
+        log: debug ? (t) => console.log("[log]", t) : undefined,
       },
-      preRun: (mod) => {
-        modRef = mod;
-        tapSerial(mod);   // every byte the phone prints, as it prints it
+      // the lockstep driver installs window.__lockstepReport
+      report: (read, code) =>
+        window.__lockstepReport?.(read("/serial.log"), read("/lockstep.log"), code),
+      setup: (mod) => {
         mod.FS.mkdirTree("/boards");
         untar(boardsBuf, (name, data) => {
           const path = "/boards/" + name;
@@ -1725,12 +1739,6 @@ async function boot() {
             const v = QS.get("ls-" + k);
             if (v != null) mod.ENV["W64_LOCKSTEP_" + k.toUpperCase()] = v;
           }
-        }
-        // ?env=NAME=VAL (repeatable): extra environment — e.g.
-        // env=QEMU_COSTACK=1 logs the stacks a coroutine switch unwinds
-        for (const kv of QS.getAll("env")) {
-          const i = kv.indexOf("=");
-          if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
         }
       },
     });
