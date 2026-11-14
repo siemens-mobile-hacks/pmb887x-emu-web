@@ -33,7 +33,7 @@ import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const RUN_NATIVE = path.join(ROOT, "scripts", "run-native.sh");
-const PLUGIN = path.join(ROOT, "tests", "lockstep.so");
+export const PLUGIN = path.join(ROOT, "tests", "lockstep.so");
 export const RTC_ARGS = ["-rtc", "base=2000-01-01T00:00:00,clock=vm"];
 export const OIPT_ARGS = ["-accel", "tcg,one-insn-per-tb=on"];
 

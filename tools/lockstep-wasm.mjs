@@ -25,7 +25,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Side, compareDigestLogs, FLASHES, claimRunStamp } from "./lockstep.mjs";
+import { Side, compareDigestLogs, FLASHES, claimRunStamp, PLUGIN } from "./lockstep.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -349,6 +349,10 @@ if (!flash) {
 }
 if (!fs.existsSync(args.aBin)) {
   console.error(`native reference binary missing: ${args.aBin} (scripts/build-native.sh)`);
+  process.exit(2);
+}
+if (!fs.existsSync(PLUGIN)) {
+  console.error(`plugin missing: ${PLUGIN} (scripts/run-lockstep.sh builds it)`);
   process.exit(2);
 }
 // The reference must be built from the source the dist was built from: one
