@@ -49,6 +49,9 @@ static const uint8_t MIX[] = {
 static uint64_t regs[NREG];
 static uint64_t mem[MEMW];
 static uint8_t prog[PROG];
+/* ops run() executed: a taken brcond in a TB's last slot skips its
+ * OP_EXIT and runs on into the next TB, so this is not entries * TBLEN */
+static uint64_t executed;
 
 static uint64_t helper_call(uint64_t a)
 {
@@ -88,7 +91,7 @@ static uint64_t run(const uint8_t *p)
             }
             break;
         case OP_CALL: regs[a] = helper_call(regs[b]); break;
-        case OP_EXIT: return acc + regs[0];
+        case OP_EXIT: executed += acc; return acc + regs[0];
         default: abort();
         }
         acc++;
@@ -127,13 +130,14 @@ int main(int argc, char **argv)
     for (i = 0; i < 200000; i++) {          /* warm */
         sink += run(prog + (i % ntb) * (TBLEN + 1) * 4);
     }
+    executed = 0;
     t0 = now_ns();
     for (i = 0; i < iters; i++) {
         seed = seed * 6364136223846793005u + 1442695040888963407u;
         sink += run(prog + ((seed >> 33) % ntb) * (TBLEN + 1) * 4);
     }
     t1 = now_ns();
-    ops = (uint64_t)iters * TBLEN;
+    ops = executed;
     printf("entries=%llu ops=%llu  %.2f ns/op  %.1f ns/TB-entry  (sink %llu)\n",
            (unsigned long long)iters, (unsigned long long)ops,
            (double)(t1 - t0) / (double)ops,
