@@ -49,8 +49,8 @@ const NOTES_ICON = '<svg class="key-icon-line" viewBox="0 0 16 14">'
   + '<ellipse cx="11.7" cy="8.9" rx="2" ry="1.6" fill="currentColor" stroke="none" transform="rotate(-18 11.7 8.9)"/>'
   + '</svg>';
 // S75 browser key: the planet ringed by its orbit, the ring crossing the
-// planet's face and its ends sticking out either side — traced off
-// keyboards/pasted file.png, not the WWW globe of the generic board
+// planet's face and its ends sticking out either side — the key right of
+// the pad in keyboards/S75-ru.webp, not the WWW globe of the generic board
 const BROWSER_ORBIT_ICON = '<svg class="key-icon-line icon-wide" viewBox="0 0 24 17" stroke-width="1.4">'
   + '<circle cx="12" cy="8.5" r="7.6"/>'
   + '<ellipse cx="12" cy="8.5" rx="11" ry="2.8" transform="rotate(20 12 8.5)"/>'
