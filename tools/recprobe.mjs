@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
-const dist = argv.find((a, i) => !a.startsWith("--") && !(i > 0 && argv[i - 1].startsWith("--"))) || "dist-jit";
+const dist = argv.find((a, i) => !a.startsWith("--") && argv[i - 1] !== "--secs") || "dist-jit";
 const secs = Number(opt("secs", 10));
 const muted = !argv.includes("--unmuted");
 const port = process.env.PORT || "8080";
