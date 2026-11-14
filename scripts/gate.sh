@@ -61,6 +61,8 @@ done
 [[ "$PORT" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$PORT" -le 65522 ] ||
   { echo "gate.sh: --port must be 1..65522, not '$PORT'" >&2; exit 2; }
 PORT_TCG=$((PORT + 13))
+[[ "$JOBS_MAX" =~ ^[1-9][0-9]*$ ]] ||
+  { echo "gate.sh: --jobs must be 1 or more, not '$JOBS_MAX'" >&2; exit 2; }
 # bootcheck and earlykey take the server from the environment only
 export PORT
 
