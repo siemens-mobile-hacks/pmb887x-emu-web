@@ -42,20 +42,25 @@ await p.setInputFiles("#fullflash",
 await p.click("#btn-start");
 await new Promise((r) => setTimeout(r, from * 1000));
 
-// Sample a short window: the buffer self-trims at 30k lines, so a long one
-// would silently drop the beginning and make every rate wrong.
+// Sample a short window: past 30k lines the buffer drops its oldest 10k, so
+// a long one would silently lose the beginning and make every rate wrong.
+// The window starts with a marker line; if it is gone, the buffer was trimmed.
 const win = Number(opt("window", 2));
-const r = await p.evaluate(async (ms) => {
+const MARK = "\u0000iotrace2 window start";
+const r = await p.evaluate(async ([ms, mark]) => {
   window.__qemulog.length = 0;
+  window.__qemulog.push(mark);
   const t0 = performance.now();
   await new Promise((res) => setTimeout(res, ms));
-  return { lines: window.__qemulog.slice(), wall: (performance.now() - t0) / 1000 };
-}, win * 1000);
+  const all = window.__qemulog.slice();
+  const trimmed = all[0] !== mark;
+  return { lines: trimmed ? all : all.slice(1), trimmed, wall: (performance.now() - t0) / 1000 };
+}, [win * 1000, MARK]);
 await b.close();
 
-if (r.lines.length >= 29000) {
-  console.log(`IOTRACE WARN buffer hit its cap (${r.lines.length} lines in ` +
-    `${r.wall.toFixed(2)}s) -- rates are a lower bound; use --window 1`);
+if (r.trimmed) {
+  console.log(`IOTRACE WARN buffer hit its cap (${r.lines.length} lines kept of ` +
+    `${r.wall.toFixed(2)}s) -- rates are a lower bound; use a shorter --window`);
 }
 const counts = new Map();
 for (const t of r.lines) {
