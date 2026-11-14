@@ -1,7 +1,9 @@
 // Verify a wasm-qemu build boots correctly + report guest insn rate.
 //   node verify-boot.mjs <tag> <seconds> [port]
-// FAIL if serial shows the early boot-ROM abort (FILE: flash);
-// PASS if it keeps running with framebuffer activity (splash draws).
+// FAIL if serial shows the early boot-ROM abort (FILE: flash), on a
+// firmware EXIT, a page error or qemu exiting, and if the guest never
+// started or never drew; PASS if it is still running with framebuffer
+// activity (splash draws) after <seconds>.
 import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
 
@@ -18,7 +20,7 @@ await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");
 
-let lastInsns = 0, lastT = 0, verdict = "TIMEOUT (still running)";
+let lastInsns = 0, lastT = 0, verdict = null, last = null;
 for (let t = 10; t <= secs; t += 10) {
   await new Promise((r) => setTimeout(r, 10000));
   const s = await page.evaluate(() => {
@@ -40,16 +42,22 @@ for (let t = 10; t <= secs; t += 10) {
     try { insns = Number(m._wasm_insns()); tbs = Number(m._wasm_tbs()); } catch (e) {}
     let vclock = -1;
     try { vclock = Number(m._wasm_vclock()); } catch (e) {}
-    return { ser, fb, insns, tbs, vclock };
+    return { ser, fb, insns, tbs, vclock, ui: window.__ui ?? {} };
   }).catch((e) => ({ err: String(e).slice(0, 200) }));
   if (s.err) { console.log(`[${tag}] t=${t}s eval err:`, s.err); continue; }
+  last = s;
   const rate = lastT ? Math.round((s.insns - lastInsns) / (t - lastT)) : 0;
   lastInsns = s.insns; lastT = t;
   const exit = (s.ser.match(/>>EXIT<<[^\r\n]*/) || [])[0] || "";
   console.log(`[${tag}] t=${t}s insns=${s.insns} rate=${rate}/s tbs=${s.tbs} vclock=${(s.vclock / 1e6).toFixed(1)}ms fb=${s.fb.updates}upd/${s.fb.nonBlack}px${exit ? " EXIT: " + exit : ""}`);
   if (/FILE:\s*flash/.test(s.ser)) { verdict = "FAIL: early boot-ROM abort (FILE: flash)"; break; }
-  if (/>>EXIT<</.test(s.ser)) { verdict = "EXIT: " + exit; break; }
+  if (s.ui.exit) { verdict = `FAIL: firmware EXIT ${[s.ui.exit.type, s.ui.exit.code].filter(Boolean).join(" ")}`; break; }
+  if (s.ui.error) { verdict = `FAIL: ${s.ui.error}`; break; }
+  if (s.ui.state === "idle" && s.ui.exitCode != null) { verdict = `FAIL: qemu exited (${s.ui.exitCode})`; break; }
 }
+verdict ??= !last || last.insns <= 0 ? "FAIL: the guest never started"
+  : last.fb.updates <= 0 ? "FAIL: no framebuffer activity"
+  : "PASS (still running)";
 await page.screenshot({ path: `verify-${tag}.png` }).catch(() => {});
 console.log(`[${tag}] verdict: ${verdict}`);
 await browser.close();
