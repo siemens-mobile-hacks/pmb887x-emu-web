@@ -33,6 +33,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { startGateway } from "./gprs-gateway.mjs";
 import { startHostPage } from "./gprs-host.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
 
@@ -149,19 +150,8 @@ async function webBackend() {
 
   // the gateway serve.mjs passes /gprs to, on loopback; its slirp may reach
   // this host's loopback, where the page waits
-  const helper = path.join(run, "slirp-pipe");
-  const cc = spawnSync("sh", ["-c", `cc -O2 -o "$1" "$2" $(pkg-config --cflags --libs slirp)`, "sh",
-    helper, path.join(GATEWAY, "slirp-pipe.c")], { stdio: "inherit" });
-  if (cc.status !== 0) throw new Error("cannot build slirp-pipe (gcc and libslirp-dev needed)");
-  const gwLog = path.join(run, "gateway.log");
-  const gw = spawn(process.execPath, [path.join(GATEWAY, "server.mjs")], {
-    env: { ...process.env, NODE_PATH: path.join(ROOT, "tools", "node_modules"),
-      GPRS_GW_LISTEN: "127.0.0.1:5751", GPRS_GW_HELPER: helper,
-      GPRS_GW_STATE: path.join(run, "gateway-state.json"), SLIRP_HOST_LOOPBACK: "1" },
-    stdio: ["ignore", fs.openSync(gwLog, "w"), fs.openSync(gwLog, "a")],
-  });
-  while (!fs.readFileSync(gwLog, "utf8").includes("listening") && gw.exitCode == null) await sleep(100);
-  if (gw.exitCode != null) throw new Error(`the gateway exited: ${fs.readFileSync(gwLog, "utf8")}`);
+  const gw = await startGateway({ dir: GATEWAY, run, hostLoopback: true });
+  const gwLog = gw.log;
   const host = await startHostPage({ padding: 8192 });
 
   const browser = await chromium.launch({ headless: true });
@@ -209,7 +199,7 @@ async function webBackend() {
     }),
     close: async () => {
       await browser.close();
-      gw.kill();
+      gw.close();
       await host.close();
     },
     errors,

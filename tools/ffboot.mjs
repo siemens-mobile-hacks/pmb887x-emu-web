@@ -5,6 +5,10 @@
 import { firefox, chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
 import { execSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { startGateway } from "./gprs-gateway.mjs";
 
 const dist = process.argv[2] || "dist-jit";
 const extraQ = process.argv[3] || "";
@@ -28,6 +32,11 @@ function rssMB() {
   } catch { return null; }
 }
 
+// since bsp 191612c every board has a radio, and the page's GPRS relay to
+// /gprs needs a gateway behind serve.mjs, or Firefox reports its failed
+// connection as a JavaScript error
+const gw = await startGateway({ run: fs.mkdtempSync(path.join(os.tmpdir(), "ffboot-")) });
+
 const launcher = which === "chromium" ? chromium : firefox;
 const b = await launcher.launch({ headless: true, args: ["--" + tag] });
 const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
@@ -46,14 +55,6 @@ await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ ? "&" + extraQ : ""
 await p.selectOption("#startup", "ONLINE");
 await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", fullflash);
-// without the GSM cell: since bsp 191612c every board has a radio, and its
-// GPRS relay to /gprs fails where no gateway runs, which Firefox reports as
-// a JavaScript error (gsmcheck/gprscheck are the GSM tests)
-await p.evaluate(() => {
-  const gsm = document.querySelector("#gsm");
-  gsm.checked = false;
-  for (const type of ["input", "change"]) gsm.dispatchEvent(new Event(type, { bubbles: true }));
-});
 const t0 = Date.now();
 await p.click("#btn-start");
 await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });
@@ -90,3 +91,4 @@ else {
 console.log(`END ${which}/${dist} last=${JSON.stringify(last)} errors=${errs.length} progress=${why.length ? "FAIL (" + why.join("; ") + ")" : "ok"}`);
 for (const e of errs.slice(0, 30)) console.log("  ERR " + e);
 await b.close();
+gw.close();
