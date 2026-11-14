@@ -18,18 +18,18 @@ await page.addScriptTag({ content: `
     const fresh = [];
     for (let i = window.__seen; i < log.length; i++) if (re.test(log[i])) fresh.push(log[i]);
     window.__seen = log.length;
-    let sl = -1, tail = "";
+    let sl = -1;
     try {
-      if (m && m.FS.analyzePath("/serial.log").exists) {
-        const d = m.FS.readFile("/serial.log");
-        sl = d.length;
-        tail = new TextDecoder("latin1").decode(d.subarray(Math.max(0, sl - 80)));
-      }
+      if (m && m.FS.analyzePath("/serial.log").exists) sl = m.FS.readFile("/serial.log").length;
     } catch (e) {}
     console.log("WATCH v=" + (m ? (Number(m._wasm_vclock())/1e9).toFixed(1) : "-") +
       " u=" + (m ? Number(m._wasm_fb_updates()) : "-") + " serial=" + sl +
       (fresh.length ? "\\n" + fresh.slice(-12).join("\\n") : ""));
-    if (tail.includes(">>EXIT<<") && !window.__exited) { window.__exited = true; console.log("SERIAL_EXIT " + JSON.stringify(tail)); }
+    const x = window.__ui?.exit;
+    if (x && !window.__exited) {
+      window.__exited = true;
+      console.log("SERIAL_EXIT " + JSON.stringify([x.type, x.code].filter(Boolean).join(" ") || "no details"));
+    }
   }, 10000);
 `});
 await page.click("#ff-mode-own");
