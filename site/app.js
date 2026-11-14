@@ -1804,7 +1804,9 @@ function onGuestExit(code) {
   finalExitCheck();         // a crash dump it printed on its way out
   setEmuState("idle");
   // the EXIT panel is the screen's own report; it replaces this one
-  if (!exitReport) showOverlay("Ready to boot", `Exited (${code})`);
+  // a failed exit, such as a start-up error, says why as its last line
+  const why = code && logTail.length ? `: ${logTail.at(-1).replace(/^this\.program: /, "")}` : "";
+  if (!exitReport) showOverlay("Ready to boot", `Exited (${code})${why}`);
 }
 
 function stop() {
