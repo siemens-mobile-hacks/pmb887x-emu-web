@@ -1,4 +1,7 @@
-// Drives the emulator page through mocks/emulator-ui-acceptance-criteria.md.
+// Drives the emulator page through its UI acceptance checks: the layout,
+// the controls and their states, the HUD, and a real boot. The numbers that
+// start the check names (1.1, v4.3, ...) are only names now: the spec they
+// were numbered from is gone, and doc/lessons.md cites some of them.
 //
 //   node tools/ui-acceptance.mjs [--flash id]   # everything, including a real boot
 //   SKIP_BOOT=1 node tools/ui-acceptance.mjs

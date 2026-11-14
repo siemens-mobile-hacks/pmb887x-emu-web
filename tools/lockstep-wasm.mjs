@@ -19,8 +19,11 @@
 // the same fullflash with -accel tcg,one-insn-per-tb=on and the RTC
 // pinned (determinism prerequisites from phase 0b).
 //
-// Exit 0 iff every run was divergence-free (E/M digests identical,
-// serial byte-identical).
+// Exit 0 iff every run reached the budget on both legs with the same config
+// line, byte-identical serial and identical internal-SRAM digests. The
+// register (E) and SDRAM digests are compared but soft: the page's fold
+// samples other instructions than the plugin (doc/performance.md, "What
+// lockstep-wasm compares"), so their differences are only reported.
 
 import { chromium } from "playwright-core";
 import { execSync } from "node:child_process";
