@@ -4,7 +4,7 @@
   "private": true,
   "license": "ISC",
   "dependencies": {
-    "playwright-core": "^1.63.0",
+    "playwright-core": "1.63.0",
     "pngjs": "^7.0.0",
     "ws": "^8.21.3"
   }
