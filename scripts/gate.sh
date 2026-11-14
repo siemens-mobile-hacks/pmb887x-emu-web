@@ -27,7 +27,7 @@
 # Why this can be parallel at all: a gate asks whether the guest reaches a
 # state, not how fast it got there.  Nothing here reads a wall clock as a
 # result, so host load cannot change a verdict -- which is exactly what is
-# NOT true of the benchmarks (workbench/idlebench/uibench/tcgbench), and
+# NOT true of the benchmarks (idlebench/uibench/tcgbench/loadbench), and
 # they must still be run alone on a quiet host.  Keep the two apart: gates
 # in parallel, measurements serial.
 #
@@ -66,8 +66,8 @@ export PORT
 # multi-board run stays in `close` because booting the boards as
 # consecutive pages of one browser is itself a test condition -- the
 # second page loads the wasm from cache and starts at full speed, which
-# has exposed races the single-board runs miss (see the bootcheck notes in
-# optimization-playbook.md).
+# has exposed races the single-board runs miss (see "Gates" in
+# doc/lessons.md).
 #
 # ui always drives the page's default dist (dist-jit): --dist does not reach
 # it.  It is here because nothing else runs it, and a UI check nobody runs
