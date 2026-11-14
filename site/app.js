@@ -3505,6 +3505,18 @@ function eraseKey(e) {
 const takesText = (el) => el.isContentEditable || el.tagName === "TEXTAREA"
   || el.tagName === "SELECT" || (el.tagName === "INPUT" && el.type !== "checkbox");
 
+// The control outside the phone's keys that the keyboard last focused: Enter
+// and Space are its own. One focused by a click is left out, or a mouse user
+// typing into the phone after muting it would toggle the sound with each
+// space. :focus-visible tells the two apart only at focus time, since any
+// keydown makes the focused element match it.
+let keyboardFocus = null;
+document.addEventListener("focusin", (e) => {
+  const t = e.target;
+  keyboardFocus = t.matches?.("button, summary, a[href]") && !t.dataset.key
+    && t.matches(":focus-visible") ? t : null;
+});
+
 // physical keyboard -> phone keys
 const heldKeys = new Set();
 window.addEventListener("keydown", (e) => {
@@ -3514,6 +3526,7 @@ window.addEventListener("keydown", (e) => {
   // Ctrl/Alt/Meta combinations are the browser's (zoom, history); AltGr,
   // which reports Ctrl+Alt on Windows, types letters (typedTaps)
   if ((e.ctrlKey || e.altKey || e.metaKey) && !e.getModifierState("AltGraph")) return;
+  if (e.target === keyboardFocus && (e.key === "Enter" || e.key === " ")) return;
   const erase = eraseKey(e);
   if (erase) {
     e.preventDefault();
