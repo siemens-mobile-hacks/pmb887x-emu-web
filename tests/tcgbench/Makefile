@@ -40,6 +40,12 @@ tcgbench-quick-wasm.elf: startup-park.o bench-quick.o linker.ld
 %.o: %.c
 	$(CC) $(CFLAGS_COMMON) -c -o $@ $<
 
+# rewritten only when ITERS_DIV changes, so bench.o follows the divisor
+iters-div.stamp: FORCE
+	@echo '$(ITERS_DIV)' | cmp -s - $@ || echo '$(ITERS_DIV)' > $@
+
+bench.o: iters-div.stamp
+
 startup-exit.o: startup.c
 	$(CC) $(CFLAGS_COMMON) -c -o $@ $<
 
@@ -62,6 +68,6 @@ install: tcgbench-wasm.bin tcgbench-quick-wasm.bin
 	@echo "installed -> site/dist/tcgbench.bin + tcgbench-quick.bin (page: ?suite=dist/tcgbench[-quick].bin)"
 
 clean:
-	rm -f *.o *.elf *.bin
+	rm -f *.o *.elf *.bin iters-div.stamp
 
-.PHONY: all quick install clean
+.PHONY: all quick install clean FORCE

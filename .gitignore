@@ -50,6 +50,7 @@ tests/tcg-isa/*.elf
 
 # tcgbench build artifacts (make -C tests/tcgbench)
 /tests/tcgbench/*.o
+/tests/tcgbench/iters-div.stamp
 /tests/tcgbench/*.elf
 /tests/tcgbench/*.bin
 
