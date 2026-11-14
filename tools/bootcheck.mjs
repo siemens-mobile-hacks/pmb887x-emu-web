@@ -62,6 +62,11 @@ const BOARDS = [
   // hw/arm/pmb887x/dif_v1.c at all - every other board is PMB8876/dif_v2
   { id: "cx70", file: "CX70_FW56_clean.bin" },
 ].filter((b) => (ONLY.length ? ONLY.includes(b.id) : true));
+const unknown = ONLY.filter((id) => !BOARDS.some((b) => b.id === id));
+if (unknown.length) {
+  console.error(`unknown --flash id: ${unknown.join(", ")}`);
+  process.exit(2);
+}
 
 // Progress = executed instructions or a framebuffer update.  A board is
 // only failed when *neither* moves for this long: KE800 spends minutes
