@@ -3511,6 +3511,9 @@ window.addEventListener("keydown", (e) => {
   if (takesText(e.target)) return;
   // a key a handler has already taken, such as the Escape that closes a sheet
   if (e.defaultPrevented) return;
+  // Ctrl/Alt/Meta combinations are the browser's (zoom, history); AltGr,
+  // which reports Ctrl+Alt on Windows, types letters (typedTaps)
+  if ((e.ctrlKey || e.altKey || e.metaKey) && !e.getModifierState("AltGraph")) return;
   const erase = eraseKey(e);
   if (erase) {
     e.preventDefault();
