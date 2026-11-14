@@ -16,11 +16,22 @@ BUILD_DIR="$1"
 DIST="$2"
 SRC_ID="$3"
 
+REQUIRED="qemu-system-arm.js qemu-system-arm.wasm"
+OPTIONAL="qemu-system-arm.worker.js qemu-system-arm.wasm.map qemu-system-arm.js.symbols"
+for f in $REQUIRED; do
+  [ -f "$BUILD_DIR/$f" ] || { echo "deploy-dist: $BUILD_DIR/$f missing; nothing deployed" >&2; exit 1; }
+done
+
 mkdir -p "$DIST"
-for f in qemu-system-arm.js qemu-system-arm.wasm qemu-system-arm.worker.js \
-         qemu-system-arm.wasm.map qemu-system-arm.js.symbols; do
+# all copied first, then renamed in a row: the js and wasm of two builds are
+# served together for as short a time as possible
+staged=()
+for f in $REQUIRED $OPTIONAL; do
   [ -f "$BUILD_DIR/$f" ] || continue
   cp "$BUILD_DIR/$f" "$DIST/.$f.tmp"
+  staged+=("$f")
+done
+for f in "${staged[@]}"; do
   mv -f "$DIST/.$f.tmp" "$DIST/$f"
 done
 rm -f "$DIST/qemu-system-arm.wasm.gz" "$DIST/qemu-system-arm.js.gz"
