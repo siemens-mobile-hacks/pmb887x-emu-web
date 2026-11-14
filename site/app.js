@@ -3718,7 +3718,9 @@ boardsReady = loadBoards().catch((e) => {
 // calls) shares the very same in-flight download when Start beats it.
 {
   const kick = () => {
-    startEngine();
+    // Start is blocked on a page that is not cross-origin isolated; device
+    // detection still uses the Siemens module there
+    if (crossOriginIsolated) startEngine();
     loadSiemensFW().catch(() => {});
   };
   const idle = "requestIdleCallback" in window
