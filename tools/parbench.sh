@@ -32,13 +32,16 @@ for r in $(seq 1 "$n"); do
   done
 done
 wait
-for d in "${D[@]}"; do
+# a dist listed twice ran twice as many runs; report it once
+mapfile -t U < <(printf '%s\n' "${D[@]}" | awk '!seen[$0]++')
+for d in "${U[@]}"; do
   lines=$(grep -h "SCENEBENCH $sc $d median" "$out"/*.log)
   vals=$(echo "$lines" | sed -nE "s/.* $metric=([0-9.]+).*/\\1/p" | sort -n | tr '\n' ' ')
   # a run that died before its median line counts as failed too
   logs=$(awk -v d="$d" -v o="$out" '$2 == d { printf "%s/%s.log ", o, $1 }' "$out/runs")
+  want=$(awk -v d="$d" '$2 == d' "$out/runs" | wc -l)
   done_=$(grep -l "SCENEBENCH $sc $d median" $logs 2>/dev/null | wc -l)
-  fails=$(( $(echo "$lines" | grep -c "ok=0") + n - done_ ))
+  fails=$(( $(echo "$lines" | grep -c "ok=0") + want - done_ ))
   med=$(echo $vals | awk '{n=split($0,a," "); if(n) print a[int((n+1)/2)]}')
   und=$(echo "$lines" | sed -nE 's/.*underruns=([0-9]+).*/\1/p' | tr '\n' ' ')
   echo "PAR $sc $d $metric=[$vals] median=$med underruns=[$und] fails=$fails"
