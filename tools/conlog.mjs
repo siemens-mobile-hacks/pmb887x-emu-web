@@ -1,5 +1,6 @@
 // Boot a dist and capture qemu console lines matching a prefix.
-//   PORT=8080 DIST=dist-jit MATCH=RRIDLE node conlog.mjs <secs>
+//   PORT=8080 DIST=dist-jit MATCH=COSTACK EXTRA_Q="env=QEMU_COSTACK=1" \
+//     node conlog.mjs <secs>
 import { chromium } from "playwright-core";
 import { files } from "./testflash.mjs";
 const port = process.env.PORT || "8080";
