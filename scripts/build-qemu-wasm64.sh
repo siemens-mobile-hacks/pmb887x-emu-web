@@ -13,10 +13,9 @@
 #
 # Prereqs (already present in this tree):
 #   - build/deps/emsdk (emsdk env + wasm64 sysroot under build/deps/target)
-#   - qemu (submodule) on the wasm-browser-port branch (all patches
-#     committed); scripts/build-qemu.sh initializes it —
-#     0017 is the wasm64 backend this script builds, 0018 the cputlb
-#     MMIO dispatch fix both engines share)
+#   - qemu (submodule) on the wasm-browser-port branch, which carries the
+#     wasm64 backend this script builds; scripts/build-qemu.sh
+#     initializes it
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
