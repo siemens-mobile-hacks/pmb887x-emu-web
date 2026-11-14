@@ -1,10 +1,9 @@
 // Headless smoke test: load the page, click Start, log console output.
 //   node smoke.mjs [waitSeconds] [fullflash]
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
 
 const waitS = Number(process.argv[2] || 25);
-const flash = process.argv[3] || fullflash;
+const flash = process.argv[3] || (await import("./testflash.mjs")).fullflash;
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
