@@ -885,12 +885,18 @@ function setError(msg, { block = false } = {}) {
 
 const scrim = $("sheet-scrim");
 let openSheetEl = null, sheetOpener = null;
+// the sheet whose close animation is still running, and its timer
+let closingSheet = null, closeTimer = 0;
 
 const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), ' +
   'select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])';
 
 function openSheet(el, opener) {
   if (openSheetEl) closeSheet(true);
+  // a close still animating must not hide what opens now
+  clearTimeout(closeTimer);
+  if (closingSheet && closingSheet !== el) closingSheet.hidden = true;
+  closingSheet = null;
   openSheetEl = el;
   sheetOpener = opener ?? null;
   el.hidden = false;
@@ -909,8 +915,10 @@ function closeSheet(immediate = false) {
   el.classList.remove("open");
   scrim.classList.remove("open");
   el.style.transform = "";
-  const done = () => { el.hidden = true; scrim.hidden = true; };
-  if (immediate) done(); else setTimeout(done, 240);
+  const done = () => { el.hidden = true; scrim.hidden = true; closingSheet = null; };
+  clearTimeout(closeTimer);
+  if (immediate) done();
+  else { closingSheet = el; closeTimer = setTimeout(done, 240); }
   sheetOpener?.focus?.();
   sheetOpener = null;
 }

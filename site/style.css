@@ -996,6 +996,8 @@ fieldset:disabled .advanced summary { pointer-events: none; }
   opacity: 0; transition: opacity .2s ease;
 }
 .sheet-scrim.open { opacity: 1; }
+/* fading out: a tap goes to what is under it, such as the button reopening a sheet */
+.sheet-scrim:not(.open) { pointer-events: none; }
 .sheet {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 41;
   display: flex; flex-direction: column; max-height: 90dvh;
