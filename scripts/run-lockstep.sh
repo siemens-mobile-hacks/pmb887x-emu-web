@@ -13,19 +13,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLUGIN="$ROOT/tests/lockstep.so"
-QEMU_HDR="$ROOT/qemu/include"
 
-# ---- build the plugin if stale -----------------------------------------
-needs_build=0
-[ -f "$PLUGIN" ] || needs_build=1
-[ "$needs_build" = 0 ] && [ "$ROOT/tests/lockstep.c" -nt "$PLUGIN" ] && needs_build=1
-if [ "$needs_build" = 1 ]; then
-  [ -d "$QEMU_HDR" ] || { echo "!! $QEMU_HDR missing — git submodule update --init qemu" >&2; exit 2; }
-  echo "== building tests/lockstep.so"
-  gcc -O2 -Wall -fPIC -shared -I "$QEMU_HDR" $(pkg-config --cflags glib-2.0) \
-      "$ROOT/tests/lockstep.c" -o "$PLUGIN"
-fi
+# rebuilds a stale plugin into a temp file and renames it, so a lockstep
+# job of a parallel gate that is loading it never reads a partial file
+bash "$ROOT/scripts/build-plugins.sh"
 
 RUNS="${RUNS:-3}"
 INSNS="${INSNS:-2.5e9}"

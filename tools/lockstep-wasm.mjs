@@ -352,7 +352,7 @@ if (!fs.existsSync(args.aBin)) {
   process.exit(2);
 }
 if (!fs.existsSync(PLUGIN)) {
-  console.error(`plugin missing: ${PLUGIN} (scripts/run-lockstep.sh builds it)`);
+  console.error(`plugin missing: ${PLUGIN} (scripts/build-plugins.sh builds it)`);
   process.exit(2);
 }
 // The reference must be built from the source the dist was built from: one

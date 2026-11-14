@@ -430,7 +430,7 @@ export async function main() {
     }
   }
   if (!fs.existsSync(PLUGIN)) {
-    console.error(`plugin missing: ${PLUGIN} (scripts/run-lockstep.sh builds it)`);
+    console.error(`plugin missing: ${PLUGIN} (scripts/build-plugins.sh builds it)`);
     process.exit(2);
   }
 
