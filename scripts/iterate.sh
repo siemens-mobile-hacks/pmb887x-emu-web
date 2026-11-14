@@ -8,8 +8,9 @@
 # build. Total wall time ≈ rebuild (~10 s) + until-splash (~30 s).
 #
 # Env:
-#   AB="fast rewind"   variants to boot in parallel (default: fast;
-#                       repeat a name for parallel duplicate samples)
+#   AB="fast bank=0"   variants to boot in parallel (default: fast; any
+#                       other token is a page query key=value, see
+#                       tools/ab.mjs; repeat one for duplicate samples)
 #   TEST=none          skip the browser check, just build+deploy
 #   AB_TIMEOUT=90      per-variant verdict timeout (seconds)
 #   AB_PASS_FB=100     splash threshold; AB_PASS_INSNS=<n> alt early-pass
