@@ -125,10 +125,11 @@ emulator.
   commit of a session.
 - If the change did not ship, add a row to Closed ideas. Keep the patch under
   `build/experiments/` if it is worth keeping (local, untracked).
-- Do not use `scripts/build-qemu.sh` mid-session. It runs
-  `git submodule update --init` and moves `qemu/` to the pin. Use
-  `scripts/ninja-fast.sh` instead (incremental build and deploy), or
-  `scripts/build-qemu-wasm64.sh`.
+- Iterate with `scripts/ninja-fast.sh` (incremental build and deploy).
+  `scripts/build-qemu-wasm64.sh` and `scripts/build-qemu.sh` also build
+  `qemu/` as it is checked out and never move it (`build-qemu.sh` checks a
+  submodule out only when it is missing); only `scripts/build-release.sh`
+  insists on the pins.
 
 ## Timing model
 

@@ -28,4 +28,4 @@ speed. Everything else is reference.
 | `tools/lockstep-wasm.mjs` | wasm vs native value lockstep; refuses a reference built from other sources |
 | `scripts/run-tcg-isa.sh` | the guest op-suite on every built backend, serial logs byte-compared |
 | `scripts/run-lockstep.sh` | native JIT-vs-TCI value lockstep over full boots |
-| `scripts/build-qemu-wasm64.sh` | the safe mid-session full rebuild (`build-qemu.sh` resets the submodule to the pin first) |
+| `scripts/build-qemu-wasm64.sh` | the wasm64 build and deploy on their own, from `qemu/` as checked out (`build-qemu.sh` adds the first submodule checkout and the bsp sync; neither moves a checkout) |
