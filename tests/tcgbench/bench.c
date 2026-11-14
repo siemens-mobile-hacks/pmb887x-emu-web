@@ -36,9 +36,9 @@
 #define UART0_DR (*(volatile uint32_t *)0x101F1000u)
 #define UART0_FR (*(volatile uint32_t *)0x101F1018u)
 
-/* Iteration scale: the defaults target roughly 1 s per phase on the
- * native JIT (~50 MIPS).  Build with -DITERS_DIV=n to shrink every
- * phase n-fold (smoke runs). */
+/* Iteration scale: the defaults total ~5.3G guest instructions (run
+ * times in README.md).  Build with -DITERS_DIV=n to shrink every phase
+ * n-fold (smoke runs). */
 #ifndef ITERS_DIV
 #define ITERS_DIV 1
 #endif
