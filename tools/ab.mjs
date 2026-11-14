@@ -1,4 +1,4 @@
-// A/B boot-survival check against the wasm build currently deployed in site/dist/.
+// A/B boot-survival check against the page's default build (site/dist-jit/).
 //
 //   node ab.mjs [variant ...]      (default: fast)
 //
