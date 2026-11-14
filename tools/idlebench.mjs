@@ -77,7 +77,7 @@
 //
 // Run classification:
 //   IDLE     reached the idle screen (tIdle = the metric; also reports
-//            tModule = Start click -> module instantiated, the 45 MB
+//            tModule = Start click -> module instantiated, the ~12 MB
 //            fetch+compile the user's reload pays before boot begins)
 //   NOIDLE   cap reached while still making forward progress
 //   STALL    v frozen, or fewer than 1 M instructions executed, for
@@ -377,7 +377,7 @@ async function runOne(dist, hashes, r) {
 
     const t0 = Date.now();
     await p.click("#btn-start");
-    // the 45 MB module is fetched + compiled only on Start
+    // the ~12 MB module is fetched + compiled only on Start
     try {
       await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });
       rec.tModule = +((Date.now() - t0) / 1000).toFixed(1);

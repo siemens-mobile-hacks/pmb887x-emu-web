@@ -2,7 +2,7 @@
 # Assemble the deployable static bundle in <repo>/dist (gitignored):
 # everything the page loads, plus a pre-gzip'd .gz sidecar next to every
 # compressible file — so the nginx image (deploy/nginx/, gzip_static on)
-# or any other static host serves the ~28 MB dist-jit wasm as its ~4 MB
+# or any other static host serves the ~12 MB dist-jit wasm as its ~4 MB
 # sidecar without ever compressing on the fly (same idea as serve.mjs'
 # gz sidecars, but frozen at bundle time).
 #
@@ -103,7 +103,7 @@ fi
 
 # -n: no filename/timestamp in the header → byte-deterministic bundles.
 # Level 9 is build-time-only cost, worth it for the wasm (the wire
-# bottleneck per README: dist-jit 28 MB → ~4 MB).
+# bottleneck per README: dist-jit ~12 MB → ~4 MB).
 gz_re='\.(html?|css|m?js|json|wasm|tar|bin|svg|txt|symbols)$'
 while IFS= read -r -d '' f; do
   [[ $f =~ $gz_re ]] || continue

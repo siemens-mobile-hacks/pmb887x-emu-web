@@ -92,10 +92,10 @@ function ensureCert() {
 
 const isLoopback = (addr) => !addr || /^(127\.|::1$|::ffff:127\.)/.test(addr);
 
-// The 45 MB wasm dominates page-load time on slow links (phone/LAN use), so
-// keep a pre-gzip'd sidecar next to it (~4x smaller) and regenerate it when
-// the source changes (ninja-fast redeploys). One compressor per file,
-// shared by concurrent requests. GZIP=0 disables.
+// The ~12 MB wasm dominates page-load time on slow links (phone/LAN use),
+// so keep a pre-gzip'd sidecar next to it (~4 MB, ~3x smaller) and
+// regenerate it when the source changes (ninja-fast redeploys). One
+// compressor per file, shared by concurrent requests. GZIP=0 disables.
 const gzInflight = new Map();
 async function gzSidecar(path) {
   if (process.env.GZIP === "0") return null;
@@ -155,7 +155,7 @@ async function handler(req, res) {
     // as 304s served from the HTTP cache. That also lets Chromium keep and
     // reuse its wasm code cache for qemu-system-arm.wasm on repeat visits
     // (streaming-compiled modules only), skipping the multi-second Liftoff
-    // compile of the 45 MB module — and the cached code includes whatever
+    // compile of the ~12 MB module — and the cached code includes whatever
     // TurboFan had tiered up, i.e. the V8 warm-up too.
     "cache-control": "no-cache",
     etag: etagOf(servePath),
