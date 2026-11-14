@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Static file server for the qemu-pmb887x wasm emulator page.
 //
 // Cross-origin isolation headers (COOP+COEP) are mandatory: the emulator is

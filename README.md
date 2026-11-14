@@ -184,9 +184,11 @@ removed when qemu exits; `SERIAL=path` keeps it.
 
 `build-native.sh` builds `qemu/` as it is checked out — the same tree the
 wasm builds compile — and writes `qemu-source.txt` (HEAD plus a hash of
-any uncommitted diff, `scripts/qemu-source-id.sh`) next to the binary;
-`tools/lockstep-wasm.mjs` refuses a native reference whose stamp does not
-match the dist's. So the native build carries the whole fork series too.
+any uncommitted diff and untracked files in `qemu/`,
+`scripts/qemu-source-id.sh`) next to the binary; `tools/lockstep-wasm.mjs`
+refuses a native reference whose stamp does not match the dist's. The stamp
+covers `qemu/` only: the board configs (`bsp/`) and the page are not in it.
+So the native build carries the whole fork series too.
 Much of it is `__EMSCRIPTEN__`-gated or wasm64-only and inert natively; the
 parts compiled into every build (marked **all** in
 [doc/wasm-fast-paths.md](doc/wasm-fast-paths.md)) are semantics-preserving
@@ -263,9 +265,9 @@ still points one run at another binary.
                         (insncount.so, lockstep.so in build/test-plugins
                         or TEST_PLUGINS_DIR)
     qemu-source-id.sh   names the qemu sources a build came from (HEAD + a
-                        hash of the uncommitted diff); the wasm builds and
-                        build-native.sh write it to qemu-source.txt and
-                        lockstep-wasm.mjs compares the two
+                        hash of the uncommitted diff and untracked files);
+                        the wasm builds and build-native.sh write it to
+                        qemu-source.txt and lockstep-wasm.mjs compares the two
     build-release.sh    release build: require every submodule on its
                         gitlink and clean, rebuild the dists, bundle for
                         static deployment
@@ -433,8 +435,10 @@ The submodules are the pins: what the parent repo's HEAD records for
 `qemu/`, `bsp/` and `pmb887x-emu/` (their gitlinks) is what a release
 builds. `build-qemu.sh` checks a submodule out only the first time and
 otherwise builds it as it is, with a warning when it is not at its
-gitlink; `build-release.sh` refuses that, and local changes. A fresh clone
-needs `git clone --recurse-submodules` (or `git submodule update --init`).
+gitlink; `build-release.sh` refuses that, and local changes. After a fresh
+clone run `git submodule update --init` (not `--recurse-submodules`, which
+also clones pmb887x-emu's own qemu submodule, about 1 GB that nothing here
+uses).
 [doc/version-pins.md](doc/version-pins.md) records every bump and why. In
 outline:
 
@@ -448,9 +452,11 @@ outline:
   [doc/architecture.md](doc/architecture.md), and every speed-only change
   is listed in [doc/wasm-fast-paths.md](doc/wasm-fast-paths.md).
 - bsp (pmb887x-dev, `bsp/`) — a bsp master revision; a plain
-  checkout of it is the whole tree. Each board declares an empty
-  `iso7816-slot` for the card: the page and `run-native.sh` add
-  `-device gsm-sim,operator=…` when the board set has that slot. qemu's
+  checkout of it is the whole tree. Every phone board declares an empty
+  `iso7816-slot` for the card (the bare chip boards `apoxi-*` and
+  `siemens-pmb8875/6` do not): the page and `run-native.sh` add
+  `-device gsm-sim,operator=…` when the board's config, or a file it
+  extends, has that slot, and boot a board without one with no SIM. qemu's
   generated `gen/` tables (pad names) must match the bsp (regenerate with
   bsp's `tools/qemu.sh` and compare).
 - pmb887x-emu (`pmb887x-emu/`) — master. Not built from (qemu comes from the root
