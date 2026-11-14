@@ -3617,6 +3617,13 @@ window.addEventListener("keyup", (e) => {
   const key = CODE_TO_KEY[e.code];
   if (key) pressPhysical(key, false);
 });
+// a key let go while the window has no focus never sends its keyup
+function releaseHeldKeys() {
+  for (const code of heldKeys) pressPhysical(CODE_TO_KEY[code], false);
+  heldKeys.clear();
+}
+window.addEventListener("blur", releaseHeldKeys);
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseHeldKeys(); });
 
 // The tools/ drivers set these fields straight from Playwright, whose
 // actionability checks fail on anything a folded <details> keeps hidden.
