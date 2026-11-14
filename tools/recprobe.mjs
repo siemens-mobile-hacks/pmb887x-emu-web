@@ -51,7 +51,7 @@ try {
     ["down", 1200], ["center", 3000], ["down", 1200], ["center", 3000], ["center", 5000]]) await key(k, ms);
   console.log(`[recprobe] audio ${JSON.stringify(await p.evaluate(() => window.__audio()))}`);
 
-  const download = p.waitForEvent("download", { timeout: 60000 });
+  const download = p.waitForEvent("download", { timeout: secs * 1000 + 60000 });
   await p.click("#btn-record");
   await sleep(secs * 1000);
   await p.click("#btn-record");
