@@ -15,6 +15,7 @@ speed. Everything else is reference.
 | [gsm-network.md](gsm-network.md) | The optional GSM network: qemu's built-in cell in the page, where it runs and what it costs, which boards get it, what is not supported |
 | [android-emulator.md](android-emulator.md) | An arm64 Android emulator and an arm64 Linux Chromium under qemu-user, both inside the container: what works, and why they were too slow for profiling (2026-11-10). A phone over adb is used instead ([performance.md](performance.md), "On a phone") |
 | [architecture.md](architecture.md) | How the browser emulator works: the wasm engine, the build pipeline from the `qemu/` submodule, what the fork adds, the page, native reference builds, the testing ladder |
+| [version-pins.md](version-pins.md) | What each `versions.env` pin (qemu, bsp) moved to and why, by date |
 
 ## Scripts worth knowing
 
