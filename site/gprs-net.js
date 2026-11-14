@@ -17,6 +17,10 @@ const CLOSED = {
   4009: "This page may not use the GPRS gateway",
 };
 
+// the size of qemu's staging buffer (NET_FRAME_MAX in qemu/ui/wasm.c):
+// _wasm_net_put checks the length only after the copy into it
+const NET_FRAME_MAX = 1600;
+
 export class GprsNet {
   constructor(module, { url = gatewayUrl(), onStatus = () => {} } = {}) {
     this.m = module;
@@ -48,6 +52,7 @@ export class GprsNet {
     ws.onopen = () => this.onStatus("online");
     ws.onmessage = (e) => {
       if (!(e.data instanceof ArrayBuffer) || !this.attached) return;
+      if (e.data.byteLength > NET_FRAME_MAX) return;
       const m = this.m;
       m.HEAPU8.set(new Uint8Array(e.data), Number(m._wasm_net_buf()));
       if (m._wasm_net_put(e.data.byteLength)) this.frames.in++;
