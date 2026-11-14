@@ -1,6 +1,6 @@
 // E2E browser test: preset fullflash picker (download-on-Start -> cache -> boot).
 //   node tools/preset-web.mjs
-// Requires the wasm build to be served (./serve.mjs) at 127.0.0.1:8080 and
+// Requires the wasm build to be served (./serve.mjs) at 127.0.0.1:$PORT (8080) and
 // internet access — the inventory URLs are fetched from the real repo
 // (git.siepatch.dev, CORS-enabled), exactly as a user's browser would.
 // Covers: select-only-no-download, lazy download with progress on Start,
@@ -29,7 +29,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
 
-await page.goto("http://127.0.0.1:8080/", { waitUntil: "networkidle", timeout: 120000 });
+await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/`, { waitUntil: "networkidle", timeout: 120000 });
 
 let fail = 0;
 const assert = (name, ok) => { console.log(`${ok ? "ok  " : "FAIL"} ${name}`); if (!ok) fail++; };

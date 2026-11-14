@@ -1,7 +1,7 @@
 // E2E browser test: engine wasm background prefetch (download after page
 // load, Start before it finishes, Cancel, warm Start).
 //   node tools/engine-prefetch-web.mjs
-// Requires the wasm build to be served (./serve.mjs) at 127.0.0.1:8080 and
+// Requires the wasm build to be served (./serve.mjs) at 127.0.0.1:$PORT (8080) and
 // ../fullflashes/s75_working20060710172101.bin on disk. The network is
 // throttled via CDP (~4 Mbps) so the download window is wide enough to hit
 // Start inside it deterministically. Covers: prefetch starts on its own
@@ -44,7 +44,7 @@ let fail = 0;
 const assert = (name, ok) => { console.log(`${ok ? "ok  " : "FAIL"} ${name}`); if (!ok) fail++; };
 const pill = () => page.$eval("#status-text", (e) => e.textContent);
 
-await page.goto("http://127.0.0.1:8080/", { waitUntil: "load" });
+await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/`, { waitUntil: "load" });
 loadAt = Date.now();
 
 // 1. the prefetch starts on its own after load, and the page stays usable

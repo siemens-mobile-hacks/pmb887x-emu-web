@@ -7,7 +7,7 @@ const pat = process.argv[4] || "DSP_INT|COM_SET|COM_STATUS|MCU0";
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 200)));
-await page.goto("http://127.0.0.1:8080/?" + q + "&tracebuf=1", { waitUntil: "networkidle", timeout: 120000 });
+await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/?` + q + "&tracebuf=1", { waitUntil: "networkidle", timeout: 120000 });
 await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
 await page.click("#btn-start");

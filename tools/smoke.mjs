@@ -9,7 +9,7 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 page.on("console", (m) => console.log("[page]", m.type(), m.text().slice(0, 300)));
 page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 500)));
-await page.goto("http://127.0.0.1:8080/", { waitUntil: "networkidle", timeout: 120000 });
+await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/`, { waitUntil: "networkidle", timeout: 120000 });
 console.log("loaded; status:", await page.$eval("#status-text", (e) => e.textContent));
 await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", flash);
