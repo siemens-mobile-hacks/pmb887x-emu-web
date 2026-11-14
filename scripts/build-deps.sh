@@ -8,7 +8,17 @@
 set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$WEB_DIR/versions.env"
+
+# Toolchain versions (mirror qemu's tests/docker/dockerfiles/emsdk-wasm64-cross.docker)
+EMSDK_VERSION="4.0.10"
+ZLIB_VERSION="1.3.2"
+# zlib-1.3.2.tar.xz; the sha256 GitHub's release lists for the asset
+ZLIB_SHA256="d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3"
+PIXMAN_VERSION="0.44.2"
+LIBFFI_VERSION="v3.5.2"
+GLIB_VERSION="2.84.0"
+# glib-2.84.0.tar.xz; from download.gnome.org's glib-2.84.0.sha256sum
+GLIB_SHA256="f8823600cb85425e2815cfad82ea20fdaa538482ab74e7293d58b3f64a5aff6a"
 
 source "$WEB_DIR/scripts/build-dirs.sh"
 TARGET="$DEPS_ROOT/target"
@@ -69,7 +79,7 @@ fetch() {
   fi
   if ! echo "$sum  $out.part" | sha256sum -c --quiet - >/dev/null 2>&1; then
     rm -f "$out.part"
-    echo "build-deps: $(basename "$out") does not match its sha256 in versions.env" >&2
+    echo "build-deps: $(basename "$out") does not match its sha256 above" >&2
     exit 1
   fi
   mv -f "$out.part" "$out"
