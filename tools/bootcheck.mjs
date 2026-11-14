@@ -24,14 +24,14 @@ import { chromium } from "playwright-core";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { opt as argOpt } from "./lib/argv.mjs";
+import { flashFiles } from "./lib/boards.mjs";
+import { bootOwnFlash, bounded } from "./lib/page.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 fs.mkdirSync(path.join(ROOT, "tests", "results"), { recursive: true });
 const argv = process.argv.slice(2);
-const opt = (n, d) => {
-  const i = argv.indexOf("--" + n);
-  return i >= 0 ? argv[i + 1] : d;
-};
+const opt = (n, d) => argOpt(argv, n, d);
 
 const DIST = opt("dist", "dist-jit");
 const SECS = Number(opt("secs", 150));
@@ -52,16 +52,16 @@ const QUERY = [opt("query", ""), process.env.EXTRA_Q || ""].filter(Boolean).join
 // at the logo (the pre-0049 GPTU timer storm starved the vCPU there)
 // still "made progress" at ~10 k insns/s.
 const BOARDS = [
-  { id: "s75", file: "s75_working20060710172101.bin" },
-  { id: "el71", file: "rr_ff_el71_stock.bin" },
-  { id: "ke800", file: "KE800-v11b.bin", efa: "KE800-v11b.bin.cfi-efa", minInsns: 1.5e9 },
+  { id: "s75" },
+  { id: "el71" },
+  { id: "ke800", minInsns: 1.5e9 },
   // KE970 boots to its idle screen at ~1.62 G insns (~50 s wall on a
   // quiet host - uibench's quiet detector), same LG L1-sync waits as
   // KE800; 1.2 G leaves margin for gate legs that share the host.
-  { id: "ke970", file: "KE970v10d.bin", efa: "KE970v10d.bin.cfi-efa", minInsns: 1.2e9 },
+  { id: "ke970", minInsns: 1.2e9 },
   // the only SGOLD (PMB8875) board here, and the only one that exercises
   // hw/arm/pmb887x/dif_v1.c at all - every other board is PMB8876/dif_v2
-  { id: "cx70", file: "CX70_FW56_clean.bin" },
+  { id: "cx70" },
 ].filter((b) => (ONLY.length ? ONLY.includes(b.id) : true));
 const unknown = ONLY.filter((id) => !BOARDS.some((b) => b.id === id));
 if (unknown.length) {
@@ -103,8 +103,7 @@ const browser = await chromium.launch({ headless: true });
 const results = [];
 
 for (const board of BOARDS) {
-  const files = [path.join(ROOT, "fullflashes", board.file)];
-  if (board.efa) files.push(path.join(ROOT, "fullflashes", board.efa));
+  const files = flashFiles(board.id);
   for (const f of files) {
     if (!fs.existsSync(f)) throw new Error(`fullflash not found: ${f}`);
   }
@@ -123,10 +122,7 @@ for (const board of BOARDS) {
 
   await page.goto(`http://127.0.0.1:${PORT}/?dist=${DIST}${QUERY ? "&" + QUERY : ""}`,
                   { waitUntil: "domcontentloaded" });
-  await page.selectOption("#startup", "ONLINE");
-  await page.click("#ff-mode-own");
-  await page.setInputFiles("#fullflash", files);
-  await page.click("#btn-start");
+  await bootOwnFlash(page, files, { startup: "ONLINE" });
 
   let last = { fb: 0, insns: 0, exit: "" };
   let lastProgress = { t: Date.now(), insns: 0 };
@@ -149,11 +145,6 @@ for (const board of BOARDS) {
                 `${mx.vclock != null ? ` guest=${mx.vclock.toFixed(1)}s` : ""}${mx.exit ? " *** EXIT ***" : ""}`);
     if ((Date.now() - lastProgress.t) / 1000 > STALL_S) break;
   }
-
-  // a page that stopped answering (a frozen main thread) never settles an
-  // evaluate or a screenshot: give up on those after a while
-  const bounded = (pr, fallback) => Promise.race([pr.catch(() => fallback),
-    new Promise((r) => setTimeout(() => r(fallback), 15000))]);
 
   if (last.exit) {
     // The firmware's panic text trails the marker and is usually still
