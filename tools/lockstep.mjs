@@ -8,6 +8,7 @@
 //   node tools/lockstep.mjs --self                # harness self-check (A vs A)
 //   node tools/lockstep.mjs --insns 300e6         # short smoke budget
 //   node tools/lockstep.mjs --dense-from N --dense-to N   # manual dense window
+//   node tools/lockstep.mjs --keep                # keep the run dirs
 //
 // Each run boots the fullflash on both binaries (a = reference JIT,
 // b = TCI) under -accel tcg,one-insn-per-tb=on (TB boundaries == insn
@@ -55,7 +56,7 @@ function parseArgs() {
     aBin: path.join(ROOT, "build/qemu-native-build/qemu-system-arm"),
     bBin: path.join(ROOT, "build/qemu-native-tci-build/qemu-system-arm"),
     self: false, localize: true, label: "lockstep",
-    denseFrom: null, denseTo: null, corrupt: null,
+    denseFrom: null, denseTo: null, corrupt: null, keep: false,
   };
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
@@ -75,6 +76,7 @@ function parseArgs() {
       case "--self": a.self = true; break;
       case "--no-localize": a.localize = false; break;
       case "--label": a.label = argv[++i]; break;
+      case "--keep": a.keep = true; break;
       case "--dense-from": a.denseFrom = num(); break;
       case "--dense-to": a.denseTo = num(); break;
       case "--corrupt": a.corrupt = num(); break;
@@ -524,7 +526,9 @@ export async function main() {
   fs.mkdirSync(path.dirname(resFile), { recursive: true });
   fs.writeFileSync(resFile, JSON.stringify(summary, null, 1) + "\n");
   log(`== ${results.filter(cleanRun).length}/${results.length} runs clean; results: ${resFile}`);
-  log(`== run dirs under ${baseDir} (tmp — remove when done)`);
+  // the logs of a failed run are kept for the diagnosis
+  if (!fail && !args.keep) fs.rmSync(baseDir, { recursive: true, force: true });
+  else log(`== run dirs under ${baseDir} (tmp — remove when done)`);
 
   return fail ? 1 : 0;
 

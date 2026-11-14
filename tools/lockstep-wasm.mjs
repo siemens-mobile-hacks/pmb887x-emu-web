@@ -7,6 +7,7 @@
 //   node tools/lockstep-wasm.mjs                        # 1 run
 //   node tools/lockstep-wasm.mjs --runs 3 --par 3       # the gate
 //   node tools/lockstep-wasm.mjs --insns 300e6          # short smoke
+//   node tools/lockstep-wasm.mjs --keep                 # keep the run dirs
 //
 // Requires: the wasm64 dist served on --port (see serve.mjs),
 // scripts/build-qemu-wasm64.sh output copied to site/dist-jit/, and the
@@ -49,6 +50,7 @@ function parseArgs() {
     label: "wasm",
     env: [],
     refCheck: true,
+    keep: false,
   };
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
@@ -68,6 +70,7 @@ function parseArgs() {
       case "--a-bin": a.aBin = argv[++i]; break;
       case "--no-ref-check": a.refCheck = false; break;
       case "--label": a.label = argv[++i]; break;
+      case "--keep": a.keep = true; break;
       case "env":
       case "--env": a.env.push(argv[++i]); break;
       default: throw new Error(`unknown arg: ${t}`);
@@ -529,7 +532,9 @@ const resFile = path.join(ROOT, "tests", "results", `lockstep-${args.label}-${st
 fs.mkdirSync(path.dirname(resFile), { recursive: true });
 fs.writeFileSync(resFile, JSON.stringify(summary, null, 1) + "\n");
 log(`== ${results.filter(cleanRun).length}/${results.length} runs clean; results: ${resFile}`);
-try { fs.rmdirSync(baseDir); } catch {}
+// the logs of a failed run are kept for the diagnosis
+if (!fail && !args.keep) fs.rmSync(baseDir, { recursive: true, force: true });
+else try { fs.rmdirSync(baseDir); } catch {}
 if (fs.existsSync(baseDir)) log(`== run dirs under ${baseDir} (tmp — remove when done)`);
 
 process.exit(fail ? 1 : 0);
