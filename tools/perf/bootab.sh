@@ -54,12 +54,15 @@ def get(f):
     return None
 cols = ("burst", "speed", "stretchedMs", "gapMs", "audioMs", "lagMax", "tIdle")
 rows = {c: [] for c in cols}
+missing, marks = set(), set()
 for p in range(1, n + 1):
     a, b = get(f"{out}/a{p}.log"), get(f"{out}/b{p}.log")
     if not a or not b or a.get("ok") != "true" or b.get("ok") != "true":
         print(f"BOOTAB p{p} FAIL"); continue
     def metrics(d):
         r = {}
+        marks.update(k[2:] for k in d if k.startswith("w@"))
+        missing.update(v for v in span if "w@" + v not in d)
         w0, w1 = d.get("w@" + span[0]), d.get("w@" + span[1])
         r["burst"] = float(w1) - float(w0) if w0 and w1 else None
         snd = json.loads(d.get("sounds", "[]"))
@@ -76,6 +79,10 @@ for p in range(1, n + 1):
             line += f" {c} {ma[c]:g}/{mb[c]:g}"
             rows[c].append((ma[c], mb[c]))
     print(line)
+if missing:
+    # bootbench reports w@<v> for a fixed set of guest times only
+    print(f"BOOTAB burst: no SPAN mark {','.join(sorted(missing, key=float))} in the bootbench output"
+          f" (it has w@{','.join(sorted(marks, key=float))})")
 for c in cols:
     v = rows[c]
     if not v:
