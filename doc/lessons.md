@@ -581,12 +581,17 @@ The binding method is in performance.md. These are the traps behind it.
   two strings ("szvo lif yr", all different keys; "cab ba ll", same-key
   letters) over and over through `_wasm_send_key`, erasing between runs and
   comparing a hash of the LCD's text area with a slow reference, gives
-  all-pass or all-fail per setting (2–3 runs each, 2026-11-13). Hold × gap:
-  the x75 Siemens (S75, C81, EL71) lose taps that come less than ~70 ms
-  apart (60+10 and 40+30 type, 40+20 does not), while the x65 ones (SL65,
-  CX70) and both LGs still type at 15+15. Multi-tap timeout, from the
-  release: x75 and KE800 0.9–1.0 s, SL65 and CX70 0.7–0.8 s, KE970
-  0.6–0.7 s. The S75's had been put at ~0.8 s by eye, which was wrong. A
+  all-pass or all-fail per setting (2–3 runs each, 2026-11-13). It goes
+  by the chip, not the generation: of 14 phones, every PMB8875 board (C65,
+  C72, C75, CX65, CX70, CX75, M75, ME75, SL65 — the C75/CX75/M75 are x75s)
+  still types at 15+15 with a multi-tap timeout of 0.7–0.8 s from the
+  release, while the PMB8876 ones lose taps that come less than 60–70 ms
+  apart (S75, C81, EL71, M81: 60+10 and 40+30 type, 40+20 does not; E71:
+  30+30 types, 20+20 does not) and time out after 0.9–1.0 s. The erase key
+  follows it too: "<C" is the left soft key on every PMB8875 editor, the
+  right one on every PMB8876. Both LGs type at 15+15; timeouts KE800
+  0.9–1.0 s, KE970 0.6–0.7 s. The S75's had been put at ~0.8 s by eye,
+  which was wrong. A
   key that takes the pending letter at once would beat the timeout, but
   joystick right is not one: at the end of the text the S75 and the LGs
   add a space with it, and in the middle of the text the EL71 and C81
@@ -595,10 +600,24 @@ The binding method is in performance.md. These are the traps behind it.
   change after a run), erase by count after a passing run, and keep the
   phone busy, as a Siemens editor left alone for ~3 minutes falls back to
   idle.
+- **Taps have to be spaced in the guest's time, by qemu.** The page timed
+  each edge itself, polling `_wasm_vclock()` and sending the edge when its
+  guest time had come, but the guest sees the edge only when the main
+  loop's bottom half runs, while the vCPU keeps running. On a throttled
+  host (phone at 0.47× real time) the KE970 lost one tap in 16 page-typed
+  runs at 30+30 (2026-11-13): a late hand-over had shortened a hold or a
+  gap. Now the page queues a character's edges at once with their spacing
+  (`wasm_send_key_after`) and a QEMU_CLOCK_VIRTUAL timer hands each one to
+  the guest; S75, SL65 and KE970 then typed 16 of 16 each under host stalls
+  and a slow host. Spacing on the page side is never exact: anything
+  between the page and the guest's clock can only add to it.
 - The EL71 and C81 end in a firmware EXIT in `modeman_sm` (code 0x0009)
-  when the red key is pressed at idle; the CX70 ends in `camera_asic`
-  when joystick left opens the camera there. Neither is the typing's
-  doing; tools should not press those keys at idle.
+  when the red key is pressed at idle. The CX70 ends in `camera_asic`
+  (`0007:D166`) whenever its camera starts: joystick left at idle is the
+  camera shortcut there (on the S75 it is a new SMS), and Menu ▸ Камера
+  ends the same way, while left moves the menu cursor left as it should —
+  the board has no model of the camera chip, not a wrong key. Neither is
+  the typing's doing; tools should not press those keys at idle.
 - The KE970's `#` goes abc → ABC → T9 Abc → T9 abc → T9 ABC → 123 → Abc →
   abc, unlike the KE800's, and right after a capital one more press than
   that is needed to get back to abc (7, typed through the page). Every

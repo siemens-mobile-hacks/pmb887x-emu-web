@@ -409,41 +409,36 @@ function pickerPresses(picker, ch) {
   return [picker.open, ...turns, slot, picker.select];
 }
 
+// The generic Siemens keyboard stands for every Siemens phone, and what
+// typing needs to know about the editor goes by the chip the board runs on
+// (its config's cpu.type): it held on all 14 phones measured
+// (doc/lessons.md). PMB8875 (the x65s, C72, C75, CX75, M75, ME75) and PMB8876
+// (S75, C81, M81, E71, EL71) differ in both below.
+//
 // Backspace while typing: the key that erases the character before the
-// cursor in the phone's editor. The x75 Siemens show "<C" on the right soft
-// key (S75, EL71), the x65 ones on the left (SL65), and LG has its C key.
-// The generic keyboard stands for both Siemens generations, so it goes by
-// the device the phone runs as. The board configs cannot tell: they follow
-// the chip, and the C75/CX75/M75 run the x75 firmware on the x65's.
-const SIEMENS_X65 = ["siemens-c65", "siemens-cx65", "siemens-cx70", "siemens-m65",
-  "siemens-s65", "siemens-sl65", "siemens-sk65"];
-const SIEMENS_ERASE = {
-  default: "right_soft",
-  ...Object.fromEntries(SIEMENS_X65.map((dev) => [dev, "left_soft"])),
-};
+// cursor in the phone's editor, the soft key that shows "<C" — the left one
+// on a PMB8875, the right one on a PMB8876. LG has its C key.
+const SIEMENS_ERASE = { default: "right_soft", pmb8875: "left_soft" };
 
 // How fast typing taps, in guest ms: each tap is held `hold` and let go for
 // `gap`, and a character on the key just used waits `pause` after the last
 // release, the multi-tap timeout after which the firmware takes the letter.
 // Measured per phone by typing the same text over and over at shorter and
 // shorter times (doc/lessons.md); the values keep a margin over the
-// shortest that never failed. The x75 Siemens miss taps that come quicker
-// than ~70 ms apart (S75, C81, EL71: 40+30 typed, 40+20 lost taps), the x65
-// ones and the LGs took 15+15. Timeouts: x75 and KE800 0.9-1.0 s, CX70 and
-// SL65 0.7-0.8 s, KE970 0.6-0.7 s. A Siemens device not known to be x65
-// gets the slower x75 times.
-const SIEMENS_X75_TIMING = { hold: 60, gap: 40, pause: 1100 };
-const SIEMENS_X65_TIMING = { hold: 30, gap: 30, pause: 900 };
-const SIEMENS_TIMING = {
-  default: SIEMENS_X75_TIMING,
-  ...Object.fromEntries(SIEMENS_X65.map((dev) => [dev, SIEMENS_X65_TIMING])),
-};
+// shortest that never failed. The PMB8876 Siemens miss taps that come
+// quicker than 60-70 ms apart (E71: 30+30 typed, 20+20 lost taps; S75, C81,
+// EL71, M81: 40+30 typed, 40+20 lost), the PMB8875 ones and the LGs took
+// 15+15. Timeouts: PMB8876 and KE800 0.9-1.0 s, PMB8875 0.7-0.8 s, KE970
+// 0.6-0.7 s. A Siemens board of no known chip gets the slower times.
+const SIEMENS_SGOLD2_TIMING = { hold: 60, gap: 40, pause: 1100 };
+const SIEMENS_TIMING = { default: SIEMENS_SGOLD2_TIMING, pmb8875: { hold: 30, gap: 30, pause: 900 } };
 
-// a per-device keyboard setting (erase, timing): the device's own, else the
-// default; a setting that is not per device is the same for all
-export function forDevice(setting, dev) {
+// a per-device keyboard setting (erase, timing): the device's own, else its
+// chip's, else the default; a setting that is not per device is the same
+// for all
+export function forDevice(setting, dev, cpu) {
   return setting && typeof setting === "object" && "default" in setting
-    ? setting[dev] ?? setting.default : setting;
+    ? setting[dev] ?? setting[cpu] ?? setting.default : setting;
 }
 
 // Capital letters. Siemens: # once in lower case gives a capital for one
@@ -490,7 +485,7 @@ export const KBD_KEYBOARDS = {
   s75: {
     name: "Siemens S75",
     board: "s75",
-    timing: SIEMENS_X75_TIMING,
+    timing: SIEMENS_SGOLD2_TIMING,
     picker: SIEMENS_PICKER_X75,
     erase: "right_soft",
     upper: SIEMENS_UPPER,

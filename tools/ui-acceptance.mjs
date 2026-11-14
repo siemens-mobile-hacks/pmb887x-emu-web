@@ -271,18 +271,24 @@ ok("3.1 capitals and erase", await page.evaluate(async () => {
     && ke.upper.before.join() === "hash" && ke.upper.after.join() === "hash,hash,hash"
     && tapTable("ke970", "en").upper.after.length === 7
     && s75.erase === "right_soft" && ke.erase === "clear"
-    && gen.erase["siemens-sl65"] === "left_soft" && gen.erase.default === "right_soft";
+    && gen.erase.pmb8875 === "left_soft" && gen.erase.default === "right_soft";
 }));
 // tap speed is the phone's own: the generic Siemens keyboard goes by the
-// device (x65 quicker than x75, and an unknown one gets the slower x75)
+// board's chip (PMB8875 quicker than PMB8876, and an unknown one gets the
+// slower times)
 ok("3.1 tap timing per phone", await page.evaluate(async () => {
   const { tapTable, forDevice } = await import("./keyboards.js");
-  const t = (kbd, dev) => { const x = forDevice(tapTable(kbd, "en").timing, dev); return `${x.hold}/${x.gap}/${x.pause}`; };
-  return t("siemens", "siemens-sl65") === "30/30/900" && t("siemens", "siemens-el71") === "60/40/1100"
-    && t("siemens", "siemens-pmb8876") === "60/40/1100" && t("s75", "siemens-s75") === "60/40/1100"
+  const t = (kbd, dev, cpu) => { const x = forDevice(tapTable(kbd, "en").timing, dev, cpu); return `${x.hold}/${x.gap}/${x.pause}`; };
+  return t("siemens", "siemens-sl65", "pmb8875") === "30/30/900" && t("siemens", "siemens-el71", "pmb8876") === "60/40/1100"
+    && t("siemens", "siemens-x", null) === "60/40/1100" && t("s75", "siemens-s75", "pmb8876") === "60/40/1100"
     && t("ke800", "lg-ke800") === "30/30/1100" && t("ke970", "lg-ke970") === "30/30/800"
-    && forDevice(tapTable("siemens", "en").erase, "siemens-cx70") === "left_soft";
+    && forDevice(tapTable("siemens", "en").erase, "siemens-cx70", "pmb8875") === "left_soft";
 }));
+// ... the chip as the board configs give it, through an include (C75) and
+// an extends (S66, on the S65's)
+ok("3.1 typing goes by the board's chip", await page.evaluate(() =>
+  ["siemens-c75", "siemens-cx75", "siemens-s66", "siemens-sk65"].every((d) => window.__boardCpu(d) === "pmb8875")
+  && ["siemens-s75", "siemens-e71", "siemens-m81"].every((d) => window.__boardCpu(d) === "pmb8876")));
 ok("3.1 HUD label has no parenthetical, tooltip instead", await page.$eval("#opt-hud", (e) =>
   e.parentElement.textContent.trim() === "Performance HUD" && !!e.parentElement.title));
 ok("3.1 export buttons", await page.evaluate(() =>

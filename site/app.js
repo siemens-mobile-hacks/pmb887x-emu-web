@@ -1097,6 +1097,17 @@ function boardChain(file, depth = 0) {
   return [[file, txt], ...(ext ? boardChain(ext[1], depth + 1) : [])];
 }
 
+// the chip a board runs on, its config's cpu.type (keyboards.js settings go by it)
+const CPU_TYPE_RE = /^[ \t]*cpu\.type[ \t]*=[ \t]*"([^"]+)"/m;
+function boardCpu(device) {
+  for (const [, txt] of boardChain(device + ".toml")) {
+    const m = txt.match(CPU_TYPE_RE);
+    if (m) return m[1];
+  }
+  return null;
+}
+window.__boardCpu = boardCpu;   // tools/ui-acceptance.mjs
+
 // Does a GSM run of this board have a transceiver to receive with?
 function gsmBoardHasRadio(device) {
   return boardChain(device + ".toml").some(([, txt]) => RADIO_TYPE_RE.test(txt));
@@ -3233,13 +3244,18 @@ syncHud();   // applies the remembered toggle, and nothing above could
 // on that same key has to wait out the multi-tap window first (see typing)
 let lastRelease = null;
 
-function sendKey(phoneKey, down) {
+// A phone key edge: now, or with `after` (ms) once that much guest time has
+// passed since the edge queued before it reached the phone. Typing's taps
+// go that way, so the phone sees their holds and gaps however fast it runs
+// against the page; keysTaken() dates the release when it is in.
+function sendKey(phoneKey, down, after) {
   const m = liveModule();
   if (!m?._wasm_send_key) return;
   const lnx = KEY_TO_LINUX[phoneKey];
   if (lnx == null) return;
-  m._wasm_send_key(lnx, down ? 1 : 0);
-  if (!down) lastRelease = { m, key: phoneKey, at: Number(m._wasm_vclock()) };
+  if (after == null) m._wasm_send_key(lnx, down ? 1 : 0);
+  else m._wasm_send_key_after(lnx, down ? 1 : 0, Math.round(after * 1000));
+  if (!down) lastRelease = { m, key: phoneKey, at: Number(m._wasm_vclock()), queued: after != null };
 }
 
 const KEY_SELECTOR =
@@ -3394,7 +3410,11 @@ hintsChk.addEventListener("change", () => {
 // out its multi-tap timeout. All of it is guest time: the firmware times its
 // multi-tap window on the guest clock, which falls behind the wall clock on
 // a slow host.
-const tapTiming = () => forDevice(typing.timing, ranDevice ?? currentDevice());
+const typingSetting = (setting) => {
+  const dev = ranDevice ?? currentDevice();
+  return forDevice(setting, dev, dev && boardCpu(dev));
+};
+const tapTiming = () => typingSetting(typing.timing);
 
 // Typed characters and the physical keys pressed among them, in order:
 // { key, count } is a character's taps, { keys, settle, after } a character's
@@ -3408,6 +3428,20 @@ let typeBusy = false;
 async function guestWait(m, ms, from = Number(m._wasm_vclock())) {
   while (liveModule() === m) {
     if (Number(m._wasm_vclock()) - from >= ms * 1e6) return true;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return false;
+}
+
+// resolves once the phone has every queued key edge (false as guestWait)
+async function keysTaken(m) {
+  while (liveModule() === m) {
+    if (!m._wasm_keys_queued()) {
+      if (lastRelease?.m === m && lastRelease.queued) {
+        lastRelease = { ...lastRelease, at: Number(m._wasm_key_last_at()), queued: false };
+      }
+      return true;
+    }
     await new Promise((r) => setTimeout(r, 5));
   }
   return false;
@@ -3440,11 +3474,11 @@ async function pumpTyping() {
   const m = liveModule();
   const { hold, gap, pause } = tapTiming();
   try {
-    run: while (m && typeQueue.length) {
+    while (m && typeQueue.length) {
       const a = typeQueue.shift();
       if ("down" in a) {
-        sendKey(a.key, a.down);
-        if (!(await guestWait(m, a.down ? hold : gap))) break;
+        sendKey(a.key, a.down, a.down ? gap : hold);
+        if (!(await keysTaken(m))) break;
         continue;
       }
       const { before, after } = casePresses(a, m);
@@ -3464,15 +3498,16 @@ async function pumpTyping() {
       const keys = [...(quiet ? [typing.wake.key] : []), ...before, ...own, ...after];
       const opener = quiet ? 1 : 0;   // a picker's settle follows the press that opened it
       const taken = keys.length - after.length - 1;
+      const settle = (i) => i === opener ? a.settle ?? 0
+        : i === keys.length - 1 ? a.after ?? 0
+        : i === taken && after.length ? pause : 0;
+      // the phone gets the character's edges with their spacing in its own time
       for (let i = 0; i < keys.length; i++) {
-        sendKey(keys[i], true);
-        if (!(await guestWait(m, hold))) break run;
-        sendKey(keys[i], false);
-        const settle = i === opener ? a.settle ?? 0
-          : i === keys.length - 1 ? a.after ?? 0
-          : i === taken && after.length ? pause : 0;
-        if (!(await guestWait(m, gap + settle))) break run;
+        sendKey(keys[i], true, i ? gap + settle(i - 1) : 0);
+        sendKey(keys[i], false, hold);
       }
+      if (!(await keysTaken(m))
+          || !(await guestWait(m, gap + settle(keys.length - 1), lastRelease.at))) break;
     }
   } finally {
     typeQueue.length = 0;   // what a stopped guest left undone is dropped
@@ -3522,7 +3557,7 @@ const typingOwns = (e) => typeChk.checked && !typeChk.disabled && !!liveModule()
 function eraseKey(e) {
   if (e.code !== "Backspace" || e.ctrlKey || e.altKey || e.metaKey) return null;
   if (!typeChk.checked || typeChk.disabled || !liveModule()) return null;
-  return forDevice(typing.erase, ranDevice ?? currentDevice()) ?? null;
+  return typingSetting(typing.erase) ?? null;
 }
 
 // Fields that take text keep their keys. A checkbox does not take any, and

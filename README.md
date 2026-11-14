@@ -39,8 +39,12 @@ Backspace presses the phone's erase key. While typing is on, `-` `=` `/` and `` 
 characters; volume, `#` and `*` stay on the numpad. The tables and pickers
 are read off the firmware and kept with the keypads in `site/keyboards.js`,
 per keyboard and language, along with how fast each phone takes taps
-(measured per phone: the x65 Siemens and the LGs take a tap every 60 ms, the
-x75 Siemens every 100 ms, and the multi-tap timeout runs 0.7–1 s). A capital
+(measured per phone: the PMB8875 Siemens and the LGs take a tap every 60 ms,
+the PMB8876 Siemens every 100 ms, and the multi-tap timeout runs 0.7–1 s;
+the generic Siemens keyboard goes by the board's chip for this and for the
+erase key). The taps are spaced in the phone's own time: qemu hands each
+edge to the guest on its virtual clock (`wasm_send_key_after`), so a slow
+or busy host makes typing slower, never too quick for the phone. A capital
 assumes the phone is in lower case; where the phone capitalises by itself
 (the start of a new message, and on the KE970 after "! "), type that letter
 in lower case. The phone itself is the same view everywhere and
