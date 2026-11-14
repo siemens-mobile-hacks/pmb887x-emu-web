@@ -70,8 +70,9 @@ gateway, `gprs-gw` (branch `gprs-gw` of
   1 KB/s (one CS-1 timeslot); an uplink above 20 KB/s or 300 frames/s over
   10 s bans the address for 182 days (five times the GPRS figures, room for
   EDGE).
-- **Hosting.** In the deployment nginx-proxy routes `/gprs` of the page's
-  host to the gateway (bts-emulator's `compose.web.yaml`). `serve.mjs`
+- **Hosting.** In the deployment the page's nginx passes `/gprs` to the
+  gateway in its own container (`deploy/gprs-gw/README.md`), or nginx-proxy
+  routes it to bts-emulator's full stack (its `compose.web.yaml`). `serve.mjs`
   passes `/gprs` to `GPRS_GW` (default 127.0.0.1:5751), and only from its
   own pages: an upgrade whose `Origin` does not name the host it was sent
   to (`Host`, or `X-Forwarded-Host` behind a proxy that rewrites `Host`)
