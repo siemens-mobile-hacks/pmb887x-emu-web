@@ -11,9 +11,9 @@ were its comment block. Figures are as measured at the time.
 
 Pinning for the qemu-pmb887x wasm build.
 
-The qemu source is the root-level qemu/ submodule (Azq2/qemu-pmb887x, local branch wasm-browser-port = origin/wasm-patches): the whole wasm/TCI/perf series committed on top of qemu-pmb887x, with siemens-mobile-hacks/qemu-pmb887x dsp-lle merged in. (The former patches/*.patch files were removed on 2026-09-12; the commits are the series.) The pmb887x-emu meta-repo is checked out alongside at master; its own qemu submodule is not used (the root qemu/ submodule is the build source), but the repo is where the page's Siemens module comes from: the siemensfw library (src/siemens) that scripts/build-recalc-wasm.sh compiles -- key recalculation, ESN recovery and the Siemens half of device detection (probeFullflash).
+The qemu source is the root-level qemu/ submodule (Azq2/qemu-pmb887x, branch wasm-browser-port, which tracks origin/wasm-browser-port): the whole wasm/TCI/perf series committed on top of siemens-mobile-hacks/qemu-pmb887x master, which is merged in regularly (the DSP LLE reached master from its dsp-lle branch). (The former patches/*.patch files were removed on 2026-09-12; the commits are the series.) The pmb887x-emu meta-repo is checked out alongside at master; its own qemu submodule is not used (the root qemu/ submodule is the build source), but the repo is where the page's Siemens module comes from: the siemensfw library (src/siemens) that scripts/build-recalc-wasm.sh compiles -- key recalculation, ESN recovery and the Siemens half of device detection (probeFullflash).
 
-Why dsp-lle and not plain master: master alone aborts every Siemens fullflash during L1 GSM frame handling (">>EXIT<< FILE: l1bbcsg") unless it carries the "hacky AFE (LLE+HLE)" commit from dsp-stuff; dsp-lle runs the real DSP firmware instead, which also gives the Siemens boards sound.
+Why the series was based on dsp-lle before the DSP LLE reached master: master alone aborted every Siemens fullflash during L1 GSM frame handling (">>EXIT<< FILE: l1bbcsg") unless it carried the "hacky AFE (LLE+HLE)" commit from dsp-stuff; dsp-lle ran the real DSP firmware instead, which also gave the Siemens boards sound.
 
 ## qemu (the `qemu/` gitlink; `QEMU_PMB887X_REV` before 2026-11-14)
 

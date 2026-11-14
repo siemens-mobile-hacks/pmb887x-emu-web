@@ -1,9 +1,9 @@
 #!/bin/bash
 # Fast incremental rebuild + deploy of the default wasm build
 # (build/qemu-wasm64, the wasm64 TCG backend -> site/dist-jit).
-# Skips the tree reset/patch/reconfigure that
-# scripts/build-qemu.sh does; use it while iterating on files already
-# committed on the qemu wasm-patches branch (qemu submodule).
+# Skips the submodule, bsp and meson configure steps of
+# scripts/build-qemu.sh, and builds qemu/ as it is, uncommitted edits
+# included: the iteration loop.
 #
 # With no arguments: builds qemu-system-arm.js and DEPLOYS the emscripten
 # artifacts to $WEB_DIST (default site/dist-jit/) so the

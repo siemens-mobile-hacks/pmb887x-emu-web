@@ -5,14 +5,13 @@
 #   scripts/gate.sh keep      # before committing a patch
 #   scripts/gate.sh close     # before the session's last commit
 #
-# Measured on this host (32 cores, 2026-09-16): quick 5 jobs / 152 s,
-# keep 11 jobs / 152 s, close 15 jobs / 719 s.  Summed serially those
-# are 846 s and 2274 s, which is the whole point.  quick and keep are
-# bounded by the single 150 s board boot they all overlap with; close
-# by boot-ordered (602 s -- four boards in one browser, in order, and
-# that sequence is the test condition, so it cannot be split).  With
-# KE970 and the UI/detection checks added (2026-09-23) close is 20 jobs
-# / 904 s, boot-ordered 753 s.
+# quick has 7 jobs, keep 14 and close 21 (--list names them).  Measured on
+# this host (32 cores) at aa89576 (2026-11-14): close took 905 s, against
+# 2631 s for its jobs one after another, which is the whole point.  It is
+# bounded by boot-ordered (754 s -- five boards in one browser, in order,
+# and that sequence is the test condition, so it cannot be split).  The
+# jobs of quick sum to 763 s and those of keep to 1009 s; the board boots
+# (150 s each) are the longest of them.
 #
 #   --dist D     dist under site/ to gate (default dist-jit)
 #   --port P     server port for the browser gates (default 8080).  opsuite
