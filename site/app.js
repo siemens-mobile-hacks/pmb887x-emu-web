@@ -2398,18 +2398,22 @@ async function attachAudio() {
   try {
     workletReady ??= ac.audioWorklet.addModule(new URL("./audio-worklet.js", import.meta.url));
     await workletReady;
-    audioNode = new AudioWorkletNode(ac, "qemu-audio", {
+    // the guest this was for may have exited (and detachAudio run) meanwhile
+    if (liveModule() !== m) return;
+    const node = new AudioWorkletNode(ac, "qemu-audio", {
       numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
     });
     if (!speaker) {
       speaker = ac.createGain();
       speaker.connect(ac.destination);
     }
-    audioNode.connect(speaker);
-    if (recSound) audioNode.connect(recSound);
-    audioNode.port.postMessage({ type: "ring", buffer: m.HEAPU8.buffer, ptr });
+    node.connect(speaker);
+    if (recSound) node.connect(recSound);
+    node.port.postMessage({ type: "ring", buffer: m.HEAPU8.buffer, ptr });
+    audioNode = node;
     audioHdr = new Int32Array(m.HEAPU8.buffer, ptr, RING_WORDS);
     if (soundOn || recSound) await ac.resume();
+    if (liveModule() !== m) return;
     updateListening();
   } catch (e) {
     workletReady = null;   // a failed addModule must not poison the next boot
