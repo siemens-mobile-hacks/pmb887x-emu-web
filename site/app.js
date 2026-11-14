@@ -1490,6 +1490,9 @@ async function boot() {
     setError("boards.tar failed to load — reload the page", { block: true });
     return;
   }
+  // the wait can have changed that: the file cleared, or the device the
+  // name gave turned out to be a board without a display
+  if (!firmwareReady()) { render(); return; }
 
   const device = currentDevice();
   const preset = selectedPreset;
