@@ -32,6 +32,8 @@ export async function startGateway({ dir = GATEWAY_DIR, run, listen = "127.0.0.1
     fs.writeFileSync(log, `a gateway was already listening on ${listen}\n`);
     return { log, close() {} };
   }
+  for (const f of ["slirp-pipe.c", "server.mjs"])
+    if (!fs.existsSync(path.join(dir, f))) throw new Error(`no gprs-gw checkout at ${dir} (${f} missing)`);
   const helper = path.join(run, "slirp-pipe");
   const cc = spawnSync("sh", ["-c", `cc -O2 -o "$1" "$2" $(pkg-config --cflags --libs slirp)`, "sh",
     helper, path.join(dir, "slirp-pipe.c")], { stdio: "inherit" });
