@@ -463,7 +463,8 @@ const worker = async (wi) => {
       continue;
     }
     // HARD: config, serial, internal-SRAM (range 0). SOFT (opts below):
-    // register E-lines + the SDRAM slice — the emscripten threading race.
+    // register E-lines + the SDRAM slice, sampled at other instructions on
+    // the wasm leg (doc/performance.md, "What lockstep-wasm compares").
     const cmp = compareDigestLogs(a.log, b.log, { soft: ["epoch", "mem-sdram"] });
     const serialFail = runRes.serialIdentical !== true;
     runRes.cmp = { commonEpochs: cmp.commonEpochs, commonSram: cmp.commonSram,
@@ -505,7 +506,7 @@ const worker = async (wi) => {
       log(`   HARD ok: ${cmp.commonSram} internal-SRAM digests + serial identical` +
           (cmp.commonSdram != null ? ` ; ${cmp.commonSdram} SDRAM identical` : "")
           + (cmp.commonEpochs ? ` ; ${cmp.commonEpochs} epochs regs identical` : "")
-          + (softN ? ` ; SOFT(timing-race): ${softN} E/SDRAM diffs` : "")
+          + (softN ? ` ; SOFT(fold count drift): ${softN} E/SDRAM diffs` : "")
           + (cmp.truncated ? " (tail truncated by stop point)" : ""));
     }
     results.push(runRes);

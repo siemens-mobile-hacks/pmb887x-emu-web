@@ -259,10 +259,10 @@ function readLogLines(file) {
 // Compare the two lockstep logs. Strict by default (the native gate:
 // every E/M divergence is real). opts.soft = ["epoch", "mem-sdram"]
 // downgrades those kinds to diagnostics-only for the wasm gate, where
-// the emscripten leg is not wall-clock deterministic (the main loop
-// interleaves with the vCPU thread differently run-to-run, so a few
-// SDRAM bytes / the transient register vector differ even though the
-// firmware's visible behaviour — serial, CPU-local SRAM — is identical).
+// the page's fold counts instructions the plugin does not (TB-start
+// exits, DSP blocks), so its samples drift onto other instructions from
+// the first such exit on (doc/performance.md, "What lockstep-wasm
+// compares").
 export function compareDigestLogs(aFile, bFile, opts = {}) {
   const soft = new Set(opts.soft || []);
   const A = readLogLines(aFile), B = readLogLines(bFile);
