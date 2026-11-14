@@ -1,8 +1,9 @@
 #!/bin/bash
 # Build qemu-system-arm (pmb887x) as WebAssembly + assemble dist.
 #
-# Uses the qemu submodule at the pinned rev (the series branch — all
-# patches committed there), then builds:
+# Builds the qemu/ submodule as it is checked out (its gitlink is the pin;
+# a checkout ahead of it is the normal state while developing, and is only
+# warned about), then:
 # the wasm64 TCG backend -> site/dist-jit/, plus site/dist/boards.tar
 # (board configs from bsp; the page always fetches it from dist/).
 # site/ is served directly by serve.mjs — nothing is copied for it.
@@ -12,6 +13,7 @@ WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$WEB_DIR/versions.env"
 
 source "$WEB_DIR/scripts/build-dirs.sh"
+source "$WEB_DIR/scripts/submodules.sh"
 TARGET="$DEPS_ROOT/target"
 DIST="$WEB_DIR/site/dist"
 mkdir -p "$BUILD" "$DIST"
@@ -22,27 +24,13 @@ export CPATH="$TARGET/include"
 export PKG_CONFIG_PATH="$TARGET/lib/pkgconfig"
 export EM_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
 
-# --- qemu source: qemu submodule (patches committed on the
-# wasm-patches branch, see versions.env) ---
-QEMU_SRC="$WEB_DIR/qemu"
-# init only the top-level submodules (not pmb887x-emu's nested qemu) and
-# move qemu to the pin (a detached HEAD elsewhere is moved, not an error)
-git -C "$WEB_DIR" submodule update --init
-# versions.env pins an abbreviated hash, so compare full hashes: a short
-# pin never equals `rev-parse HEAD`, and the checkout below then ran on every
-# build; two concurrent gate builds raced on index.lock and the loser's
-# `checkout -f` fallback wiped uncommitted qemu edits (2026-09-24).
-PIN="$(git -C "$QEMU_SRC" rev-parse --verify -q "$QEMU_PMB887X_REV^{commit}")" || {
-  echo "$(basename "$0"): the qemu pin $QEMU_PMB887X_REV is not in qemu/'s objects;" \
-       "fetch it: git -C qemu fetch origin $QEMU_PMB887X_REV" >&2
-  exit 1
-}
-if [ "$(git -C "$QEMU_SRC" rev-parse HEAD)" != "$PIN" ]; then
-  git -C "$QEMU_SRC" checkout -q -B "$QEMU_PMB887X_BRANCH" "$PIN" 2>/dev/null \
-    || { git -C "$QEMU_SRC" diff --quiet HEAD \
-          || { echo "$(basename "$0"): qemu/ has uncommitted changes and is not at the pin $QEMU_PMB887X_REV; refusing to force a checkout" >&2; exit 1; }
-        git -C "$QEMU_SRC" checkout -q -f "$PIN"; }
-fi
+# --- qemu source: the qemu/ submodule as checked out ---
+# A submodule is checked out only the first time; after that it is never
+# moved (only pmb887x-emu's own top level, not its nested qemu).
+for sub in qemu pmb887x-emu; do
+  submodule_init "$sub"
+  submodule_warn_off_pin "$sub"
+done
 
 # --- board configs from bsp (pinned rev) ---
 bash "$WEB_DIR/scripts/sync-bsp.sh"

@@ -2,10 +2,12 @@
 # Release build: rebuild the wasm dists from the latest code, then bundle
 # them for static deployment (dist/).
 #
-# What "latest code" means here: versions.env is the source of truth —
-#   - qemu/ is hard-synced to the pinned rev (the submodule is inited,
-#     then a forced checkout discards any local edits — an edited file in
-#     the tree must never leak into a release artifact)
+# What "latest code" means here: the superproject's HEAD is the source of
+# truth —
+#   - qemu/ and pmb887x-emu/ must sit exactly on their gitlinks with no
+#     local changes, or the release stops (it never moves or cleans a
+#     checkout: an edited file must not leak into a release artifact, and
+#     a commit not yet in a gitlink must not either)
 #   - bsp is re-synced at the pin (sync-bsp.sh, idempotent)
 #   - build/qemu-wasm64 is wiped, so no ninja object
 #     from an earlier tree can survive into the artifacts
@@ -24,26 +26,17 @@ WEB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$WEB_DIR"
 source ./versions.env
 source scripts/build-dirs.sh
+source scripts/submodules.sh
 
 note() { echo "build-release: $*"; }
 
-# ---- 1. qemu source = the pin, exactly --------------------------------
+# ---- 1. qemu source = the gitlink, exactly ----------------------------
 
-# init only the top-level submodules (not pmb887x-emu's nested qemu);
-# the checkout below is forced unconditionally, so local edits cannot
-# ride along.  First, or on a fresh clone the fetch runs in the parent.
-git submodule update --init
-
-# Best-effort: make the pinned objects available when the pin was just
-# bumped (GitHub allows fetching SHAs).  Harmless when present, tolerated
-# when offline.
-git -C qemu fetch origin "$QEMU_PMB887X_REV" 2>/dev/null ||
-  note "fetch of $QEMU_PMB887X_REV failed (offline?) — continuing with local objects"
-
-git -C qemu checkout -q -f -B "$QEMU_PMB887X_BRANCH" "$QEMU_PMB887X_REV"
-[ -z "$(git -C qemu status --porcelain)" ] ||
-  note "WARNING: qemu/ still dirty after forced checkout (untracked files — inspect with: git -C qemu status)"
-note "qemu @ $(git -C qemu rev-parse --short HEAD) (versions.env pin $QEMU_PMB887X_REV)"
+# (only pmb887x-emu's own top level, not its nested qemu)
+for sub in qemu pmb887x-emu; do
+  submodule_require_pin "$sub"
+done
+note "qemu @ $(git -C qemu rev-parse --short HEAD) (the gitlink)"
 
 # ---- 2. wipe the qemu build dirs (toolchain/deps stay) ------------------
 
