@@ -46,6 +46,10 @@ ws.on("message", (d) => {
 
 const gt = await send("Target.getTargets");
 const pageT = gt.result.targetInfos.find((t) => t.type === "page" && t.url.includes("127.0.0.1"));
+if (!pageT) {
+  console.error(`no page on 127.0.0.1 behind devtools port ${port}`);
+  process.exit(1);
+}
 const pageSid = (await send("Target.attachToTarget", { targetId: pageT.targetId, flatten: true })).result.sessionId;
 await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, pageSid);
 await new Promise((r) => setTimeout(r, 1500));
@@ -80,6 +84,10 @@ for (const w of workers) {
   if (mods.size > bestN) { bestN = mods.size; best = { w, mods, tot }; }
 }
 
+if (!best) {
+  console.error(`none of the ${workers.length} workers ran wasm in ${secs}s`);
+  process.exit(1);
+}
 // the main module is the one wasm script with thousands of named functions
 const ranked = [...best.mods].sort((a, b) => b[1].t - a[1].t);
 const main = ranked.reduce((a, r) => (r[1].fns.size > a[1].fns.size ? r : a), ranked[0]);
