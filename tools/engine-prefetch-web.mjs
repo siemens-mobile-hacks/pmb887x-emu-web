@@ -34,9 +34,13 @@ let loadAt = 0;
 const errors = [];
 page.on("request", (r) => { if (r.url().endsWith("qemu-system-arm.wasm")) wasmReqs.push(Date.now()); });
 page.on("pageerror", (e) => errors.push("pageerror: " + String(e).slice(0, 300)));
+// The page's GPRS relay connects to /gprs, and with no gateway behind
+// serve.mjs (bts-emulator's gprs-gw) Chromium logs the failed connection.
+// The gateway is not part of this test (gprscheck --web is the relay's).
+const GPRS_DOWN = /^WebSocket connection to 'wss?:\/\/[^/']+\/gprs' failed/;
 page.on("console", (m) => {
   const t = m.text();
-  if ((m.type() === "error" || m.type() === "warning") && !/favicon|net::ERR/.test(t))
+  if ((m.type() === "error" || m.type() === "warning") && !/favicon|net::ERR/.test(t) && !GPRS_DOWN.test(t))
     errors.push(`${m.type()}: ${t.slice(0, 200)}`);
 });
 
