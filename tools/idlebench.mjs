@@ -83,7 +83,7 @@
 //   STALL    v frozen, or fewer than 1 M instructions executed, for
 //            --stall secs (10x-slowdown / crash-loop / starved-vCPU
 //            class — the automatic salvage tells which)
-//   CRASH    page error / worker death before idle
+//   CRASH    page error / worker death / firmware EXIT before idle
 //
 // Usage:
 //   PORT=8094 node tools/idlebench.mjs [dists] [--runs N] [--max S]
@@ -250,6 +250,9 @@ function rssMB(marker) {
 // The reference image is decoded once and cached on the window.
 const SAMPLER = async (cfg) => {
   const { refB64, rowsCmp, pctMax, cmp } = cfg;
+  // the page quits the guest once it has shown the dump
+  const x = window.__ui?.exit;
+  if (x) return { exit: [x.type, x.code].filter(Boolean).join(" ") || "no details" };
   const m = window.__qemu;
   if (!m || !m._wasm_vclock) return null;
   const v = Number(m._wasm_vclock()) / 1e9;
@@ -350,7 +353,6 @@ async function runOne(dist, hashes, r) {
         w64lines.push(t.slice(0, 200));
         if (w64lines.length <= 40) console.log(`  [${tag}] [page] ${t.slice(0, 160)}`);
       }
-      if (t.includes(">>EXIT<<")) rec.serialExit = true;
     });
     p.on("pageerror", (e) => {
       crashed = String(e).slice(0, 200);
@@ -414,6 +416,10 @@ async function runOne(dist, hashes, r) {
         });
       } catch (e) { crashed = "evaluate: " + String(e).slice(0, 120); }
       if (crashed) { rec.cls = "CRASH"; rec.why = crashed; break; }
+      if (s?.exit) {
+        rec.cls = "CRASH"; rec.why = "firmware EXIT " + s.exit; rec.serialExit = true;
+        break;
+      }
       if (s) {
         if (lastSample && s.v === lastSample.v) {
           s.stallSince = lastSample.stallSince ?? t;
