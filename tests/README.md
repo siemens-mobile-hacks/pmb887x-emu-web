@@ -62,9 +62,9 @@ instruction-count plugin.
 ## Benchmarks
 
 - `tests/insncount.c` — TCG plugin that counts executed guest
-  instructions (compiled to `tests/insncount.so`, needs the qemu source
-  tree headers: `gcc -O2 -fPIC -shared -I qemu/include
-  $(pkg-config --cflags glib-2.0) tests/insncount.c -o tests/insncount.so`).
+  instructions (compiled to `tests/insncount.so` by
+  `scripts/build-plugins.sh`, which `gate.sh` runs; needs the qemu source
+  tree headers).
 - **MIPS** — executed instructions per second over the `--bench-secs`
   window (plugin's own monotonic clock; comparable across builds,
   independent of guest-visible milestones).

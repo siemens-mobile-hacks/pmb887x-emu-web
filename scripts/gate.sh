@@ -192,11 +192,14 @@ mkdir -p "$LOGDIR"
 # bring them up to date before any job starts (incremental, seconds when
 # nothing changed).  Concurrent jobs must not each rebuild them, and a
 # lockstep job against a stale reference fails for nothing.
-need_jit=0 need_tci=0
+need_jit=0 need_tci=0 need_plugins=0
 for name in "${names_selected[@]}"; do
   case "$name" in
     native|lockstep-wasm|lockstep-full) need_jit=1 ;;
     opsuite|lockstep-native) need_jit=1 need_tci=1 ;;
+  esac
+  case "$name" in
+    native|lockstep-*) need_plugins=1 ;;
   esac
 done
 if [ "$need_jit" = 1 ]; then
@@ -208,6 +211,11 @@ if [ "$need_tci" = 1 ]; then
   echo "gate: native TCI build (scripts/build-native-tci.sh)"
   bash "$ROOT/scripts/build-native-tci.sh" >"$LOGDIR/build-native-tci.log" 2>&1 ||
     { echo "gate: native TCI build failed: $LOGDIR/build-native-tci.log"; exit 1; }
+fi
+if [ "$need_plugins" = 1 ]; then
+  echo "gate: test plugins (scripts/build-plugins.sh)"
+  bash "$ROOT/scripts/build-plugins.sh" >"$LOGDIR/build-plugins.log" 2>&1 ||
+    { echo "gate: plugin build failed: $LOGDIR/build-plugins.log"; exit 1; }
 fi
 
 echo "gate: tier=$TIER dist=$DIST jobs=${#selected[@]} concurrency=$JOBS_MAX"
