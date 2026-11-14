@@ -69,6 +69,7 @@ let page = null;
 let bootAt = 0;
 let lastSample = null; // {t, insns} for rate-since-last-status
 let consoleLines = [];
+let serveChild = null;  // a serve.mjs this session started, stopped with it
 
 async function ensureServer() {
   const up = async () => {
@@ -79,7 +80,7 @@ async function ensureServer() {
   };
   if (await up()) return;
   log("serve.mjs not reachable — starting it");
-  const serve = spawn(process.execPath, [path.join(TOOLS, "..", "serve.mjs")], {
+  const serve = serveChild = spawn(process.execPath, [path.join(TOOLS, "..", "serve.mjs")], {
     detached: true, stdio: "ignore",
     env: { ...process.env, PORT: String(PORT) },
   });
@@ -285,6 +286,7 @@ function shutdown() {
   server.close();
   fs.rmSync(SOCK, { force: true });
   if (browser) browser.close().catch(() => {});
+  if (serveChild) try { process.kill(serveChild.pid, "SIGTERM"); } catch {}
   process.exit(0);
 }
 process.on("SIGINT", shutdown);
