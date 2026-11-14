@@ -4,7 +4,6 @@ import { fullflash } from "./testflash.mjs";
 const waitS = Number(process.argv[2] || 30);
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
-page.on("console", (m) => { const t = m.text(); if (t.startsWith("WATCH")) console.log("[page]", t.slice(0, 120)); });
 await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/?qargs=-d exec -D /exec.log`, { waitUntil: "networkidle" });
 await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflash);
