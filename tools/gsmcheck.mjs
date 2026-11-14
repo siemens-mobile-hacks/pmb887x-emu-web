@@ -44,9 +44,23 @@ const GSM = opt("gsm", "1");
 const QUERY = [opt("query", ""), process.env.EXTRA_Q || ""].filter(Boolean).join("&");
 
 const HOLD = Number(opt("hold", 60));
+// linux keycodes, as the page's own keypad sends them (KEY_TO_LINUX in site/app.js)
+const KEYCODE = {
+  up: 103, down: 108, left: 105, right: 106, center: 28,
+  left_soft: 59, right_soft: 60, send: 61, end: 62, clear: 14,
+  music: 63, play: 64, ptt: 65, camera: 66, browser: 67,
+  vol_up: 78, vol_down: 74,
+  "0": 11, "1": 2, "2": 3, "3": 4, "4": 5, "5": 6,
+  "6": 7, "7": 8, "8": 9, "9": 10,
+  star: 55, hash: 98,
+};
 // [seconds after start, page key name]
 const KEYS = opt("keys", "").split(",").filter(Boolean).map((k) => {
   const [at, name] = k.split(":");
+  if (!Number.isFinite(Number(at)) || !(name in KEYCODE)) {
+    console.error(`--keys ${k}: want <seconds>:<key>, key one of ${Object.keys(KEYCODE).join(" ")}`);
+    process.exit(2);
+  }
   return [Number(at), name];
 });
 const file = opt("flash", "") || (await import("./testflash.mjs")).fullflash;
@@ -100,8 +114,6 @@ await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", [file, file + ".cfi-efa"].filter((f) => fs.existsSync(f)));
 await page.click("#btn-start");
 
-// linux keycodes, as the page's own keypad sends them
-const KEYCODE = { left_soft: 59, right_soft: 60, end: 62, 1: 2 };
 const press = (key) => page.evaluate(async (code) => {
   window.__qemu._wasm_send_key(code, 1);
   await new Promise((r) => setTimeout(r, 200));
