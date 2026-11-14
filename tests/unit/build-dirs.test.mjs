@@ -24,10 +24,14 @@ function nodeDirs(set) {
   return execFileSync(process.execPath, ["--input-type=module", "-e", script, helper], { env: withEnv(set), encoding: "utf8" }).trim();
 }
 
-test("build-dirs: the unset defaults are the paths the gate has always used", () => {
+test("build-dirs: the unset defaults are all under build/", () => {
   const r = path.resolve(ROOT);
   assert.equal(shellDirs({}),
-    [`${r}/build`, `${r}/build/qemu-native-build`, `${r}/build/qemu-native-tci-build`, `${r}/tests`].join("|"));
+    [`${r}/build`, `${r}/build/qemu-native-build`, `${r}/build/qemu-native-tci-build`, `${r}/build/test-plugins`].join("|"));
+});
+
+test("build-dirs: the test plugins follow WEB_BUILD", () => {
+  assert.equal(shellDirs({ WEB_BUILD: "/x" }), "/x|/x/qemu-native-build|/x/qemu-native-tci-build|/x/test-plugins");
 });
 
 test("build-dirs: tools/lib/build-dirs.mjs resolves what scripts/build-dirs.sh does", () => {

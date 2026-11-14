@@ -348,8 +348,7 @@ thread is using them).
 The directories are `scripts/build-dirs.sh`'s, which `tools/lib/build-dirs.mjs`
 mirrors for the node tools: under `build/`, or `$WEB_BUILD` when set, with
 `QEMU_NATIVE_BUILD`, `QEMU_NATIVE_TCI_BUILD` and `TEST_PLUGINS_DIR` (the
-test plugins: `tests/` while `WEB_BUILD` is unset, else
-`$WEB_BUILD/test-plugins/`) for each one alone.
+test plugins, `test-plugins/`) for each one alone.
 
 - `scripts/build-native.sh` → `build/qemu-native-build/` (real TCG JIT,
   built from `qemu/` as it is checked out, uncommitted edits included —
@@ -376,7 +375,7 @@ clock as a result, so host load cannot change a verdict. Before its jobs
 start it brings the native reference builds (`build-native.sh`, and
 `build-native-tci.sh` when a job needs TCI) up to date with `qemu/`, and
 rebuilds the test plugins (`build-plugins.sh`: `insncount.so` and
-`lockstep.so` in `tests/` or `TEST_PLUGINS_DIR`) when their sources or
+`lockstep.so` in `build/test-plugins/` or `TEST_PLUGINS_DIR`) when their sources or
 qemu's plugin API are newer. The benchmarks at the bottom are *not* in it and must be run one at a time on
 a quiet host.
 

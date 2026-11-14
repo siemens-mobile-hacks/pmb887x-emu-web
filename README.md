@@ -197,9 +197,8 @@ The build directories are set in `scripts/build-dirs.sh`, and the node
 tools read the same settings from `tools/lib/build-dirs.mjs`. `WEB_BUILD`
 (default `build/`) moves all of them: `qemu-wasm64/`, `deps/` (or
 `WASM_DEPS`), the JIT build `qemu-native-build/` (or `QEMU_NATIVE_BUILD`)
-and the TCI build `qemu-native-tci-build/` (or `QEMU_NATIVE_TCI_BUILD`).
-The test plugins go to `tests/` while `WEB_BUILD` is unset and to
-`$WEB_BUILD/test-plugins/` when it is set (or to `TEST_PLUGINS_DIR`). Set
+and the TCI build `qemu-native-tci-build/` (or `QEMU_NATIVE_TCI_BUILD`),
+and the test plugins `test-plugins/` (or `TEST_PLUGINS_DIR`). Set
 them in the environment of the builds and of the scripts, tests and tools
 that run the binaries. `QEMU_BIN` (`QEMU_JIT`/`QEMU_TCI`, `--a-bin`/`--b-bin`)
 still points one run at another binary.
@@ -261,8 +260,8 @@ still points one run at another binary.
     build-native-tci.sh native TCI build of the same tree (plugins on — the
                         lockstep b-side)
     build-plugins.sh    the native TCG plugins the test harnesses load
-                        (insncount.so, lockstep.so in tests/ or
-                        TEST_PLUGINS_DIR)
+                        (insncount.so, lockstep.so in build/test-plugins
+                        or TEST_PLUGINS_DIR)
     qemu-source-id.sh   names the qemu sources a build came from (HEAD + a
                         hash of the uncommitted diff); the wasm builds and
                         build-native.sh write it to qemu-source.txt and

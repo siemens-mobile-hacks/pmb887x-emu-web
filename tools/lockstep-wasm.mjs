@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Lockstep driver, wasm leg (phase-1 gate):
 // value-level diff of guest-state digests per executed-insn epoch between
-// the native reference JIT (tests/lockstep.so plugin) and the wasm64
+// the native reference JIT (the lockstep.so test plugin) and the wasm64
 // backend running in a headless browser (built-in fold, env-driven).
 //
 //   node tools/lockstep-wasm.mjs                        # 1 run

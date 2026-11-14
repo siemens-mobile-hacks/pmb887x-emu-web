@@ -9,7 +9,7 @@
 #   QEMU_NATIVE_TCI_BUILD  the native TCI build with plugins, the lockstep
 #                          b-side (default $WEB_BUILD/qemu-native-tci-build)
 #   TEST_PLUGINS_DIR the test plugins insncount.so and lockstep.so (default
-#                    tests/ while WEB_BUILD is unset, else $WEB_BUILD/test-plugins)
+#                    $WEB_BUILD/test-plugins)
 #   PMB887X_BSP_DIR  the bsp checkout (default the bsp/ submodule); every
 #                    native boot reads it through run-native.sh
 # The node tools take the native ones from tools/lib/build-dirs.mjs, with the
@@ -20,11 +20,7 @@ BUILD="${WEB_BUILD:-$WEB_DIR/build}"
 DEPS_ROOT="${WASM_DEPS:-$BUILD/deps}"
 NATIVE_BUILD="${QEMU_NATIVE_BUILD:-$BUILD/qemu-native-build}"
 NATIVE_TCI_BUILD="${QEMU_NATIVE_TCI_BUILD:-$BUILD/qemu-native-tci-build}"
-if [ -n "${WEB_BUILD:-}" ]; then
-  PLUGINS_DIR="${TEST_PLUGINS_DIR:-$BUILD/test-plugins}"
-else
-  PLUGINS_DIR="${TEST_PLUGINS_DIR:-$WEB_DIR/tests}"
-fi
+PLUGINS_DIR="${TEST_PLUGINS_DIR:-$BUILD/test-plugins}"
 BSP_DIR="${PMB887X_BSP_DIR:-$WEB_DIR/bsp}"
 
 # the pinned emsdk's environment, quietly, or what to run to get it

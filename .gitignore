@@ -32,10 +32,7 @@ node_modules
 tools/.session*
 tools/.serve.log
 
-# test suite build/run artifacts
-tests/insncount.so
-tests/lockstep.so
-tests/*.so.??????
+# test suite run artifacts (the plugins build into build/test-plugins)
 tests/results/
 
 # tcg-isa build artifacts (binaries covered by *.bin; keep the elf/objects out too)

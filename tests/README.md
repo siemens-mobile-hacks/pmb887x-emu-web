@@ -70,8 +70,8 @@ instruction-count plugin.
 ## Benchmarks
 
 - `tests/insncount.c` — TCG plugin that counts executed guest
-  instructions (compiled to `tests/insncount.so`, or into
-  `TEST_PLUGINS_DIR` / `$WEB_BUILD/test-plugins` when set, by
+  instructions (compiled to `build/test-plugins/insncount.so`, or into
+  `$WEB_BUILD/test-plugins` / `TEST_PLUGINS_DIR` when set, by
   `scripts/build-plugins.sh`, which `gate.sh` runs; needs the qemu source
   tree headers).
 - **MIPS** — executed instructions per second over the `--bench-secs`
@@ -104,8 +104,8 @@ SELF=1 scripts/run-lockstep.sh           # harness self-check (JIT vs JIT)
 node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
 ```
 
-- **Plugin** `tests/lockstep.c` (built to `tests/lockstep.so`, or next to
-  `insncount.so` as above): samples
+- **Plugin** `tests/lockstep.c` (built to `build/test-plugins/lockstep.so`,
+  next to `insncount.so` as above): samples
   the r0–pc + CPSR vector every 2^16 executed guest insns (an inline
   per-insn counter + conditional callback) and writes a tiny text log —
   one E-line per 2^20 insns with a hash of the vector at that sample,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Lockstep driver (phase 0b): run the
-// same deterministic boot on two TCG backends with the tests/lockstep.so
+// same deterministic boot on two TCG backends with the lockstep.so test
 // plugin and value-diff the guest-state digests.
 //
 //   node tools/lockstep.mjs                       # 1 run, JIT vs TCI, S75

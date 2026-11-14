@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the native TCG plugins the test harnesses load, into
-# $TEST_PLUGINS_DIR (scripts/build-dirs.sh: tests/ unless WEB_BUILD or
-# TEST_PLUGINS_DIR is set):
+# $TEST_PLUGINS_DIR (scripts/build-dirs.sh: build/test-plugins, or
+# $WEB_BUILD/test-plugins):
 #
 #   insncount.so   tests/run.mjs (the native gate job)
 #   lockstep.so    tools/lockstep.mjs, tools/lockstep-wasm.mjs
