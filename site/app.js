@@ -934,22 +934,23 @@ document.addEventListener("keydown", (e) => {
 // swipe the sheet down to close it (the handle and the title are the grip;
 // the body scrolls instead)
 for (const sheet of document.querySelectorAll(".sheet")) {
-  let y0 = null;
+  // dy is the last move's: a pointercancel carries no position of its own
+  let y0 = null, dy = 0;
   const grip = (e) => e.target.closest(".sheet-handle, .sheet-title") || e.target === sheet;
   sheet.addEventListener("pointerdown", (e) => {
     if (!grip(e)) return;
     y0 = e.clientY;
+    dy = 0;
     sheet.style.transition = "none";
   });
   sheet.addEventListener("pointermove", (e) => {
     if (y0 == null) return;
-    const dy = Math.max(0, e.clientY - y0);
+    dy = Math.max(0, e.clientY - y0);
     sheet.style.transform = `translateY(${dy}px)`;
   });
   for (const t of ["pointerup", "pointercancel", "pointerleave"]) {
-    sheet.addEventListener(t, (e) => {
+    sheet.addEventListener(t, () => {
       if (y0 == null) return;
-      const dy = Math.max(0, e.clientY - y0);
       y0 = null;
       sheet.style.transition = "";
       sheet.style.transform = "";

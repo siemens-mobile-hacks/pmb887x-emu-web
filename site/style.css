@@ -1005,8 +1005,10 @@ fieldset:disabled .advanced summary { pointer-events: none; }
   transform: translateY(100%); transition: transform .24s ease;
 }
 .sheet.open { transform: none; }
-.sheet-handle { flex: none; width: 44px; height: 4px; border-radius: 2px; background: var(--border); margin: 10px auto 8px; }
-.sheet-title { flex: none; margin: 0 0 0.7rem; font-size: 1rem; }
+/* the swipe-to-close grip: without touch-action the browser takes the drag
+   as a pan and cancels the pointer */
+.sheet-handle { flex: none; width: 44px; height: 4px; border-radius: 2px; background: var(--border); margin: 10px auto 8px; touch-action: none; }
+.sheet-title { flex: none; margin: 0 0 0.7rem; font-size: 1rem; touch-action: none; }
 .sheet-body { flex: 1; min-height: 0; overflow-y: auto; }
 .sheet-done {
   flex: none; width: 100%; margin-top: 0.8rem; padding: 0.7rem;
