@@ -82,6 +82,10 @@ for c in cols:
         continue
     ma, mb = statistics.mean(x for x, _ in v), statistics.mean(y for _, y in v)
     rel = [(y / x - 1) * 100 for x, y in v if x]
+    if not rel:
+        # leg A read 0 in every pair (a host that keeps up): no ratio to take
+        print(f"BOOTAB {c}: A {ma:.3f} B {mb:.3f}  B/A n/a (A is 0 in all {len(v)} pairs)")
+        continue
     se = statistics.stdev(rel) / len(rel) ** 0.5 if len(rel) > 1 else 0
     print(f"BOOTAB {c}: A {ma:.3f} B {mb:.3f}  B/A {statistics.mean(rel):+.1f}% (se {se:.1f}, n {len(rel)})")
 EOF
