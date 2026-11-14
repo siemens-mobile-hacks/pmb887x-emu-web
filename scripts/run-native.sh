@@ -26,15 +26,17 @@
 #                        page's vcpu-timers clock instead (default
 #                        shift=3,sleep=off: deterministic, which lockstep
 #                        and the test suites need)
+#   QEMU_BIN=path        the qemu-system-arm to run (default the JIT build's,
+#                        $QEMU_NATIVE_BUILD/qemu-system-arm: build-dirs.sh)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-QEMU="${QEMU_BIN:-$ROOT/build/qemu-native-build/qemu-system-arm}"
 WEB_DIR="$ROOT"
 source "$ROOT/scripts/build-dirs.sh"
+QEMU="${QEMU_BIN:-$NATIVE_BUILD/qemu-system-arm}"
 BOARDS="${BOARDS_DIR:-$BSP_DIR/lib/data/board}"
 
-[ -x "$QEMU" ] || { echo "qemu-system-arm not built — see scripts/build-native.sh" >&2; exit 1; }
+[ -x "$QEMU" ] || { echo "$QEMU not built — see scripts/build-native.sh" >&2; exit 1; }
 [ -n "${1:-}" ] || { echo "usage: $0 <fullflash.bin> [extra qemu args...]" >&2; exit 1; }
 FLASH="$(realpath "$1")"; shift
 [ -f "$FLASH" ] || { echo "fullflash not found: $FLASH" >&2; exit 1; }

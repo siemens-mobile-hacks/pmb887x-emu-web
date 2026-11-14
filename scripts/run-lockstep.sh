@@ -13,6 +13,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WEB_DIR="$ROOT"
+source "$ROOT/scripts/build-dirs.sh"
 
 # rebuilds a stale plugin into a temp file and renames it, so a lockstep
 # job of a parallel gate that is loading it never reads a partial file
@@ -26,8 +28,7 @@ EXTRA=()
 # the TCI build must have plugins force-enabled (upstream configures them
 # off with TCI by default — CI cost, not a hard incompatibility):
 #   scripts/build-native-tci.sh
-for bin in "$ROOT/build/qemu-native-build/qemu-system-arm" \
-           "$ROOT/build/qemu-native-tci-build/qemu-system-arm"; do
+for bin in "$NATIVE_BUILD/qemu-system-arm" "$NATIVE_TCI_BUILD/qemu-system-arm"; do
   [ -x "$bin" ] || { echo "!! $bin not built — scripts/build-native.sh + scripts/build-native-tci.sh"; exit 2; }
 done
 

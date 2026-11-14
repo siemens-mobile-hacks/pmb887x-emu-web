@@ -1,8 +1,10 @@
 #!/bin/bash
-# Build the native TCG plugins the test harnesses load:
+# Build the native TCG plugins the test harnesses load, into
+# $TEST_PLUGINS_DIR (scripts/build-dirs.sh: tests/ unless WEB_BUILD or
+# TEST_PLUGINS_DIR is set):
 #
-#   tests/insncount.so   tests/run.mjs (the native gate job)
-#   tests/lockstep.so    tools/lockstep.mjs, tools/lockstep-wasm.mjs
+#   insncount.so   tests/run.mjs (the native gate job)
+#   lockstep.so    tools/lockstep.mjs, tools/lockstep-wasm.mjs
 #
 #   scripts/build-plugins.sh
 #
@@ -14,18 +16,21 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WEB_DIR="$ROOT"
+source "$ROOT/scripts/build-dirs.sh"
 HDR="$ROOT/qemu/include"
 API="$HDR/plugins/qemu-plugin.h"
 
 [ -f "$API" ] || { echo "!! $API missing — git submodule update --init qemu" >&2; exit 2; }
 GLIB_CFLAGS="$(pkg-config --cflags glib-2.0)"
+mkdir -p "$PLUGINS_DIR"
 
 for name in insncount lockstep; do
-  src="$ROOT/tests/$name.c" so="$ROOT/tests/$name.so"
+  src="$ROOT/tests/$name.c" so="$PLUGINS_DIR/$name.so"
   if [ -f "$so" ] && [ ! "$src" -nt "$so" ] && [ ! "$API" -nt "$so" ]; then
     continue
   fi
-  echo "== building tests/$name.so"
+  echo "== building $so"
   tmp="$(mktemp "$so.XXXXXX")"
   # shellcheck disable=SC2086  # GLIB_CFLAGS is a flag list
   if ! gcc -O2 -Wall -fPIC -shared -I "$HDR" $GLIB_CFLAGS "$src" -o "$tmp"; then

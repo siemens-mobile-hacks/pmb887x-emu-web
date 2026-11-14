@@ -1,9 +1,13 @@
 #!/bin/bash
 # Build the native (Linux) qemu-system-arm for pmb887x.
 #
-#   scripts/build-native.sh       JIT  -> build/qemu-native-build/qemu-system-arm
-#   scripts/build-native.sh tci   TCI  -> build/qemu-native-tci-build/qemu-system-arm
+#   scripts/build-native.sh       JIT  -> $QEMU_NATIVE_BUILD/qemu-system-arm
+#   scripts/build-native.sh tci   TCI  -> $QEMU_NATIVE_TCI_BUILD/qemu-system-arm
 #                                 (scripts/build-native-tci.sh runs this)
+#
+# The directories come from scripts/build-dirs.sh: build/qemu-native-build
+# and build/qemu-native-tci-build unless WEB_BUILD or the two variables
+# move them.
 #
 # Builds the qemu/ submodule as it is checked out — the very tree the wasm
 # builds compile (the emscripten parts are inert natively).  The JIT binary
@@ -26,9 +30,11 @@ set -euo pipefail
 MODE="${1:-jit}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/qemu"
+WEB_DIR="$ROOT"
+source "$ROOT/scripts/build-dirs.sh"
 case "$MODE" in
-  jit) BUILD="$ROOT/build/qemu-native-build" ;;
-  tci) BUILD="$ROOT/build/qemu-native-tci-build" ;;
+  jit) OUT="$NATIVE_BUILD" ;;
+  tci) OUT="$NATIVE_TCI_BUILD" ;;
   *) echo "usage: $0 [jit|tci]" >&2; exit 2 ;;
 esac
 
@@ -36,14 +42,14 @@ esac
 
 # a build dir configured from another tree (the old pinned worktree) is
 # rebuilt from scratch: meson cannot move a build dir between sources
-INFO="$BUILD/meson-info/meson-info.json"
+INFO="$OUT/meson-info/meson-info.json"
 if [ -f "$INFO" ] && ! grep -q "\"source\": *\"$SRC\"" "$INFO"; then
-  rm -rf "$BUILD"
+  rm -rf "$OUT"
 fi
 
-mkdir -p "$BUILD"
-cd "$BUILD"
-MESON="$BUILD/pyvenv/bin/meson"
+mkdir -p "$OUT"
+cd "$OUT"
+MESON="$OUT/pyvenv/bin/meson"
 if [ "$MODE" = jit ]; then
   # slirp (libslirp-dev) is the network behind the GSM cell's GPRS that
   # tools/gprscheck.mjs uses
@@ -71,13 +77,13 @@ ninja -j"$(nproc)" qemu-system-arm || ninja -j"$(nproc)" qemu-system-arm
 echo "$ID" > qemu-source.txt
 
 if [ "$MODE" = tci ]; then
-  if "$BUILD/qemu-system-arm" -plugin help 2>&1 | grep -q "plugin interface not enabled"; then
-    echo "!! plugins still disabled in $BUILD — inspect meson configuration" >&2
+  if "$OUT/qemu-system-arm" -plugin help 2>&1 | grep -q "plugin interface not enabled"; then
+    echo "!! plugins still disabled in $OUT — inspect meson configuration" >&2
     exit 1
   fi
-  echo "=== native TCI qemu ready (plugins on): $BUILD/qemu-system-arm (qemu $ID) ==="
+  echo "=== native TCI qemu ready (plugins on): $OUT/qemu-system-arm (qemu $ID) ==="
 else
-  echo "=== native qemu ready: $BUILD/qemu-system-arm (qemu $ID) ==="
+  echo "=== native qemu ready: $OUT/qemu-system-arm (qemu $ID) ==="
   echo "board configs: bash scripts/sync-bsp.sh (the bsp/ submodule)"
   echo "run: scripts/run-native.sh fullflashes/<device>.bin"
 fi

@@ -21,8 +21,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$ROOT/tests/tcg-isa"
-JIT="${QEMU_JIT:-$ROOT/build/qemu-native-build/qemu-system-arm}"
-TCI="${QEMU_TCI:-$ROOT/build/qemu-native-tci-build/qemu-system-arm}"
+WEB_DIR="$ROOT"
+source "$ROOT/scripts/build-dirs.sh"
+JIT="${QEMU_JIT:-$NATIVE_BUILD/qemu-system-arm}"
+TCI="${QEMU_TCI:-$NATIVE_TCI_BUILD/qemu-system-arm}"
 T="$(mktemp -d)"
 IMG="" SRV="" CHILD=""
 descendants() {
