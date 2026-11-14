@@ -166,80 +166,80 @@ export const KBD_BOARDS = {
     ],
   },
 
-// LG KE800 Chocolate: 4-way pad with OK center, soft keys + up above it,
-// call / down / C below it; side keys sit on BOTH flanks of the phone —
-// vol rocker on the left, power / camera / mp3 (top to bottom) on the
-// right. C maps to the board CLEAR key (backspace). Legends glow red on
-// the real phone (keyboards/LG KE800.png) → key-red.
-ke800: {
-  auxLeft: [
-    { key: "vol_up", label: "Vol+", short: "+", title: "Volume up (left side)" },
-    { key: "vol_down", label: "Vol−", short: "−", title: "Volume down (left side)" },
-  ],
-  auxRight: [
-    { key: "end", label: POWER_ICON, short: POWER_ICON, title: "Power / end call (right side, top)" },
-    { key: "camera", label: "CAM", short: CAMERA_ICON, title: "Camera (right side)" },
-    { key: "music", label: "MP3", short: "♪", title: "Music player (right side)" },
-  ],
-  rows: [
-    { cls: "krow krow-soft", cols: "1fr 1.2fr 1fr", keys: [
-      { key: "left_soft", label: "—", cls: "key-red", title: "Left soft key" },
-      { key: "up", label: NAV_CHEVRON.up, cls: "key-nav key-red", title: "D-pad up" },
-      { key: "right_soft", label: "—", cls: "key-red", title: "Right soft key" },
-    ]},
-    { cls: "krow krow-joy", cols: "1fr 1.2fr 1fr", keys: [
-      { key: "left", label: NAV_CHEVRON.left, cls: "key-nav key-red", title: "D-pad left" },
-      { key: "center", label: "OK", cls: "key-nav key-center key-red", title: "OK" },
-      { key: "right", label: NAV_CHEVRON.right, cls: "key-nav key-red", title: "D-pad right" },
-    ]},
-    { cls: "krow krow-call", cols: "1fr 1.2fr 1fr", keys: [
-      { key: "send", label: CALL_ICON_HUNGUP, cls: "key-send key-red", title: "Call key" },
-      { key: "down", label: NAV_CHEVRON.down, cls: "key-nav key-red", title: "D-pad down" },
-      { key: "clear", label: C_ICON, cls: "key-red", title: "C — erase / back" },
-    ]},
-    DIGIT_ROW,
-  ],
-},
-
-// LG KE970 Shine (keyboards/LG KE970.jpg, keyboards/LG KE970-2.jpg): the
-// front carries no pad at all — a scroll wheel lies between two dash soft
-// keys, and it is the whole navigation: roll it for up/down, press it for
-// OK. It stands in here as a pad, wider than it is tall like the roller
-// itself; left/right have no mark of their own on the phone but are keys of
-// its matrix, so the pad carries them. The slide-out keypad adds call / C /
-// end above the digits, and the only side keys are on the right flank
-// (keyboards/LG KE970-3.jpg — the left flank is bare).
-ke970: {
-  auxRight: [
-    { key: "vol_up", label: VOL_ARROW.up, short: VOL_ARROW.up, title: "Volume up (right side)" },
-    { key: "vol_down", label: VOL_ARROW.down, short: VOL_ARROW.down, title: "Volume down (right side)" },
-    { key: "music", label: "MP3", short: "MP3", title: "Music player (right side)" },
-    { key: "camera", label: CAMERA_ICON, short: CAMERA_ICON, title: "Camera (right side)" },
-  ],
-  rows: [
-    // the wheel: .kwheel dresses the pad as the roller it stands for (a
-    // ridged chrome bar), the hit areas are the pad's own
-    { cls: "krow krow-ke970-mid", keys: [
-      { key: "left_soft", label: "—", title: "Left soft key" },
-      { cls: "kpad kwheel", keys: [
-        { key: "up", label: NAV_CHEVRON.up, cls: "key-nav kpad-up", title: "Scroll wheel up" },
-        { key: "left", label: NAV_CHEVRON.left, cls: "key-nav kpad-left", title: "Left" },
-        { key: "center", label: "OK", cls: "key-center kpad-ok", title: "Scroll wheel press (OK)" },
-        { key: "right", label: NAV_CHEVRON.right, cls: "key-nav kpad-right", title: "Right" },
-        { key: "down", label: NAV_CHEVRON.down, cls: "key-nav kpad-down", title: "Scroll wheel down" },
+  // LG KE800 Chocolate: 4-way pad with OK center, soft keys + up above it,
+  // call / down / C below it; side keys sit on BOTH flanks of the phone —
+  // vol rocker on the left, power / camera / mp3 (top to bottom) on the
+  // right. C maps to the board CLEAR key (backspace). Legends glow red on
+  // the real phone (keyboards/LG KE800.png) → key-red.
+  ke800: {
+    auxLeft: [
+      { key: "vol_up", label: "Vol+", short: "+", title: "Volume up (left side)" },
+      { key: "vol_down", label: "Vol−", short: "−", title: "Volume down (left side)" },
+    ],
+    auxRight: [
+      { key: "end", label: POWER_ICON, short: POWER_ICON, title: "Power / end call (right side, top)" },
+      { key: "camera", label: "CAM", short: CAMERA_ICON, title: "Camera (right side)" },
+      { key: "music", label: "MP3", short: "♪", title: "Music player (right side)" },
+    ],
+    rows: [
+      { cls: "krow krow-soft", cols: "1fr 1.2fr 1fr", keys: [
+        { key: "left_soft", label: "—", cls: "key-red", title: "Left soft key" },
+        { key: "up", label: NAV_CHEVRON.up, cls: "key-nav key-red", title: "D-pad up" },
+        { key: "right_soft", label: "—", cls: "key-red", title: "Right soft key" },
       ]},
-      { key: "right_soft", label: "—", title: "Right soft key" },
-    ]},
-    // call and end carry no colour here: the KE970 prints them in the same
-    // dark ink as every other legend, green and red are the Siemens boards'
-    { cls: "krow krow-call", cols: "1fr 1.2fr 1fr", keys: [
-      { key: "send", label: CALL_ICON_HUNGUP, title: "Call key" },
-      { key: "clear", label: "C", title: "C — erase / back" },
-      { key: "end", label: END_ICON, title: "End call / power" },
-    ]},
-    DIGIT_ROW,
-  ],
-},
+      { cls: "krow krow-joy", cols: "1fr 1.2fr 1fr", keys: [
+        { key: "left", label: NAV_CHEVRON.left, cls: "key-nav key-red", title: "D-pad left" },
+        { key: "center", label: "OK", cls: "key-nav key-center key-red", title: "OK" },
+        { key: "right", label: NAV_CHEVRON.right, cls: "key-nav key-red", title: "D-pad right" },
+      ]},
+      { cls: "krow krow-call", cols: "1fr 1.2fr 1fr", keys: [
+        { key: "send", label: CALL_ICON_HUNGUP, cls: "key-send key-red", title: "Call key" },
+        { key: "down", label: NAV_CHEVRON.down, cls: "key-nav key-red", title: "D-pad down" },
+        { key: "clear", label: C_ICON, cls: "key-red", title: "C — erase / back" },
+      ]},
+      DIGIT_ROW,
+    ],
+  },
+
+  // LG KE970 Shine (keyboards/LG KE970.jpg, keyboards/LG KE970-2.jpg): the
+  // front carries no pad at all — a scroll wheel lies between two dash soft
+  // keys, and it is the whole navigation: roll it for up/down, press it for
+  // OK. It stands in here as a pad, wider than it is tall like the roller
+  // itself; left/right have no mark of their own on the phone but are keys of
+  // its matrix, so the pad carries them. The slide-out keypad adds call / C /
+  // end above the digits, and the only side keys are on the right flank
+  // (keyboards/LG KE970-3.jpg — the left flank is bare).
+  ke970: {
+    auxRight: [
+      { key: "vol_up", label: VOL_ARROW.up, short: VOL_ARROW.up, title: "Volume up (right side)" },
+      { key: "vol_down", label: VOL_ARROW.down, short: VOL_ARROW.down, title: "Volume down (right side)" },
+      { key: "music", label: "MP3", short: "MP3", title: "Music player (right side)" },
+      { key: "camera", label: CAMERA_ICON, short: CAMERA_ICON, title: "Camera (right side)" },
+    ],
+    rows: [
+      // the wheel: .kwheel dresses the pad as the roller it stands for (a
+      // ridged chrome bar), the hit areas are the pad's own
+      { cls: "krow krow-ke970-mid", keys: [
+        { key: "left_soft", label: "—", title: "Left soft key" },
+        { cls: "kpad kwheel", keys: [
+          { key: "up", label: NAV_CHEVRON.up, cls: "key-nav kpad-up", title: "Scroll wheel up" },
+          { key: "left", label: NAV_CHEVRON.left, cls: "key-nav kpad-left", title: "Left" },
+          { key: "center", label: "OK", cls: "key-center kpad-ok", title: "Scroll wheel press (OK)" },
+          { key: "right", label: NAV_CHEVRON.right, cls: "key-nav kpad-right", title: "Right" },
+          { key: "down", label: NAV_CHEVRON.down, cls: "key-nav kpad-down", title: "Scroll wheel down" },
+        ]},
+        { key: "right_soft", label: "—", title: "Right soft key" },
+      ]},
+      // call and end carry no colour here: the KE970 prints them in the same
+      // dark ink as every other legend, green and red are the Siemens boards'
+      { cls: "krow krow-call", cols: "1fr 1.2fr 1fr", keys: [
+        { key: "send", label: CALL_ICON_HUNGUP, title: "Call key" },
+        { key: "clear", label: "C", title: "C — erase / back" },
+        { key: "end", label: END_ICON, title: "End call / power" },
+      ]},
+      DIGIT_ROW,
+    ],
+  },
 };
 
 // LG bottom-row sub-legend stacks. 0 is engraved the same on both phones —
