@@ -1258,8 +1258,9 @@ async function applyFullflashFile(file) {
 /* ?suite=<url>: the guest op-suite (tests/tcg-isa) —
  * boot -M versatilepb with the raw image fetched from <url> (built by
  * tests/tcg-isa, installed to dist/tcgisa.bin) instead of a phone: the
- * suite prints TAP + value dumps on the PL011 and exits via semihosting
- * SYS_EXIT, so the run ends in the normal onExit hook. */
+ * suite prints TAP + value dumps on the PL011 and then parks, since a
+ * semihosting exit from the vCPU thread would tear the page down first;
+ * tools/tcgisa.mjs reads the serial log up to its "# result:" line. */
 /* ?dist=<dir>: which build output to run (default dist-jit/; tools point
  * this at side-by-side builds).  boards.tar is always served from dist/. */
 const DIST = new URLSearchParams(location.search).get("dist") || null;
