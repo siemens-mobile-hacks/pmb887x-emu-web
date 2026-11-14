@@ -7,9 +7,9 @@
  * Usage: -plugin file=insncount.so,count=/path/to/count.txt
  * The counter file always holds the most recent flush:
  *     "<monotonic_ns> <insn_count>\n"
- * Flushed every FLUSH_EVERY executed instructions (one pwrite per ~8M
- * insns — negligible) and once more at qemu exit, so the count survives
- * SIGKILL up to the last flush.
+ * Flushed each time the count crosses a multiple of 8M instructions (one
+ * pwrite per ~8M insns — negligible) and once more at qemu exit, so the
+ * count survives SIGKILL up to the last flush.
  */
 #include <inttypes.h>
 #include <stdio.h>
@@ -27,7 +27,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 static int out_fd = -1;
 
 static _Atomic unsigned long long insn_count;
-static unsigned long long flush_mask = (8ULL << 20) - 1;
+static const unsigned long long flush_mask = (8ULL << 20) - 1;
+static unsigned long long next_flush = flush_mask + 1;
 
 static void flush_counter(void)
 {
@@ -45,9 +46,12 @@ static void flush_counter(void)
 
 static void vcpu_tb_exec(unsigned int cpu_index, void *udata)
 {
-	insn_count += (unsigned long long)(uintptr_t)udata;
-	if ((insn_count & flush_mask) == 0)
+	unsigned long long n = insn_count += (unsigned long long)(uintptr_t)udata;
+
+	if (n >= next_flush) {
+		next_flush = (n | flush_mask) + 1;
 		flush_counter();
+	}
 }
 
 static void vcpu_tb_translate(struct qemu_plugin_tb *tb, void *udata)
