@@ -3,8 +3,9 @@
 #
 #   scripts/run-native.sh <fullflash.bin> [extra qemu args...]
 #
-# Mirrors the web page's boot: same -icount, -drive, -serial and PMB887X_*
-# env vars (PMB887X_BOARD / _STARTUP / _FLASH0_OTP0/1) and -device gsm-sim.
+# Mirrors the web page's boot: same -drive, -serial and PMB887X_* env vars
+# (PMB887X_BOARD / _STARTUP / _FLASH0_OTP0/1) and -device gsm-sim, but a
+# deterministic -icount clock where the page runs vcpu-timers (ICOUNT below).
 #
 # Env overrides:
 #   BOARD=siemens-s75    board config id (default: inferred from filename)
