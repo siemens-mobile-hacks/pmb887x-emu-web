@@ -149,7 +149,8 @@ let pendingDevice = null; // device inferred from a fullflash picked before
                           // boards.tar finished loading (slow links)
 
 // The one place the whole UI reads its run state from:
-//   idle | downloading | booting | running | paused
+//   idle | downloading | recovering | booting | running | paused
+// (recovering: the Siemens ESN sweep before a boot)
 // ("paused" has no trigger yet — qemu's wasm display backend exposes no
 // vm_stop; the pill, the export buttons and the lock all handle it, so
 // wiring one up is a one-liner here.)
