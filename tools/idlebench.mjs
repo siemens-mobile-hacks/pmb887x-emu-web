@@ -196,6 +196,7 @@ const V_MILESTONES = [2, 5, 10, 20, 40, 80, 120, 160, 200, 245];
 const T_MILESTONES = [30, 60, 90, 110, 150, 240, 360, 600, 900];
 
 const here = fileURLToPath(new URL(".", import.meta.url));
+mkdirSync(path.join(here, "../tests/results"), { recursive: true });
 const FLASH = opt("flash", here + "../fullflashes/" + board.flash);
 const SIDECARS = opt("flash") ? [] : board.sidecars.map((f) => here + "../fullflashes/" + f);
 const REF = opt("ref", here + "test_targets/" + board.ref);
