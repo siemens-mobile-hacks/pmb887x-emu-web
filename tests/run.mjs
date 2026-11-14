@@ -44,11 +44,21 @@ const opt = (name, dflt) => {
   return i >= 0 ? argv[i + 1] : dflt;
 };
 const has = (name) => argv.includes("--" + name);
+const num = (name, dflt) => {
+  if (!has(name)) return dflt;
+  const v = opt(name);
+  const n = Number(v);
+  if (!(n > 0) || !Number.isFinite(n)) {
+    console.error(`run.mjs: --${name} takes a positive number, not ${JSON.stringify(v ?? "")}`);
+    process.exit(2);
+  }
+  return n;
+};
 
 const LABEL = opt("label", "run");
-const TIMEOUT = Number(opt("timeout", 180));
-const BENCH_SECS = Number(opt("bench-secs", 45));
-const POLL_MS = Number(opt("poll-ms", 3000));
+const TIMEOUT = num("timeout", 180);
+const BENCH_SECS = num("bench-secs", 45);
+const POLL_MS = num("poll-ms", 3000);
 const INIT_SECS = 15;
 const INIT_MIN_INSNS = 10e6;
 const ONLY = opt("flash", "").split(",").filter(Boolean);
@@ -223,6 +233,12 @@ class Instance {
       this.conn.on("data", (d) => { this.buf += d; });
       await new Promise((res, rej) => { this.conn.once("connect", res); this.conn.once("error", rej); }).catch(() => {});
       this.conn.on("error", () => {});
+      // The monitor greets with a banner and a prompt. A command sent before
+      // that prompt takes the banner's as its own reply.
+      const until = Date.now() + 15000;
+      while (!this.dead && Date.now() < until && !/\(qemu\) $/.test(this.buf)) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
     }
   }
 
