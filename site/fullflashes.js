@@ -310,11 +310,23 @@ async function fetchWithProgress(file, onProgress, signal) {
   });
 }
 
+// The inventory's `size` is the entry's files together. An entry cached at
+// another size is not the image the inventory names (a truncated transfer,
+// the repo serving an error page or another file under that name): it is
+// dropped, so the next Start fetches it afresh.
+async function checkEntrySize(cache, entry, got) {
+  if (!entry.size || got === entry.size) return;
+  for (const file of entry.files) await cache.delete(fileUrl(file));
+  throw new Error(`${entry.files[0]}: ${got} bytes, but the inventory says ${entry.size}` +
+    " — it was dropped from the cache, Start downloads it again");
+}
+
 // Download every not-yet-cached file of the entry (already-cached files are
 // skipped, so a retry after a partial failure only fetches what's missing —
 // cache.put is atomic per file, a cached file is always complete). Aborting
 // the optional signal throws AbortError; whatever finished stays cached, so
-// pressing Start again resumes at the next file.
+// pressing Start again resumes at the next file. Throws when the files
+// together are not the inventory's size.
 export async function downloadEntry(entry, onProgress, signal) {
   const cache = await caches.open(CACHE_NAME);
   for (const file of entry.files) {
@@ -323,6 +335,12 @@ export async function downloadEntry(entry, onProgress, signal) {
     if (await cache.match(url)) continue;
     await cache.put(url, await fetchWithProgress(file, onProgress, signal));
   }
+  let got = 0;
+  for (const file of entry.files) {
+    const res = await cache.match(fileUrl(file));
+    got += Number(res?.headers.get(SIZE_HEADER)) || (res ? (await res.blob()).size : 0);
+  }
+  await checkEntrySize(cache, entry, got);
 }
 
 export async function deleteEntry(entry) {
@@ -331,7 +349,9 @@ export async function deleteEntry(entry) {
 }
 
 // Read the entry back from the cache, in entry.files order (main .bin
-// first, sidecars after). Throws if any file is missing.
+// first, sidecars after). Throws if any file is missing, or if together
+// they are not the inventory's size (an entry cached before that was
+// checked).
 export async function readCachedEntry(entry) {
   const cache = await caches.open(CACHE_NAME);
   const out = [];
@@ -340,5 +360,6 @@ export async function readCachedEntry(entry) {
     if (!res) throw new Error(`${file} is not cached — download it again`);
     out.push({ name: file, bytes: new Uint8Array(await res.arrayBuffer()) });
   }
+  await checkEntrySize(cache, entry, out.reduce((n, f) => n + f.bytes.length, 0));
   return out;
 }

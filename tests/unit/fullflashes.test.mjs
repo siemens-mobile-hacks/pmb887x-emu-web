@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
-import { inferDevice, variantFor, detectDevice } from "../../site/fullflashes.js";
+import {
+  inferDevice, variantFor, detectDevice, downloadEntry, readCachedEntry, entryCacheState,
+} from "../../site/fullflashes.js";
 
 const BOARD_DIR = new URL("../../bsp/lib/data/board/", import.meta.url);
 
@@ -70,4 +72,41 @@ test("detectDevice: the stand-in table, else the library's board wherever it exi
   assert.deepEqual(await detectDevice(siemensHead("C66"), has("siemens-c65")),
     { device: "siemens-c65", model: "C66", exact: false });
   assert.equal(await detectDevice(new Blob([new Uint8Array(0x1000)])), null);
+});
+
+// the Cache API over a Map, and a repo that serves `bodies` by file name
+function fakeRepo(t, bodies) {
+  const store = new Map();
+  const cache = {
+    match: async (url) => store.get(url)?.clone(),
+    put: async (url, res) => { store.set(url, new Response(await res.blob(), { headers: res.headers })); },
+    delete: async (url) => store.delete(url),
+  };
+  globalThis.caches = { open: async () => cache };
+  t.after(() => { delete globalThis.caches; });
+  t.mock.method(globalThis, "fetch", async (url) =>
+    new Response(bodies[url.split("/").at(-1)], { headers: { "content-type": "application/octet-stream" } }));
+  return store;
+}
+
+test("downloadEntry: an entry that is not the inventory's size is dropped", async (t) => {
+  const entry = { files: ["X.bin", "X.bin.cfi-efa"], size: 1000 + 24 };
+  const store = fakeRepo(t, { "X.bin": new Uint8Array(1000), "X.bin.cfi-efa": new Uint8Array(24) });
+  await downloadEntry(entry);
+  assert.equal((await readCachedEntry(entry)).length, 2);
+  assert.equal(store.size, 2);
+
+  const short = { files: ["Y.bin"], size: 1000 };
+  fakeRepo(t, { "Y.bin": new Uint8Array(999) });
+  await assert.rejects(downloadEntry(short), /999 bytes, but the inventory says 1000/);
+  assert.equal((await entryCacheState(short)).count, 0, "the short file was dropped");
+});
+
+test("readCachedEntry: an entry cached at another size is dropped", async (t) => {
+  const entry = { files: ["Z.bin"], size: 1000 };
+  const store = fakeRepo(t, {});
+  store.set(entry.files.map((f) => `https://git.siepatch.dev/api/v1/repos/siepatch/fullflashes/raw/${f}`)[0],
+    new Response(new Uint8Array(512)));
+  await assert.rejects(readCachedEntry(entry), /512 bytes, but the inventory says 1000/);
+  assert.equal(store.size, 0);
 });
