@@ -3,8 +3,8 @@
  *  - cross-TB: patch another function between calls -> plain
  *    translation-block invalidation on the next lookup;
  *  - same-TB: the store modifies the next instruction of its own basic
- *    block -> qemu must catch the write to the currently-executing TB
- *    (notdirty -> cpu_io_recompile) and re-run the tail fresh. */
+ *    block -> the running TB still executes the old instruction and the
+ *    next call sees the patch (see the assertion below). */
 #include "harness.h"
 
 extern uint32_t smc_target(void);

@@ -5,9 +5,10 @@
  *  - smc_target: cross-TB SMC — the patching store executes in a
  *    different TB than the patched instruction (patch from C, call again).
  *  - smc_self:   same-TB SMC — the store modifies the *next* instruction
- *    of its own basic block; qemu must catch the write to the currently
- *    executing TB and re-translate (cpu_io_recompile) instead of running
- *    the stale translated insn. r0 = replacement instruction word. */
+ *    of its own basic block. ARM has no precise SMC in qemu: the running
+ *    TB finishes on its stale translation and the patch takes effect at
+ *    the next lookup (t_smc.c asserts exactly that). r0 = replacement
+ *    instruction word. */
 .syntax unified
 .arm
 
