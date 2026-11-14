@@ -143,18 +143,17 @@ class WasmSide {
     await this.page.goto(`http://127.0.0.1:${port}/?${q}`,
       { waitUntil: "domcontentloaded", timeout: 120000 });
     // nor with the GSM cell, which the page adds by default on a board with
-    // a radio
-    await loadOwnFlash(this.page, flashPath, { startup: "ONLINE", gsm: false });
-    // The board run-native.sh boots, picked once detection has landed, and
-    // the image as is: the native leg never recalculates the Siemens keys.
+    // a radio; on the board run-native.sh boots
     const board = nativeBoard(flashPath);
-    await this.page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 }).catch(() => {});
-    await this.page.selectOption("#device", board);
+    await loadOwnFlash(this.page, flashPath, { startup: "ONLINE", gsm: false, device: board })
+      .catch((e) => {
+        throw new Error(`the page did not take ${board}, the native leg's board: ${String(e.message).split("\n")[0]}`);
+      });
+    // the image as is: the native leg never recalculates the Siemens keys
     const asIs = await this.page.$('input[name="siemens-mode"][value="as-is"]');
     if (asIs) await asIs.check();
-    await this.page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 });
-    const device = await this.page.evaluate(() => window.__ui.device);
-    if (device !== board) throw new Error(`the page picked ${device}, the native leg boots ${board}`);
+    await this.page.waitForFunction((d) => window.__ui.ready && window.__ui.device === d, board,
+                                    { timeout: 30000 });
     await this.page.click("#btn-start");
   }
 
