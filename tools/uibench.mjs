@@ -38,6 +38,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { UI_READ, guestGone } from "./lib/page.mjs";
+import { resultName, runStamp } from "./lib/results.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -77,8 +78,8 @@ const devtools = Number(opt("devtools", 0));       // CDP port for wprof2 PROF_A
 const holdS = Number(opt("hold", 0));              // keep the page alive after measuring
 const chromeArgs = (process.env.CHROME_ARGS || "").split(/\s+/).filter(Boolean);
 
-const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
-const outBase = path.join(here, `../tests/results/uibench-${stamp}-${boardId}-${dist}`);
+const stamp = runStamp();
+const outBase = path.join(here, "../tests/results", resultName("uibench", boardId, dist, extraQ));
 
 const b = await chromium.launch({
   headless: true,

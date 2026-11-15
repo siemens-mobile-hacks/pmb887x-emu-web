@@ -6,6 +6,7 @@ import { fullflash } from "./testflash.mjs";
 import WebSocket from "ws";
 import fs from "node:fs";
 import net from "node:net";
+import { resultName } from "./lib/results.mjs";
 
 const secs = Number(process.argv[2] || 12);
 const query = process.argv[3] || "";
@@ -83,14 +84,17 @@ try {
   const insns = (insnsAfter?.result?.result?.value || 0) - (insnsBefore?.result?.result?.value || 0);
   console.log(`guest executed ${(insns / 1e6).toFixed(0)}M insns during the window`);
 
+  const outDir = new URL(`../tests/results/${resultName("threadmap", query)}/`, import.meta.url).pathname;
+  fs.mkdirSync(outDir, { recursive: true });
   sessions.forEach((s, i) => {
     s.i = i;
     send("Profiler.stop", {}, s.sid, 8000).then((st) => {
       const p = st?.result?.profile;
-      if (p) fs.writeFileSync(`/tmp/prof-${i}.json`, JSON.stringify(p));
+      if (p) fs.writeFileSync(`${outDir}prof-${i}.json`, JSON.stringify(p));
     });
   });
   await new Promise((r) => setTimeout(r, 5000));
+  console.log(`profiles: ${outDir}prof-<worker>.json`);
 } catch (e) {
   console.error("threadmap:", e);
   process.exitCode = 1;

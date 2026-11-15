@@ -16,7 +16,7 @@
 // timestamped as they stream) and <dist-name> (wasm page legs via
 // ?suite=dist/tcgbench.bin&dist=<name>, /serial.log polled, lines
 // timestamped on appearance; guest insns read at DONE for MIPS).
-// Results -> tests/results/tcgbench-<ts>.json (+ tcgbench-latest.json, only
+// Results -> tests/results/<suite>-<legs>[-icount..][-<EXTRA_Q>]-<ts>-<pid>.json (+ tcgbench-latest.json, only
 // when every leg finished with identical checksums).
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
@@ -25,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { NATIVE_JIT_BIN, NATIVE_TCI_BIN } from "./lib/build-dirs.mjs";
+import { resultName } from "./lib/results.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = path.resolve(here, "..");
@@ -250,7 +251,7 @@ const out = {
   results, medians: med,
 };
 fs.mkdirSync(`${ROOT}/tests/results`, { recursive: true });
-const file = `${ROOT}/tests/results/tcgbench-${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16)}.json`;
+const file = `${ROOT}/tests/results/${resultName(suite, legs.join(","), icounts.join(",") === "0" ? "" : "icount" + icounts.join(","), extraQ)}.json`;
 fs.writeFileSync(file, JSON.stringify(out, null, 1));
 // a failed run must not become the baseline the next one is compared with
 const latest = `tcgbench-${suite === "tcgbench" ? "" : "quick-"}latest.json`;

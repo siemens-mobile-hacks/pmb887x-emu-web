@@ -33,12 +33,13 @@
 // prints the page's console lines containing it (cut at BOOTBENCH_CONSOLE_MAX
 // chars, default 300), BOOTBENCH_SAMPLES=1 keeps the 200 ms samples.
 //
-// Runs interleave across dists.  Results: tests/results/bootbench-<phone>-<ts>.json.
+// Runs interleave across dists.  Results: tests/results/bootbench-<phone>-<dists>[-warm]-<ts>-<pid>.json.
 import { chromium } from "playwright-core";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { UI_READ, guestGone } from "./lib/page.mjs";
+import { resultName, runStamp } from "./lib/results.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const argv = process.argv.slice(2);
@@ -72,8 +73,8 @@ if (!flash || !existsSync(flash)) throw new Error(`${ph.image} not found: pass -
 const distDir = (spec) => spec.split("@")[0];
 const distQuery = (spec) => { const i = spec.indexOf("@"); return i < 0 ? "" : spec.slice(i + 1); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
-const outBase = path.join(here, `../tests/results/bootbench-${phoneName}-${stamp}`);
+const stamp = runStamp();
+const outBase = path.join(here, "../tests/results", resultName("bootbench", phoneName, dists.join(","), warm ? "warm" : ""));
 mkdirSync(path.dirname(outBase), { recursive: true });
 
 // Sampled in the page every 200 ms from the Start click; the samples stay in
