@@ -8,7 +8,8 @@
 #   swab.sh <scene> <distA> <distB> [pairs 1-4] [measure s]
 # More than 4 pairs would share cores and give garbage: run it twice instead.
 # Env: BFLAGS=0 drops the bounds checks, ARGS_A/ARGS_B extra chrome args,
-# METRIC (vratio), OUT (log dir), PORT_A/PORT_B (server per leg, default 8080).
+# METRIC (vratio), OUT (log dir), PORT (page server, default 8080), PORT_A/PORT_B
+# (a server per leg, default PORT).
 sc=$1; A=$2; B=$3; n=${4:-4}; m=${5:-20}
 [ "$n" -ge 1 ] && [ "$n" -le 4 ] || { echo "pairs must be 1-4" >&2; exit 2; }
 metric=${METRIC:-vratio}
@@ -23,7 +24,7 @@ out=${OUT:-$(mktemp -d "${TMPDIR:-/tmp}/swab.XXXX")}
 mkdir -p "$out"
 # serve.mjs gzips a dist's wasm on its first request; a dist built moments
 # ago would make its legs wait for that compress while the other side runs
-pa=${PORT_A:-8080}; pb=${PORT_B:-8080}
+pa=${PORT_A:-${PORT:-8080}}; pb=${PORT_B:-${PORT:-8080}}
 curl -s -H "Accept-Encoding: gzip" -o /dev/null "http://127.0.0.1:$pa/$A/qemu-system-arm.wasm"
 curl -s -H "Accept-Encoding: gzip" -o /dev/null "http://127.0.0.1:$pb/$B/qemu-system-arm.wasm"
 # the runs are background jobs: a signal stops them as well, and the script

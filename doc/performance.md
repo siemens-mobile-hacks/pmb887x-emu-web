@@ -370,7 +370,8 @@ always revert with `git apply -R`.
 - `ARGS_A`/`ARGS_B` add per-leg Chrome arguments. Chrome keeps only one
   `--js-flags`, so a leg that passes its own must include
   `--wasm-enforce-bounds-checks` in it, comma-separated.
-- `METRIC` (default `vratio`), `OUT` (log dir), `PORT_A`/`PORT_B`.
+- `METRIC` (default `vratio`), `OUT` (log dir), `PORT` (page server,
+  default 8080), `PORT_A`/`PORT_B` (a server per leg, default `PORT`).
 
 **Pitfalls and noise:**
 
