@@ -22,7 +22,14 @@
 // Same walk, same code, only F changes.  `rand` is the pseudo-random walk;
 // `seq` reads its next index from the same array (identical instruction
 // stream) but the array holds a linear sweep, so the *stream of targets* is
-// predictable while every memory access stays the same.
+// predictable while every memory access stays the same.  The array has a
+// power of two entries, at least 8192 and at least the largest F; `seq`
+// fills it with i % F and `rand` with the same entries shuffled, so both
+// walks reach every function equally often and only the order differs.
+//
+// Until 2026-11-14 (TB-2) `rand` was an LCG computed in doubles, which loses
+// its low bits: over 4096 functions it reached about 84, and the array's
+// 8192 entries capped every larger F.  Its results need re-measurement.
 import { chromium } from "playwright-core";
 
 const argv = process.argv.slice(2);
@@ -34,7 +41,8 @@ const PORT = process.env.PORT || "8080";
 
 const PROBE = String.raw`
 const SIZES = __SIZES__, ITERS = __ITERS__, REPS = __REPS__;
-const SEQBITS = 13, SEQN = 1 << SEQBITS;
+const SEQN = 2 ** Math.max(13, Math.ceil(Math.log2(Math.max(...SIZES))));
+const PAGES = Math.ceil((64 + 4 * SEQN) / 65536);
 const u = (n) => { const o = []; do { let b = n & 0x7f; n >>>= 7; if (n) b |= 0x80; o.push(b); } while (n); return o; };
 const sl = (n) => { const o = []; for (;;) { const b = n & 0x7f; n >>= 7;
   if ((n === 0 && !(b & 0x40)) || (n === -1 && (b & 0x40))) { o.push(b); return o; }
@@ -62,7 +70,7 @@ function moduleBytes(F) {
   const types = sect(1, [1, 0x60, 3, 0x7e, 0x7e, 0x7e, 1, 0x7f]);
   const funcs = sect(3, [...u(F), ...Array(F).fill(0)]);
   const table = sect(4, [1, 0x70, 1, ...u(F), ...u(F)]);
-  const mem = sect(5, [1, 0x00, 1]);
+  const mem = sect(5, [1, 0x00, ...u(PAGES)]);
   const exp = sect(7, [2, ...st("run"), 0, 0, ...st("mem"), 2, 0]);
   const elems = sect(9, [1, 0x02, 0, 0x41, 0, 0x0b, 0x00, ...u(F),
                          ...Array.from({ length: F }, (_, i) => u(i)).flat()]);
@@ -84,10 +92,14 @@ for (const F of SIZES) {
   const bufm = inst.exports.mem.buffer;
   const dv = new DataView(bufm), u32 = new Uint32Array(bufm);
   for (const walk of ["rand", "seq"]) {
-    let x = 12345;
-    for (let i = 0; i < SEQN; i++) {
-      x = (x * 1103515245 + 12345) >>> 0;
-      u32[16 + i] = walk === "rand" ? x % F : i % F;
+    for (let i = 0; i < SEQN; i++) u32[16 + i] = i % F;
+    if (walk === "rand") {
+      let x = 12345;
+      for (let i = SEQN - 1; i > 0; i--) {                  // Fisher-Yates, xorshift32
+        x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0;
+        const j = x % (i + 1), t = u32[16 + i];
+        u32[16 + i] = u32[16 + j]; u32[16 + j] = t;
+      }
     }
     let best = Infinity;
     for (let r = 0; r < REPS; r++) {

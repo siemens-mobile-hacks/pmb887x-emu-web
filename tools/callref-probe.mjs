@@ -15,6 +15,12 @@
 // elements need no signature check at all: `table.get` + `return_call_ref`
 // is then a checkless tail call.  This prices the three forms against each
 // other on the same pseudo-random walk over the same functions.
+//
+// Until 2026-11-14 (TB-2) the walk was an LCG computed in doubles, which
+// loses its low bits: it reached about 84 of the 4096 functions.  Now the
+// walk is every function equally often (at least 8192 entries, at least
+// one per function) shuffled with xorshift32, and the results of that time
+// need re-measurement.
 import { chromium } from "playwright-core";
 
 const argv = process.argv.slice(2);
@@ -26,7 +32,8 @@ const PORT = process.env.PORT || "8080";
 
 const PROBE = String.raw`
 const FUNCS = __FUNCS__, ITERS = __ITERS__, REPS = __REPS__;
-const SEQMASK = 8191;
+const SEQN = 2 ** Math.max(13, Math.ceil(Math.log2(FUNCS))), SEQMASK = SEQN - 1;
+const PAGES = Math.ceil((64 + 4 * SEQN) / 65536);
 const u = (n) => { const o = []; do { let b = n & 0x7f; n >>>= 7; if (n) b |= 0x80; o.push(b); } while (n); return o; };
 const sl = (n) => { const o = []; for (;;) { const b = n & 0x7f; n >>= 7;
   if ((n === 0 && !(b & 0x40)) || (n === -1 && (b & 0x40))) { o.push(b); return o; }
@@ -61,7 +68,7 @@ function moduleBytes(kind) {
   // reftype: funcref (0x70) or (ref null $0) = 0x63 0x00
   const et = typed ? [0x63, 0x00] : [0x70];
   const table = sect(4, [1, ...et, 1, ...u(FUNCS), ...u(FUNCS)]);
-  const mem = sect(5, [1, 0x00, 1]);
+  const mem = sect(5, [1, 0x00, ...u(PAGES)]);
   const exp = sect(7, [2, ...st("run"), 0, 0, ...st("mem"), 2, 0]);
   const elems = typed
     // 0x06: active, tableidx, offset expr, reftype, vec(expr)
@@ -81,8 +88,13 @@ for (const kind of ["ind", "ind-typed", "callref"]) {
     const inst = new WebAssembly.Instance(new WebAssembly.Module(moduleBytes(kind)));
     const buf = inst.exports.mem.buffer;
     const dv = new DataView(buf), u32 = new Uint32Array(buf);
+    for (let i = 0; i <= SEQMASK; i++) u32[16 + i] = i % FUNCS;
     let x = 12345;
-    for (let i = 0; i <= SEQMASK; i++) { x = (x * 1103515245 + 12345) >>> 0; u32[16 + i] = x % FUNCS; }
+    for (let i = SEQMASK; i > 0; i--) {                       // Fisher-Yates, xorshift32
+      x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0;
+      const j = x % (i + 1), t = u32[16 + i];
+      u32[16 + i] = u32[16 + j]; u32[16 + j] = t;
+    }
     let best = Infinity;
     for (let r = 0; r < REPS; r++) {
       dv.setBigUint64(0, BigInt(Math.round(ITERS / 20)), true);
