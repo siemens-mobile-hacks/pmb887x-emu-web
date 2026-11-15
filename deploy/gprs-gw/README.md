@@ -197,13 +197,11 @@ address, so its filters are the whole point:
 - The domain, DNS and TLS are the front's (`deploy/nginx/README.md`); the
   page must be `https://` for cross-origin isolation, and so the gateway
   sees `Origin: https://<host>`.
-- nginx-proxy sets no proxy timeouts, so nginx's default 60 s closes an
-  idle `/gprs` at the front after a minute. The page dials again on the
-  next frame, but the phone's open TCP connections in that slirp are lost.
-  Install `deploy/nginx/front-location.conf` on the front as
-  `/etc/nginx/vhost.d/<VIRTUAL_HOST>_location` (`deploy/nginx/README.md`,
-  "Front settings"); then an idle link lasts until the gateway's own
-  15-minute close.
+- The front must keep idle WebSockets for longer than nginx's default 60 s,
+  or an idle `/gprs` drops the phone's open TCP connections in that slirp.
+  perk11/nginx-proxy's image does this for every site since 115c8b7
+  (`deploy/nginx/README.md`, "What the front is"); rebuild the front if
+  its image is older.
 - Do not also run bts-emulator's `compose.web.yaml` for the same host: its
   `VIRTUAL_PATH=/gprs` makes the front send `/gprs` to that stack instead.
   Use one or the other. That stack keeps the operator services, this one

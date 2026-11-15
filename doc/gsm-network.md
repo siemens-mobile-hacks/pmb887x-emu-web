@@ -73,9 +73,9 @@ gateway, `gprs-gw` (branch `gprs-gw` of
 - **Hosting.** In the deployment the page's nginx passes `/gprs` to the
   gateway in its own container (`deploy/gprs-gw/README.md`), or nginx-proxy
   routes it to bts-emulator's full stack (its `compose.web.yaml`). The
-  nginx-proxy front closes a link after 60 s without traffic unless its
-  timeouts are raised for the host (`deploy/nginx/README.md`, "Front
-  settings"). There the gateway itself checks `Origin`, against the list
+  nginx-proxy front keeps an idle link for 960 s, past the gateway's own
+  15-minute idle close (its image raises nginx's 60 s default;
+  `deploy/nginx/README.md`, "What the front is"). There the gateway itself checks `Origin`, against the list
   in `GPRS_GW_ORIGINS`, and not against `Host`. `serve.mjs` passes `/gprs`
   to `GPRS_GW` (default 127.0.0.1:5751), and only from its
   own pages: an upgrade whose `Origin` does not name the host it was sent
