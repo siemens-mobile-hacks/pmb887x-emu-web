@@ -185,7 +185,8 @@ Two things the check had to get past:
 
 While a run has the network the status pill shows an antenna over a
 bearer tag (doc/architecture.md, "Network badge"; redesigned from the
-owner's mockups on 2026-11-15, it was a boxed G). The antenna is the
+owner's mockups on 2026-11-15, it was a boxed G), drawn at 3/4 in the
+phone layout, whose pill stays 32 px tall. The antenna is the
 cell, read from the bits below for the whole run: muted and dotted until
 the phone is registered, lit after, and muted again if the phone loses
 the cell, also while a link is up ("GPRS Connected · no network" on

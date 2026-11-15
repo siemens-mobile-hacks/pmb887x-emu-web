@@ -509,7 +509,7 @@ ok("5.2 title bar and panels are out of the view", await evaluate(() =>
   && document.getElementById("pre-panel").closest(".sheet") !== null
   && document.getElementById("post-panel").closest(".sheet") !== null));
 
-/* ---------------- one control row, 52px (56 on desktop) ---------------- */
+/* ---------------- one control row, 32px (56 on desktop) ---------------- */
 ok("v2.1 exactly one row above the screen", await evaluate(() => {
   const top = document.querySelector(".screen-row").getBoundingClientRect().top;
   // every element box that sits entirely above the screen and is not an
@@ -521,9 +521,9 @@ ok("v2.1 exactly one row above the screen", await evaluate(() => {
     return row.contains(e) || e.contains(row);
   });
 }));
-// tall enough for the network badge (37px) in the pill
-ok("v2.1 row is 52px tall", await $eval(".status-row", (e) =>
-  Math.round(e.getBoundingClientRect().height) === 52));
+// the network badge is drawn at 3/4 here (27.75px), inside the pill
+ok("v2.1 row is 32px tall", await $eval(".status-row", (e) =>
+  Math.round(e.getBoundingClientRect().height) === 32));
 ok("v2.1 pill + five 28px buttons", await evaluate(() => {
   const row = document.querySelector(".status-row");
   const ids = [...row.children].map((e) => e.id);
@@ -646,11 +646,11 @@ ok("v2.2 no shortcut labels on the edge keys", await evaluate(() =>
 /* ---------------- screen box at the device ratio ---------------- */
 ok("v2.3 no object-fit letterboxing", await $eval("#lcd", (e) =>
   getComputedStyle(e).objectFit !== "contain"));
-// 844 − 12 page padding − 52 control row − 2×6 gaps − the keypad's
-// 7×--key-h + 6×6 leaves the row 436 tall, and 3:4 of that is the box
-ok("v2.3 box is 327x436 at 390x844", await evaluate(() => {
+// 844 − 12 page padding − 32 control row − 2×6 gaps − the keypad's
+// 7×--key-h + 6×6 leaves the row 456 tall, and 3:4 of that is the box
+ok("v2.3 box is 342x456 at 390x844", await evaluate(() => {
   const r = document.querySelector(".lcd-wrap").getBoundingClientRect();
-  return Math.round(r.width) === 327 && Math.round(r.height) === 436;
+  return Math.round(r.width) === 342 && Math.round(r.height) === 456;
 }), await evaluate(() => {
   const r = document.querySelector(".lcd-wrap").getBoundingClientRect();
   return `${Math.round(r.width)}x${Math.round(r.height)}`;
@@ -760,7 +760,7 @@ for (const [w, h] of [[320, 568], [320, 490], [360, 640], [360, 560], [390, 844]
   });
   ok(`v2.4 ${w}x${h}: no scroll, keypad whole, box ${r.box} (${r.ar})`,
     r.scroll <= r.inner + 1 && r.kpBottom <= r.inner + 1 && r.kpTop > 0 && !r.clipped
-    && r.box[1] >= 120 && Math.abs(r.ar - 0.75) < 0.01 && r.rowH === 52,
+    && r.box[1] >= 120 && Math.abs(r.ar - 0.75) < 0.01 && r.rowH === 32,
     `scroll=${r.scroll}/${r.inner} kpBottom=${r.kpBottom} clipped=${r.clipped}`);
 }
 
@@ -1010,6 +1010,19 @@ if (!process.env.SKIP_BOOT) {
         "registered/online", "registered/online", "registered/offline", "registered/offline",
         "registered/offline", "registered/refused", "registered/refused", "registered/refused",
         "nonet/online"].join(), seen.map((p) => `${p.net}/${p.gprs}`).join());
+    } else {
+      // the 32px pill holds the badge at 3/4 inside its border, and the
+      // slot's arrows (10x8) at 3/4 too
+      await evaluate((st) => window.__stage(st), STAGES.find((s) => s[0] === "connected"));
+      const z = await evaluate(() => {
+        const box = (e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height, r.bottom]; };
+        const [, pt, , ph, pb] = box(document.getElementById("status"));
+        const [, bt, bw, bh, bb] = box(document.getElementById("gprs"));
+        const [, , aw, ah] = box(document.querySelector(".gsm-slot .gsm-up"));
+        return { pill: ph, badge: [bw, bh], arrow: [aw, ah], inside: bt >= pt + 1 && bb <= pb - 1 };
+      });
+      ok(`gprs: ${name}: badge 24x27.75 and arrows 7.5x6 inside the 32px pill`,
+        z.pill === 32 && z.badge.join() === "24,27.75" && z.arrow.join() === "7.5,6" && z.inside, JSON.stringify(z));
     }
   }
   await setViewportSize({ width: 1770, height: 1000 });
@@ -1165,11 +1178,9 @@ if (!process.env.SKIP_BOOT) {
     return String(withStrip) === String(without) && withStrip[1] > 100;
   }));
 
-  // the strip's fitting rule, at the widths it is quoted for
-  // (390 lost one when the control row grew to 52px for the network badge:
-  // the box went from 342 to 327px)
-  for (const [w, h, want] of [[430, 932, 6], [390, 844, 5], [360, 844, 5], [320, 844, 4]]) {
-    await setViewportSize({ width: w, height: h });
+  // the strip's fitting rule, at the three widths it is quoted for
+  for (const [w, want] of [[390, 6], [360, 5], [320, 4]]) {
+    await setViewportSize({ width: w, height: 844 });
     await page.waitForTimeout(700);
     const r = await evaluate(() => {
       const m = document.getElementById("hud-metrics"), e = document.getElementById("hud-env");
@@ -1285,7 +1296,7 @@ if (!process.env.SKIP_BOOT) {
   ok("v3.5 start was announced", (await text("#live-region")) === "Recording started");
   const during = await geom();
   ok("v3.4 no layout shift while recording",
-    during.row === 52 && before.row === 52
+    during.row === 32 && before.row === 32
     && during.box[0] === before.box[0] && during.box[1] === before.box[1]
     && during.keypad === before.keypad,
     JSON.stringify({ before, during }));
@@ -1297,7 +1308,7 @@ if (!process.env.SKIP_BOOT) {
   ok("v3.3 everything fits one row at 320px", await evaluate(() => {
     const row = document.querySelector(".status-row").getBoundingClientRect();
     const kids = [...document.querySelector(".status-row").children].filter((e) => !e.hidden);
-    return Math.round(row.height) === 52
+    return Math.round(row.height) === 32
       && kids.every((e) => {
         const r = e.getBoundingClientRect();
         return r.top >= row.top - 0.5 && r.bottom <= row.bottom + 0.5

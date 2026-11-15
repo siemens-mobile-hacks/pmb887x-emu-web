@@ -19,8 +19,10 @@
      after layout, so a resize is one reflow and lands where it belongs. */
   /* the one control row above the screen: tall enough for the pill's
      network badge (an antenna over a bearer tag, 37px) and, on desktop,
-     the two lines beside it; 52px in the phone layout (below) */
+     the two lines beside it; 32px in the phone layout (below), where the
+     badge and the slot beside it are drawn at --gsm-z, 3/4 */
   --status-h: 56px;
+  --gsm-z: 1;
   /* the control block: the row, plus the line under it for the reason an
      action is disabled wherever there is height to spare for one */
   --head-h: var(--status-h);
@@ -37,7 +39,7 @@
 }
 /* the phone layout (`phoneLayout` in app.js), where the pill is one line */
 @media (width < 900px), (height < 621px) {
-  :root { --status-h: 52px; }
+  :root { --status-h: 32px; --gsm-z: 0.75; }
 }
 * { box-sizing: border-box; }
 /* several components below set their own `display`, which would otherwise
@@ -158,20 +160,22 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
    as colour tells the states apart (dotted or full waves; no tag,
    outlined, filled, struck through), so they read in greyscale too. The
    geometry is in SVG units: 32x37 at 1x, antenna 24x22, a 2px gap, tag
-   32x13. */
+   32x13. Every size here is times --gsm-z: in the phone layout the badge
+   and the slot beside it are 3/4 of that, 24x27.75, which the 32px pill
+   holds inside its border; the SVG strokes scale with their boxes. */
 .gsm-badge {
-  flex: none; width: 32px;
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  flex: none; width: calc(32px * var(--gsm-z));
+  display: flex; flex-direction: column; align-items: center; gap: calc(2px * var(--gsm-z));
   color: var(--text);
 }
 .status:has(> .gsm-badge:not([hidden])) > .status-dot { display: none; }
 /* A run keeps the badge's place whether or not it shows (GSM off, no
    radio), so the uptime starts at the same x either way */
-.status:is([data-state="running"], [data-state="paused"]) > .status-dot { margin-inline: 13px; }
-.status[data-state="booting"] > .status-dot { margin-inline: 12px; }
+.status:is([data-state="running"], [data-state="paused"]) > .status-dot { margin-inline: calc(16px * var(--gsm-z) - 3px); }
+.status[data-state="booting"] > .status-dot { margin-inline: calc(16px * var(--gsm-z) - 4px); }
 
 .gsm-ant {
-  width: 24px; height: 22px;
+  width: calc(24px * var(--gsm-z)); height: calc(22px * var(--gsm-z));
   fill: none; stroke: currentColor; stroke-width: 1.8;
   stroke-linecap: round; stroke-linejoin: round;
 }
@@ -184,7 +188,7 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 /* a dist without _wasm_gsm_state cannot read the cell: muted, full waves */
 .gsm-badge[data-net="unknown"] .gsm-ant { color: var(--muted); }
 
-.gsm-tag { width: 32px; height: 13px; overflow: visible; }
+.gsm-tag { width: calc(32px * var(--gsm-z)); height: calc(13px * var(--gsm-z)); overflow: visible; }
 .gsm-tag-box { fill: none; stroke: currentColor; stroke-width: 1.2; }
 .gsm-tag-letters { fill: none; stroke: var(--gsm-ink, currentColor); stroke-width: 1.25; stroke-linejoin: round; }
 /* offline and refused strike the word through, over a wider stroke in the
@@ -236,15 +240,16 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
    the arrows' are always kept, so neither traffic nor a state change moves
    the uptime. */
 .gsm-slot {
-  display: none; flex: none; width: 28px; align-items: center;
+  display: none; flex: none; width: calc(28px * var(--gsm-z)); align-items: center;
+  font-size: calc(0.75rem * var(--gsm-z));
   font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap;
   color: #ffb0b0;
 }
 .gsm-wait:empty { display: none; }
-.gsm-arrows { display: none; flex-direction: column; gap: 2px; }
+.gsm-arrows { display: none; flex-direction: column; gap: calc(2px * var(--gsm-z)); }
 .gsm-badge[data-gprs="online"] ~ .gsm-slot .gsm-arrows { display: flex; }
 /* dim while idle, lit for 400 ms after frames went that way */
-.gsm-arrow { display: block; flex: none; width: 10px; height: 8px; fill: #ffffff; opacity: 0.25; }
+.gsm-arrow { display: block; flex: none; width: calc(10px * var(--gsm-z)); height: calc(8px * var(--gsm-z)); fill: #ffffff; opacity: 0.25; }
 .status[data-gsm-tx] .gsm-up, .status[data-gsm-rx] .gsm-down { opacity: 1; }
 @media (width < 900px), (height < 621px) {
   .status .gsm-data, .status .gsm-status { display: none; }
@@ -258,15 +263,16 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
    every state apart, and the countdown is in its title. Measured on the
    pill's content box (its width less 14px of border and padding), so it is
    the same in every network state: "Running · 10:00" needs 95px, the badge
-   32, the slot 28, Stop 72 (52 at 360px and under) and the gaps 6 each. */
+   32 (24 in the phone layout), the slot 21, Stop 72 (52 at 360px and
+   under) and the gaps 6 each. */
 @container pill (width < 211px) {
   .status-verb { display: none; }
 }
 @media (width < 900px), (height < 621px) {
-  @container pill (width < 245px) {
+  @container pill (width < 230px) {
     .status-verb { display: none; }
   }
-  @container pill (width < 184px) {
+  @container pill (width < 169px) {
     .status:is([data-state]) > .gsm-slot { display: none; }
   }
 }

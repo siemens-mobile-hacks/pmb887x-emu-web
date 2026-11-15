@@ -227,10 +227,12 @@ thread is using them).
   place of the pill's dot: an **antenna** for the cell over a boxed
   **bearer tag** for the data link, 32x37 px at 1x, all in SVG units
   (antenna 24x22, a 2 px gap, tag 32x13; the owner's mockup package of
-  2026-11-14). A run without the network (option unticked, a board without
-  a radio, a dist without `_wasm_net_attach`) shows none and keeps the dot,
-  which then sits in the icon's 32 px place, so the uptime starts at the
-  same x either way.
+  2026-11-14). In the phone layout the icon and the slot beside it are
+  drawn at 3/4 (`--gsm-z`): 24x27.75 px, shapes and proportions kept, inside
+  the 32 px pill's border. A run without the network (option unticked, a
+  board without a radio, a dist without `_wasm_net_attach`) shows none and
+  keeps the dot, which then sits in the icon's place (32 px, 24 in the phone
+  layout), so the uptime starts at the same x either way.
   - The **antenna** (`data-net`) follows the cell for the whole run, also
     after the phone's first data: muted with dotted inner waves until the
     cell has registered the phone (LOCATION UPDATING ACCEPT, or a GPRS
@@ -266,16 +268,17 @@ thread is using them).
     ellipsised); the line with the amounts wraps and clips, so they show
     only where they fit. Neutral status text is #9fdcb5 on the green pill
     (5.8:1), #d9bf80 on amber and #e0a8a8 on red.
-  - **Phone layout**: one line, the icon, a 28 px slot (the redial
-    countdown, or the two arrows stacked while connected, else empty),
-    the uptime and Stop. The slot is kept for the whole run.
+  - **Phone layout**: one line in the 32 px pill, the icon, a 21 px slot
+    (the redial countdown, or the two arrows stacked while connected, else
+    empty; both at 3/4 like the icon), the uptime and Stop. The slot is
+    kept for the whole run.
   - **Narrow pills.** The pill is as wide as the control row allows, much
     less than the mockups' 416/332 px: 240 px at 1280x900, 344 at
-    1920x1080 (the row may grow to 480 px there), 202 at 390x844, 160 at
+    1920x1080 (the row may grow to 480 px there), 204 at 390x844, 184 at
     360x740. Container queries on the pill's content width drop the
     "Running · " in front of the uptime under 211 px on desktop and
-    245 px in the phone layout (it is a span of its own; `#status-text`'s
-    text is unchanged), and the slot under 184 px. They depend on the
+    230 px in the phone layout (it is a span of its own; `#status-text`'s
+    text is unchanged), and the slot under 169 px. They depend on the
     width only, never on the state: no state moves the uptime, sideways or
     up and down. At 1280x900 that leaves out the amounts and ellipsises the
     longer status lines; the title has both.
@@ -309,8 +312,8 @@ thread is using them).
   from the paint loop, the key path or audio.
 - **The phone column is the same view at every size, and it is laid out in
   CSS alone.** One `100dvh` page that never scrolls: a single control row
-  (`--status-h`, 56px on desktop and 52px in the phone layout, tall enough
-  for the network badge; state/firmware pill, screenshot, record, sound,
+  (`--status-h`, 56px on desktop, tall enough for the network badge, and
+  32px in the phone layout, where the badge is drawn at 3/4; state/firmware pill, screenshot, record, sound,
   fullscreen, and the settings gear where the panels are sheets), the
   screen at the board's own `[peripheral.LCD0]` aspect ratio flanked by edge
   tabs for the side keys, and the keypad under it. From 900px wide (and
