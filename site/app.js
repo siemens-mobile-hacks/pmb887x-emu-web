@@ -1984,10 +1984,11 @@ function gprsShown() {
 const gprsRetryIn = (g) => g?.state === "offline" && Number.isFinite(g.retryAt)
   ? Math.max(0, Math.ceil((g.retryAt - Date.now()) / 1000)) : 0;
 
-// What the badge shows: the link when there is one or was one (connecting,
-// online, offline, refused), else what the cell says of the phone (no
-// network, registered, GPRS attached); "idle" on a dist without
-// _wasm_gsm_state, which cannot tell those apart.
+// What the badge stands for (its name, data-state, __ui.gprs.badge): the
+// link when there is one or was one (connecting, online, offline,
+// refused), else what the cell says of the phone (no network, registered,
+// GPRS attached); "idle" on a dist without _wasm_gsm_state, which cannot
+// tell those apart. Its antenna follows the cell throughout (gsm-badge.js).
 function gprsBadge() {
   const g = gprsNet;
   const link = gprsShown();

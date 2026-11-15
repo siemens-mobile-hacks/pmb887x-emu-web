@@ -24,9 +24,9 @@ export const shortReason = (code) => SHORT[code] ?? "unreachable";
 
 // badge is what the badge stands for (gprsBadge() in app.js): the cell's
 // "nonet", "registered" or "attached", "idle" on a dist that cannot read the
-// cell, or the link's "connecting", "online", "offline" or "refused". g is
-// the GprsNet, retryIn the redial countdown in seconds (0: none), bearer
-// the tag's word. Gives the antenna (net: the cell), the tag (gprs: the
+// cell, or the link's "connecting", "online", "offline" or "refused" (from
+// the phone's first data on, whatever the cell says). g is the GprsNet,
+// retryIn the redial countdown in seconds (0: none), bearer the tag's word. Gives the antenna (net: the cell), the tag (gprs: the
 // link), the bearer it spells, the desktop status line and its tone ("",
 // "warn" or "off"), and whether the amounts sent and received show: from
 // the phone's first data, which is what dials the link, until Stop.
@@ -54,8 +54,14 @@ export function badgeView(badge, g, { retryIn = 0, bearer = "GPRS" } = {}) {
     case "refused": status = `${b} refused · ${shortReason(g.code)}`; tone = "off"; break;
     default: status = "";
   }
+  // the antenna follows the cell after the phone's first data too: a link
+  // that outlives the registration says so
+  if (link && cell === "nonet") {
+    status += " · no network";
+    if (!tone) tone = "warn";
+  }
   return {
-    net: link && cell === "nonet" ? "registered" : cell,
+    net: cell,
     gprs: badge === "attached" || link ? badge : "none",
     bearer: b, status, tone, amounts: link,
   };
