@@ -222,41 +222,80 @@ thread is using them).
   Start/Stop/Cancel there is (`window.__ui` mirrors that state for the
   drivers in `tools/`). A capture in progress is a second pill beside it,
   ended with **Finish** — "Stop" only ever means the emulator.
-- **Network badge** (`#gprs`, `renderGprs()` in app.js). While a run has
-  the GSM network, a boxed **G**, the GPRS mark of a phone's status bar,
-  takes the place of the pill's dot, which only repeats the pill's own
-  colour. A run without the network (option unticked, a board without a
-  radio, a dist without `_wasm_net_attach`) shows none and keeps the dot.
-  What it shows, the phone's state first, then the gateway link:
-  - **no network**, faint with a dashed box: the cell has not registered
-    the phone. Every run starts here;
-  - **registered**, outlined and dim: the cell sent LOCATION UPDATING
-    ACCEPT;
-  - **GPRS attached**, lit and neutral: the cell sent GMM ATTACH ACCEPT.
-    The phone has not sent an IP packet, so there is no link;
-  - **connecting**, pulsing amber: the phone sent its first frame and
-    `gprs-net.js` is dialling the gateway (it dials only for a frame, and
-    after a close only when the phone sends again);
-  - **connected**, filled green: the gateway's WebSocket is open. A tiny ▴
-    shows while frames go to the gateway, ▾ while they come back;
-  - **offline**, struck through in red, with the redial countdown: beside
-    the G on desktop, under it in the phone layout, where the pill has no
-    room beside it;
-  - **refused**, struck through on a red ground: a close that is final for
-    the run (4003, 4004, 4009).
+- **Network badge** (`#gprs`, `renderGprs()` in app.js, what it shows in
+  `site/gsm-badge.js`). While a run has the GSM network, an icon takes the
+  place of the pill's dot: an **antenna** for the cell over a boxed
+  **bearer tag** for the data link, 32x37 px at 1x, all in SVG units
+  (antenna 24x22, a 2 px gap, tag 32x13; the owner's mockup package of
+  2026-11-14). A run without the network (option unticked, a board without
+  a radio, a dist without `_wasm_net_attach`) shows none and keeps the dot,
+  which then sits in the icon's 32 px place, so the uptime starts at the
+  same x either way.
+  - The **antenna** (`data-net`) follows the cell for the whole run, also
+    after the phone's first data: muted with dotted inner waves until the
+    cell has registered the phone (LOCATION UPDATING ACCEPT, or a GPRS
+    attach), lit with full waves after. A dist without `_wasm_gsm_state`
+    shows it muted with full waves.
+  - The **tag** (`data-gprs`) follows the link: absent (its place kept)
+    until GPRS attaches (GMM ATTACH ACCEPT); outlined once attached;
+    amber and pulsing (steady with reduced motion) while `gprs-net.js`
+    dials the gateway, which it does only for a frame from the phone;
+    filled green with dark letters while
+    the gateway's WebSocket is open; pink and struck through when offline
+    (it will redial); filled red (#d63a3a, so white reaches 4.5:1) and
+    struck when refused for the run (4003, 4004, 4009). The strike's gap
+    is drawn in `--pill-bg`, the colour of the pill behind it. Shape tells
+    the states apart as well as colour (dotted or full waves; no tag,
+    outlined, filled, struck), so they read in greyscale.
+  - The tag's letters are stroked paths, symbols `#gsm-bearer-GPRS` and
+    `#gsm-bearer-EDGE` in index.html (4.4x7 glyphs on a 5.7 advance), never
+    text or a font, so they look the same on every system. `data-bearer`
+    on `#gprs` names the bearer (GPRS by default); EDGE changes the tag's
+    word and the status line's, nothing else. A new bearer needs glyphs
+    drawn to match.
+  - **Desktop** (the page's wide layout): the pill's text is two lines,
+    "Running · 0:31" over the network's state in words: "No network",
+    "Registered", "GPRS attached" (" · context active"), "GPRS connecting…"
+    or "reconnecting…" (amber), "GPRS Connected", "GPRS offline · <reason>
+    · retry <N>s" or "· waiting for data", "GPRS refused · <reason>"
+    (#ffb0b0), with " · no network" when the link outlives the
+    registration. The reasons are short forms of gprs-net.js's close
+    reasons. Beside the uptime, from the phone's first data until Stop,
+    "▴ 3.1 KB ▾ 12.4 KB" (`kb()`), each arrow dim when idle and lit for
+    400 ms after frames went that way. The status line never wraps (it is
+    ellipsised); the line with the amounts wraps and clips, so they show
+    only where they fit. Neutral status text is #9fdcb5 on the green pill
+    (5.8:1), #d9bf80 on amber and #e0a8a8 on red.
+  - **Phone layout**: one line, the icon, a 28 px slot (the redial
+    countdown, or the two arrows stacked while connected, else empty),
+    the uptime and Stop. The slot is kept for the whole run.
+  - **Narrow pills.** The pill is as wide as the control row allows, much
+    less than the mockups' 416/332 px: 240 px at 1280x900, 344 at
+    1920x1080 (the row may grow to 480 px there), 202 at 390x844, 160 at
+    360x740. Container queries on the pill's content width drop the
+    "Running · " in front of the uptime under 211 px on desktop and
+    245 px in the phone layout (it is a span of its own; `#status-text`'s
+    text is unchanged), and the slot under 184 px. They depend on the
+    width only, never on the state: no state moves the uptime, sideways or
+    up and down. At 1280x900 that leaves out the amounts and ellipsises the
+    longer status lines; the title has both.
 
-  At 390x844 "Running · 0:17" keeps 2.5 px (connected, the widest at
-  16 px) to 7.5 px to spare; the dot left 12.5. The badge's accessible
-  name (`role="img"`) says the state and the close reason, its title adds
-  the network line ("Registered, GPRS attached, data context active"),
-  the link and the frames and bytes each way. `#live-region` says
-  "Registered on the network", "GPRS attached", "GPRS connected", "GPRS
-  offline: …" or "GPRS refused: …", and "No network" when registration is
-  lost, once per change: a redial loop that fails the same way says it
-  once, and traffic says nothing. Advanced ▸ GSM network keeps its caption
-  with the close reason. `window.__ui.gprs` gives tools the link `state`,
-  the `badge`, reason, close code, `retryIn` and the counts;
-  `window.__ui.gsm` gives `{known, registered, gprsAttached, pdpActive}`.
+  The icon is one `role="img"` element; its accessible name says the state
+  and the close reason. Its title (also on the status line and the amounts)
+  adds the network line ("Registered, GPRS attached, data context
+  active"), the link ("GPRS: no link to the gateway." while there is none
+  and the cell is known: registered without GPRS is a resting state and
+  nothing reads as pending) and "Sent 3.1 KB, received 12.4 KB". The status
+  line and the amounts are `aria-hidden`. `#live-region` says "Registered
+  on the network", "GPRS attached", "GPRS connected", "GPRS offline: …" or
+  "GPRS refused: …", and "No network" when registration is lost, once per
+  change: a redial loop that fails the same way says it once, and traffic
+  says nothing. Name and announcements follow the link once there is one,
+  as before the antenna. Advanced ▸ GSM network keeps its caption with the
+  close reason. `window.__ui.gprs` gives tools the link `state`, the
+  `badge` (also `#gprs`'s `data-state`), reason, close code, `retryIn` and
+  the counts; `window.__ui.gsm` gives `{known, registered, gprsAttached,
+  pdpActive}`.
 
   It costs the hot paths nothing. `GprsNet` (no DOM) keeps `state`,
   `reason`, `code`, `retryAt`, `frames`/`bytes` both ways and `ms`, the
@@ -269,9 +308,10 @@ thread is using them).
   arrows out, and from a 1 Hz countdown while a redial waits. Nothing runs
   from the paint loop, the key path or audio.
 - **The phone column is the same view at every size, and it is laid out in
-  CSS alone.** One `100dvh` page that never scrolls: a single 32px control
-  row (state/firmware pill, screenshot, record, sound, fullscreen, and the
-  settings gear where the panels are sheets), the
+  CSS alone.** One `100dvh` page that never scrolls: a single control row
+  (`--status-h`, 56px on desktop and 52px in the phone layout, tall enough
+  for the network badge; state/firmware pill, screenshot, record, sound,
+  fullscreen, and the settings gear where the panels are sheets), the
   screen at the board's own `[peripheral.LCD0]` aspect ratio flanked by edge
   tabs for the side keys, and the keypad under it. From 900px wide (and
   621px tall) the Firmware and Run panels come back as the two columns
@@ -293,7 +333,9 @@ thread is using them).
     which phone is selected. `--box-h` is then what the column
     has left, `--box-w` that at the board's ratio, `--tab-w` what a
     ratio-locked box could not use (14px to 44px, and no more than 13% of the
-    box), and `--asm-w` the whole assembly, which the control row matches.
+    box), and `--asm-w` the whole assembly, which the control row matches
+    (on desktop it may be wider, up to 480px where the column has room,
+    for the network badge's status line and amounts).
   - The one thing CSS cannot know is the panel's aspect ratio, because that is
     board data: `setAspect()` publishes it as `--ar` on `.phone-panel` — from
     the board config, or from the guest's own framebuffer once it is running.

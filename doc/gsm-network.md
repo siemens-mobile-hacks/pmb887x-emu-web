@@ -161,10 +161,17 @@ Two things the check had to get past:
 
 ### The page's network badge, and the phone's registration
 
-The status pill shows a boxed G while a run has the network
-(doc/architecture.md, "Network badge"): no network, registered, GPRS
-attached, then the gateway link (connecting, connected with ▴/▾ for
-traffic, offline, refused).
+While a run has the network the status pill shows an antenna over a
+bearer tag (doc/architecture.md, "Network badge"; redesigned from the
+owner's mockups on 2026-11-15, it was a boxed G). The antenna is the
+cell, read from the bits below for the whole run: muted and dotted until
+the phone is registered, lit after, and muted again if the phone loses
+the cell, also while a link is up ("GPRS Connected · no network" on
+desktop). The tag is the data link: none before GPRS attaches, then
+attached, connecting, connected (▴/▾ for traffic), offline or refused. On
+desktop a status line says the state in words and, from the phone's
+first data until Stop, the amounts sent and received sit beside the
+uptime.
 
 - **What the cell records** (qemu 133f91266b). `gsm-bts` keeps a byte,
   the read-only property `ms-state` (`GSM_BTS_MS_*` in gsm-bts.h): bit 0
@@ -195,9 +202,9 @@ the gateway's requests, which need a link), the hub adds none, and the
 phones above do not even attach to GPRS at boot. What the owner saw was
 the "idle" glyph: two dim arrows on a dark chip, appearing the moment the
 run starts, which read as a data link. The badge that replaced it starts
-at "no network", moves to "registered" when the cell says so, and turns
-green only while the gateway's WebSocket is open, which the phone's first
-IP frame dials. ui-acceptance records every badge of its GSM boot with
+at "no network", moves to "registered" when the cell says so, and its tag
+turns green only while the gateway's WebSocket is open, which the
+phone's first IP frame dials. ui-acceptance records every badge of its GSM boot with
 the frames the phone had handed the relay and fails a link state
 reached before the phone sent one. Real traffic is relayed and shown as
 it was.
