@@ -18,9 +18,11 @@
 //           actually change (ours is initial == max).
 //
 // So four modules, both axes crossed, identical code otherwise.  The
-// production module is i64+shared; if i32+shared is much faster, the
-// -sMEMORY64=2 build is worth its cost, and if only i64+unshared is fast
-// then sharing is the culprit and lowering would not help.
+// production engine is the -sMEMORY64=2 build: site/dist-jit imports an
+// i32 shared memory (initial == max), so i32+shared is the production leg
+// and i64+shared is what a -sMEMORY64=1 build would give.  If i32+shared is
+// much faster, the lowering pays for itself; if only i64+unshared is fast,
+// sharing is the culprit and lowering would not help.
 //
 // The kernel has to defeat bound-check *elimination* without defeating the
 // check itself, or the probe measures nothing and says the checks are free.
@@ -177,12 +179,12 @@ function time(name, is64, shared, chain) {
 
 function main() {
   return [
-    time("i64 shared (production)", true, true, false),
-    time("i32 shared (MEMORY64=2)", false, true, false),
+    time("i64 shared (MEMORY64=1)", true, true, false),
+    time("i32 shared (production)", false, true, false),
     time("i64 unshared", true, false, false),
     time("i32 unshared", false, false, false),
-    time("i64 shared (production)", true, true, true),
-    time("i32 shared (MEMORY64=2)", false, true, true),
+    time("i64 shared (MEMORY64=1)", true, true, true),
+    time("i32 shared (production)", false, true, true),
   ];
 }
 `;
@@ -211,7 +213,7 @@ function report(engine, out) {
     }
     const ok = legs.filter((r) => !r.err);
     const g = (n) => ok.find((r) => r.name === n);
-    const p = g("i64 shared (production)"), q = g("i32 shared (MEMORY64=2)");
+    const p = g("i64 shared (MEMORY64=1)"), q = g("i32 shared (production)");
     const u = g("i64 unshared");
     if (p && q) {
       const d = (1 - q.ns / p.ns) * 100;
@@ -246,8 +248,8 @@ if (!argv.includes("--chrome")) {
   report(`node ${process.version} / v8 ${process.versions.v8}`, out);
 } else {
   /* A shared memory needs SharedArrayBuffer, which needs cross-origin
-     isolation -- about:blank has none, so the two production legs would
-     fail there.  serve.mjs sets COOP/COEP, so run the page on it. */
+     isolation -- about:blank has none, so the shared legs would fail
+     there.  serve.mjs sets COOP/COEP, so run the page on it. */
   const url = (argv.find((a) => a.startsWith("--url=")) || "").slice(6) ||
               `http://127.0.0.1:${process.env.PORT || "8080"}/`;
   const { chromium } = await import("playwright-core");
