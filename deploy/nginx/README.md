@@ -61,21 +61,19 @@ the cert is issued.
 ### What the front is
 
 perk11/nginx-proxy is not a fork of nginx-proxy's code. It is a compose
-file whose image is `FROM jwilder/nginx-proxy:alpine` plus two `conf.d`
-files (`client_max_body_size 100m`, and the proxy timeouts below), with the Let's Encrypt
-companion (`jrcs/letsencrypt-nginx-proxy-companion`) started next to it
-with `docker run --volumes-from nginx-proxy`. So the template is
-upstream's `nginx.tmpl`, and `jwilder/nginx-proxy:alpine` is a rolling
-build of upstream `main`: what runs is whatever that tag was when the
-front's image was last built (its `Dockerfile` last changed in 2025-03,
-after 1.7.0). The points below hold for upstream's template as of 2025-03
-and 2026-11; the 2018 template differs only where noted.
+file whose image is upstream's release `jwilder/nginx-proxy:1.11.6-alpine`
+plus one `conf.d` file (`client_max_body_size 100m`) and one container
+label of its own, `com.github.perk11.nginx-proxy.proxy-timeout` (below),
+with the Let's Encrypt companion (`jrcs/letsencrypt-nginx-proxy-companion`)
+started next to it with `docker run --volumes-from nginx-proxy`. So the
+template is upstream's `nginx.tmpl` with that label patched in. The points
+below hold for upstream's template as of 2025-03 and 2026-11; the 2018
+template differs only where noted.
 
 - **Discovery:** docker-gen picks up `VIRTUAL_HOST` and `VIRTUAL_PORT`
   (80) from `pmb887x-web` and proxies to its address on the network it
   shares with the front, the external `nginx-proxy` network (`expose`,
-  no published port). `VIRTUAL_PROTO` stays the default `http`; no labels
-  are needed. The gateway has no `VIRTUAL_HOST` and is on the stack's
+  no published port). `VIRTUAL_PROTO` stays the default `http`. The gateway has no `VIRTUAL_HOST` and is on the stack's
   `gprs` network only, so the front never routes to it.
 - **TLS:** `LETSENCRYPT_HOST` and `LETSENCRYPT_EMAIL` are read by the
   companion, not the proxy. The front then redirects http to https and
@@ -103,11 +101,23 @@ and 2026-11; the 2018 template differs only where noted.
 - **Timeouts:** upstream's template sets none, so nginx's default 60 s
   `proxy_read_timeout` would close a `/gprs` link after a minute without
   traffic, dropping the phone's open TCP connections long before the
-  gateway's own 15-minute idle close. The front's image raises
-  `proxy_read_timeout` and `proxy_send_timeout` to 960 s for every site
-  (`nginx-proxy/00_proxy_timeouts.conf`, perk11/nginx-proxy 115c8b7), so
-  nothing has to be installed per host; rebuild the front
-  (`docker-compose up -d --build` in that repo) if its image predates it.
+  gateway's own 15-minute idle close. So `docker-compose.yml` gives
+  `pmb887x-web` the label `com.github.perk11.nginx-proxy.proxy-timeout:
+  "960s"`, and perk11/nginx-proxy then sets `proxy_read_timeout` and
+  `proxy_send_timeout` to 960 s in this container's location block, for
+  whatever host name `VIRTUAL_HOST` gives it, and for no other site. The
+  front ignores a value that is not a number with an optional `s`, `m` or
+  `h`. Its image must be built from a version that has the label (rebuild
+  it with `docker-compose up -d --build` in that repo); check with
+  `docker exec nginx-proxy nginx -T 2>/dev/null | grep -n proxy_read_timeout`.
+
+  A stock nginx-proxy, or any other front, ignores the label, and its idle
+  `/gprs` links end after its own timeout (60 s for nginx-proxy). Raise
+  it there for this host your own way: on nginx-proxy, a
+  `vhost.d/<VIRTUAL_HOST>_location` file holding
+  `proxy_read_timeout 960s;` and `proxy_send_timeout 960s;`, which docker-gen
+  picks up when it next renders (for example after
+  `docker restart pmb887x-web`).
 
 ### The phone's Internet
 

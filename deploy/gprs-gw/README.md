@@ -199,9 +199,12 @@ address, so its filters are the whole point:
   sees `Origin: https://<host>`.
 - The front must keep idle WebSockets for longer than nginx's default 60 s,
   or an idle `/gprs` drops the phone's open TCP connections in that slirp.
-  perk11/nginx-proxy's image does this for every site since 115c8b7
-  (`deploy/nginx/README.md`, "What the front is"); rebuild the front if
-  its image is older.
+  perk11/nginx-proxy does it for containers with the
+  `com.github.perk11.nginx-proxy.proxy-timeout` label, which
+  `deploy/nginx/docker-compose.yml` sets to 960 s on `pmb887x-web`; rebuild
+  the front if its image predates the label. A stock nginx-proxy or another
+  front ignores the label and needs the timeout raised its own way
+  (`deploy/nginx/README.md`, "What the front is").
 - Do not also run bts-emulator's `compose.web.yaml` for the same host: its
   `VIRTUAL_PATH=/gprs` makes the front send `/gprs` to that stack instead.
   Use one or the other. That stack keeps the operator services, this one

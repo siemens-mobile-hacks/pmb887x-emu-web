@@ -7,8 +7,8 @@
 #
 # Usage (bundle first — the Dockerfile COPYs it):
 #   scripts/bundle-dist.sh
-#   VIRTUAL_HOST=emu.test \
-#   LETSENCRYPT_HOST=emu.test \
+#   VIRTUAL_HOST=emu.example.org \
+#   LETSENCRYPT_HOST=emu.example.org \
 #   LETSENCRYPT_EMAIL=you@example.org \
 #     docker compose up -d --build
 #
@@ -18,8 +18,8 @@
 # The phone's Internet (GPRS gateway at /gprs, ../gprs-gw/README.md) is the
 # `gprs` profile: COMPOSE_PROFILES=gprs, plus a bts-emulator checkout of
 # branch gprs-gw at BTS_EMULATOR (default ../../../bts-emulator).  The front
-# must not close an idle /gprs after nginx's default 60 s (README.md, "What
-# the front is").
+# must not close an idle /gprs after nginx's default 60 s: the proxy-timeout
+# label below (README.md, "What the front is").
 services:
   pmb887x-web:
     build:
@@ -35,14 +35,19 @@ services:
     restart: unless-stopped
     expose:
       - "80"
+    labels:
+      # perk11/nginx-proxy's own label: the front keeps an idle /gprs past the
+      # gateway's 15-minute idle close instead of nginx's 60 s. A stock
+      # nginx-proxy ignores it (README.md, "What the front is").
+      com.github.perk11.nginx-proxy.proxy-timeout: "960s"
     environment:
       # picked up by jwilder/nginx-proxy via the docker socket
-      VIRTUAL_HOST: ${VIRTUAL_HOST:-emu.test}
+      VIRTUAL_HOST: ${VIRTUAL_HOST:-emu.example.org}
       VIRTUAL_PORT: "80"
       # picked up by the letsencrypt companion via the docker socket
       # (needs DNS for the host to point at the proxy; the http→https
       # redirect appears automatically once the cert is issued)
-      LETSENCRYPT_HOST: ${LETSENCRYPT_HOST:-emu.test}
+      LETSENCRYPT_HOST: ${LETSENCRYPT_HOST:-emu.example.org}
       LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-you@example.org}
     networks:
       - default
@@ -69,7 +74,7 @@ services:
       - "5751"
     # An empty value leaves the gateway's default (../gprs-gw/README.md).
     environment:
-      GPRS_GW_ORIGINS: ${GPRS_GW_ORIGINS:-https://${VIRTUAL_HOST:-emu.test}}
+      GPRS_GW_ORIGINS: ${GPRS_GW_ORIGINS:-https://${VIRTUAL_HOST:-emu.example.org}}
       # nginx-proxy front + pmb887x-web, each appending to X-Forwarded-For
       GPRS_GW_TRUSTED_PROXIES: ${GPRS_GW_TRUSTED_PROXIES:-2}
       GPRS_GW_PER_IP: ${GPRS_GW_PER_IP:-}
