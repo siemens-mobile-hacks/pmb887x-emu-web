@@ -28,21 +28,37 @@ ws.on("message", (d) => {
   const m = JSON.parse(d);
   if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
   else if (m.method === "Tracing.dataCollected") events.push(...m.params.value);
-  else if (m.method === "Tracing.tracingComplete") done();
+  else if (m.method === "Tracing.tracingComplete") done({ dataLoss: !!m.params?.dataLossOccurred });
 });
-const send = (method, params = {}) => new Promise((r) => {
-  pending.set(++id, r);
-  ws.send(JSON.stringify({ id, method, params }));
-});
+ws.on("close", () => done({ closed: true }));
+// a browser that stops answering must not hang the tool: every wait is
+// bounded (unref'd, so a finished run exits at once)
+const after = (ms, v) => new Promise((r) => setTimeout(() => r(v), ms).unref());
+const send = (method, params = {}, ms = 30000) => {
+  const i = ++id;
+  const answer = new Promise((r) => pending.set(i, r));
+  ws.send(JSON.stringify({ id: i, method, params }));
+  return Promise.race([answer, after(ms, { error: { message: `no answer in ${ms / 1000} s` } })]);
+};
 
 const st = await send("Tracing.start", { transferMode: "ReportEvents",
   traceConfig: { recordMode: "recordUntilFull", includedCategories: cats.split(",") } });
 if (st.error) { console.error("Tracing.start:", st.error.message); process.exit(1); }
 console.log(`tracing ${cats} for ${secs}s on ${ver.Browser}...`);
 await new Promise((r) => setTimeout(r, secs * 1000));
-await send("Tracing.end");
-await finished;
+const end = await send("Tracing.end");
+if (end.error) { console.error("Tracing.end:", end.error.message); process.exit(1); }
+const fin = await Promise.race([finished, after(120000, { timeout: true })]);
 ws.close();
+if (fin.timeout || fin.closed) {
+  console.error(fin.timeout ? "no Tracing.tracingComplete in 120 s" : "the DevTools connection closed before the trace completed");
+  console.error("the events received so far are summed below, and the run fails");
+  process.exitCode = 1;
+}
+if (fin.dataLoss) {
+  console.log("WARNING: the trace buffer filled (dataLossOccurred): every count below is a lower bound;" +
+    " trace fewer seconds or fewer categories");
+}
 if (process.env.TRACE_SAVE) fs.writeFileSync(process.env.TRACE_SAVE, JSON.stringify(events));
 
 const threads = new Map();
