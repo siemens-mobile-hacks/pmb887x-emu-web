@@ -17,6 +17,7 @@ Why the series was based on dsp-lle before the DSP LLE reached master: master al
 
 ## qemu (the `qemu/` gitlink; `QEMU_PMB887X_REV` before 2026-11-14)
 
+- `133f91266b` (2026-11-14) gsm-bts records what it answered the phone, as the read-only property `ms-state` (registered, GPRS attached, PDP context active), and ui/wasm's `wasm_gsm_state()` hands it to the page's network badge.  The fork's first change to upstream's hw/gsm besides 9bf917bb6e: twelve lines in gsm-bts.h, gsm-bts.c and gsm-bts-gprs.c, each marked `WASM PORT (removable)`, approved by the owner for this feature only
 - `48858038d9` (2026-11-14) an `exit()` from a thread that holds the BQL runs the exit notifiers on that thread, as on a native host: a start-up error (an unknown option, a board without a display, error_fatal) no longer freezes the page.  From here the gitlink is the pin
 - `8fb9035755` (2026-11-13) ui/wasm: `wasm_send_key_after`, key edges spaced in guest time, for the page's typing.  The gitlink moved here while `QEMU_PMB887X_REV` stayed at d992a03bf8, so build-qemu.sh would have moved qemu back to an engine without that export
 - `d992a03bf8` (2026-11-13) merge of smh/master 3403936c99 -- the cfi-flash CFI/PRI decode and AMD command set (OTP data now without lock words), PMB627X / Bright 6PLA / HD155165BP transceivers, the TPU's RF SSC timing, the cell configurable (default DCS1800 ARFCN 512).  With bsp 191612c the CX70 gets its pmb6270, which ends its l1bbcsg panics
