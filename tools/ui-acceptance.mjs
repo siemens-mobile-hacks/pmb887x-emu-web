@@ -498,7 +498,7 @@ ok("5.2 title bar and panels are out of the view", await evaluate(() =>
   && document.getElementById("pre-panel").closest(".sheet") !== null
   && document.getElementById("post-panel").closest(".sheet") !== null));
 
-/* ---------------- one 32px control row ---------------- */
+/* ---------------- one control row, 52px (56 on desktop) ---------------- */
 ok("v2.1 exactly one row above the screen", await evaluate(() => {
   const top = document.querySelector(".screen-row").getBoundingClientRect().top;
   // every element box that sits entirely above the screen and is not an
@@ -510,8 +510,9 @@ ok("v2.1 exactly one row above the screen", await evaluate(() => {
     return row.contains(e) || e.contains(row);
   });
 }));
-ok("v2.1 row is 32px tall", await $eval(".status-row", (e) =>
-  Math.round(e.getBoundingClientRect().height) === 32));
+// tall enough for the network badge (37px) in the pill
+ok("v2.1 row is 52px tall", await $eval(".status-row", (e) =>
+  Math.round(e.getBoundingClientRect().height) === 52));
 ok("v2.1 pill + five 28px buttons", await evaluate(() => {
   const row = document.querySelector(".status-row");
   const ids = [...row.children].map((e) => e.id);
@@ -634,11 +635,11 @@ ok("v2.2 no shortcut labels on the edge keys", await evaluate(() =>
 /* ---------------- screen box at the device ratio ---------------- */
 ok("v2.3 no object-fit letterboxing", await $eval("#lcd", (e) =>
   getComputedStyle(e).objectFit !== "contain"));
-// 844 − 12 page padding − 32 control row − 2×6 gaps − the keypad's
-// 7×--key-h + 6×6 leaves the row 456 tall, and 3:4 of that is the box
-ok("v2.3 box is 342x456 at 390x844", await evaluate(() => {
+// 844 − 12 page padding − 52 control row − 2×6 gaps − the keypad's
+// 7×--key-h + 6×6 leaves the row 436 tall, and 3:4 of that is the box
+ok("v2.3 box is 327x436 at 390x844", await evaluate(() => {
   const r = document.querySelector(".lcd-wrap").getBoundingClientRect();
-  return Math.round(r.width) === 342 && Math.round(r.height) === 456;
+  return Math.round(r.width) === 327 && Math.round(r.height) === 436;
 }), await evaluate(() => {
   const r = document.querySelector(".lcd-wrap").getBoundingClientRect();
   return `${Math.round(r.width)}x${Math.round(r.height)}`;
@@ -748,7 +749,7 @@ for (const [w, h] of [[320, 568], [320, 490], [360, 640], [360, 560], [390, 844]
   });
   ok(`v2.4 ${w}x${h}: no scroll, keypad whole, box ${r.box} (${r.ar})`,
     r.scroll <= r.inner + 1 && r.kpBottom <= r.inner + 1 && r.kpTop > 0 && !r.clipped
-    && r.box[1] >= 120 && Math.abs(r.ar - 0.75) < 0.01 && r.rowH === 32,
+    && r.box[1] >= 120 && Math.abs(r.ar - 0.75) < 0.01 && r.rowH === 52,
     `scroll=${r.scroll}/${r.inner} kpBottom=${r.kpBottom} clipped=${r.clipped}`);
 }
 
@@ -847,7 +848,8 @@ if (!process.env.SKIP_BOOT) {
         m.__counted = true;
       }
       const g = window.__ui?.gprs;
-      if (g && g.badge !== window.__badges.at(-1)?.badge)
+      // the states the badge checks below set by hand are not the run's
+      if (g && !window.__badgeStaged && g.badge !== window.__badges.at(-1)?.badge)
         window.__badges.push({ badge: g.badge, phoneFrames: window.__phoneFrames });
     }, 100);
   });
@@ -895,18 +897,171 @@ if (!process.env.SKIP_BOOT) {
   ok("2.2 Stop replaced Start", !(await has("#btn-start")) && (await has("#btn-stop")));
   // the phone has not used GPRS, so no link was dialled: the badge shows
   // what the cell says of the phone (no network, registered or attached),
-  // in the dot's place
+  // in the dot's place: the antenna for the cell over the bearer tag
   ok("gprs: a GSM run shows the network badge in the dot's place", await evaluate(() => {
     const g = document.getElementById("gprs");
     const r = g.getBoundingClientRect();
     const label = { nonet: "No network", registered: "Registered on the network, GPRS not attached" };
+    const gsm = window.__ui.gsm;
     return !g.hidden && ["nonet", "registered", "attached"].includes(g.dataset.state)
       && (g.dataset.state === "attached" || g.getAttribute("aria-label") === label[g.dataset.state])
       && window.__ui.gprs.state === "idle" && window.__ui.gprs.badge === g.dataset.state
-      && window.__ui.gsm.known && !window.__gprsNet.ws
+      && gsm.known && !window.__gprsNet.ws
+      && g.dataset.net === (gsm.registered || gsm.gprsAttached ? "registered" : "nonet")
+      && g.dataset.gprs === (g.dataset.state === "attached" ? "attached" : "none")
       && getComputedStyle(document.querySelector(".status-dot")).display === "none"
-      && g.nextElementSibling.id === "status-open" && r.width <= 12 && r.height <= 18;
+      && g.nextElementSibling.classList.contains("gsm-slot")
+      && Math.round(r.width) === 32 && Math.round(r.height) === 37
+      && document.getElementById("gsm-data").hidden;
   }), await evaluate(() => JSON.stringify([window.__ui.gprs, window.__ui.gsm])));
+
+  // The badge through every state of the owner's mockups, set on the run's
+  // own GprsNet (the cell's bits through _wasm_gsm_state, the link's fields
+  // as the relay keeps them) and drawn by its onChange, as the relay would.
+  // Restored afterwards; __badges above does not record these.
+  const STAGES = [
+    ["nonet", 0, "idle"], ["registered", 1, "idle"], ["attached", 3, "idle"], ["context", 7, "idle"],
+    ["connecting", 7, "connecting"], ["reconnecting", 7, "connecting", 1006],
+    ["connected", 7, "online"], ["sending", 7, "online", 0, 0, "t"], ["receiving", 7, "online", 0, 0, "r"],
+    ["both", 7, "online", 0, 0, "tr"], ["offline", 7, "offline", 1006, 9], ["offline 4029", 7, "offline", 4029, 59],
+    ["offline, over", 7, "offline", 1006, 0], ["refused 4003", 7, "offline", 4003, -1],
+    ["refused 4004", 7, "offline", 4004, -1], ["refused 4009", 7, "offline", 4009, -1],
+    ["connected, cell lost", 0, "online"],
+  ];
+  await evaluate(() => {
+    const g = window.__gprsNet, m = window.__qemu;
+    window.__badgeStaged = {
+      fields: { ms: g.ms, state: g.state, reason: g.reason, code: g.code, retryAt: g.retryAt,
+        bytes: { ...g.bytes }, frames: { ...g.frames } },
+      read: m._wasm_gsm_state,
+    };
+    window.__stagedMs = g.ms;
+    m._wasm_gsm_state = () => window.__stagedMs;
+    window.__stage = ([, ms, state, code = 0, retry = 0, lit = ""]) => {
+      const g = window.__gprsNet;
+      window.__stagedMs = g.ms = ms;
+      g.code = code;
+      g.reason = code ? `reason ${code}` : "";
+      g.retryAt = retry < 0 ? Infinity : retry > 0 ? Date.now() + retry * 1000 - 200 : 0;
+      g.bytes.out = state === "idle" ? 0 : 3174;
+      g.bytes.in = state === "idle" ? 0 : 12698;
+      g.state = state;
+      g.onChange("gsm");
+      if (lit) {
+        if (lit.includes("t")) g.frames.out++;
+        if (lit.includes("r")) g.frames.in++;
+        g.noticed = g.frames.in + g.frames.out;
+        g.noticedAt = Date.now();
+        g.onChange("traffic");
+      }
+    };
+  });
+  // where the uptime starts, and whether anything in the pill spills out
+  // of it or over its neighbour
+  const pillNow = () => evaluate(() => {
+    const t = document.getElementById("status-text").getBoundingClientRect();
+    const pill = document.getElementById("status").getBoundingClientRect();
+    const parts = [...document.querySelectorAll("#status > *")].filter((e) => e.getBoundingClientRect().width)
+      .map((e) => e.getBoundingClientRect());
+    const inside = parts.every((r) => r.left >= pill.left && r.right <= pill.right && r.top >= pill.top && r.bottom <= pill.bottom);
+    const apart = parts.every((r, i) => i === 0 || r.left >= parts[i - 1].right - 0.5);
+    return { x: Math.round(t.left * 10) / 10, y: Math.round(t.top * 10) / 10, inside, apart,
+      state: document.getElementById("gprs").dataset.state, net: document.getElementById("gprs").dataset.net,
+      gprs: document.getElementById("gprs").dataset.gprs, status: document.getElementById("gsm-status").textContent };
+  });
+  const uptimeAt = {};
+  for (const size of [{ width: 1770, height: 1000 }, { width: 390, height: 844 }]) {
+    await setViewportSize(size);
+    await page.waitForTimeout(300);
+    const seen = [];
+    for (const stage of STAGES) {
+      await evaluate((st) => window.__stage(st), stage);
+      seen.push({ stage: stage[0], ...(await pillNow()) });
+    }
+    const name = `${size.width}x${size.height}`;
+    uptimeAt[name] = seen[0];
+    ok(`gprs: ${name}: the uptime does not move in any badge state`,
+      seen.every((p) => p.x === seen[0].x && p.y === seen[0].y),
+      JSON.stringify(seen.map((p) => `${p.stage} ${p.x},${p.y}`)));
+    ok(`gprs: ${name}: the pill's parts stay inside it, side by side`, seen.every((p) => p.inside && p.apart),
+      JSON.stringify(seen.filter((p) => !p.inside || !p.apart).map((p) => p.stage)));
+    if (size.width === 1770) {
+      ok("gprs: the status line names each state", JSON.stringify(seen.map((p) => p.status)) === JSON.stringify([
+        "No network", "Registered", "GPRS attached", "GPRS attached · context active", "GPRS connecting…",
+        "GPRS reconnecting…", "GPRS Connected", "GPRS Connected", "GPRS Connected", "GPRS Connected",
+        "GPRS offline · unreachable · retry 9s", "GPRS offline · too many connections · retry 59s",
+        "GPRS offline · waiting for data", "GPRS refused · address banned",
+        "GPRS refused · daily traffic used up", "GPRS refused · page not allowed",
+        "GPRS Connected · no network"]), JSON.stringify(seen.map((p) => p.status)));
+      ok("gprs: the antenna follows the cell, the tag the link", seen.map((p) => `${p.net}/${p.gprs}`).join() === [
+        "nonet/none", "registered/none", "registered/attached", "registered/attached",
+        "registered/connecting", "registered/connecting", "registered/online", "registered/online",
+        "registered/online", "registered/online", "registered/offline", "registered/offline",
+        "registered/offline", "registered/refused", "registered/refused", "registered/refused",
+        "nonet/online"].join(), seen.map((p) => `${p.net}/${p.gprs}`).join());
+    }
+  }
+  await setViewportSize({ width: 1770, height: 1000 });
+  await page.waitForTimeout(300);
+  // the tag's word is drawn, never typeset: system fonts differ
+  ok("gprs: the tag's letters are paths, no text and no font", await evaluate(() => {
+    const g = document.getElementById("gprs");
+    const use = g.querySelector(".gsm-tag-letters");
+    const sym = document.querySelector(use.getAttribute("href"));
+    const symbols = [...document.querySelectorAll('symbol[id^="gsm-bearer-"]')];
+    return g.querySelectorAll("text, tspan, foreignObject").length === 0 && g.textContent.trim() === ""
+      && use.tagName === "use" && sym?.tagName === "symbol" && symbols.length >= 2
+      && symbols.every((s) => s.children.length === 4 && [...s.children].every((c) => c.tagName === "path")
+        && s.textContent.trim() === "");
+  }));
+  // EDGE in data-bearer: the tag spells it and the status line says it;
+  // nothing else changes, not a box nor a name nor a title
+  const bearerDiff = await evaluate(() => {
+    const g = document.getElementById("gprs");
+    const snap = () => ({
+      // the letters' own box is their ink, which is the word: the tag's is not
+      boxes: [...document.querySelectorAll("#status, #status *:not(.gsm-tag-letters)")].map((e) => {
+        const r = e.getBoundingClientRect();
+        return [r.left, r.top, r.width, r.height].map((v) => Math.round(v * 10) / 10).join();
+      }),
+      attrs: [g.dataset.state, g.dataset.net, g.dataset.gprs, g.getAttribute("aria-label"), g.title, g.hidden,
+        document.getElementById("gsm-status").dataset.tone, document.getElementById("gsm-data").hidden,
+        document.getElementById("live-region").textContent],
+      status: document.getElementById("gsm-status").textContent,
+      letters: g.querySelector(".gsm-tag-letters").getAttribute("href"),
+    });
+    const results = [];
+    for (const stage of [["attached", 3, "idle"], ["connected", 7, "online"], ["offline", 7, "offline", 4002, 30],
+      ["refused", 7, "offline", 4003, -1]]) {
+      g.dataset.bearer = "GPRS";
+      window.__stage(stage);
+      const a = snap();
+      g.dataset.bearer = "EDGE";
+      window.__gprsNet.onChange("gsm");
+      const b = snap();
+      const diff = [];
+      if (a.letters !== "#gsm-bearer-GPRS" || b.letters !== "#gsm-bearer-EDGE") diff.push(`letters ${a.letters} ${b.letters}`);
+      if (!a.status.startsWith("GPRS ") || b.status !== a.status.replace(/^GPRS/, "EDGE")) diff.push(`status ${a.status} / ${b.status}`);
+      a.boxes.forEach((box, i) => { if (box !== b.boxes[i]) diff.push(`box ${i}: ${box} / ${b.boxes[i]}`); });
+      a.attrs.forEach((v, i) => { if (v !== b.attrs[i]) diff.push(`attr ${i}: ${v} / ${b.attrs[i]}`); });
+      if (diff.length) results.push(`${stage[0]}: ${diff.join("; ")}`);
+    }
+    g.dataset.bearer = "GPRS";
+    window.__gprsNet.onChange("gsm");
+    return results;
+  });
+  ok("gprs: the bearer EDGE changes only the tag and the wording", bearerDiff.length === 0, bearerDiff.join(" | "));
+  // the run's own state back, as the relay and the cell had it
+  await evaluate(() => {
+    const g = window.__gprsNet, st = window.__badgeStaged;
+    window.__qemu._wasm_gsm_state = st.read;
+    Object.assign(g, { ...st.fields, bytes: st.fields.bytes, frames: st.fields.frames });
+    g.onChange("gsm");
+    window.__badgeStaged = null;
+  });
+  ok("gprs: the badge is back to the run's own state", await evaluate(() =>
+    window.__ui.gprs.state === "idle" && ["nonet", "registered", "attached"].includes(window.__ui.gprs.badge)
+    && document.getElementById("gsm-data").hidden && !document.getElementById("status").hasAttribute("data-gsm-tx")));
   ok("2.2 exactly one action button", await evaluate(() =>
     [...document.querySelectorAll("button")].filter((b) => /^(Start|Stop|Cancel)$/.test(b.textContent.trim())).length === 1));
   ok("1.7 every firmware control is disabled", await evaluate(() => {
@@ -999,9 +1154,11 @@ if (!process.env.SKIP_BOOT) {
     return String(withStrip) === String(without) && withStrip[1] > 100;
   }));
 
-  // the strip's fitting rule, at the three widths it is quoted for
-  for (const [w, want] of [[390, 6], [360, 5], [320, 4]]) {
-    await setViewportSize({ width: w, height: 844 });
+  // the strip's fitting rule, at the widths it is quoted for
+  // (390 lost one when the control row grew to 52px for the network badge:
+  // the box went from 342 to 327px)
+  for (const [w, h, want] of [[430, 932, 6], [390, 844, 5], [360, 844, 5], [320, 844, 4]]) {
+    await setViewportSize({ width: w, height: h });
     await page.waitForTimeout(700);
     const r = await evaluate(() => {
       const m = document.getElementById("hud-metrics"), e = document.getElementById("hud-env");
@@ -1117,19 +1274,19 @@ if (!process.env.SKIP_BOOT) {
   ok("v3.5 start was announced", (await text("#live-region")) === "Recording started");
   const during = await geom();
   ok("v3.4 no layout shift while recording",
-    during.row === 32 && before.row === 32
+    during.row === 52 && before.row === 52
     && during.box[0] === before.box[0] && during.box[1] === before.box[1]
     && during.keypad === before.keypad,
     JSON.stringify({ before, during }));
   ok("v3.4 screenshot stays enabled", await $eval("#btn-shot", (e) => !e.disabled));
 
-  // verify: both pills plus the two icon buttons on one 32px row at 320px
+  // verify: both pills plus the two icon buttons on one row at 320px
   await setViewportSize({ width: 320, height: 568 });
   await page.waitForTimeout(400);
   ok("v3.3 everything fits one row at 320px", await evaluate(() => {
     const row = document.querySelector(".status-row").getBoundingClientRect();
     const kids = [...document.querySelector(".status-row").children].filter((e) => !e.hidden);
-    return Math.round(row.height) === 32
+    return Math.round(row.height) === 52
       && kids.every((e) => {
         const r = e.getBoundingClientRect();
         return r.top >= row.top - 0.5 && r.bottom <= row.bottom + 0.5
@@ -1197,6 +1354,18 @@ if (!process.env.SKIP_BOOT) {
   ok("gprs: a run without the GSM network shows no indicator", await evaluate(() =>
     document.getElementById("gprs").hidden && window.__ui.gprs.state === "off" && !window.__gprsNet
     && getComputedStyle(document.querySelector(".status-dot")).display !== "none"));
+  // the dot keeps the badge's place, so the uptime starts where it does
+  // with the badge, in both layouts
+  for (const size of [{ width: 1770, height: 1000 }, { width: 390, height: 844 }]) {
+    await setViewportSize(size);
+    await page.waitForTimeout(300);
+    const name = `${size.width}x${size.height}`;
+    const x = await evaluate(() => Math.round(document.getElementById("status-text").getBoundingClientRect().left * 10) / 10);
+    ok(`gprs: ${name}: without the badge the uptime starts where it does with it`, x === uptimeAt[name].x,
+      `${x} vs ${uptimeAt[name].x}`);
+  }
+  await setViewportSize({ width: 1770, height: 1000 });
+  await page.waitForTimeout(300);
   await page.click("#btn-stop");
   await page.waitForFunction(() => window.__ui.state === "idle", null, { timeout: 60000 });
   await evaluate(() => { document.getElementById("gsm").checked = true; });
