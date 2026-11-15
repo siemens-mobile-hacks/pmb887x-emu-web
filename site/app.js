@@ -753,7 +753,7 @@ function renderAction() {
         : '<svg class="ico" viewBox="0 0 24 24"><rect x="6.8" y="6.8" width="10.4" height="10.4" rx="2"/></svg>';
     }
     b.append(kind === "start" ? "Start" : kind === "stop" ? "Stop" : "Cancel");
-    b.addEventListener("click", kind === "start" ? () => boot() : stop);
+    b.addEventListener("click", kind === "start" ? () => startRun() : stop);
     pillActionEl.replaceChildren(b);
   }
   const btn = pillActionEl.firstElementChild;
@@ -2179,6 +2179,7 @@ function onGuestExit(code) {
   refreshTyping();
   stopGuestOutput();
   stopRecording();          // flushes whatever was captured
+  endAudio();               // closed once that capture is saved
   finalExitCheck();         // a crash dump it printed on its way out
   setEmuState("idle");
   // the EXIT panel is the screen's own report; it replaces this one
@@ -2224,7 +2225,22 @@ function stop() {
   });
 }
 
-$("boot-form").addEventListener("submit", (e) => { e.preventDefault(); boot(); });
+$("boot-form").addEventListener("submit", (e) => { e.preventDefault(); startRun(); });
+
+// Start is the user gesture the browser's autoplay rules ask for, so each
+// run's AudioContext is created here, before boot() awaits anything. A Start
+// that ends without a live guest (an error, a cancel, a second click while
+// the first waits) closes it again once no other Start is under way.
+let startsPending = 0;
+async function startRun() {
+  if (QS.get("sound") !== "off" && !QS.get("suite")) audioContext();
+  startsPending++;
+  try {
+    await boot();
+  } finally {
+    if (--startsPending === 0 && !running) endAudio();
+  }
+}
 
 // "S75v40lg1.bin" -> "S75v40lg1 modified.bin": the suffix goes on the name, not
 // after the extension, so the file still opens as a .bin
@@ -2650,7 +2666,7 @@ for (const [chk, key, apply] of [
 // way and a mute never changes what the firmware is timing against.
 const RING_WORDS = 16, RING_ACTIVE = 6, RING_UNDERRUNS = 8;
 const SOUND_KEY = "opt-sound";
-let audioCtx = null;      // one per page — boots reuse it
+let audioCtx = null;      // one per run: startRun() creates it, endAudio() closes it
 let audioNode = null;
 let speaker = null;       // gain between the worklet and the device: the mute
 let recSound = null;      // MediaStreamAudioDestinationNode while a capture records
@@ -2671,6 +2687,22 @@ function audioContext() {
   // ring fills and back-pressure stalls the guest's audio pipeline.
   audioCtx.onstatechange = updateListening;
   return audioCtx;
+}
+
+// The end of a run closes its context. A context kept for the page kept its
+// AudioWorklet's isolate too, and that isolate held every finished run's
+// 2 GiB heap (the ring's buffer) until it happened to collect (PA-1). The
+// next Start makes a new one; speaker and worklet belong to the old one. A
+// capture still saving its file keeps the context until it has.
+function endAudio() {
+  const ac = audioCtx;
+  if (!ac) return;
+  audioCtx = null;
+  speaker = null;
+  workletReady = null;
+  ac.onstatechange = null;
+  const close = () => ac.close().catch(() => {});
+  if (recorder) recDone.push(close); else close();
 }
 
 // What the guest's mixer resamples to. Matching the device's own rate leaves
@@ -2761,7 +2793,8 @@ soundBtn.addEventListener("click", async () => {
   soundOn = !soundOn;
   store.set(SOUND_KEY, soundOn ? "1" : "0");
   renderSound();
-  const ac = audioContext();
+  // the run's context; between runs there is none, and the next Start makes it
+  const ac = audioCtx;
   if (!ac) return;
   if (soundOn) {
     try { await ac.resume(); } catch { /* no gesture yet: the next Start has one */ }
