@@ -36,7 +36,7 @@ S75v40 were each the only run on the host, the others ran five at a time:
 | `SL65v49lg1_TIM.bin` | 9.3 s | not in 240 s | |
 | `KE800v11b.bin` | 17 s | not in 240 s | "Test Network", full signal |
 | `KE970v10d.bin` | 16.5 s | not in 240 s | "Test Network", full signal |
-| `s75_working20060710172101.bin` (the gate's S75) | not in 240 s | | "Поиск сети" (searching) |
+| `s75_working20060710172101.bin` (the gate's S75) | never: its network selection is Manual (below) | | "Поиск сети" (searching) |
 
 So the LG phones register now (the 2026-11-11 "No network" above is
 history), and no phone attaches to GPRS until something on it uses it.
@@ -295,9 +295,13 @@ So the built-in cell stays where upstream runs it.
 - **LG boards**: KE800 and KE970 stayed on "No network" at qemu
   47d1ff26aa, native build included. At 133f91266b (bsp 191612c) both
   register and show "Test Network" (table above).
-- **The gate's S75 image** (`s75_working20060710172101.bin`) does not
-  register: after 240 s it still searches. S75v40lg1.bin registers in
-  10 s. Not looked into.
+- **The gate's S75 image** (`s75_working20060710172101.bin`) never
+  registers: its network selection is set to Manual, so it searches only
+  for the one carrier it was set to, and the cell (001-01) is not that
+  carrier. It keeps showing "Поиск сети" (searching). That is the image's
+  setting, not an emulator fault, and the image is left as it is (it is the
+  gate's, booted read-only). S75v40lg1.bin, on automatic selection,
+  registers in 10 s.
 - **Deep sleep.** With the radio enabled and an accessory that lets the
   firmware deep-sleep (music cable, or none) EL71 hangs about a minute after
   boot: the firmware waits for `SCCUCLKSTA.GSMCLK` to clear after writing
