@@ -38,6 +38,7 @@ import { chromium } from "playwright-core";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { UI_READ, guestGone } from "./lib/page.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const argv = process.argv.slice(2);
@@ -99,7 +100,19 @@ const SAMPLER = `(() => {
   window.__bootTimer = setInterval(tick, 200);
 })()`;
 
+// the idle detector's sample; a guest that died keeps answering with the
+// count it stopped at, which reads as quiet, so it checks that it is there
+const IDLE_SNAP = `({ t: performance.now(), i: Number(window.__qemu._wasm_insns()), ui: ${UI_READ} })`;
+
 async function boot(p, spec, measured) {
+  let pageErr = null;
+  p.on("pageerror", (e) => { pageErr ??= String(e).slice(0, 200); });
+  const sample = async () => {
+    const c = await p.evaluate(IDLE_SNAP);
+    const gone = guestGone(c.ui) || (pageErr && `page error: ${pageErr}`);
+    if (gone) throw new Error(`guest gone during the boot: ${gone}`);
+    return c;
+  };
   const q = distQuery(spec);
   await p.goto(`http://127.0.0.1:${port}/?dist=${distDir(spec)}${q ? "&" + q : ""}`,
     { waitUntil: "domcontentloaded", timeout: 120000 });
@@ -123,11 +136,11 @@ async function boot(p, spec, measured) {
   await p.click("#btn-start");
   await p.waitForFunction(() => !!window.__qemu?._wasm_insns, null, { timeout: 240000 });
   let quiet = 0, idleAt = null;
-  let last = await p.evaluate(() => ({ t: performance.now(), i: Number(window.__qemu._wasm_insns()) }));
+  let last = await sample();
   for (;;) {
     await sleep(1000);
     if ((Date.now() - t0) / 1000 > 300) throw new Error("guest never went idle");
-    const c = await p.evaluate(() => ({ t: performance.now(), i: Number(window.__qemu._wasm_insns()) }));
+    const c = await sample();
     quiet = (c.i - last.i) / ((c.t - last.t) / 1000) < 8e6 ? quiet + 1 : 0;
     last = c;
     if (idleAt == null && (Date.now() - t0) / 1000 >= 15 && quiet >= 4 && c.i >= ph.bootInsns)
@@ -207,13 +220,10 @@ async function runOnce(spec, run) {
       await p0.close();
     }
     const p = await ctx.newPage();
-    let pageErr = null;
-    p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });
     const conMatch = process.env.BOOTBENCH_CONSOLE;
     if (conMatch) p.on("console", (m) => { if (m.text().includes(conMatch)) console.log(`[console] ${m.text().slice(0, +(process.env.BOOTBENCH_CONSOLE_MAX || 300))}`); });
     const { idleAt, samples } = await boot(p, spec, true);
     Object.assign(result, analyse(idleAt, samples));
-    if (pageErr) result.pageErr = pageErr;
     if (process.env.BOOTBENCH_SAMPLES) result.samples = samples;
     result.ok = true;
   } catch (e) {

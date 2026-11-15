@@ -52,3 +52,20 @@ export async function bounded(promise, fallback, { ms = 15000, onError } = {}) {
     return fallback;
   }
 }
+
+// What window.__ui says about the run, as page code to splice into a
+// sampler (`{ ..., ui: ${UI_READ} }`): the frozen counters of a guest that
+// died look like an idle one, so a sampler reads these with them.
+export const UI_READ = `((u) => u && { state: u.state, error: u.error, exitCode: u.exitCode,
+  exit: u.exit && { type: u.exit.type, code: u.exit.code } })(window.__ui)`;
+
+// Why the guest is gone, from a UI_READ reading: the firmware's EXIT dump,
+// qemu's exit (exitCode is cleared at Start), or an error the page shows.
+// null while none of them has happened.
+export function guestGone(ui) {
+  if (!ui) return null;
+  if (ui.exit) return `firmware EXIT ${[ui.exit.type, ui.exit.code].filter(Boolean).join(" ") || "(no details)"}`;
+  if (ui.exitCode != null) return `qemu exited (${ui.exitCode}), page ${ui.state}`;
+  if (ui.error) return `page error: ${String(ui.error).slice(0, 200)} (page ${ui.state})`;
+  return null;
+}

@@ -66,6 +66,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
+import { UI_READ, guestGone } from "./lib/page.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const argv = process.argv.slice(2);
@@ -252,7 +253,7 @@ const outBase = path.join(here, `../tests/results/scenebench-${scenarioName}-` +
 const SNAP = `(() => {
   const m = window.__qemu;
   const r = { t: performance.now(), v: Number(m._wasm_vclock()), insns: Number(m._wasm_insns()),
-    fb: Number(m._wasm_fb_updates()) };
+    fb: Number(m._wasm_fb_updates()), ui: ${UI_READ} };
   const ptr = m._wasm_audio_ring_ptr ? Number(m._wasm_audio_ring_ptr()) : 0;
   if (ptr) {
     const h = new Int32Array(m.HEAPU8.buffer, ptr, 16);
@@ -385,14 +386,20 @@ async function runOnce(spec, run) {
       },
     };
     const fail = (why) => { throw new Error(why + (pageErr ? " pageerror=" + pageErr : "") + (serialExit ? " serial=EXIT" : "")); };
+    // a guest that died keeps answering with the counters it stopped at
+    const snap = async (when) => {
+      const c = await p.evaluate(SNAP);
+      const gone = guestGone(c.ui) || (pageErr && "page error") || (serialExit && "firmware EXIT");
+      if (gone) fail(`${when}: ${gone}`);
+      return c;
+    };
 
     // boot done: the instruction rate stays low for 4 s (EL71 idles at ~4M/s)
-    let quiet = 0, last = await p.evaluate(SNAP);
+    let quiet = 0, last = await snap("boot");
     for (;;) {
       await sleep(1000);
-      if (serialExit || pageErr) fail("boot");
       if ((Date.now() - t0) / 1000 > 300) fail("guest never went idle");
-      const c = await p.evaluate(SNAP);
+      const c = await snap("boot");
       quiet = (c.insns - last.insns) / ((c.t - last.t) / 1000) < 8e6 ? quiet + 1 : 0;
       last = c;
       if ((Date.now() - t0) / 1000 >= 15 && quiet >= 4 && c.insns >= sc.bootInsns) break;
@@ -400,10 +407,7 @@ async function runOnce(spec, run) {
     result.tIdle = +((Date.now() - t0) / 1000 - 4).toFixed(1);
     await wait(10000);   // the network search banner and first redraws settle
     const startBy = Date.now() + 300000;
-    while (sc.startAt && (await p.evaluate(SNAP)).v / 1e9 < sc.startAt) {
-      // a guest that stopped keeps its clock where it was
-      const ui = await p.evaluate(() => window.__ui);
-      if (pageErr || ui?.exit || ui?.state === "idle") fail(`guest stopped before ${sc.startAt} s of guest time`);
+    while (sc.startAt && (await snap(`before ${sc.startAt} s of guest time`)).v / 1e9 < sc.startAt) {
       if (Date.now() > startBy) fail(`guest time did not reach ${sc.startAt} s`);
       await sleep(1000);
     }
@@ -433,7 +437,7 @@ async function runOnce(spec, run) {
         if (!there) await wait(1000);
       }
       if (!there) console.log(`[scenebench] ${tag}: attempt ${attempt} missed the app, retrying`);
-      if (serialExit || pageErr) fail("navigation");
+      await snap("navigation");
     }
     if (!there) fail("could not reach the app");
     if (sc.start && !(await sc.start(s))) fail("app did not start");
@@ -442,7 +446,7 @@ async function runOnce(spec, run) {
     if (process.env.SCENEBENCH_AT_MEASURE) await p.evaluate(process.env.SCENEBENCH_AT_MEASURE);
 
     await sleep(3000);
-    const a = await p.evaluate(SNAP);
+    const a = await snap("measure");
     const cpu0 = treeCpuS();
     let minFill = Infinity, maxFill = 0, prev = a;
     const underrunAt = [];
@@ -452,7 +456,7 @@ async function runOnce(spec, run) {
     playing?.catch(() => {});
     for (let el = 0; el < measureS * 1000; el += 1000) {
       await sleep(1000);
-      const c = await p.evaluate(SNAP);
+      const c = await snap("measure");
       if (c.freq) {
         const fill = ((c.write - c.read) | 0) / c.freq * 1000;
         minFill = Math.min(minFill, fill);
@@ -465,7 +469,7 @@ async function runOnce(spec, run) {
     }
     await playing;
     if (a.freq) result.underrunAt = JSON.stringify(underrunAt);
-    const c = await p.evaluate(SNAP);
+    const c = await snap("measure");
     const cpu1 = treeCpuS();
     await shoot("end");
     const wall = (c.t - a.t) / 1000;

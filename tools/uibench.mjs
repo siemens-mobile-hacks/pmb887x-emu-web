@@ -37,6 +37,7 @@ import { chromium } from "playwright-core";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { UI_READ, guestGone } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -93,8 +94,10 @@ p.on("console", (m) => {
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function snap() {
-  return p.evaluate(() => {
+// every sample; a guest that died keeps answering with the counters it
+// stopped at, so each one also checks that it is still there
+async function snap(when) {
+  const s = await p.evaluate(`(() => {
     const m = window.__qemu;
     const f = (n, ...a) => (typeof m[n] === "function" ? Number(m[n](...a)) : 0);
     const bench = {};
@@ -102,9 +105,13 @@ async function snap() {
     return {
       ...bench,
       t: performance.now(), v: f("_wasm_vclock"), insns: f("_wasm_insns"),
-      fb: f("_wasm_fb_updates"), halts: f("_wasm_halts"),
+      fb: f("_wasm_fb_updates"), halts: f("_wasm_halts"), ui: ${UI_READ},
     };
-  });
+  })()`);
+  const gone = guestGone(s.ui) || (pageErr && "page error") || (serialExit && "firmware EXIT");
+  if (gone) await fail(`${when}: ${gone}`);
+  delete s.ui;
+  return s;
 }
 async function shoot(tag) {
   try { const lcd = await p.$("#lcd"); if (lcd) await lcd.screenshot({ path: `${outBase}-${tag}.png` }); } catch {}
@@ -127,20 +134,19 @@ await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });
 
 // boot done = the guest goes quiet (no reference image, so this works for
 // any firmware); the floor keeps a mid-boot dip from ending it early
-let tIdle = null, quiet = 0, last = await snap();
+let tIdle = null, quiet = 0, last = await snap("boot");
 const bootTrace = [[0, 0]];    // [wall s since start, insns]
 if (settleS) {
   while ((Date.now() - t0) / 1000 < settleS) {
     await sleep(1000);
-    if (serialExit || pageErr) await fail("boot: " + (pageErr || "guest EXIT"));
+    await snap("boot");
   }
   tIdle = settleS;
-  last = await snap();
+  last = await snap("boot");
 }
 while (tIdle === null && (Date.now() - t0) / 1000 < idleMax) {
   await sleep(1000);
-  if (serialExit || pageErr) await fail("boot: " + (pageErr || "guest EXIT"));
-  const s = await snap();
+  const s = await snap("boot");
   const rate = (s.insns - last.insns) / ((s.t - last.t) / 1000);
   last = s;
   bootTrace.push([(Date.now() - t0) / 1000, s.insns]);
@@ -166,12 +172,12 @@ await shoot("idle");
 
 // one measurement window; `drive` runs concurrently with it
 async function measure(name, drive) {
-  const a = await snap();
+  const a = await snap(name);
   const done = drive ? drive() : Promise.resolve();
   await sleep(measureS * 1000);
   stopDriving = true;
   await done;
-  const c = await snap();
+  const c = await snap(name);
   const d = {}; for (const k in a) d[k] = c[k] - a[k];
   const wall = d.t / 1000;
   const rec = {
