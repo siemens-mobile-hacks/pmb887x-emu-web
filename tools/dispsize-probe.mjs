@@ -29,7 +29,8 @@
 //
 // Until 2026-11-14 (TB-2) `rand` was an LCG computed in doubles, which loses
 // its low bits: over 4096 functions it reached about 84, and the array's
-// 8192 entries capped every larger F.  Its results need re-measurement.
+// 8192 entries capped every larger F.  Re-measured that day: performance.md,
+// Closed ideas, dispatch locality.
 import { chromium } from "playwright-core";
 import { gotoBlank } from "./lib/page.mjs";
 

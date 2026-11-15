@@ -20,7 +20,7 @@
 // loses its low bits: it reached about 84 of the 4096 functions.  Now the
 // walk is every function equally often (at least 8192 entries, at least
 // one per function) shuffled with xorshift32, and the results of that time
-// need re-measurement.
+// were re-measured that day: performance.md, Closed ideas, typed funcref.
 import { chromium } from "playwright-core";
 import { gotoBlank } from "./lib/page.mjs";
 

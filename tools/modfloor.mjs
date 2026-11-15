@@ -11,16 +11,14 @@
 // with everything else held fixed; BUSY=1 boots a board first so the same
 // measurement runs against the machine load the vCPU worker sees.
 //
-// Answer, for the record: every shape of that size costs 21-25 us here,
-// busy or idle, so nothing about the module explains the emulator's 83 us.
-// W64_MODBENCH (tcg/wasm64/wasm64.c) then showed the same bytes cost
-// 12-31 us compiled back-to-back inside the vCPU worker itself -- the
-// difference is cold cache, not the module and not the isolate.
-// Needs re-measurement (TB-1, 2026-11-14): until then this probe compiled
-// at most 128 distinct modules per row (32 for the local-touching shapes,
-// and its warm-up compiled the first one again), and W64_MODBENCH the same
-// bytes 200 times, so both numbers include V8's compiled-module cache.
-// Every module is now distinct.
+// Answer, for the record (2026-11-14, every module distinct, idle page):
+// the close shapes cost 46-51 us, one function 27-30 us, twenty 59-70 us.
+// Until then this probe compiled at most 128 distinct modules per row (32
+// for the local-touching shapes, and its warm-up compiled the first one
+// again), and W64_MODBENCH (tcg/wasm64/wasm64.c) compiled the same bytes
+// 200 times, so their 21-25 us and 12-31 us were V8's compiled-module
+// cache, and so was the "cold cache" that was to explain the rest of the
+// emulator's 83 us in September.  BUSY=1 was not re-measured.
 //
 //   PORT=8080 [BUSY=1 TESTFLASH=...] node tools/modfloor.mjs
 import { chromium } from "playwright-core";

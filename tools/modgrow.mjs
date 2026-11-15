@@ -8,8 +8,9 @@
 // there, and W64_MODBENCH saw 12-31 us back-to-back inside the vCPU worker
 // -- while the emulator pays ~74 us fixed per module (fit over its own two
 // populations: 2.3 KB closes at 77 us, 404 KB compaction modules at
-// 580 us).  (modfloor's and W64_MODBENCH's figures compiled repeated bytes
-// and need re-measurement, TB-1 2026-11-14.)  But modfloor creates a
+// 580 us).  (modfloor's and W64_MODBENCH's figures compiled repeated bytes;
+// with distinct modules, 2026-11-14, modfloor's shapes cost 46-51 us and this
+// probe stays flat at ~50 us from 250 to 8000 live modules.)  But modfloor creates a
 // handful of modules; the boot holds
 // hundreds to W64_LIVE_MAX=6144 of them at once, each with its own
 // NativeModule and code space.
