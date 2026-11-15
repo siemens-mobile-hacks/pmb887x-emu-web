@@ -1909,7 +1909,7 @@ async function boot() {
   attachAudio();   // needs liveModule(); the worklet loads on its own time
   // a dist built before the export existed runs without the phone's Internet
   if (gsm && qemuModule._wasm_net_attach) {
-    gprsNet = new GprsNet(qemuModule, { onStatus: showGprsStatus });
+    gprsNet = new GprsNet(qemuModule, { onChange: (what) => what === "state" && showGprsStatus() });
     window.__gprsNet = gprsNet; // debugging and tools/gprscheck.mjs --web
     gprsNet.start();
   }
@@ -1917,10 +1917,13 @@ async function boot() {
   if (bootCancelled) stop();
 }
 
-// only trouble is shown: an online phone needs no caption
-function showGprsStatus(state, why) {
+// only trouble is shown: an online phone needs no caption, and a redial
+// keeps it up until the link is back
+function showGprsStatus() {
+  const g = gprsNet;
+  const down = g?.reason && (g.state === "offline" || g.state === "connecting");
   const cap = $("gsm-caption");
-  cap.textContent = state === "offline" ? `No GPRS Internet: ${why}` : "";
+  cap.textContent = down ? `No GPRS Internet: ${g.reason}` : "";
   cap.hidden = !cap.textContent;
 }
 
@@ -1931,7 +1934,7 @@ function onGuestExit(code) {
   gprsNet = null;
   window.__gprsNet = null;
   lastRelease = null;       // names this run's module, which must not outlive it
-  showGprsStatus("stopped");
+  showGprsStatus();
   exitCode = code;
   refreshTyping();
   stopGuestOutput();
