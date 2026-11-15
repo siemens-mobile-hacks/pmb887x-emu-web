@@ -557,7 +557,8 @@ ok("v2.1 6px dot", await $eval(".status-dot", (e) =>
 ok("gprs: the indicator is in the pill, hidden with no run", await evaluate(() => {
   const g = document.getElementById("gprs");
   return g?.parentElement?.id === "status" && g.hidden && g.getAttribute("role") === "img"
-    && g.getAttribute("aria-label") === "GPRS off" && window.__ui.gprs.state === "off";
+    && g.getAttribute("aria-label") === "Network off" && window.__ui.gprs.state === "off"
+    && window.__ui.gprs.badge === "off" && window.__ui.gsm.known === false;
 }));
 ok("v2.1 action button is 24px tall and right-aligned in the pill",
   await evaluate(() => {
@@ -829,6 +830,27 @@ if (!process.env.SKIP_BOOT) {
   await page.waitForFunction(() => window.__ui.ready);
   ok("2.2 Start enabled once firmware is ready", await $eval("#btn-start", (e) => !e.disabled));
   ok("2.2 no caption when Start is live", await $eval("#status-caption", (e) => e.hidden));
+  // every badge the run shows, with the frames the phone had sent by then:
+  // the boot must not reach a link state (connected, or dialling at all)
+  // unless the phone's own GPRS traffic went out first
+  // (counted where the relay takes them from qemu: the frame that dials
+  // the link is dropped, so txFrames misses it; a phone sends nothing
+  // before it registers, seconds after the counter is in place)
+  await evaluate(() => {
+    window.__badges = [];
+    window.__phoneFrames = 0;
+    window.__badgeTimer = setInterval(() => {
+      const m = window.__qemu;
+      if (m?._wasm_net_take && !m.__counted) {
+        const take = m._wasm_net_take;
+        m._wasm_net_take = () => { const n = take(); if (n > 0) window.__phoneFrames++; return n; };
+        m.__counted = true;
+      }
+      const g = window.__ui?.gprs;
+      if (g && g.badge !== window.__badges.at(-1)?.badge)
+        window.__badges.push({ badge: g.badge, phoneFrames: window.__phoneFrames });
+    }, 100);
+  });
   await page.click("#btn-start");
   await page.waitForFunction(() => window.__ui.state === "running", null, { timeout: 180000 });
 
@@ -871,16 +893,20 @@ if (!process.env.SKIP_BOOT) {
   // been under 0.80x for three seconds
   ok("2.2 running pill", /^Running · \d+:\d\d( · slow)?$/.test(await text("#status-text")), await text("#status-text"));
   ok("2.2 Stop replaced Start", !(await has("#btn-start")) && (await has("#btn-stop")));
-  // the phone has not used GPRS, so no link was dialled: idle, in the
-  // dot's place, and nothing announced for it
-  ok("gprs: a GSM run shows the indicator in the dot's place", await evaluate(() => {
+  // the phone has not used GPRS, so no link was dialled: the badge shows
+  // what the cell says of the phone (no network, registered or attached),
+  // in the dot's place
+  ok("gprs: a GSM run shows the network badge in the dot's place", await evaluate(() => {
     const g = document.getElementById("gprs");
     const r = g.getBoundingClientRect();
-    return !g.hidden && g.getAttribute("aria-label") === "GPRS not used yet"
-      && window.__ui.gprs.state === "idle" && !window.__gprsNet.ws
+    const label = { nonet: "No network", registered: "Registered on the network, GPRS not attached" };
+    return !g.hidden && ["nonet", "registered", "attached"].includes(g.dataset.state)
+      && (g.dataset.state === "attached" || g.getAttribute("aria-label") === label[g.dataset.state])
+      && window.__ui.gprs.state === "idle" && window.__ui.gprs.badge === g.dataset.state
+      && window.__ui.gsm.known && !window.__gprsNet.ws
       && getComputedStyle(document.querySelector(".status-dot")).display === "none"
-      && g.nextElementSibling.id === "status-open" && r.width <= 14 && r.height <= 18;
-  }), await evaluate(() => JSON.stringify(window.__ui.gprs)));
+      && g.nextElementSibling.id === "status-open" && r.width <= 12 && r.height <= 18;
+  }), await evaluate(() => JSON.stringify([window.__ui.gprs, window.__ui.gsm])));
   ok("2.2 exactly one action button", await evaluate(() =>
     [...document.querySelectorAll("button")].filter((b) => /^(Start|Stop|Cancel)$/.test(b.textContent.trim())).length === 1));
   ok("1.7 every firmware control is disabled", await evaluate(() => {
@@ -1153,6 +1179,13 @@ if (!process.env.SKIP_BOOT) {
   ok("EFA export stays hidden for the siemens run", await $eval("#btn-save-efa", (e) => e.hidden));
   ok("gprs: hidden again after Stop", await evaluate(() =>
     document.getElementById("gprs").hidden && window.__ui.gprs.state === "off"));
+  // the boot regression: the badge went to "connected" during boot with no
+  // GPRS frame from the phone (doc/gsm-network.md, "The badge")
+  ok("gprs: the run reached no link state without the phone's GPRS traffic", await evaluate(() => {
+    clearInterval(window.__badgeTimer);
+    return window.__badges.length > 1 && window.__badges.every(({ badge, phoneFrames }) =>
+      ["off", "nonet", "registered", "attached", "idle"].includes(badge) || phoneFrames > 0);
+  }), await evaluate(() => JSON.stringify(window.__badges)));
 
   // the same image with the GSM network unticked: no indicator, the dot back
   await evaluate(() => {

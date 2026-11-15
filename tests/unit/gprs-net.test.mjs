@@ -204,3 +204,51 @@ test("GprsNet: traffic is noticed at most every 250 ms, and only when there is s
   g.poll();
   assert.equal(traffic(), 5);
 });
+
+test("GprsNet: reads the cell's ms-state once a second, notices each change, never dials for it", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 1e9 });
+  // mock tick() moves Date to its end before the intervals run: step it
+  const run = (ms) => { for (let n = 0; n < ms; n += 20) t.mock.timers.tick(20); };
+  const { g, states } = rig();
+  let ms = 0, reads = 0;
+  const notices = [];
+  g.m._wasm_gsm_state = () => (reads++, ms);
+  g.ms = 0;
+  g.onChange = (what) => { if (what === "gsm") notices.push(g.ms); else states.push(g.state); };
+  g.start();
+  run(10e3);                // 500 polls of 20 ms
+  assert.ok(reads >= 10 && reads <= 11, `${reads} reads in 10 s`);
+  assert.deepEqual(notices, []);           // no change from the 0 it started with
+  ms = 1;                                  // LOCATION UPDATING ACCEPT
+  run(1000);
+  ms = 1 | 2 | 4;                          // GMM ATTACH ACCEPT, then a PDP context
+  run(1000);
+  assert.deepEqual(notices, [1, 7]);
+  assert.deepEqual([g.registered, g.gprsAttached, g.pdpActive], [true, true, true]);
+  ms = 1;                                  // GMM DETACH
+  run(1000);
+  assert.deepEqual([g.registered, g.gprsAttached, g.pdpActive], [true, false, false]);
+  assert.equal(FakeSocket.made.length, 0);
+  assert.deepEqual(states, []);
+  g.stop();
+  const after = reads;
+  run(10e3);                // stopped: no poll, no read
+  assert.equal(reads, after);
+});
+
+test("GprsNet: a dist without _wasm_gsm_state has ms null and is never asked", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 1e9 });
+  const { g } = rig();
+  assert.equal(g.ms, null);
+  g.start();
+  t.mock.timers.tick(5e3);
+  assert.deepEqual([g.ms, g.registered, g.gprsAttached, g.pdpActive], [null, false, false, false]);
+  g.stop();
+});
+
+test("GprsNet: a module with _wasm_gsm_state starts at 0, not registered", () => {
+  FakeSocket.made = [];
+  const g = new GprsNet({ _wasm_gsm_state: () => 1 }, { url: "ws://gw/gprs" });
+  assert.equal(g.ms, 0);
+  assert.equal(g.registered, false);
+});
