@@ -63,40 +63,41 @@ for (const w of workers) {
 console.log(`profiling ${workers.length} workers for ${secs}s`);
 await new Promise((r) => setTimeout(r, secs * 1000));
 
-// the vCPU is the worker whose samples span the most wasm scripts (two
+// The main module's frames carry the url it was fetched from; only TB
+// modules, compiled from bytes, are wasm://wasm/<hash>.
+const isMain = (url) => /qemu-system-arm\.wasm(?:[?#]|$)/.test(url);
+// the vCPU is the worker whose samples span the most TB modules (two
 // helper workers spin inside one wasm function and outweigh it on samples)
 let best = null, bestN = 0;
 for (const w of workers) {
   const { profile } = (await send("Profiler.stop", {}, w.sessionId)).result;
   const byId = new Map(profile.nodes.map((n) => [n.id, n]));
   const mods = new Map();
-  let tot = 0;
+  let tot = 0, mainT = 0, mainUrl = null;
   for (let j = 0; j < profile.samples.length; j++) {
     const cf = byId.get(profile.samples[j]).callFrame;
     const dt = profile.timeDeltas[j] || 0;
     tot += dt;
+    if (isMain(cf.url)) { mainT += dt; mainUrl = cf.url; continue; }
     if (!cf.url.startsWith("wasm://")) continue;
     if (!mods.has(cf.url)) mods.set(cf.url, { t: 0, fns: new Map() });
     const m = mods.get(cf.url);
     m.t += dt;
     m.fns.set(cf.functionName, (m.fns.get(cf.functionName) || 0) + dt);
   }
-  if (mods.size > bestN) { bestN = mods.size; best = { w, mods, tot }; }
+  if (mods.size > bestN) { bestN = mods.size; best = { w, mods, tot, mainT, mainUrl }; }
 }
 
 if (!best) {
   console.error(`none of the ${workers.length} workers ran wasm in ${secs}s`);
   process.exit(1);
 }
-// the main module is the one wasm script with thousands of named functions
-const ranked = [...best.mods].sort((a, b) => b[1].t - a[1].t);
-const main = ranked.reduce((a, r) => (r[1].fns.size > a[1].fns.size ? r : a), ranked[0]);
-const hot = ranked.filter((r) => r !== main).slice(0, nmod);
+const hot = [...best.mods].sort((a, b) => b[1].t - a[1].t).slice(0, nmod);
 
 await send("Debugger.enable", {}, best.w.sessionId);
 await new Promise((r) => setTimeout(r, 1500));
 const report = { worker: best.w.targetInfo.url, totalMs: best.tot / 1000,
-  main: { url: main[0], share: main[1].t / best.tot }, modules: [] };
+  main: { url: best.mainUrl, share: best.mainT / best.tot }, modules: [] };
 for (const [url, m] of hot) {
   const sid = scripts.get(url);
   const hash = url.slice("wasm://wasm/".length);
