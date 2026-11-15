@@ -1969,7 +1969,11 @@ function renderGprs() {
     online: "GPRS connected", active: "GPRS connected",
     offline: `GPRS offline: ${g?.reason}`, refused: `GPRS refused: ${g?.reason}`,
   }[shown]);
-  if (shown !== "online" && shown !== "active") gprsLight(false, false);
+  if (shown !== "online" && shown !== "active") {
+    gprsLight(false, false);
+    clearTimeout(gprsLitTimer);
+    gprsLitTimer = 0;
+  }
   clearInterval(gprsWaitTimer);
   gprsWaitTimer = gprsRetryIn(g) > 0 ? setInterval(gprsWait, 1000) : 0;
   gprsWait();
