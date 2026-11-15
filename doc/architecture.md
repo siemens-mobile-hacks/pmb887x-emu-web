@@ -222,6 +222,40 @@ thread is using them).
   Start/Stop/Cancel there is (`window.__ui` mirrors that state for the
   drivers in `tools/`). A capture in progress is a second pill beside it,
   ended with **Finish** — "Stop" only ever means the emulator.
+- **GPRS indicator** (`#gprs`, `renderGprs()` in app.js). While a run has
+  the GSM network, a 12px glyph of two arrows takes the place of the
+  pill's dot, which only repeats the pill's own colour, so it costs the
+  row no width and "Running · 0:17" stays whole at 390px. A run without
+  the network (option unticked, a board without a radio, a dist without
+  `_wasm_net_attach`) shows none and keeps the dot. What it shows:
+  - **idle**, dim arrows: the phone has not used GPRS, so there is no
+    link. `gprs-net.js` dials the gateway only when the phone sends its
+    first frame, and after a close only when it sends again;
+  - **connecting**, pulsing amber;
+  - **connected**, green;
+  - **active**: the up arrow lights while frames go to the gateway, the
+    down arrow while they come back;
+  - **offline**, slashed red, with the redial countdown beside it while
+    the backoff runs. After that the link is dialled when the phone next
+    sends;
+  - **refused**, slashed on red: a close that is final for the run
+    (4003, 4004, 4009).
+
+  The glyph's accessible name (`role="img"`) says the state and the close
+  reason. Its title adds the frames and bytes each way. `#live-region`
+  says "GPRS connected" and "GPRS offline: …" or "GPRS refused: …" once
+  per change: a redial loop that fails the same way says it once, and
+  traffic says nothing. Advanced ▸ GSM network keeps its caption with the
+  same reason. `window.__ui.gprs` gives tools the shown state, reason,
+  close code, `retryIn` and the counts.
+
+  It costs the hot paths nothing. `GprsNet` (no DOM) keeps `state`,
+  `reason`, `code`, `retryAt` and `frames`/`bytes` both ways, and calls
+  `onChange("state")` on each change. From its existing 20 ms poll it
+  calls `onChange("traffic")` when frames were counted, at most every
+  250 ms. The page writes the DOM only from those calls, from a 400 ms
+  timer that puts the arrows out, and from a 1 Hz countdown while a
+  redial waits. Nothing runs from the paint loop, the key path or audio.
 - **The phone column is the same view at every size, and it is laid out in
   CSS alone.** One `100dvh` page that never scrolls: a single 32px control
   row (state/firmware pill, screenshot, record, sound, fullscreen, and the
