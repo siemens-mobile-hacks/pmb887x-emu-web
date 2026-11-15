@@ -126,6 +126,8 @@ hops back in `X-Forwarded-For`. Every nginx in the path appends one hop:
 | `serve.mjs` → gateway | `1` |
 | browser → gateway directly | `0` |
 
+nginx-proxy appends the client's address (with `TRUST_DOWNSTREAM_PROXY=false`
+it sends that address alone), so either way the client is its last entry.
 Too low and every phone counts as the proxy's address, so all of them
 share `PER_IP` connections and one day's quota. Too high and a client can
 choose its own address with a forged `X-Forwarded-For`, which evades bans.
@@ -195,12 +197,13 @@ address, so its filters are the whole point:
 - The domain, DNS and TLS are the front's (`deploy/nginx/README.md`); the
   page must be `https://` for cross-origin isolation, and so the gateway
   sees `Origin: https://<host>`.
-- nginx-proxy's own `proxy_read_timeout` is nginx's default 60 s, so the
-  front closes an idle `/gprs` after a minute. The page dials again on the
+- nginx-proxy sets no proxy timeouts, so nginx's default 60 s closes an
+  idle `/gprs` at the front after a minute. The page dials again on the
   next frame, but the phone's open TCP connections in that slirp are lost.
-  To keep them for the gateway's 15 minutes, raise it for this host on the
-  front, for example `proxy_read_timeout 960s;` in its
-  `vhost.d/<host>_location`.
+  Install `deploy/nginx/front-location.conf` on the front as
+  `/etc/nginx/vhost.d/<VIRTUAL_HOST>_location` (`deploy/nginx/README.md`,
+  "Front settings"); then an idle link lasts until the gateway's own
+  15-minute close.
 - Do not also run bts-emulator's `compose.web.yaml` for the same host: its
   `VIRTUAL_PATH=/gprs` makes the front send `/gprs` to that stack instead.
   Use one or the other. That stack keeps the operator services, this one
