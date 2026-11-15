@@ -190,7 +190,16 @@ done
 # A gate stopped half way must not leave its jobs behind: their browsers and
 # the unpaced native qemus keep running on their own otherwise.  The same
 # goes for its server and for a pre-step (a native build) still running.
-SRV="" pre=""
+#
+# A signal from outside (`timeout 170 gate.sh`, Ctrl-C, a closed terminal)
+# reaches the whole process group of this shell, so the job subshells die
+# with it and their children cannot be found from them any more.  Each job's
+# `timeout` leads a process group of its own (it calls setpgid), which the
+# signal does not reach; the job records that group in JOBDIR and the
+# cleanup kills every member of it and everything below them.  Playwright
+# starts its browser in a session of its own, which is why the descendants
+# are collected as well as the group.
+SRV="" pre="" JOBDIR=""
 # the jobs not yet reaped, by pid: a finished job's pid can be reused
 declare -A live=()
 descendants() {
@@ -198,15 +207,34 @@ descendants() {
   for c in $(pgrep -P "$1"); do echo "$c"; descendants "$c"; done
 }
 cleanup() {
-  local p all=()
+  local p g f all=()
   for p in "${!live[@]}" $pre; do
     kill -0 "$p" 2>/dev/null && all+=("$p" $(descendants "$p"))
   done
-  [ ${#all[@]} -eq 0 ] || kill "${all[@]}" 2>/dev/null
+  if [ -n "$JOBDIR" ]; then
+    for f in "$JOBDIR"/*; do
+      [ -f "$f" ] || continue
+      g="$(<"$f")"
+      for p in $(pgrep -g "$g"); do all+=("$p" $(descendants "$p")); done
+    done
+  fi
+  if [ ${#all[@]} -gt 0 ]; then
+    kill "${all[@]}" 2>/dev/null
+    # a browser or a qemu can take a moment over a TERM; whatever is left
+    # after 15 s is killed, so that nothing outlives the gate
+    for _ in $(seq 150); do
+      for p in "${all[@]}"; do kill -0 "$p" 2>/dev/null && break; p=""; done
+      [ -z "$p" ] && break
+      sleep 0.1
+    done
+    kill -KILL "${all[@]}" 2>/dev/null
+  fi
   [ -z "$SRV" ] || kill "$SRV" 2>/dev/null
+  [ -z "$JOBDIR" ] || rm -rf "$JOBDIR"
   return 0
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -289,6 +317,8 @@ if [ "$need_plugins" = 1 ]; then
     { echo "gate: plugin build failed: $LOGDIR/build-plugins.log"; exit 1; }
 fi
 
+JOBDIR="$(mktemp -d "${TMPDIR:-/tmp}/gate-jobs-XXXXXX")"
+
 echo "gate: tier=$TIER dist=$DIST jobs=${#selected[@]} concurrency=$JOBS_MAX"
 echo "gate: logs in $LOGDIR"
 t_all=$(date +%s)
@@ -313,9 +343,13 @@ for j in "${selected[@]}"; do
   (
     t0=$(date +%s)
     # timeout signals the job's whole process group; -k for one that
-    # ignores the TERM
-    timeout -k 30 "$limit" bash -c "$cmd" >"$LOGDIR/$name.log" 2>&1
+    # ignores the TERM.  Started in the background so that its pid, the
+    # group's id, can be recorded for cleanup()
+    timeout -k 30 "$limit" bash -c "$cmd" >"$LOGDIR/$name.log" 2>&1 &
+    echo "$!" >"$JOBDIR/$name"
+    wait "$!"
     rc=$?
+    rm -f "$JOBDIR/$name"
     secs=$(( $(date +%s) - t0 ))
     if { [ "$rc" = 124 ] || [ "$rc" = 137 ]; } && [ "$secs" -ge "$limit" ]; then
       echo "gate: $name timed out after ${limit}s" >>"$LOGDIR/$name.log"
