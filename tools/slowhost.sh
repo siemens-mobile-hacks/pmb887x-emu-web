@@ -15,8 +15,23 @@ set -euo pipefail
 CORES="${CORES:-0-3}"
 SPIN="${SPIN:-1}"
 pids=()
+cmd=""
 cleanup() { kill "${pids[@]}" 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
+# a signal goes on to the command; the wrapper waits for it, stops the
+# spinners and exits 128+n
+on_signal() {
+  trap - HUP INT TERM
+  if [ -n "$cmd" ]; then
+    kill -"$1" "$cmd" 2>/dev/null || true
+    wait "$cmd" 2>/dev/null || true
+  fi
+  cleanup
+  exit $((128 + $2))
+}
+trap cleanup EXIT
+trap 'on_signal HUP 1' HUP
+trap 'on_signal INT 2' INT
+trap 'on_signal TERM 15' TERM
 # expand "a-b,c" into a core list
 for range in ${CORES//,/ }; do
   lo="${range%-*}"; hi="${range#*-}"
@@ -28,5 +43,11 @@ for range in ${CORES//,/ }; do
   done
 done
 echo "slowhost: cores=$CORES spinners/core=$SPIN (~$((100 / (SPIN + 1))) % of each core)" >&2
-# not exec: the EXIT trap must outlive the command to stop the spinners
-taskset -c "$CORES" "$@"
+# not exec, and in the background: the traps must outlive the command to
+# stop the spinners, and bash runs a trap only between commands, so a
+# foreground command would hold off TERM until it ended by itself
+taskset -c "$CORES" "$@" &
+cmd=$!
+rc=0
+wait "$cmd" || rc=$?
+exit "$rc"
