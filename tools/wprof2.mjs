@@ -8,29 +8,31 @@ import WebSocket from "ws";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { BUILD } from "./lib/build-dirs.mjs";
 
 // wasm-function[N] -> C symbol map (emcc --emit-symbol-map sidecar; the
-// wasm binary carries no name section). Looked up next to the wasm being
-// served (site/dist/ or site/dist-jit/) and in the build dirs.
+// wasm binary carries no name section). It has to be the map of the build
+// being served: ?dist=<d> (or PROF_DIST) reads site/<d>/ and nothing else;
+// without one, the page's default site/dist-jit/, then the build tree it is
+// copied from ($WEB_BUILD/qemu-wasm64, scripts/ninja-fast.sh).
 const qDist = (/(?:^|&)dist=([^&]+)/.exec(process.argv[3] || "") || [])[1] || process.env.PROF_DIST;
-const symPaths = [
-  ...(qDist ? [`../site/${qDist}/qemu-system-arm.js.symbols`] : []),
-  "../site/dist/qemu-system-arm.js.symbols",
-  "../site/dist-jit/qemu-system-arm.js.symbols",
-  "../build/qemu-wasm/qemu-system-arm.js.symbols",
-  "../build/qemu-wasm32/qemu-system-arm.js.symbols",
-];
+const SYMS = "qemu-system-arm.js.symbols";
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const symPaths = qDist ? [path.join(ROOT, "site", qDist, SYMS)]
+  : [path.join(ROOT, "site", "dist-jit", SYMS), path.join(BUILD, "qemu-wasm64", SYMS)];
 const fnSyms = new Map();
 for (const p of symPaths) {
   try {
-    for (const l of fs.readFileSync(new URL(p, import.meta.url), "utf8").split("\n")) {
+    for (const l of fs.readFileSync(p, "utf8").split("\n")) {
       const m = l.match(/^(\d+):(.*)$/);
       if (m) fnSyms.set(m[1], m[2]);
     }
-    console.log(`symbols: ${path.basename(path.dirname(p))} (${fnSyms.size} fns)`);
+    console.log(`symbols: ${path.relative(ROOT, p)} (${fnSyms.size} fns)`);
     break;
   } catch {}
 }
+if (!fnSyms.size) console.log(`symbols: none (tried ${symPaths.map((p) => path.relative(ROOT, p)).join(", ")}): main-module frames stay wasm-function[N]`);
 // The map numbers the main module's functions. A TB module
 // (wasm://wasm/<hash>) numbers its own from 0, so only frames of
 // qemu-system-arm.wasm are looked up; a TB frame keeps wasm-function[N].
@@ -152,14 +154,10 @@ try {
 
   const totals = new Map();
   const perWorker = [];
-  const throwStacks = new Map();
   let i = 0;
   for (const profile of profiles) {
     const nodes = profile.nodes;
     const byId = new Map(nodes.map((n) => [n.id, n]));
-    // build parent links
-    const parent = new Map();
-    for (const n of nodes) for (const c of n.children || []) parent.set(c, n.id);
     const wtotals = new Map();
     let wsum = 0;
     for (let j = 0; j < profile.samples.length; j++) {
@@ -169,18 +167,6 @@ try {
       const key = symOf(cf) + " " + (cf.url || "").slice(-24);
       wtotals.set(key, (wtotals.get(key) || 0) + (profile.timeDeltas[j] || 0));
       wsum += profile.timeDeltas[j] || 0;
-      if ((cf.functionName || "").includes("throw_longjmp")) {
-        // walk ancestors
-        const chain = [];
-        let cur = parent.get(profile.samples[j]);
-        while (cur !== undefined && chain.length < 9) {
-          const anc = byId.get(cur);
-          if (anc) chain.push(anc.callFrame.functionName || "?");
-          cur = parent.get(cur);
-        }
-        const sk = chain.join(" <- ");
-        throwStacks.set(sk, (throwStacks.get(sk) || 0) + (profile.timeDeltas[j] || 0));
-      }
     }
     for (const [k, v] of wtotals) totals.set(k, (totals.get(k) || 0) + v);
     perWorker.push({ idx: i, label: labels[i], sum: wsum, totals: wtotals });
@@ -198,6 +184,10 @@ try {
     if (/\b(idle|program|garbage collector)\b/.test(key)) return "idle / v8";
     return "page JS + browser";
   };
+  // time a thread waits rather than works: V8's idle, program and GC
+  // frames, and the futex and condvar waits emscripten's pthreads block in
+  const isWait = (key) => bucketOf(key) === "idle / v8" ||
+    key.startsWith("emscripten_futex_wait ") || key.startsWith("qemu_cond_wait_impl ");
   for (const w of perWorker) {
     console.log("\n=== " + w.label + " self-time (total " + (w.sum / 1000).toFixed(0) + "ms) ===");
     for (const [k, v] of [...w.totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN)) {
@@ -211,8 +201,7 @@ try {
     for (const [k, v] of w.totals) {
       const b = bucketOf(k);
       roll.set(b, (roll.get(b) || 0) + v);
-      if (b !== "idle / v8" && !k.startsWith("emscripten_futex_wait ") &&
-          !k.startsWith("qemu_cond_wait_impl ")) busy += v;
+      if (!isWait(k)) busy += v;
     }
     console.log("  -- all " + w.totals.size + " frames by module, busy=" +
                 (busy / 1000).toFixed(0) + "ms --");
@@ -232,9 +221,8 @@ try {
     else {
       let best = 0;
       for (const w of perWorker) {
-        let busy = w.sum;
-        for (const [k, v] of w.totals)
-          if (k.startsWith("emscripten_futex_wait ") || k === "(idle) ") busy -= v;
+        let busy = 0;
+        for (const [k, v] of w.totals) if (!isWait(k)) busy += v;
         if (busy > best) { best = busy; pick = w.idx; }
       }
     }
