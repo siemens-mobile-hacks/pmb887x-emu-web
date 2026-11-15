@@ -552,6 +552,13 @@ ok("v3.1 nothing in the row is danger-coloured while idle", await evaluate(() =>
 }));
 ok("v2.1 6px dot", await $eval(".status-dot", (e) =>
   Math.round(e.getBoundingClientRect().width) === 6));
+// the phone's GPRS indicator lives in the pill and shows only while a run
+// has the GSM network
+ok("gprs: the indicator is in the pill, hidden with no run", await evaluate(() => {
+  const g = document.getElementById("gprs");
+  return g?.parentElement?.id === "status" && g.hidden && g.getAttribute("role") === "img"
+    && g.getAttribute("aria-label") === "GPRS off" && window.__ui.gprs.state === "off";
+}));
 ok("v2.1 action button is 24px tall and right-aligned in the pill",
   await evaluate(() => {
     const b = document.querySelector("#pill-action button").getBoundingClientRect();
@@ -864,6 +871,16 @@ if (!process.env.SKIP_BOOT) {
   // been under 0.80x for three seconds
   ok("2.2 running pill", /^Running · \d+:\d\d( · slow)?$/.test(await text("#status-text")), await text("#status-text"));
   ok("2.2 Stop replaced Start", !(await has("#btn-start")) && (await has("#btn-stop")));
+  // the phone has not used GPRS, so no link was dialled: idle, in the
+  // dot's place, and nothing announced for it
+  ok("gprs: a GSM run shows the indicator in the dot's place", await evaluate(() => {
+    const g = document.getElementById("gprs");
+    const r = g.getBoundingClientRect();
+    return !g.hidden && g.getAttribute("aria-label") === "GPRS not used yet"
+      && window.__ui.gprs.state === "idle" && !window.__gprsNet.ws
+      && getComputedStyle(document.querySelector(".status-dot")).display === "none"
+      && g.nextElementSibling.id === "status-open" && r.width <= 14 && r.height <= 18;
+  }), await evaluate(() => JSON.stringify(window.__ui.gprs)));
   ok("2.2 exactly one action button", await evaluate(() =>
     [...document.querySelectorAll("button")].filter((b) => /^(Start|Stop|Cancel)$/.test(b.textContent.trim())).length === 1));
   ok("1.7 every firmware control is disabled", await evaluate(() => {
@@ -1134,6 +1151,22 @@ if (!process.env.SKIP_BOOT) {
   ok("the stopped run's flash is still readable", await evaluate(() =>
     !!window.__qemu?.FS?.analyzePath("/data/fullflash.bin")?.exists));
   ok("EFA export stays hidden for the siemens run", await $eval("#btn-save-efa", (e) => e.hidden));
+  ok("gprs: hidden again after Stop", await evaluate(() =>
+    document.getElementById("gprs").hidden && window.__ui.gprs.state === "off"));
+
+  // the same image with the GSM network unticked: no indicator, the dot back
+  await evaluate(() => {
+    document.getElementById("advanced").open = true;
+    document.getElementById("gsm").checked = false;
+  });
+  await page.click("#btn-start");
+  await page.waitForFunction(() => window.__ui.state === "running", null, { timeout: 180000 });
+  ok("gprs: a run without the GSM network shows no indicator", await evaluate(() =>
+    document.getElementById("gprs").hidden && window.__ui.gprs.state === "off" && !window.__gprsNet
+    && getComputedStyle(document.querySelector(".status-dot")).display !== "none"));
+  await page.click("#btn-stop");
+  await page.waitForFunction(() => window.__ui.state === "idle", null, { timeout: 60000 });
+  await evaluate(() => { document.getElementById("gsm").checked = true; });
 }
 
 console.log(`\n${count - fails}/${count} checks passed`);
