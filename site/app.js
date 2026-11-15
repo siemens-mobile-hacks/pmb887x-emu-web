@@ -1796,8 +1796,9 @@ async function boot() {
       : ["-accel", `tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=${bank},vcpu-timers-idle-lead=${idleLead},cross-page-links=on`];
     // The guest's mixer resamples straight to the output device's own rate,
     // so the worklet copies frames instead of interpolating them. ?sound=off
-    // leaves the machine without an audiodev at all — the benchmark harnesses
-    // use it so the audio timer never enters a measurement.
+    // leaves the machine without an audiodev at all: lockstep-wasm uses it,
+    // because the native run it is compared with has none. The benchmarks
+    // keep sound on.
     const audioArgs = QS.get("sound") === "off"
       ? []
       : ["-audio", `wasm,out.frequency=${audioRate()},out.channels=2`];
