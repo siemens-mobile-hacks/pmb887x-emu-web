@@ -38,11 +38,20 @@ const TRAFFIC_MS = 250;
 // _wasm_net_put checks the length only after the copy into it
 const NET_FRAME_MAX = 1600;
 
+// The phone as the cell sees it: _wasm_gsm_state() returns gsm-bts's
+// "ms-state" bits (GSM_BTS_MS_* in qemu/hw/gsm/gsm-bts.h), read once a
+// second from the poll below. A dist without the export leaves ms null.
+export const MS_REGISTERED = 1;
+export const MS_GPRS_ATTACHED = 2;
+export const MS_PDP_ACTIVE = 4;
+const GSM_POLL_MS = 1000;
+
 // state: "idle" (no link, none wanted yet), "connecting", "online",
 // "offline" (closed or never reached: reason and code say why, retryAt when
 // a frame may dial again, Infinity for never) and "off" after stop().
 // onChange("state") follows every change of state; onChange("traffic")
-// follows frames counted since the last notice, at most every TRAFFIC_MS.
+// follows frames counted since the last notice, at most every TRAFFIC_MS;
+// onChange("gsm") follows a change of ms.
 export class GprsNet {
   constructor(module, { url = gatewayUrl(), onChange = () => {} } = {}) {
     this.m = module;
@@ -61,7 +70,13 @@ export class GprsNet {
     this.openedAt = 0;
     this.noticed = 0;    // frames in + out at the last traffic notice
     this.noticedAt = 0;
+    this.ms = module._wasm_gsm_state ? 0 : null;
+    this.msAt = 0;
   }
+
+  get registered() { return !!(this.ms & MS_REGISTERED); }
+  get gprsAttached() { return !!(this.ms & MS_GPRS_ATTACHED); }
+  get pdpActive() { return !!(this.ms & MS_PDP_ACTIVE); }
 
   start() {
     if (this.timer) return;
@@ -125,6 +140,17 @@ export class GprsNet {
   // one that finds no link dials it once the backoff allows
   poll() {
     const m = this.m;
+    if (this.ms !== null) {
+      const now = Date.now();
+      if (now - this.msAt >= GSM_POLL_MS) {
+        this.msAt = now;
+        const ms = m._wasm_gsm_state();
+        if (ms !== this.ms) {
+          this.ms = ms;
+          this.onChange("gsm");
+        }
+      }
+    }
     if (!this.attached && !(this.attached = !!m._wasm_net_attach())) return;
     const buf = Number(m._wasm_net_buf());
     let len;
