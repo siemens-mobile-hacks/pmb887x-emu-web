@@ -699,7 +699,7 @@ function pillText() {
     return `Prefetching emulator · ${engineSt.total
       ? Math.round((engineSt.loaded / engineSt.total) * 100) + "%"
       : fmtMiB(engineSt.loaded)}`;
-  // while the recording pill is up the two have to share one 32px row:
+  // while the recording pill is up the two have to share one row:
   // the uptime alone, no "Running · " in front of it
   const bare = !!recorder && phoneLayout.matches;
   // "· slow" is the pill's half of the slow warning: the amber colour says
@@ -818,7 +818,7 @@ function render() {
   $("rec-pill").hidden = !pillRec;
   recBtn.hidden = pillRec;
   // The recording pill needs the record button's width and a little more: at
-  // 320px the two pills plus four icons no longer fit the one 32px row. So
+  // 320px the two pills plus four icons no longer fit the one row. So
   // fullscreen stands down while a capture runs — it is not something to
   // toggle mid-capture anyway, since it resizes the canvas under the recorder.
   if (fsSupported) fsBtn.hidden = pillRec;

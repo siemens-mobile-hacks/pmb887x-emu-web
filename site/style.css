@@ -17,7 +17,10 @@
      Every size below is derived from these and the container's own size, in
      CSS alone: there is no measure/apply pass in JS and nothing is scaled
      after layout, so a resize is one reflow and lands where it belongs. */
-  --status-h: 32px;   /* the one control row above the screen */
+  /* the one control row above the screen: tall enough for the pill's
+     network badge (an antenna over a bearer tag, 37px) and, on desktop,
+     the two lines beside it; 52px in the phone layout (below) */
+  --status-h: 56px;
   /* the control block: the row, plus the line under it for the reason an
      action is disabled wherever there is height to spare for one */
   --head-h: var(--status-h);
@@ -31,6 +34,10 @@
      guest's own framebuffer says otherwise — the one thing here that cannot
      come from CSS, because it is board data. */
   --ar: 0.75;
+}
+/* the phone layout (`phoneLayout` in app.js), where the pill is one line */
+@media (width < 900px), (height < 621px) {
+  :root { --status-h: 52px; }
 }
 * { box-sizing: border-box; }
 /* several components below set their own `display`, which would otherwise
@@ -66,7 +73,7 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .ico-fill { width: 1rem; height: 1rem; flex: none; fill: currentColor; }
 
 /* ---------------- status pill: state + the only Start/Stop ------------- */
-/* One 32px row above the screen at every width: the state/firmware pill,
+/* One row above the screen at every width (`--status-h`): the state/firmware pill,
    then screenshot, record, fullscreen and (where the panels live in sheets)
    settings. The block's height is `--head-h`, a constant the screen box is
    derived from — so whether the disabled-reason caption under the row has
@@ -85,8 +92,10 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   flex: 1; min-width: 0; height: var(--status-h);
   display: flex; align-items: center; gap: 6px;
   padding: 0 4px 0 8px;
-  border: 1px solid var(--border); border-radius: 1em;
-  background: #333a47; font-size: 0.75rem;
+  border: 1px solid var(--border); border-radius: calc(var(--status-h) / 2);
+  background: var(--pill-bg); font-size: 0.75rem;
+  /* what is behind the badge, for the gap under its strike (below) */
+  --pill-bg: #333a47;
 }
 /* a long status ("Downloading · 23 / 64 MiB") must not widen the row */
 #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -110,19 +119,19 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   background: var(--muted);
 }
 .status[data-state="booting"], .status[data-state="running"] {
-  background: #14532d; color: #b8f5cd; border-color: #1e7a41;
+  --pill-bg: #14532d; color: #b8f5cd; border-color: #1e7a41;
 }
 .status[data-state="booting"] .status-dot,
 .status[data-state="running"] .status-dot { background: var(--good); }
-.status[data-state="paused"] { background: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
+.status[data-state="paused"] { --pill-bg: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
 .status[data-state="paused"] .status-dot { background: var(--warn); }
 /* the guest has been slower than 0.80x for three seconds, and the
    real-time cap is no longer banking — during the banked boot, below 1.00x
    is what the guest is supposed to look like. Amber until it has been back
    up for three. After the green rules, before the red one */
-.status.warn { background: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
+.status.warn { --pill-bg: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
 .status.warn .status-dot { background: var(--warn); }
-.status.error { background: #5c1a1a; color: #ffc4c4; border-color: #8a2b2b; }
+.status.error { --pill-bg: #5c1a1a; color: #ffc4c4; border-color: #8a2b2b; }
 .status.error .status-dot { background: var(--bad); }
 /* the two waiting states spin instead of sitting still */
 .status[data-state="downloading"] .status-dot,
