@@ -36,6 +36,26 @@ function rig({ put = () => 1 } = {}) {
   return { g, send, states, traffic: () => traffic, last: () => FakeSocket.made.at(-1) };
 }
 
+test("GprsNet: start() dials only when the phone first sends", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 1e9 });
+  const { g, states, last } = rig();
+  let queued = 0;
+  g.m._wasm_net_take = () => (queued > 0 ? (queued--, 60) : 0);
+  g.start();
+  t.mock.timers.tick(10 * 60e3);           // ten minutes of 20 ms polls, no frame
+  assert.equal(FakeSocket.made.length, 0);
+  assert.equal(g.state, "idle");
+  queued = 1;
+  t.mock.timers.tick(20);
+  assert.equal(FakeSocket.made.length, 1);
+  assert.deepEqual(states, ["connecting"]);
+  last().open();
+  queued = 2;
+  t.mock.timers.tick(20);
+  assert.equal(last().sent, 2);
+  g.stop();
+});
+
 test("GprsNet: redials after a close only for a frame, after the backoff", (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 1e9 });
   const { g, send, states, last } = rig();

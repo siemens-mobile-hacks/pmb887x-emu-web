@@ -17,11 +17,13 @@ const CLOSED = {
   4009: "This page may not use the GPRS gateway",
 };
 
-// After a close the link is dialled again only when the phone has a frame
-// to send, and not before the backoff has passed: 1 s, doubling to 30 s
-// while the gateway stays away, back to 1 s once a link held for a minute.
-// The gateway counts every attempt (4029 above 20 a minute), so a refusal
-// that may clear waits a minute, and one that will not today is final.
+// The link is dialled only when the phone has a frame to send: the first
+// time it uses GPRS, so a phone that never does holds none of the
+// gateway's connections, and after a close not before the backoff has
+// passed: 1 s, doubling to 30 s while the gateway stays away, back to 1 s
+// once a link held for a minute. The gateway counts every attempt (4029
+// above 20 a minute), so a refusal that may clear waits a minute, and one
+// that will not today is final.
 const BACKOFF_MIN = 1000;
 const BACKOFF_MAX = 30000;
 const HELD_MS = 60000;
@@ -64,7 +66,6 @@ export class GprsNet {
   start() {
     if (this.timer) return;
     this.retryAt = 0;
-    this.connect();
     this.timer = setInterval(() => this.poll(), 20);
   }
 
@@ -121,7 +122,7 @@ export class GprsNet {
   }
 
   // the phone's frames go out as they come; none queue while offline, and
-  // one that finds the link gone dials it again once the backoff allows
+  // one that finds no link dials it once the backoff allows
   poll() {
     const m = this.m;
     if (!this.attached && !(this.attached = !!m._wasm_net_attach())) return;
