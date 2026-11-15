@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # busdigest.py QEMU_TREE: patches a temporary digest of the DSP peripheral bus
-# into a qemu tree (never commit it; `git -C qemu checkout -- .` drops it).
+# into a qemu tree (never commit it).  It edits four files in place and has no
+# undo, so save them first and put them back afterwards; never `git checkout`
+# them, which also wipes any other uncommitted edit in them
+# (doc/performance.md, "Reverting the bench patch"):
+#
+#   d=qemu/hw/arm/pmb887x/dsp; f="peripheral.c peripheral/i2s.c peripheral/internal.h peripheral/interrupt.c"
+#   tar -cf /tmp/busdigest-orig.tar -C $d $f    # before running it
+#   tar -xmf /tmp/busdigest-orig.tar -C $d      # afterwards (-m: new mtimes, so ninja rebuilds)
 # Every 2^18 events the patched binary prints to stderr
 #   BUSHASH <events> <fnv> cyc=<bus cycles> I= R= W= T= X=
 # over each register read and write with its value, each interrupt flag set
