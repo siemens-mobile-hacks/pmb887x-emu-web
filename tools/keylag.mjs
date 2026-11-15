@@ -27,6 +27,7 @@ import { chromium } from "playwright-core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { median } from "./lib/stats.mjs";
+import { pageCall } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -60,10 +61,10 @@ const b = await chromium.launch({ headless: true });
 const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
 let pageErr = null;
 p.on("pageerror", (e) => { pageErr = String(e).slice(0, 200); });
-const guestExit = () => p.evaluate(() => {
+const guestExit = () => pageCall(p.evaluate(() => {
   const x = window.__ui?.exit;
   return x ? [x.type, x.code].filter(Boolean).join(" ") || "no details" : null;
-});
+}), "exit check");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 await p.goto(`http://127.0.0.1:${port}/?dist=${dist}${extraQ ? "&" + extraQ : ""}`,
@@ -73,7 +74,9 @@ await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", [FLASH, ...SIDECARS]);
 const t0 = Date.now();
 await p.click("#btn-start");
-await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });
+// Playwright's own timeout does not hold on a frozen page
+await pageCall(p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 }),
+               "waiting for the engine", 245000);
 
 while ((Date.now() - t0) / 1000 < settleS) {
   await sleep(1000);
@@ -89,7 +92,7 @@ console.log(`[keylag] ${boardId} ${dist}${extraQ ? " " + extraQ : ""}: settled a
 // poll would be a large part of the number being measured.
 const rows = [];
 for (let i = 0; i < presses; i++) {
-  const r = await p.evaluate(async ({ key, quietRate, maxBurstMs }) => {
+  const r = await pageCall(p.evaluate(async ({ key, quietRate, maxBurstMs }) => {
     const m = window.__qemu;
     const now = () => performance.now();
     const insns = () => Number(m._wasm_insns());
@@ -125,7 +128,7 @@ for (let i = 0; i < presses; i++) {
     if (!up) ev("pointerup");
     const burst = now() - t0;
     return { paint, burst, vms: (vclock() - v0) / 1e6, mi: (insns() - i0) / 1e6 };
-  }, { key: keys[i % keys.length], quietRate, maxBurstMs });
+  }, { key: keys[i % keys.length], quietRate, maxBurstMs }), "a press", maxBurstMs + 30000);
 
   if (r.err) { console.log("KEYLAG FAIL " + r.err); await b.close(); process.exit(1); }
   rows.push(r);

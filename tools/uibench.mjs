@@ -38,7 +38,7 @@ import { chromium } from "playwright-core";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { UI_READ, guestGone } from "./lib/page.mjs";
+import { UI_READ, guestGone, pageCall } from "./lib/page.mjs";
 import { resultName, runStamp } from "./lib/results.mjs";
 
 const argv = process.argv.slice(2);
@@ -99,7 +99,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // every sample; a guest that died keeps answering with the counters it
 // stopped at, so each one also checks that it is still there
 async function snap(when) {
-  const s = await p.evaluate(`(() => {
+  const s = await pageCall(p.evaluate(`(() => {
     const m = window.__qemu;
     const f = (n, ...a) => (typeof m[n] === "function" ? Number(m[n](...a)) : 0);
     const bench = {};
@@ -109,7 +109,7 @@ async function snap(when) {
       t: performance.now(), v: f("_wasm_vclock"), insns: f("_wasm_insns"),
       fb: f("_wasm_fb_updates"), halts: f("_wasm_halts"), ui: ${UI_READ},
     };
-  })()`);
+  })()`), "sample");
   const gone = guestGone(s.ui) || (pageErr && "page error") || (serialExit && "firmware EXIT");
   if (gone) await fail(`${when}: ${gone}`);
   delete s.ui;
@@ -132,7 +132,9 @@ await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", [FLASH, ...SIDECARS]);
 const t0 = Date.now();
 await p.click("#btn-start");
-await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });
+// Playwright's own timeout does not hold on a frozen page
+await pageCall(p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 }),
+               "waiting for the engine", 245000);
 
 // boot done = the guest goes quiet (no reference image, so this works for
 // any firmware); the floor keeps a mid-boot dip from ending it early

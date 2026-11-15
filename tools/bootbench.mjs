@@ -38,7 +38,7 @@ import { chromium } from "playwright-core";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { UI_READ, guestGone } from "./lib/page.mjs";
+import { UI_READ, guestGone, pageCall } from "./lib/page.mjs";
 import { resultName, runStamp } from "./lib/results.mjs";
 import { median } from "./lib/stats.mjs";
 
@@ -110,7 +110,7 @@ async function boot(p, spec, measured) {
   let pageErr = null;
   p.on("pageerror", (e) => { pageErr ??= String(e).slice(0, 200); });
   const sample = async () => {
-    const c = await p.evaluate(IDLE_SNAP);
+    const c = await pageCall(p.evaluate(IDLE_SNAP), "sample");
     const gone = guestGone(c.ui) || (pageErr && `page error: ${pageErr}`);
     if (gone) throw new Error(`guest gone during the boot: ${gone}`);
     return c;
@@ -131,12 +131,15 @@ async function boot(p, spec, measured) {
   await p.setInputFiles("#fullflash", [flash, flash + ".cfi-efa"].filter((f) => existsSync(f)));
   // the engine prefetch compiles the module in the background; a Start that
   // beats it waits for the same compile, so let it finish for every leg alike
-  await p.waitForFunction(() => !/Prefetching|Downloading/.test(document.body.innerText), null, { timeout: 120000 })
+  // Playwright's own timeouts do not hold on a frozen page
+  await pageCall(p.waitForFunction(() => !/Prefetching|Downloading/.test(document.body.innerText), null,
+                                   { timeout: 120000 }), "waiting for the prefetch", 125000)
     .catch(() => {});
   await p.evaluate(SAMPLER);
   const t0 = Date.now();
   await p.click("#btn-start");
-  await p.waitForFunction(() => !!window.__qemu?._wasm_insns, null, { timeout: 240000 });
+  await pageCall(p.waitForFunction(() => !!window.__qemu?._wasm_insns, null, { timeout: 240000 }),
+                 "waiting for the engine", 245000);
   let quiet = 0, idleAt = null;
   let last = await sample();
   for (;;) {
@@ -149,7 +152,8 @@ async function boot(p, spec, measured) {
       idleAt = (Date.now() - t0) / 1000 - 4;
     if (idleAt != null && (Date.now() - t0) / 1000 >= idleAt + 4 + (measured ? afterS : 0)) break;
   }
-  const samples = await p.evaluate(() => { clearInterval(window.__bootTimer); return window.__bootSamples; });
+  const samples = await pageCall(p.evaluate(() => { clearInterval(window.__bootTimer); return window.__bootSamples; }),
+                                 "reading the samples");
   return { idleAt, samples };
 }
 

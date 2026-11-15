@@ -101,7 +101,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { median } from "./lib/stats.mjs";
-import { guestGone } from "./lib/page.mjs";
+import { guestGone, pageCall } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, dflt) => {
@@ -390,7 +390,9 @@ async function runOne(dist, hashes, r) {
     await p.click("#btn-start");
     // the ~12 MB module is fetched + compiled only on Start
     try {
-      await p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 });
+      // Playwright's own timeout does not hold on a frozen page
+      await pageCall(p.waitForFunction(() => !!window.__qemu, null, { timeout: 240000 }),
+                     "waiting for the engine", 245000);
       rec.tModule = +((Date.now() - t0) / 1000).toFixed(1);
       console.log(`  [${tag}] [step] module ready ${rec.tModule}s after Start`);
     } catch (e) {
@@ -419,10 +421,10 @@ async function runOne(dist, hashes, r) {
       let s = null;
       cmpOn = cmpOn || (!noref && (t >= floorSecs || (lastSample && lastSample.insns >= cmpInsns)));
       try {
-        s = await p.evaluate(SAMPLER, {
+        s = await pageCall(p.evaluate(SAMPLER, {
           refB64, rowsCmp: rows, pctMax,
           cmp: cmpOn,
-        });
+        }), "sample");
       } catch (e) { crashed = "evaluate: " + String(e).slice(0, 120); }
       if (crashed) { rec.cls = "CRASH"; rec.why = crashed; break; }
       if (s?.gone) {

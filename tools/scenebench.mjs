@@ -66,7 +66,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
-import { UI_READ, guestGone } from "./lib/page.mjs";
+import { UI_READ, guestGone, pageCall } from "./lib/page.mjs";
 import { median } from "./lib/stats.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -295,7 +295,10 @@ async function runOnce(spec, run) {
   });
   const tag = `${distDir(spec)}-r${run}`;
   const shoot = async (what) => {
-    try { await (await p.$("#lcd")).screenshot({ path: `${outBase}-${tag}-${what}.png` }); } catch {}
+    try {
+      await pageCall((async () => (await p.$("#lcd")).screenshot({ path: `${outBase}-${tag}-${what}.png` }))(),
+                     "screenshot", 35000);
+    } catch {}
   };
   const result = { dist: spec, run };
   try {
@@ -340,13 +343,15 @@ async function runOnce(spec, run) {
     }
     const t0 = Date.now();
     await p.click("#btn-start");
-    await p.waitForFunction(() => !!window.__qemu?._wasm_insns, null, { timeout: 240000 });
+    // Playwright's own timeout does not hold on a frozen page
+    await pageCall(p.waitForFunction(() => !!window.__qemu?._wasm_insns, null, { timeout: 240000 }),
+                   "waiting for the engine", 245000);
 
-    const grab = () => p.evaluate(() => {
+    const grab = () => pageCall(p.evaluate(() => {
       const c = document.getElementById("lcd");
       const d = c.getContext("2d").getImageData(0, 0, c.width, c.height);
       return { width: d.width, height: d.height, data: Array.from(d.data) };
-    });
+    }), "LCD grab");
     // % of pixels over rows [y0, y1) with any channel off by > 48
     const diffPct = async (ref, [y0, y1] = [0, ref.height], live = null) => {
       live = live || await grab();
@@ -361,7 +366,7 @@ async function runOnce(spec, run) {
     };
     // Attached to a phone, the walk waits in guest time: an idle guest keeps
     // real time, a busy one that cannot gets the time it needs and no more.
-    const vclockMs = () => p.evaluate(() => Number(window.__qemu._wasm_vclock()) / 1e6);
+    const vclockMs = () => pageCall(p.evaluate(() => Number(window.__qemu._wasm_vclock()) / 1e6), "vclock");
     const wait = async (ms) => {
       if (!cdp) return sleep(ms);
       const v0 = await vclockMs(), t0 = Date.now();
@@ -389,7 +394,7 @@ async function runOnce(spec, run) {
     const fail = (why) => { throw new Error(why + (pageErr ? " pageerror=" + pageErr : "") + (serialExit ? " serial=EXIT" : "")); };
     // a guest that died keeps answering with the counters it stopped at
     const snap = async (when) => {
-      const c = await p.evaluate(SNAP);
+      const c = await pageCall(p.evaluate(SNAP), "sample");
       const gone = guestGone(c.ui) || (pageErr && "page error") || (serialExit && "firmware EXIT");
       if (gone) fail(`${when}: ${gone}`);
       return c;

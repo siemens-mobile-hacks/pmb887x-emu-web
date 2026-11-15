@@ -12,6 +12,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pageCall } from "./lib/page.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const argv = process.argv.slice(2);
@@ -36,12 +37,14 @@ try {
   await p.click("#ff-mode-own");
   await p.setInputFiles("#fullflash", [flash]);
   await p.click("#btn-start");
-  await p.waitForFunction(() => !!window.__qemu?._wasm_insns, null, { timeout: 240000 });
+  // Playwright's own timeout does not hold on a frozen page
+  await pageCall(p.waitForFunction(() => !!window.__qemu?._wasm_insns, null, { timeout: 240000 }),
+                 "waiting for the engine", 245000);
   // booted: past 5e8 guest instructions and the rate low for 4 s
-  let quiet = 0, last = await p.evaluate(() => Number(window.__qemu._wasm_insns()));
+  let quiet = 0, last = await pageCall(p.evaluate(() => Number(window.__qemu._wasm_insns())), "sample");
   for (let t = 0; t < 300 && quiet < 4; t++) {
     await sleep(1000);
-    const c = await p.evaluate(() => Number(window.__qemu._wasm_insns()));
+    const c = await pageCall(p.evaluate(() => Number(window.__qemu._wasm_insns())), "sample");
     quiet = c - last < 8e6 && c > 5e8 ? quiet + 1 : 0;
     last = c;
   }
