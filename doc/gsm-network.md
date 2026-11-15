@@ -31,9 +31,9 @@ S75v40 were each the only run on the host, the others ran five at a time:
 | image | registered | GPRS attached | the LCD at the end |
 |---|---|---|---|
 | `EL71v41lg91.bin` | 15.8 s (16.3 s in a second run, 17 s through the gateway run) | only when the browser goes online: 130 s into gprscheck, PDP context 3 s later | idle screen, operator and signal |
-| `S75v40lg1.bin` | 9.8 s | not in 150 s | |
-| `CX70v56lg3.bin` | 9.3 s | not in 240 s | |
-| `SL65v49lg1_TIM.bin` | 9.3 s | not in 240 s | |
+| `S75v40lg1.bin` | 9.8 s | not in 150 s; when the browser goes online, as EL71 (gprscheck below) | |
+| `CX70v56lg3.bin` | 9.3 s | not in 240 s; when the browser goes online (gprscheck below) | |
+| `SL65v49lg1_TIM.bin` | 9.3 s | not in 240 s; when the browser goes online (gprscheck below) | |
 | `KE800v11b.bin` | 17 s | not in 240 s | "Test Network", full signal |
 | `KE970v10d.bin` | 16.5 s | not in 240 s | "Test Network", full signal |
 | `s75_working20060710172101.bin` (the gate's S75) | never: its network selection is Manual (below) | | "Поиск сети" (searching) |
@@ -108,17 +108,33 @@ gateway, `gprs-gw` (branch `gprs-gw` of
 
 `node tools/gprscheck.mjs --web` checks it end to end: it builds the helper
 and starts the gateway from a bts-emulator checkout next to this repository
-(`--gateway`), lets that one slirp reach this host's loopback, which the
-real gateway never does, and the phone fetches an 8 KB page from
-`tools/gprs-host.mjs` (about 2 min 30 s), with the same profile change as
-the native check below.
+(`--gateway`, on `--gateway-listen`, which must be serve.mjs's `GPRS_GW`),
+lets that one slirp reach this host's loopback, which the real gateway
+never does, and the phone fetches an 8 KB page from `tools/gprs-host.mjs`
+(about 2 min 30 s), with the profile change below. `--phone` picks the
+firmware whose menus the keys walk (`el71`, `s75`, `cx70`, `sl65`); a phone
+that does not get through is a SKIP (exit 2) naming where it stops, and
+`--try` runs it anyway. Results on 2026-11-15 (qemu 133f91266b, bsp
+191612c), each through the real gateway on loopback:
+
+| `--phone`, image | result | where |
+|---|---|---|
+| `el71`, `EL71v41lg91.bin` | PASS | registered 19 s, "Go online" answered at 126 s, GET at 140 s from `SIE-EL71/41 UP.Browser/7.1.0.k.6`, the page on the LCD; 15 frames up, 14 down |
+| `s75`, `S75v40lg1.bin` | PASS | the EL71's keys unchanged; registered 15 s, GET at 135 s from `SIE-S75/40 UP.Browser/7.1.0.e.20`, the page on the LCD; 13 frames each way |
+| `cx70`, `CX70v56lg3.bin` | SKIP | GPRS attaches when the browser goes online and the cell accepts the PDP context, but the phone sends no IP packet (the relay counts 0 frames either way); 10-15 s later it deactivates the context, and the browser asks "CSD: You are about to go online." The same with its stock WAP/WSP profile (192.168.10.10:9201) and with HTTP and no proxy |
+| `sl65`, `SL65v49lg1_TIM.bin` | SKIP | exactly as CX70, with its stock TIM WAP profile and with an HTTP profile without proxy |
+
+So the x65 phones stop between the PDP context and their first IP packet,
+inside the phone: nothing reaches the relay, so neither the page nor the
+gateway is involved. Not worked around; the check records where they stop.
 
 ### GPRS data (native build)
 
 With `-object gsm-bts,id=gsm0,netdev=net0` and a slirp netdev
 (`-netdev user,id=net0`), the cell hands the phone's IP packets to qemu's
 network: the phone gets 10.0.2.15, DNS 10.0.2.3, and reaches the host at
-10.0.2.2. `tools/gprscheck.mjs` checks it end to end on EL71: it serves a
+10.0.2.2. `tools/gprscheck.mjs` checks it end to end (natively verified on
+EL71; `--phone` as above): it serves a
 page on the host (`tools/gprs-host.mjs`), points the browser's online
 profile at the bare GPRS connection, opens `http://10.0.2.2:<port>` from
 Internet ▸ Enter URL, answers "Go online", and passes when the host gets the
@@ -134,7 +150,13 @@ Two things the check had to get past:
   check selects the connection "MTS Internet-GPRS" in the WAP browser's
   connection list instead (Settings ▸ Connectivity ▸ Online settings ▸ MTS ▸
   Edit ▸ Applications ▸ WAP browser), so the browser speaks plain HTTP. It
-  boots a writable copy of the flash for that.
+  boots a writable copy of the flash for that (the browser build changes
+  only the page's copy in memory). S75v40 has the same menus and keys. The
+  x65 phones keep their profiles in the browser (Internet ▸ Options ▸ Setup
+  ▸ Profiles): the check sets CX70's active "UMC WAP" to HTTP and deletes
+  its proxy address; SL65's TIM WAP profiles are not editable, so it fills
+  the empty third one (HTTP, no proxy, the same TIM WAP connection profile)
+  and activates it. The URL goes in through Options ▸ Go to.
 - **Upstream lost every uplink packet over about 240 bytes** (fixed in the
   fork, `9bf917bb6e`): the uplink reassembled LLC frames in a 251-byte buffer,
   and the cell accepts the N201-U the phone proposes in XID (EL71: 1520), so

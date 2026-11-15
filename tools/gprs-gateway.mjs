@@ -3,7 +3,7 @@
 // default), run on loopback for a test. Without it every phone's GPRS relay
 // fails to connect, which Firefox reports as a JavaScript error.
 //
-//   const gw = await startGateway({ run });   ...   gw.close();
+//   const gw = await startGateway({ run });   ...   await gw.close();
 //
 // dir is the gprs-gw checkout (default ../bts-emulator/gprs-gw next to this
 // repository), run a directory for the helper build, log and state, and
@@ -59,5 +59,18 @@ export async function startGateway({ dir = GATEWAY_DIR, run, listen = "127.0.0.1
     stop();
     throw new Error(`the gateway did not start listening within 60 s: ${fs.readFileSync(log, "utf8")}`);
   }
-  return { log, close() { process.off("exit", stop); stop(); } };
+  // resolves once it has exited: it saves its state into run as it stops, so
+  // a caller that removes run straight after close() would race with that
+  return {
+    log,
+    close() {
+      process.off("exit", stop);
+      if (gw.exitCode != null || gw.signalCode != null) return Promise.resolve();
+      return new Promise((res) => {
+        const kill = setTimeout(() => gw.kill("SIGKILL"), 5000);
+        gw.once("exit", () => { clearTimeout(kill); res(); });
+        stop();
+      });
+    },
+  };
 }

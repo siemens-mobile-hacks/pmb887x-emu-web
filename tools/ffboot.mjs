@@ -109,4 +109,4 @@ else {
 console.log(`END ${which}/${dist} last=${JSON.stringify(last)} errors=${errs.length} progress=${why.length ? "FAIL (" + why.join("; ") + ")" : "ok"}`);
 for (const e of errs.slice(0, 30)) console.log("  ERR " + e);
 await bounded(b.close(), null, { ms: 30000 });
-gw.close();
+await gw.close();
