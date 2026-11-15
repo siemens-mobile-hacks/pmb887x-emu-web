@@ -49,7 +49,9 @@
 const CFG = (typeof process !== 'undefined' && process.env)
     ? process.env : (globalThis.DB_CFG || {});
 const NFUNC = Number(CFG.DB_NFUNC || 256);
-const PAD = Number(CFG.DB_PAD || 0);
+/* the one default for node and tools/dispatchbench.mjs (Chromium) alike;
+ * DB_PAD=0 is the empty-body, mechanism-only reading */
+const PAD = Number(CFG.DB_PAD ?? 32);
 /* how many modules the cross-module variants spread NFUNC functions over;
  * NFUNC (the default) is one each, the shape this benchmark had before */
 const NMOD = Math.max(1, Math.min(NFUNC, Number(CFG.DB_NMOD || NFUNC)));

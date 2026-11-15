@@ -16,9 +16,9 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 const src = readFileSync(here + "../tests/wasm/dispatchbench.mjs", "utf8");
 const chromeArgs = (process.env.CHROME_ARGS || "").split(/\s+/).filter(Boolean);
 
+// DB_NFUNC, DB_PAD and the rest default in the bench file itself, so node and
+// Chromium run the same configuration unless the environment says otherwise
 const cfg = {
-  DB_NFUNC: process.env.DB_NFUNC || "256",
-  DB_PAD: process.env.DB_PAD || "32",
   DB_N: process.argv[2] || "3000000",
   DB_REPS: process.argv[3] || "7",
 };
