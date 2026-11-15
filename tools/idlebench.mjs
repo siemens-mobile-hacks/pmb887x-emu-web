@@ -83,7 +83,8 @@
 //   STALL    v frozen, or fewer than 1 M instructions executed, for
 //            --stall secs (10x-slowdown / crash-loop / starved-vCPU
 //            class — the automatic salvage tells which)
-//   CRASH    page error / worker death / firmware EXIT before idle
+//   CRASH    page error / worker death / qemu exit / firmware EXIT
+//            before idle
 //
 // Usage:
 //   PORT=8094 node tools/idlebench.mjs [dists] [--runs N] [--max S]
@@ -100,6 +101,7 @@ import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { median } from "./lib/stats.mjs";
+import { guestGone } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, dflt) => {
@@ -249,9 +251,12 @@ function rssMB(marker) {
 // The reference image is decoded once and cached on the window.
 const SAMPLER = async (cfg) => {
   const { refB64, rowsCmp, pctMax, cmp } = cfg;
-  // the page quits the guest once it has shown the dump
-  const x = window.__ui?.exit;
-  if (x) return { exit: [x.type, x.code].filter(Boolean).join(" ") || "no details" };
+  // a firmware EXIT (the page quits the guest once it has shown the dump),
+  // a qemu exit or a page error: the counters stop, but it is no stall
+  const u = window.__ui;
+  if (u && (u.exit || u.exitCode != null || u.error))
+    return { gone: { state: u.state, error: u.error, exitCode: u.exitCode,
+      exit: u.exit && { type: u.exit.type, code: u.exit.code } } };
   const m = window.__qemu;
   if (!m || !m._wasm_vclock) return null;
   const v = Number(m._wasm_vclock()) / 1e9;
@@ -414,8 +419,9 @@ async function runOne(dist, hashes, r) {
         });
       } catch (e) { crashed = "evaluate: " + String(e).slice(0, 120); }
       if (crashed) { rec.cls = "CRASH"; rec.why = crashed; break; }
-      if (s?.exit) {
-        rec.cls = "CRASH"; rec.why = "firmware EXIT " + s.exit; rec.serialExit = true;
+      if (s?.gone) {
+        rec.cls = "CRASH"; rec.why = guestGone(s.gone);
+        if (s.gone.exit) rec.serialExit = true;
         break;
       }
       if (s) {
