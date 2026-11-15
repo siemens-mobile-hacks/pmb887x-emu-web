@@ -69,3 +69,32 @@ export function guestGone(ui) {
   if (ui.error) return `page error: ${String(ui.error).slice(0, 200)} (page ${ui.state})`;
   return null;
 }
+
+// window.__qemulog (?tracebuf=1) holds only the newest lines: past 30000
+// the page cuts the oldest 10000, so an index into it goes stale and a tool
+// that remembers one skips lines.  Added with page.addInitScript() before the
+// page loads, QEMULOG_COUNT wraps the array the page assigns there so that
+// log.total counts every line it ever pushed.
+export const QEMULOG_COUNT = `(() => {
+  let buf;
+  Object.defineProperty(window, "__qemulog", {
+    configurable: true,
+    get: () => buf,
+    set: (v) => {
+      buf = v;
+      if (!Array.isArray(v)) return;
+      v.total = v.length;
+      v.push = function (...xs) { this.total += xs.length; return Array.prototype.push.apply(this, xs); };
+    },
+  });
+})()`;
+
+// In-page source of (log, seen) => { lines, total, lost }: the lines pushed
+// after the first `seen`, by the count above (by index without it), the new
+// count, and how many of them the page had already cut.
+export const QEMULOG_SINCE = `((log, seen) => {
+  if (!log) return { lines: [], total: seen, lost: 0 };
+  const total = log.total ?? log.length, first = total - log.length;
+  const from = Math.max(seen, first);
+  return { lines: log.slice(from - first), total, lost: from - seen };
+})`;

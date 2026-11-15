@@ -18,6 +18,7 @@
 //        [TOGGLE_AT=20,30] node audioprobe.mjs [extraQuery]
 import { chromium } from "playwright-core";
 import { files as fullflashFiles } from "./testflash.mjs";
+import { QEMULOG_COUNT, QEMULOG_SINCE } from "./lib/page.mjs";
 
 const dist = process.env.DIST || "dist-jit";
 const port = process.env.PORT || "8080";
@@ -48,19 +49,16 @@ const PROBE = `(() => {
   }
   // Guest clock plus any new PCMPLAY chatter: silence in the ring means one
   // of two very different things, and only the DSP log tells them apart.
-  const log = window.__qemulog ?? [];
-  const fresh = [];
-  for (let i = window.__audioSeen ?? 0; i < log.length; i++) {
-    if (/PCMPLAY|pcmplay|DSP_CMD|afe/i.test(log[i])) fresh.push(log[i].slice(0, 200));
-  }
-  window.__audioSeen = log.length;
+  const got = ${QEMULOG_SINCE}(window.__qemulog, window.__audioSeen ?? 0);
+  const fresh = got.lines.filter((l) => /PCMPLAY|pcmplay|DSP_CMD|afe/i.test(l)).map((l) => l.slice(0, 200));
+  window.__audioSeen = got.total;
 
   return {
     magic: (h[0] >>> 0).toString(16), cap, ch, freq: h[3],
     read: Atomics.load(h, 4), write: wr, active: h[6], gen: h[7], under: h[8],
     peak, audio: window.__audio ? window.__audio() : null,
     v: m._wasm_vclock ? Number(m._wasm_vclock()) / 1e9 : 0,
-    dsp: fresh.slice(-6),
+    dsp: fresh.slice(-6), dspHits: fresh.length, dspCut: got.lost,
   };
 })()`;
 
@@ -81,6 +79,7 @@ p.on("console", (m) => {
 p.on("pageerror", (e) => console.log("  [pageerror]", String(e).slice(0, 300)));
 
 const url = `http://127.0.0.1:${port}/?dist=${dist}${extraQ ? "&" + extraQ : ""}`;
+await p.addInitScript(QEMULOG_COUNT);
 await p.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
 await p.selectOption("#startup", "ONLINE");
 await p.click("#ff-mode-own");
@@ -127,6 +126,8 @@ while ((Date.now() - t0) / 1000 < maxSecs) {
       `peak=${s.peak} under=${s.under} ctx=${s.audio?.state ?? "?"}@${s.audio?.rate ?? 0}`
   );
   for (const l of s.dsp ?? []) console.log("    dsp| " + l);
+  if (s.dspHits > 6) console.log(`    dsp| (${s.dspHits} matching lines, the last 6 shown)`);
+  if (s.dspCut) console.log(`    dsp| (${s.dspCut} log lines cut by the page before they were read)`);
   prev = s;
 }
 
