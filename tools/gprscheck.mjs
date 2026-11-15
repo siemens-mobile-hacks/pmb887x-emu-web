@@ -62,6 +62,19 @@ const PROMPT = [ref("el71v41_gprs_prompt.png"), 292, 320, 0, 240];
 const PAGE = [ref("el71v41_gprs_page.png"), 26, 110, 0, 240];
 
 const run = fs.mkdtempSync(path.join(os.tmpdir(), "gprscheck-"));
+// what a backend has started, stopped however the check ends: a throw, a
+// timeout, or a signal (the gate's timeout sends TERM)
+const cleanups = [];
+let cleaned = false;
+async function cleanup() {
+  if (cleaned) return;
+  cleaned = true;
+  for (const f of cleanups.reverse()) { try { await f(); } catch {} }
+  if (KEEP) console.log(`run directory: ${run}`);
+  else fs.rmSync(run, { recursive: true, force: true });
+}
+for (const [sig, n] of [["SIGHUP", 1], ["SIGINT", 2], ["SIGTERM", 15]])
+  process.on(sig, () => { cleanup().finally(() => process.exit(128 + n)); });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const t0 = Date.now();
 const log = (s) => console.log(`[gprs] t=${((Date.now() - t0) / 1000).toFixed(0)}s ${s}`);
@@ -78,6 +91,7 @@ async function nativeBackend() {
   const flash = path.join(run, "flash.bin");
   fs.copyFileSync(FLASH, flash);
   const host = await startHostPage({ padding: 8192 });
+  cleanups.push(() => host.close());
   const monitor = path.join(run, "monitor.sock");
   const qemu = spawn("bash", [path.join(ROOT, "scripts", "run-native.sh"), flash,
     "-netdev", "user,id=net0",
@@ -89,11 +103,13 @@ async function nativeBackend() {
   });
   let exited = false;
   qemu.on("exit", () => { exited = true; });
+  cleanups.push(() => { if (!exited) qemu.kill(); });
 
   const qemuLog = path.join(run, "qemu.log");
   while (!fs.existsSync(monitor) && !exited) await sleep(200);
   if (exited) throw new Error(`qemu exited before its monitor came up: see ${qemuLog}`);
   const sock = net.connect(monitor);
+  cleanups.push(() => sock.destroy());
   let out = "";
   let waiter = null, broken = null;
   const fail = (e) => {
@@ -131,11 +147,6 @@ async function nativeBackend() {
     },
     exited: () => exited,
     serial: () => fs.readFileSync(path.join(run, "serial.log"), "latin1"),
-    close: async () => {
-      sock.destroy();
-      qemu.kill();
-      await host.close();
-    },
   };
 }
 
@@ -150,10 +161,13 @@ async function webBackend() {
   // the gateway serve.mjs passes /gprs to, on loopback; its slirp may reach
   // this host's loopback, where the page waits
   const gw = await startGateway({ dir: GATEWAY, run, hostLoopback: true });
+  cleanups.push(() => gw.close());
   const gwLog = gw.log;
   const host = await startHostPage({ padding: 8192 });
+  cleanups.push(() => host.close());
 
   const browser = await chromium.launch({ headless: true });
+  cleanups.push(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
@@ -196,16 +210,11 @@ async function webBackend() {
       caption: await page.evaluate(() => document.querySelector("#gsm-caption")?.textContent),
       gateway: fs.readFileSync(gwLog, "utf8").trim().split("\n").slice(-4),
     }),
-    close: async () => {
-      await browser.close();
-      gw.close();
-      await host.close();
-    },
     errors,
   };
 }
 
-const phone = WEB ? await webBackend() : await nativeBackend();
+let phone;
 const lcdPng = async () => {
   const l = await phone.lcd();
   const png = new PNG({ width: l.width, height: l.height });
@@ -258,64 +267,72 @@ const until = async (what, cond, secs) => {
 const left = () => SECS - (Date.now() - t0) / 1000;
 
 const checks = [];
-let request = null;
-let shown = false;
-const registered = await until("registration", async () => off(await phone.lcd(), REGISTERED) <= 2, left());
-checks.push(["registered (status icons match the reference)", registered]);
-if (registered) {
-  log("registered");
-  await keys([
-    // main menu, Settings, Connectivity, Online settings (second to last)
-    "ret", "kp_divide", "6", "up", "up", "ret",
-    // the active profile (MTS): Options > Edit, Applications tab, WAP browser
-    "f1", "ret", "right", "f1",
-    // its profile "MTS WAP": Options > Edit, Connect. list
-    "f1", "ret", "down", "ret",
-    // entry 01, the "MTS WAP" proxy: Options > Select conn. > MTS Internet-GPRS
-    "f1", "down", "down", "ret", "down", "down", "down", "down", "down", "ret",
-    // Options > Save the list, Options > Save the profile; a Back while
-    // "Saved." still shows would only close that
-    "f1", "ret", "f1", "down", ["ret", 100, 4000],
-    // back to the main menu, Internet > Enter URL; "www." is selected
-    "f2", "f2", "f2", "f2", "f2", "3", "2",
-  ]);
-  log(`typing ${phone.url}`);
-  await type(phone.url);
-  // Options > OK
-  await keys(["ret", "ret"]);
-  let answered = false;
-  await until("page request", async () => {
-    if ((request = await phone.request())) return true;
-    // "GPRS: Go online using [...]?" Yes
-    const now = answered ? null : await phone.lcd();
-    if (now && off(now, PROMPT) <= 2) {
-      log("going online");
-      await key("f1");
-      answered = true;
+let failed = null;
+try {
+  phone = WEB ? await webBackend() : await nativeBackend();
+  let request = null;
+  let shown = false;
+  const registered = await until("registration", async () => off(await phone.lcd(), REGISTERED) <= 2, left());
+  checks.push(["registered (status icons match the reference)", registered]);
+  if (registered) {
+    log("registered");
+    await keys([
+      // main menu, Settings, Connectivity, Online settings (second to last)
+      "ret", "kp_divide", "6", "up", "up", "ret",
+      // the active profile (MTS): Options > Edit, Applications tab, WAP browser
+      "f1", "ret", "right", "f1",
+      // its profile "MTS WAP": Options > Edit, Connect. list
+      "f1", "ret", "down", "ret",
+      // entry 01, the "MTS WAP" proxy: Options > Select conn. > MTS Internet-GPRS
+      "f1", "down", "down", "ret", "down", "down", "down", "down", "down", "ret",
+      // Options > Save the list, Options > Save the profile; a Back while
+      // "Saved." still shows would only close that
+      "f1", "ret", "f1", "down", ["ret", 100, 4000],
+      // back to the main menu, Internet > Enter URL; "www." is selected
+      "f2", "f2", "f2", "f2", "f2", "3", "2",
+    ]);
+    log(`typing ${phone.url}`);
+    await type(phone.url);
+    // Options > OK
+    await keys(["ret", "ret"]);
+    let answered = false;
+    await until("page request", async () => {
+      if ((request = await phone.request())) return true;
+      // "GPRS: Go online using [...]?" Yes
+      const now = answered ? null : await phone.lcd();
+      if (now && off(now, PROMPT) <= 2) {
+        log("going online");
+        await key("f1");
+        answered = true;
+      }
+      return false;
+    }, Math.min(90, left()));
+    if (request) {
+      log(`GET ${request.url} from ${request.userAgent}`);
+      shown = await until("page on the LCD", async () => off(await phone.lcd(), PAGE) <= 2, Math.min(60, left()));
     }
-    return false;
-  }, Math.min(90, left()));
-  if (request) {
-    log(`GET ${request.url} from ${request.userAgent}`);
-    shown = await until("page on the LCD", async () => off(await phone.lcd(), PAGE) <= 2, Math.min(60, left()));
   }
-}
-checks.push(["the host got the browser's GET (uplink)", !!request]);
-checks.push(["the page shows on the LCD (downlink)", shown]);
+  checks.push(["the host got the browser's GET (uplink)", !!request]);
+  checks.push(["the page shows on the LCD (downlink)", shown]);
 
-const results = path.join(ROOT, "tests", "results");
-fs.mkdirSync(results, { recursive: true });
-if (!phone.exited())
-  fs.writeFileSync(path.join(results, `gprscheck${WEB ? "-web" : ""}.png`), PNG.sync.write(await lcdPng()));
-checks.push(["no firmware >>EXIT<<", !(await phone.serial()).includes(">>EXIT<<")]);
-if (WEB) {
-  checks.push(["no page error", !phone.errors.length]);
-  log(`page network: ${JSON.stringify(await phone.report())}`);
+  const results = path.join(ROOT, "tests", "results");
+  fs.mkdirSync(results, { recursive: true });
+  if (!phone.exited())
+    fs.writeFileSync(path.join(results, `gprscheck${WEB ? "-web" : ""}.png`), PNG.sync.write(await lcdPng()));
+  checks.push(["no firmware >>EXIT<<", !(await phone.serial()).includes(">>EXIT<<")]);
+  if (WEB) {
+    checks.push(["no page error", !phone.errors.length]);
+    log(`page network: ${JSON.stringify(await phone.report())}`);
+  }
+} catch (e) {
+  failed = e;
+} finally {
+  await cleanup();
 }
-
-await phone.close();
-if (KEEP) console.log(`run directory: ${run}`);
-else fs.rmSync(run, { recursive: true, force: true });
+if (failed) {
+  console.error(`[gprs] ${failed.stack || failed}`);
+  checks.push(["the check ran to its end", false]);
+}
 
 for (const [name, ok] of checks) console.log(`${ok ? "ok  " : "FAIL"} ${name}`);
 const pass = checks.every(([, ok]) => ok);
