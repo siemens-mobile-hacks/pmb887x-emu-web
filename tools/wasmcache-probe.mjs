@@ -9,12 +9,23 @@
 // go through the HTTP cache and are compiled with compileStreaming.  A
 // Cache API response *might* ride the same machinery.
 //
-// Method: put N synthetic Responses (same module bytes) at versioned
+// Method: put N synthetic Responses (N distinct modules) at versioned
 // same-origin URLs, compileStreaming them (generation 1 = cold fill),
-// reload the page, compileStreaming them again (generation 2 = would-be
-// code-cache hit) and compare against new WebAssembly.Module(bytes) in
-// the same isolate.  If gen2 does not beat fresh compile, the code cache
-// does not apply to Cache API responses and the AOT branch is closed.
+// restart the browser on the same profile, compileStreaming them again
+// (generation 2 = would-be code-cache hit) and compare against
+// new WebAssembly.Module(bytes) of modules never compiled before, in the
+// same process.  If gen2 does not beat fresh compile, the code cache does
+// not apply to Cache API responses and the AOT branch is closed.
+//
+// V8 also caches compiled modules by their bytes in memory, so every
+// module here is distinct (a trailing custom section names the run, the
+// phase and a counter) and the restart is a new process.  Until 2026-11-14
+// (TB-1) all of them were one module's bytes and the restart a page
+// reload, so gen2 and the fresh baseline both read that cache and the
+// verdict could not fire.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { chromium, firefox } from "playwright-core";
 
 const argv = process.argv.slice(2);
@@ -34,12 +45,12 @@ async function run(count, phase, tag) {
     for (let k = 0; k < OPS; k++) { if (k % 12 === 11) b.push(0x41, ...u(1 + (k & 0x1f)), 0x20, 0, 0x10, (k >> 4) & 1, 0x1a); else b.push(0x41, ...u(1 + ((k * 37 + i * 11) & 0x3f)), 0x6a + (k % 5)); }
     b.push(0x0b); return [...u(b.length), ...b]; };
   const sect = (id, c) => [id, ...u(c.length), ...c];
-  const bytes = new Uint8Array([0,97,115,109,1,0,0,0, ...sect(1, [1,0x60,2,0x7f,0x7f,1,0x7f]), ...sect(2, [2,...s("e"),...s("a"),0,0,...s("e"),...s("b"),0,0]), ...sect(3, [F, ...Array(F).fill(0)]), ...sect(7, (()=>{const c=[F];for(let i=0;i<F;i++)c.push(...s("f"+i),0,...u(2+i));return c;})()), ...sect(10, (()=>{const c=[F];for(let i=0;i<F;i++)c.push(...body(i));return c;})())]);
-  out.moduleBytes = bytes.length;
+  const mk = (name) => new Uint8Array([0,97,115,109,1,0,0,0, ...sect(1, [1,0x60,2,0x7f,0x7f,1,0x7f]), ...sect(2, [2,...s("e"),...s("a"),0,0,...s("e"),...s("b"),0,0]), ...sect(3, [F, ...Array(F).fill(0)]), ...sect(7, (()=>{const c=[F];for(let i=0;i<F;i++)c.push(...s("f"+i),0,...u(2+i));return c;})()), ...sect(10, (()=>{const c=[F];for(let i=0;i<F;i++)c.push(...body(i));return c;})()), ...sect(0, [...s("u"), ...s(tag + ":" + name)])]);
+  out.moduleBytes = mk("cached:0").length;
   const urls = i => new URL("/wasmcache-probe/" + tag + "/" + i + ".wasm", location.href).href;
   const cache = await caches.open("wasmcache-probe-" + tag);
   if (phase === "first") {
-    for (let i = 0; i < count; i++) await cache.put(urls(i), new Response(bytes, { headers: { "content-type": "application/wasm" } }));
+    for (let i = 0; i < count; i++) await cache.put(urls(i), new Response(mk("cached:" + i), { headers: { "content-type": "application/wasm" } }));
   }
   // gen compile via compileStreaming fed from cache.match (the Cache API
   // is storage, not an interceptor: fetch() would go to the network)
@@ -47,9 +58,10 @@ async function run(count, phase, tag) {
   for (let i = 0; i < count; i++) await WebAssembly.compileStreaming(cache.match(urls(i)));
   out.streamUs = (performance.now() - t) * 1e3 / count;
   // fresh baseline in this same isolate
-  for (let i = 0; i < 20; i++) new WebAssembly.Module(bytes);
+  for (let i = 0; i < 20; i++) new WebAssembly.Module(mk(phase + ":warm:" + i));
+  const fresh = Array.from({ length: count }, (_, i) => mk(phase + ":fresh:" + i));
   t = performance.now();
-  for (let i = 0; i < count; i++) new WebAssembly.Module(bytes);
+  for (let i = 0; i < count; i++) new WebAssembly.Module(fresh[i]);
   out.freshUs = (performance.now() - t) * 1e3 / count;
   out.phase = phase;
   return out;
@@ -57,19 +69,30 @@ async function run(count, phase, tag) {
 `;
 const src = (phase, tag, count) => `(async () => {\n${BODY}\nreturn run(${count}, ${JSON.stringify(phase)}, ${JSON.stringify(tag)});\n})()`;
 
+// a browser on the profile in dir, and a page of the site in it
+async function open(B, dir) {
+  const ctx = await B.launchPersistentContext(dir, { headless: true });
+  const p = ctx.pages()[0] || await ctx.newPage();
+  await p.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+  return { ctx, p };
+}
+
 for (const name of browsers) {
   const B = name === "firefox" ? firefox : chromium;
-  let browser;
-  try { browser = await B.launch({ headless: true }); }
-  catch (e) { console.log(`WASMCACHE ${name}: cannot launch — skipped`); continue; }
+  const dir = mkdtempSync(path.join(tmpdir(), "wasmcache-probe-"));
+  let ctx, p;
+  try { ({ ctx, p } = await open(B, dir)); }
+  catch (e) {
+    console.log(`WASMCACHE ${name}: cannot launch — skipped`);
+    rmSync(dir, { recursive: true, force: true });
+    continue;
+  }
   try {
-    const p = await browser.newPage();
-    await p.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     const tag = Date.now().toString(36);
     const g1 = await p.evaluate(src("first", tag, COUNT));
-    await p.reload({ waitUntil: "domcontentloaded" });
+    await ctx.close();
+    ({ ctx, p } = await open(B, dir));
     const g2 = await p.evaluate(src("second", tag, COUNT));
-    await p.evaluate(async (t) => { for (const k of await caches.keys()) if (k.includes(t)) await caches.delete(k); }, tag).catch(() => {});
     const fmt = (us) => us.toFixed(1) + " us";
     console.log(`WASMCACHE ${name} module=${(g1.moduleBytes / 1024).toFixed(2)}KB count=${COUNT} (Cache API + compileStreaming)`);
     console.log(`  gen1 (fill) : stream ${fmt(g1.streamUs)}/mod  fresh-beside ${fmt(g1.freshUs)}/mod`);
@@ -78,5 +101,6 @@ for (const name of browsers) {
   } catch (e) {
     console.log(`WASMCACHE ${name}: FAIL ${String(e).slice(0, 250)}`);
   }
-  await browser.close();
+  await ctx.close().catch(() => {});
+  rmSync(dir, { recursive: true, force: true });
 }

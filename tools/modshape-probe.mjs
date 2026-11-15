@@ -22,8 +22,15 @@
 // Caveat carried from round 19 (W64_MODBENCH): back-to-back compiles run
 // cache-warm at 12-31 us where the emulator pays ~84 us in situ.  This probe
 // is therefore about SHAPE -- how cost varies with count and size -- not
-// about the absolute level.  Whether that shape survives going cold (with
-// unrelated work between compiles) is not measured here.
+// about the absolute level.  F and G:distinct+cold put unrelated work
+// between compiles.
+//
+// Every compile gets bytes no earlier compile had (a trailing custom
+// section holding a counter), except G:same, which repeats one module's
+// bytes on purpose to show what V8's compiled-module cache answers.  Until
+// 2026-11-14 (TB-1) A-F compiled the same bytes over and over, and
+// G:distinct+cold the 30 variants G:distinct had just compiled: those
+// results measured the cache.
 import { chromium } from "playwright-core";
 
 const port = process.env.PORT || "8080";
@@ -39,6 +46,14 @@ const probe = () => {
   };
   const str = (s, dst) => { uleb(s.length, dst); for (const c of s) dst.push(c.charCodeAt(0)); };
   const section = (m, id, payload) => { m.push(id); uleb(payload.length, m); put(m, payload); };
+  let uniq = 0;
+  const tagged = (bytes) => {
+    const p = []; str("u", p); uleb(++uniq, p);
+    const t = []; section(t, 0, p);
+    const out = new Uint8Array(bytes.length + t.length);
+    out.set(bytes); out.set(t, bytes.length);
+    return out;
+  };
 
   // body: (local i32) then P x [local.get 0; i32.const 1; i32.add; local.set 0]
   const body = (P, dst) => {
@@ -77,19 +92,18 @@ const probe = () => {
     return x;
   };
 
-  // `vary` perturbs one immediate byte per rep.  Compiling the SAME wire
-  // bytes over and over may be served from V8's compiled-module cache, in
-  // which case every repeat-the-same measurement -- this probe's and round
-  // 19's W64_MODBENCH -- prices a cache hit rather than a compile.  The
-  // emulator never compiles the same bytes twice.
-  const time = (bytes, reps, spaceMs, vary) => {
+  // Compiling the same wire bytes again is served from V8's
+  // compiled-module cache, so a repeat prices a cache hit rather than a
+  // compile; the emulator never compiles the same bytes twice.  `same`
+  // repeats them anyway, as the control.
+  const time = (bytes, reps, spaceMs, same = false) => {
     const mods = [];
-    const at = bytes.length - 5;                  // the last i32.const immediate
-    for (let i = 0; i < 3; i++) mods.push(new WebAssembly.Module(bytes));   // warm
+    const input = () => same ? bytes : tagged(bytes);
+    for (let i = 0; i < 3; i++) mods.push(new WebAssembly.Module(input()));   // warm
+    const inputs = Array.from({ length: reps }, input);
     const t0 = performance.now();
     for (let i = 0; i < reps; i++) {
-      if (vary) bytes[at] = (i % 100) + 1;
-      mods.push(new WebAssembly.Module(bytes));
+      mods.push(new WebAssembly.Module(inputs[i]));
       if (spaceMs) burn(spaceMs);
     }
     const t1 = performance.now();
@@ -130,14 +144,14 @@ const probe = () => {
   // F: the same count sweep, gone cold between calls
   for (const N of [1, 5, 32, 128]) {
     const b = build(N, 130);
-    row("F:cold@1KB/fn", N, 130, b, time(b, 30, 2, false));
+    row("F:cold@1KB/fn", N, 130, b, time(b, 30, 2));
   }
-  // G: identical bytes vs a fresh module every call -- is A-F a cache hit?
+  // G: identical bytes (the cache) vs a fresh module every call
   for (const N of [1, 5, 32, 128]) {
     const b = build(N, 130);
-    row("G:same@1KB/fn", N, 130, b, time(b, 100, 0, false));
-    row("G:distinct", N, 130, b, time(b, 100, 0, true));
-    row("G:distinct+cold", N, 130, b, time(b, 30, 2, true));
+    row("G:same@1KB/fn", N, 130, b, time(b, 100, 0, true));
+    row("G:distinct", N, 130, b, time(b, 100, 0));
+    row("G:distinct+cold", N, 130, b, time(b, 30, 2));
   }
   return out;
 };

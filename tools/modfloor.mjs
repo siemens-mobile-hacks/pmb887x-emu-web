@@ -16,6 +16,11 @@
 // W64_MODBENCH (tcg/wasm64/wasm64.c) then showed the same bytes cost
 // 12-31 us compiled back-to-back inside the vCPU worker itself -- the
 // difference is cold cache, not the module and not the isolate.
+// Needs re-measurement (TB-1, 2026-11-14): until then this probe compiled
+// at most 128 distinct modules per row (32 for the local-touching shapes,
+// and its warm-up compiled the first one again), and W64_MODBENCH the same
+// bytes 200 times, so both numbers include V8's compiled-module cache.
+// Every module is now distinct.
 //
 //   PORT=8080 [BUSY=1 TESTFLASH=...] node tools/modfloor.mjs
 import { chromium } from "playwright-core";
@@ -39,6 +44,10 @@ const out = await p.evaluate(() => {
   const sec = (id, body) => [id, ...uleb(body.length), ...body];
   const vec = (items) => [...uleb(items.length), ...items.flat()];
   const str = (s) => [...uleb(s.length), ...[...s].map((c) => c.charCodeAt(0))];
+  // V8 caches compiled modules by their bytes: a trailing custom section
+  // holding a page-wide counter makes every module this page builds distinct.
+  let uniq = 0;
+  const tag = () => { const body = [...str("u"), ...uleb(++uniq)]; return [0x00, ...uleb(body.length), ...body]; };
 
   // locals: 0 = none, 1 = the real four runs (33 i32, 32 i64, 1 i32, 3 i64)
   // body: "i32" = i32.const/drop pairs, "i64" = i64 local.get/local.set
@@ -74,13 +83,13 @@ const out = await p.evaluate(() => {
     const one = [...uleb(decl.length + body.length), ...decl, ...body];
     const code = sec(10, vec(Array.from({ length: nfn }, () => one)));
     return new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
-                           ...type, ...imp, ...fn, ...exp, ...code]);
+                           ...type, ...imp, ...fn, ...exp, ...code, ...tag()]);
   }
 
   function time(label, nfn, pad, locals, kind) {
     const iters = 400;
+    new WebAssembly.Module(build(nfn, pad, 0, locals, kind));
     const mods = Array.from({ length: iters }, (_, i) => build(nfn, pad, i, locals, kind));
-    new WebAssembly.Module(mods[0]);
     const t0 = performance.now();
     for (let i = 0; i < iters; i++) new WebAssembly.Module(mods[i]);
     const us = ((performance.now() - t0) * 1000) / iters;

@@ -1004,8 +1004,8 @@ that exists.
 | TPU event RAM as its own MemoryRegion | S75 idle −2.3 %: the extra flatview section costs more than the range compare it removes |
 | `dacr_write` value guard (skip the TLB flush on an unchanged value) | No effect: this firmware does not rewrite DACR with the same value |
 | Lazy flash romd restore (back to array mode on the first array read) | 7.4x fewer topology flips but 32 % slower in the flash-heavy window: array reads and fetches become MMIO dispatches meanwhile |
-| A cheap corner in `new WebAssembly.Module` (size threshold, imports, exports) | None: cost is linear in function count plus a per-call intercept; 64 imports add 0.09 µs each, exports are free. Only fewer modules pay |
-| Persisting compiled TB modules across boots (AOT cache) | Dead on the platform: neither V8 nor SpiderMonkey stores a `WebAssembly.Module` in IndexedDB, restoring bytes costs more than compiling them fresh, and synthetic responses get no code-cache hit |
+| A cheap corner in `new WebAssembly.Module` (size threshold, imports, exports) | None: cost is linear in function count plus a per-call intercept; 64 imports add 0.09 µs each, exports are free. Only fewer modules pay. **Needs re-measurement (TB-1/TB-2, 2026-11-14):** `tools/modshape-probe.mjs` compiled the same bytes over and over in every series but one, so these slopes are V8's compiled-module cache, not compiles |
+| Persisting compiled TB modules across boots (AOT cache) | Dead on the platform: neither V8 nor SpiderMonkey stores a `WebAssembly.Module` in IndexedDB, restoring bytes costs more than compiling them fresh, and synthetic responses get no code-cache hit. **Needs re-measurement (TB-1/TB-2, 2026-11-14):** the module storability stands (Chromium refuses to serialise a Module), but the costs and the code-cache verdict do not: `tools/wasmclone-probe.mjs` and `wasmcache-probe.mjs` compiled one module's bytes every time and "restarted" with a page reload in the same process, so both sides of each comparison read V8's in-memory module cache and the code-cache verdict could not fire |
 
 ## Known open issues and remaining levers
 

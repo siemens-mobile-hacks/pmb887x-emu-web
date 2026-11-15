@@ -40,6 +40,10 @@ const sl = (n) => { const o = []; for (;;) { const b = n & 0x7f; n >>= 7;
   o.push(b | 0x80); } };
 const st = (t) => [t.length, ...t.split("").map(c => c.charCodeAt(0))];
 const sect = (id, c) => [id, ...u(c.length), ...c];
+// V8 caches compiled modules by their bytes: a trailing custom section
+// holding a page-wide counter makes every module this page builds distinct.
+let uniq = 0;
+const tag = () => sect(0, [...st("u"), ...u(++uniq)]);
 
 // params 0=env 1=sp 2=tp (i64); declared 3=$n (i64), 4=$idx (i32),
 // then @extra unused locals split evenly between i32 and i64 the way the
@@ -75,6 +79,7 @@ function moduleBytes(base, n, extra) {
     ...sect(9, [1, 0x00, 0x41, ...sl(base), 0x0b, ...u(n),
                 ...Array.from({ length: n }, (_, i) => u(i)).flat()]),
     ...sect(10, [...u(n), ...bodies.flat()]),
+    ...tag(),
   ]);
 }
 
@@ -82,14 +87,20 @@ async function measure(extra) {
   const mem = new WebAssembly.Memory({ initial: 96 });
   const tab = new WebAssembly.Table({ initial: FUNCS, element: "anyfunc" });
   const imports = { e: { m: mem, t: tab } };
-  const blobs = [];
-  for (let base = 0; base < FUNCS; base += SPLIT) {
-    blobs.push(moduleBytes(base, Math.min(SPLIT, FUNCS - base), extra));
-  }
-  // compile: best-of-3 over the whole set, charged per module
+  const set = () => {
+    const blobs = [];
+    for (let base = 0; base < FUNCS; base += SPLIT) {
+      blobs.push(moduleBytes(base, Math.min(SPLIT, FUNCS - base), extra));
+    }
+    return blobs;
+  };
+  // compile: best-of-3 over the whole set, charged per module, each rep
+  // a set of modules never compiled before
   let compileNs = Infinity;
   let mods = [];
+  let blobs;
   for (let r = 0; r < 3; r++) {
+    blobs = set();
     const t = performance.now();
     mods = blobs.map((b) => new WebAssembly.Module(b));
     const ns = (performance.now() - t) * 1e6 / blobs.length;

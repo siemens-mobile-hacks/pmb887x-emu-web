@@ -19,12 +19,22 @@
 //   IndexedDB    one bulk transaction of N puts (the boot-start readback
 //                cost), and N sequential one-put transactions (what
 //                writing at every batch close would really cost)
-//   page reload  fresh isolate — forces true deserialisation: getAll
-//                the modules back, instantiate + call each, and compile
-//                fresh ones beside them for a same-conditions baseline.
+//   restart      the browser again on the same profile, a fresh process
+//                with nothing compiled in memory — forces true
+//                deserialisation: getAll the modules back, instantiate +
+//                call each, and compile fresh ones beside them for a
+//                same-conditions baseline.
+//
+// Every module compiled is distinct (a trailing custom section names the
+// run, the phase and a counter): V8 caches compiled modules by their bytes,
+// and until 2026-11-14 (TB-1) every compile here was of one module's bytes,
+// and the restart was a page reload in the same renderer process.
 //
 // The verdict line extrapolates to the EL71 boot economy of round 19:
 // ~34k modules / ~88 MB per 25 s boot at 83 us a compile cold.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { chromium, firefox } from "playwright-core";
 
 const argv = process.argv.slice(2);
@@ -55,7 +65,8 @@ const put1 = (db, v, store, k) => new Promise((res, rej) => {
   t.objectStore(store).put(v, k);
 });
 
-function moduleBytes() { // ~2.4 KB, 2 imports, 69 locals, dense i32 math
+let uniq = 0;
+function moduleBytes(phase) { // ~2.4 KB, 2 imports, 69 locals, dense i32 math
   const u = (n) => { const o = []; do { let b = n & 0x7f; n >>>= 7; if (n) b |= 0x80; o.push(b); } while (n); return o; };
   const s = (str) => [str.length, ...str.split("").map(c => c.charCodeAt(0))];
   const F = 6, LOCALS = 69, OPS = OPSARG;
@@ -80,21 +91,23 @@ function moduleBytes() { // ~2.4 KB, 2 imports, 69 locals, dense i32 math
     ...sect(3, [F, ...Array(F).fill(0)]),
     ...sect(7, (() => { const c = [F]; for (let i = 0; i < F; i++) c.push(...s("f" + i), 0x00, ...u(2 + i)); return c; })()),
     ...sect(10, (() => { const c = [F]; for (let i = 0; i < F; i++) c.push(...body(i)); return c; })()),
+    ...sect(0, [...s("u"), ...s(DB + ":" + phase + ":" + ++uniq)]),
   ];
   return new Uint8Array(bytes);
 }
 
 async function run(count, phase) {
   const out = {};
-  const bytes = moduleBytes();
-  out.moduleBytes = bytes.length;
+  const fresh = (n) => Array.from({ length: n }, () => moduleBytes(phase));
   const imports = { e: { a: (x, y) => x | 0, b: (x, y) => y | 0 } };
 
   if (phase === "first") {
     // warm, then timed fresh compiles
-    for (let i = 0; i < 50; i++) new WebAssembly.Module(bytes);
+    for (const b of fresh(50)) new WebAssembly.Module(b);
+    const inputs = fresh(count);
+    out.moduleBytes = inputs[0].length;
     let t = performance.now(), mods = [];
-    for (let i = 0; i < count; i++) mods.push(new WebAssembly.Module(bytes));
+    for (let i = 0; i < count; i++) mods.push(new WebAssembly.Module(inputs[i]));
     out.compileUs = (performance.now() - t) * 1e3 / count;
     t = performance.now();
     for (const m of mods) { const w = new WebAssembly.Instance(m, imports); w.exports.f0(1, 2); }
@@ -116,7 +129,7 @@ async function run(count, phase) {
       out.moduleStorable = false;
       out.storeError = String(e).slice(0, 120);
       const w = db.transaction(STORE, "readwrite");
-      for (let i = 0; i < count; i++) w.objectStore(STORE).put(bytes, i);
+      for (let i = 0; i < count; i++) w.objectStore(STORE).put(inputs[i], i);
       await txDone(w);
     }
     out.writeBulkMs = performance.now() - t;
@@ -124,7 +137,7 @@ async function run(count, phase) {
     // in its own store so the reloaded getAll(M) counts cleanly
     const SEQ = Math.min(500, count);
     t = performance.now();
-    const putWhat = out.moduleStorable ? mods[0] : bytes;
+    const putWhat = out.moduleStorable ? mods[0] : inputs[0];
     for (let i = 0; i < SEQ; i++) await put1(db, putWhat, "p", i);
     out.writePerPutMs = (performance.now() - t) / SEQ;
     mods = null;
@@ -148,12 +161,14 @@ async function run(count, phase) {
       for (const b of items) { const m = new WebAssembly.Module(b); new WebAssembly.Instance(m, imports2).exports.f0(1, 2); }
       out.restoredCiUs = (performance.now() - t) * 1e3 / items.length;
     }
-    for (let i = 0; i < 50; i++) new WebAssembly.Module(bytes);
+    for (const b of fresh(50)) new WebAssembly.Module(b);
+    let inputs = fresh(count);
     t = performance.now();
-    for (let i = 0; i < count; i++) new WebAssembly.Module(bytes);
+    for (let i = 0; i < count; i++) new WebAssembly.Module(inputs[i]);
     out.compileUs = (performance.now() - t) * 1e3 / count;
+    inputs = fresh(count);
     t = performance.now();
-    for (let i = 0; i < count; i++) { const m = new WebAssembly.Module(bytes); new WebAssembly.Instance(m, imports).exports.f0(1, 2); }
+    for (let i = 0; i < count; i++) { const m = new WebAssembly.Module(inputs[i]); new WebAssembly.Instance(m, imports).exports.f0(1, 2); }
     out.freshCiUs = (performance.now() - t) * 1e3 / count;
   }
   return out;
@@ -163,14 +178,25 @@ const probeSrc = (phase, db) => `(async () => {\nconst OPSARG = ${OPS};\n${PROBE
 
 const fmt = (us) => us == null ? "-" : us >= 1000 ? (us / 1000).toFixed(1) + " ms" : us.toFixed(1) + " us";
 
-for (const name of browsers) {
-  const B = name === "firefox" ? firefox : chromium;
-  let browser;
-  try { browser = await B.launch({ headless: true }); }
-  catch (e) { console.log(`WASMCLONE ${name}: cannot launch (${String(e).slice(0, 80)}) — skipped`); continue; }
-  const p = await browser.newPage();
+// a browser on the profile in dir, and a page of the site in it
+async function open(B, name, dir) {
+  const ctx = await B.launchPersistentContext(dir, { headless: true });
+  const p = ctx.pages()[0] || await ctx.newPage();
   p.on("crash", () => console.log(`WASMCLONE ${name}: !! page crashed`));
   await p.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+  return { ctx, p };
+}
+
+for (const name of browsers) {
+  const B = name === "firefox" ? firefox : chromium;
+  const dir = mkdtempSync(path.join(tmpdir(), "wasmclone-probe-"));
+  let ctx, p;
+  try { ({ ctx, p } = await open(B, name, dir)); }
+  catch (e) {
+    console.log(`WASMCLONE ${name}: cannot launch (${String(e).slice(0, 80)}) — skipped`);
+    rmSync(dir, { recursive: true, force: true });
+    continue;
+  }
   // fresh DB per run: a hard-killed browser can leave one wedged so that
   // every new transaction on it hangs (paid for once this session)
   const db = "wasmclone-probe-" + Date.now().toString(36);
@@ -178,8 +204,9 @@ for (const name of browsers) {
   try {
     console.log(`WASMCLONE ${name}: phase first...`);
     first = await p.evaluate(probeSrc("first", db));
-    console.log(`WASMCLONE ${name}: reload...`);
-    await p.reload({ waitUntil: "domcontentloaded" });
+    console.log(`WASMCLONE ${name}: restart...`);
+    await ctx.close();
+    ({ ctx, p } = await open(B, name, dir));
     console.log(`WASMCLONE ${name}: phase reloaded...`);
     const re = await p.evaluate(probeSrc("reloaded", db));
     console.log(`WASMCLONE ${name}: done, reporting.`);
@@ -201,6 +228,6 @@ for (const name of browsers) {
   } catch (e) {
     console.log(`WASMCLONE ${name}: FAIL ${String(e).slice(0, 300)}`);
   }
-  try { await p.evaluate(`indexedDB.deleteDatabase(${JSON.stringify(db)})`); } catch {}
-  await browser.close();
+  await ctx.close().catch(() => {});
+  rmSync(dir, { recursive: true, force: true });
 }
