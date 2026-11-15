@@ -30,7 +30,7 @@ const FLASH = args[0] ?? flashPath("s66-broken");
 const DEVICE = args[1] ?? "siemens-s65";
 const BOOT_TIMEOUT = Number(process.env.BOOT_TIMEOUT || 600) * 1000;
 
-let fails = 0, count = 0;
+let fails = 0, count = 0, pageErrors = 0;
 function ok(name, cond, extra = "") {
   count++;
   if (!cond) fails++;
@@ -53,7 +53,7 @@ const RECORDED = [
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1400, height: 950 } });
-page.on("pageerror", (e) => { fails++; console.log("PAGEERROR", String(e).slice(0, 300)); });
+page.on("pageerror", (e) => { pageErrors++; console.log("PAGEERROR", String(e).slice(0, 300)); });
 // every call into the page is bounded: a frozen main thread fails the check
 // instead of hanging it. Playwright's own timeouts do not do that: a 20 s
 // waitForFunction on a frozen page came back after 199 s.
@@ -245,6 +245,7 @@ ok("Start clears the dump and lights the screen again", await ev(() =>
   window.__ui.exit === null && document.getElementById("exit-overlay").hidden
   && !document.getElementById("lcd").style.filter));
 
-console.log(`\n${count - fails}/${count} checks passed`);
+console.log(`\n${count - fails}/${count} checks passed` +
+  (pageErrors ? `, ${pageErrors} page error${pageErrors > 1 ? "s" : ""} (FAIL)` : ""));
 await bounded(browser.close(), undefined);
-process.exit(fails ? 1 : 0);
+process.exit(fails || pageErrors ? 1 : 0);
