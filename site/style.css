@@ -94,9 +94,19 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   padding: 0 4px 0 8px;
   border: 1px solid var(--border); border-radius: calc(var(--status-h) / 2);
   background: var(--pill-bg); font-size: 0.75rem;
-  /* what is behind the badge, for the gap under its strike (below) */
-  --pill-bg: #333a47;
+  /* what is behind the badge, for the gap under its strike (below), and
+     the network status line's neutral colour on it (4.5:1 or better) */
+  --pill-bg: #333a47; --pill-status: #c3c9d4;
+  /* what fits beside the badge depends on the pill's own width (below) */
+  container: pill / inline-size;
 }
+/* the pill's text: one line, or on desktop while the network badge shows,
+   two: the run state over the network's (`.gsm-status`) */
+.status-main {
+  flex: 1; min-width: 0; align-self: stretch;
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+}
+.status-top { display: flex; align-items: center; min-width: 0; }
 /* a long status ("Downloading · 23 / 64 MiB") must not widen the row */
 #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* while idle where the Firmware panel is a sheet, the text is the way in */
@@ -119,19 +129,19 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   background: var(--muted);
 }
 .status[data-state="booting"], .status[data-state="running"] {
-  --pill-bg: #14532d; color: #b8f5cd; border-color: #1e7a41;
+  --pill-bg: #14532d; --pill-status: #9fdcb5; color: #b8f5cd; border-color: #1e7a41;
 }
 .status[data-state="booting"] .status-dot,
 .status[data-state="running"] .status-dot { background: var(--good); }
-.status[data-state="paused"] { --pill-bg: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
+.status[data-state="paused"] { --pill-bg: #4a3a10; --pill-status: #d9bf80; color: #ffdf9e; border-color: #7a5f18; }
 .status[data-state="paused"] .status-dot { background: var(--warn); }
 /* the guest has been slower than 0.80x for three seconds, and the
    real-time cap is no longer banking — during the banked boot, below 1.00x
    is what the guest is supposed to look like. Amber until it has been back
    up for three. After the green rules, before the red one */
-.status.warn { --pill-bg: #4a3a10; color: #ffdf9e; border-color: #7a5f18; }
+.status.warn { --pill-bg: #4a3a10; --pill-status: #d9bf80; color: #ffdf9e; border-color: #7a5f18; }
 .status.warn .status-dot { background: var(--warn); }
-.status.error { --pill-bg: #5c1a1a; color: #ffc4c4; border-color: #8a2b2b; }
+.status.error { --pill-bg: #5c1a1a; --pill-status: #e0a8a8; color: #ffc4c4; border-color: #8a2b2b; }
 .status.error .status-dot { background: var(--bad); }
 /* the two waiting states spin instead of sitting still */
 .status[data-state="downloading"] .status-dot,
@@ -196,22 +206,70 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .gsm-badge[data-gprs="refused"] .gsm-tag-strike { display: inline; stroke: #ffffff; }
 @keyframes gsm-pulse { 50% { opacity: 0.35; } }
 
-/* Beside the badge, for the whole run: the redial countdown while one
-   waits, the two activity arrows while connected, else empty. Its place
-   and the arrows' are always kept, so neither traffic nor a state change
-   moves the uptime. */
+/* Desktop: beside the uptime, from the phone's first data until Stop, the
+   amounts sent and received, each with its activity arrow; under it the
+   network's state in words, ellipsised (the badge's title has it all).
+   The top line wraps and clips, so the amounts show only where the pill
+   has room for them beside the uptime and never push it aside. */
+.status-top { flex-wrap: wrap; column-gap: 10px; height: 16px; line-height: 16px; overflow: hidden; }
+.status-top > .status-open { flex: 0 1 auto; }
+.gsm-data {
+  margin-left: auto; display: flex; align-items: center; gap: 8px;
+  font-size: 0.6875rem; font-weight: 500; font-variant-numeric: tabular-nums;
+  white-space: nowrap; color: var(--pill-status);
+}
+.gsm-data > span { display: flex; align-items: center; gap: 3px; }
+.gsm-status {
+  font-size: 0.6875rem; line-height: 14px; font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--pill-status);
+}
+.gsm-status:empty { display: none; }
+.gsm-status[data-tone="warn"] { color: var(--warn); }
+/* #ff9a9a is 4.49:1 on the green pill; this is 5.2 */
+.gsm-status[data-tone="off"] { color: #ffb0b0; }
+
+/* The phone layout: one line, and the badge alone says the state. Beside
+   it, for the whole run, a slot for the redial countdown while one waits
+   or the two activity arrows while connected, else empty. Its place and
+   the arrows' are always kept, so neither traffic nor a state change moves
+   the uptime. */
 .gsm-slot {
   display: none; flex: none; width: 28px; align-items: center;
   font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap;
   color: #ffb0b0;
 }
-.status:is([data-state="booting"], [data-state="running"], [data-state="paused"]) > .gsm-slot { display: flex; }
 .gsm-wait:empty { display: none; }
 .gsm-arrows { display: none; flex-direction: column; gap: 2px; }
 .gsm-badge[data-gprs="online"] ~ .gsm-slot .gsm-arrows { display: flex; }
 /* dim while idle, lit for 400 ms after frames went that way */
 .gsm-arrow { display: block; flex: none; width: 10px; height: 8px; fill: #ffffff; opacity: 0.25; }
 .status[data-gsm-tx] .gsm-up, .status[data-gsm-rx] .gsm-down { opacity: 1; }
+@media (width < 900px), (height < 621px) {
+  .status .gsm-data, .status .gsm-status { display: none; }
+  .status-top { flex-wrap: nowrap; height: auto; line-height: inherit; overflow: visible; }
+  .status-top > .status-open { flex: 1; }
+  .status:is([data-state="booting"], [data-state="running"], [data-state="paused"]) > .gsm-slot { display: flex; }
+}
+/* Where the pill is too narrow for all of it (a phone, or a desktop window
+   whose phone column is small), the uptime keeps its place and loses its
+   "Running · " first, then (phone layout) the slot: the badge still tells
+   every state apart, and the countdown is in its title. Measured on the
+   pill's content box (its width less 14px of border and padding), so it is
+   the same in every network state: "Running · 10:00" needs 95px, the badge
+   32, the slot 28, Stop 72 (52 at 360px and under) and the gaps 6 each. */
+@container pill (width < 211px) {
+  .status-verb { display: none; }
+}
+@media (width < 900px), (height < 621px) {
+  @container pill (width < 245px) {
+    .status-verb { display: none; }
+  }
+  @container pill (width < 184px) {
+    .status:is([data-state]) > .gsm-slot { display: none; }
+  }
+}
 
 .pill-action { display: flex; }
 .pill-btn {
@@ -336,6 +394,10 @@ main {
      give it a line of its own, charged to the control block whether or not
      there is anything on it, so the screen never moves when there is */
   .phone-panel { grid-column: 2; --head-h: calc(var(--status-h) + 1.15rem); }
+  /* the row may be wider than a small phone where the column has room,
+     enough for the network badge's two lines and the amounts beside the
+     uptime */
+  .status-row { width: min(100cqw, max(var(--asm-w), 480px)); }
   .status-caption { display: block; }
 }
 

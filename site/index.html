@@ -176,15 +176,29 @@
               <svg class="gsm-arrow gsm-down" viewBox="0 0 10 8"><path d="M1 1h8L5 7z"/></svg>
             </span>
           </span>
-          <!-- at phone widths the state text doubles as the way into the
-               Firmware sheet while idle; on desktop it is inert text -->
-          <button type="button" id="status-open" class="status-open"
-            aria-haspopup="dialog" disabled>
-            <span id="status-text">Idle</span>
-            <svg class="ico status-chev" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M6 9.5 12 15.5 18 9.5"/>
-            </svg>
-          </button>
+          <div class="status-main">
+            <div class="status-top">
+              <!-- at phone widths the state text doubles as the way into the
+                   Firmware sheet while idle; on desktop it is inert text -->
+              <button type="button" id="status-open" class="status-open"
+                aria-haspopup="dialog" disabled>
+                <span id="status-text">Idle</span>
+                <svg class="ico status-chev" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 9.5 12 15.5 18 9.5"/>
+                </svg>
+              </button>
+              <!-- desktop, from the phone's first data until Stop: what went
+                   up and down, each with its activity arrow; shown only where
+                   the line has room for it -->
+              <span id="gsm-data" class="gsm-data" aria-hidden="true" hidden>
+                <span><svg class="gsm-arrow gsm-up" viewBox="0 0 10 8"><path d="M1 7 5 1l4 6z"/></svg><span id="gsm-sent"></span></span>
+                <span><svg class="gsm-arrow gsm-down" viewBox="0 0 10 8"><path d="M1 1h8L5 7z"/></svg><span id="gsm-received"></span></span>
+              </span>
+            </div>
+            <!-- desktop, while the badge shows: its state in words, one
+                 line, ellipsised; the badge's title has it in full -->
+            <span id="gsm-status" class="gsm-status" aria-hidden="true"></span>
+          </div>
           <!-- app.js renders exactly one of Start/Stop/Cancel in here -->
           <span id="pill-action" class="pill-action"></span>
         </div>

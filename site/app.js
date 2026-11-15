@@ -20,7 +20,7 @@ import {
 } from "./recalc.js";
 import { loadSiemensFW } from "./siemensfw.js";
 import { GprsNet } from "./gprs-net.js";
-import { badgeLook, bearerOf } from "./gsm-badge.js";
+import { badgeView } from "./gsm-badge.js";
 import { buildShortUA } from "./ua.js";
 import { esnToOtp0, imeiToOtp1 } from "./otp.js";
 import { serialMessages, parseExit } from "./exit-report.js";
@@ -718,6 +718,20 @@ function pillText() {
   }
 }
 
+// The pill's text, with "Running · " or "Paused · " in a span of its own
+// that the stylesheet drops where the pill is too narrow for it beside the
+// network badge. The text as a whole (what tools read) stays the same.
+const statusVerbEl = document.createElement("span");
+statusVerbEl.className = "status-verb";
+const statusRestEl = document.createTextNode("");
+function showPillText() {
+  const text = pillText();
+  const verb = /^(Running|Paused) · /.exec(text)?.[0] ?? "";
+  if (statusTextEl.firstChild !== statusVerbEl) statusTextEl.replaceChildren(statusVerbEl, statusRestEl);
+  if (statusVerbEl.textContent !== verb) statusVerbEl.textContent = verb;
+  if (statusRestEl.data !== text.slice(verb.length)) statusRestEl.data = text.slice(verb.length);
+}
+
 // exactly one of Start / Stop / Cancel is ever in the DOM
 let actionKind = null;
 function renderAction() {
@@ -771,7 +785,7 @@ function render() {
   statusEl.dataset.state = emuState;
   statusEl.className = "status"
     + (errorMsg || (stalled && locked) ? " error" : slow && locked ? " warn" : "");
-  statusTextEl.textContent = pillText();
+  showPillText();
   renderAction();
   const cap = captionText();
   captionEl.textContent = cap;
@@ -874,7 +888,7 @@ function setEmuState(next) {
 function startUptime() {
   if (uptimeTimer) return;
   uptimeTimer = setInterval(() => {
-    if (emuState === "running" || emuState === "paused") statusTextEl.textContent = pillText();
+    if (emuState === "running" || emuState === "paused") showPillText();
   }, 1000);
 }
 function stopUptime() { clearInterval(uptimeTimer); uptimeTimer = 0; }
@@ -1286,14 +1300,14 @@ function engineTick() {
   if (dlWhat === "engine") {
     dlLoaded = st.loaded;
     dlTotal = st.total;
-    statusTextEl.textContent = pillText();
+    showPillText();
     const pct = st.total ? Math.round((st.loaded / st.total) * 100) : null;
     $("ov-sub").textContent = st.total ? fmtProgress(st.loaded, st.total)
       : fmtMiB(st.loaded);
     overlayBar.hidden = pct == null;
     if (pct != null) overlayBar.firstElementChild.style.width = pct + "%";
   } else if (emuState === "idle" && !phoneLayout.matches) {
-    statusTextEl.textContent = pillText();
+    showPillText();
   }
 }
 
@@ -1531,7 +1545,7 @@ async function runEsnRecovery(identity, device) {
       signal: esnAbort.signal,
       onProgress: (frac) => {
         esnPct = Math.round(frac * 100);
-        statusTextEl.textContent = pillText();
+        showPillText();
         showOverlay("Recovering ESN…", `${esnPct}% of the ESN space searched`, esnPct);
       },
     });
@@ -1655,7 +1669,7 @@ async function boot() {
             const pct = dlTotal ? Math.round((dlLoaded / dlTotal) * 100) : null;
             // straight to the three elements that move: this fires once per
             // stream chunk, far too often for a cache-state refresh
-            statusTextEl.textContent = pillText();
+            showPillText();
             P.status.className = "ff-status";
             P.status.textContent = `Downloading · ${fmtProgress(dlLoaded, dlTotal)}`;
             P.bar.hidden = false;
@@ -1943,6 +1957,10 @@ function showGprsStatus() {
 const gprsEl = $("gprs");
 const gprsWaitEl = $("gprs-wait");
 const gprsLettersEl = gprsEl.querySelector(".gsm-tag-letters");
+const gsmStatusEl = $("gsm-status");
+const gsmDataEl = $("gsm-data");
+const gsmSentEl = $("gsm-sent");
+const gsmReceivedEl = $("gsm-received");
 const GPRS_LIT_MS = 400;      // how long an arrow stays lit after a notice
 const gprsLit = { tx: false, rx: false };
 const gprsSeen = { in: 0, out: 0 };
@@ -1997,13 +2015,6 @@ function renderGprs() {
   if (gprsEl.hidden !== (badge === "off")) gprsEl.hidden = badge === "off";
   if (gprsEl.dataset.state !== badge) gprsEl.dataset.state = badge;
   if (gprsEl.getAttribute("aria-label") !== label) gprsEl.setAttribute("aria-label", label);
-  if (badge !== "off") {
-    const { net, gprs } = badgeLook(badge, g);
-    if (gprsEl.dataset.net !== net) gprsEl.dataset.net = net;
-    if (gprsEl.dataset.gprs !== gprs) gprsEl.dataset.gprs = gprs;
-    const letters = `#gsm-bearer-${bearerOf(gprsEl.dataset.bearer)}`;
-    if (gprsLettersEl.getAttribute("href") !== letters) gprsLettersEl.setAttribute("href", letters);
-  }
   if (badge !== "online") {
     gprsLight(false, false);
     clearTimeout(gprsLitTimer);
@@ -2027,12 +2038,39 @@ function renderGprs() {
   if (news && news !== gprsSaid) say(gprsSaid = news);
 }
 
-// the redial countdown, and the title that carries it
+// What gsm-badge.js says the badge shows: the antenna and the tag, the
+// bearer's letters (#gprs's data-bearer), the desktop status line and
+// whether the amounts show. Also from the countdown, which the line carries.
+function gprsLook(badge = gprsBadge()) {
+  const off = badge === "off";
+  const v = off ? { status: "", tone: "", amounts: false }
+    : badgeView(badge, gprsNet, { retryIn: gprsRetryIn(gprsNet), bearer: gprsEl.dataset.bearer });
+  if (!off) {
+    if (gprsEl.dataset.net !== v.net) gprsEl.dataset.net = v.net;
+    if (gprsEl.dataset.gprs !== v.gprs) gprsEl.dataset.gprs = v.gprs;
+    const letters = `#gsm-bearer-${v.bearer}`;
+    if (gprsLettersEl.getAttribute("href") !== letters) gprsLettersEl.setAttribute("href", letters);
+  }
+  if (gsmStatusEl.textContent !== v.status) gsmStatusEl.textContent = v.status;
+  if ((gsmStatusEl.dataset.tone ?? "") !== v.tone) gsmStatusEl.dataset.tone = v.tone;
+  if (gsmDataEl.hidden !== !v.amounts) gsmDataEl.hidden = !v.amounts;
+  gprsAmounts();
+}
+
+function gprsAmounts() {
+  if (gsmDataEl.hidden) return;
+  const sent = kb(gprsNet.bytes.out), received = kb(gprsNet.bytes.in);
+  if (gsmSentEl.textContent !== sent) gsmSentEl.textContent = sent;
+  if (gsmReceivedEl.textContent !== received) gsmReceivedEl.textContent = received;
+}
+
+// the redial countdown, and the status line and title that carry it
 function gprsWait() {
   const s = gprsRetryIn(gprsNet);
   const text = s > 0 ? `${s}s` : "";
   if (gprsWaitEl.textContent !== text) gprsWaitEl.textContent = text;
   if (!s && gprsWaitTimer) { clearInterval(gprsWaitTimer); gprsWaitTimer = 0; }
+  gprsLook();
   gprsTitle();
 }
 
@@ -2046,6 +2084,7 @@ function gprsTraffic() {
   gprsLight(tx, rx);
   clearTimeout(gprsLitTimer);
   gprsLitTimer = setTimeout(() => gprsLight(false, false), GPRS_LIT_MS);
+  gprsAmounts();
   gprsTitle();
 }
 
@@ -2061,7 +2100,7 @@ function gprsTitle() {
   const g = gprsNet;
   const shown = gprsShown();
   if (shown === "off") {
-    if (gprsEl.title) gprsEl.title = "";
+    for (const e of [gprsEl, gsmStatusEl, gsmDataEl]) if (e.title) e.title = "";
     return;
   }
   const s = gprsRetryIn(g);
@@ -2076,7 +2115,9 @@ function gprsTitle() {
   const net = gsmLine(g);
   const title = `${net ? `Network: ${net}\n` : ""}${head}\nSent ${g.frames.out} frames (${kb(g.bytes.out)}), `
     + `received ${g.frames.in} frames (${kb(g.bytes.in)})`;
-  if (gprsEl.title !== title) gprsEl.title = title;
+  // the status line and the amounts are ellipsised or dropped where the
+  // pill is short of room: the same title has them in full
+  for (const e of [gprsEl, gsmStatusEl, gsmDataEl]) if (e.title !== title) e.title = title;
 }
 
 // window.__ui.gprs and window.__ui.gsm, for tools/: badge is what #gprs
