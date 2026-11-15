@@ -10,19 +10,21 @@
 //   node tools/bootmatrix.mjs --secs 900 [--poll 20] SPEC [SPEC ...]
 //     SPEC = label[|query[|fullflash[|sidecar]]]
 //            query   e.g. "icount=shift=3" (& not needed; single param)
-//            files default to tools/testflash.mjs's flash
+//            files default to tools/testflash.mjs's flash (and its sidecar)
 //   Examples:
 //     node tools/bootmatrix.mjs --secs 600 'shift3|icount=shift=3' 'none||fullflashes/KE800-v11b.bin|fullflashes/KE800-v11b.bin.cfi-efa'
 //
 // Output: one line per poll per page (label v=… insns=… …), a final
-// JSON verdict per page (last v/insns/fb, exit text, screenshots under
-// tools/matrix-<label>-*.png).
+// JSON verdict per page (last v/insns/fb, exit text, why it failed;
+// screenshots under tools/matrix-<label>-*.png).  Exit 1 when a page failed:
+// it stopped answering, threw, its firmware EXITed, its qemu exited, the page
+// reported an error, or it never reported at all.
 
 import { chromium } from "playwright-core";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { fullflash as defaultFlash } from "./testflash.mjs";
+import { files as defaultFiles } from "./testflash.mjs";
 import { bounded } from "./lib/page.mjs";
 
 const TOOLS = path.dirname(fileURLToPath(import.meta.url));
@@ -45,7 +47,7 @@ for (let i = 0; i < argv.length; i++) {
 
 const runs = specArgs.map((s) => {
   const [label, query = "", flash = "", sidecar = ""] = s.split("|");
-  const files = [flash ? path.resolve(ROOT, flash) : defaultFlash];
+  const files = flash ? [path.resolve(ROOT, flash)] : [...defaultFiles];
   if (sidecar) files.push(path.resolve(ROOT, sidecar));
   for (const f of files) if (!fs.existsSync(f)) throw new Error(`file not found: ${f}`);
   return { label, query, files };
@@ -61,6 +63,9 @@ const browser = await chromium.launch({ headless: true });
 const WATCH = `
   window.__mx = { v: 0, insns: 0, fb: 0, ser: 0, exit: "", status: "" };
   setInterval(() => {
+    const u = window.__ui;
+    if (u && u.error) window.__mx.gone = "page error: " + String(u.error).slice(0, 120);
+    else if (u && u.exitCode != null) window.__mx.gone = "qemu exited (" + u.exitCode + ")";
     const m = window.__qemu; if (!m) return;
     try { window.__mx.ser = m.FS.readFile("/serial.log").length; } catch {}
     const x = window.__ui?.exit;
@@ -80,14 +85,18 @@ for (const r of runs) {
   // Run panels are bottom sheets, and a driver would have to open one to
   // reach the controls it sets here
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-  page.on("pageerror", (e) => console.log(`[${r.label}] pageerror: ${String(e).slice(0, 200)}`));
+  page.on("pageerror", (e) => {
+    console.log(`[${r.label}] pageerror: ${String(e).slice(0, 200)}`);
+    r.pageErr ??= String(e).slice(0, 120);
+  });
   await page.goto(`http://127.0.0.1:${PORT}/${r.query ? "?" + r.query : ""}`, { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.addScriptTag({ content: WATCH });
   await page.selectOption("#startup", "ONLINE");
   await page.click("#ff-mode-own");
   await page.setInputFiles("#fullflash", r.files);
   await page.click("#btn-start");
-  pages.push({ ...r, page });
+  r.page = page;
+  pages.push(r);
   await new Promise((res) => setTimeout(res, 1500)); // stagger page starts
 }
 
@@ -117,6 +126,16 @@ for (const p of pages) {
   if (lcd) await bounded(lcd.screenshot({ path: path.join(TOOLS, `matrix-${p.label}-lcd.png`) }), null);
 }
 const out = {};
-for (const [label, mx] of results) out[label] = mx;
+for (const p of pages) {
+  const mx = results.get(p.label);
+  const fail = p.unresponsive ? "the page does not answer: " + p.unresponsive
+    : p.pageErr ? "page error: " + p.pageErr
+    : !mx ? "no reading in " + secs + " s"
+    : mx.exit ? "firmware EXIT " + mx.exit
+    : mx.gone || null;
+  out[p.label] = mx && { ...mx, ...(fail ? { fail } : {}) };
+  if (!mx && fail) out[p.label] = { fail };
+  if (fail) { console.log(`[${p.label}] FAIL: ${fail}`); process.exitCode = 1; }
+}
 console.log("BOOTMATRIX " + JSON.stringify(out));
 await bounded(browser.close(), undefined);
