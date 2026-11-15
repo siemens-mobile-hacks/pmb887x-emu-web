@@ -2105,8 +2105,11 @@ function gprsTitle() {
     return;
   }
   const s = gprsRetryIn(g);
+  // a phone that registers and never attaches, or attaches and never sends,
+  // is at rest, not waiting: nothing here says "yet" once the cell is known
   const head = {
-    idle: "GPRS: not used yet. The gateway is dialled when the phone first sends.",
+    idle: g.ms === null ? "GPRS: not used yet. The gateway is dialled when the phone first sends."
+      : "GPRS: no link to the gateway.",
     connecting: g.reason ? `GPRS: connecting again. ${g.reason}.` : "GPRS: connecting",
     online: "GPRS: connected", active: "GPRS: connected",
     offline: `GPRS: offline. ${g.reason}. Dialled again when the phone sends`
@@ -2114,8 +2117,7 @@ function gprsTitle() {
     refused: `GPRS: refused. ${g.reason}. Not dialled again in this run.`,
   }[shown];
   const net = gsmLine(g);
-  const title = `${net ? `Network: ${net}\n` : ""}${head}\nSent ${g.frames.out} frames (${kb(g.bytes.out)}), `
-    + `received ${g.frames.in} frames (${kb(g.bytes.in)})`;
+  const title = `${net ? `Network: ${net}\n` : ""}${head}\nSent ${kb(g.bytes.out)}, received ${kb(g.bytes.in)}`;
   // the status line and the amounts are ellipsised or dropped where the
   // pill is short of room: the same title has them in full
   for (const e of [gprsEl, gsmStatusEl, gsmDataEl]) if (e.title !== title) e.title = title;
