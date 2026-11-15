@@ -146,12 +146,13 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 }
 .status:has(> .gprs:not([hidden])) > .status-dot { display: none; }
 .gprs-arrows { flex: none; width: 6px; height: 10px; fill: currentColor; }
-.gprs-arrows path { opacity: 0.45; }
+.gprs-arrows path { opacity: 0.6; }
 .gprs-cut { display: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
 .gprs-wait:empty { display: none; }
 .gprs[data-state="connecting"] { color: var(--warn); }
 .gprs[data-state="connecting"] .gprs-arrows { animation: gprs-pulse 1.2s ease-in-out infinite; }
 .gprs[data-state="online"] { color: var(--good); }
+.gprs[data-state="connecting"] .gprs-arrows path,
 .gprs[data-state="online"] .gprs-arrows path { opacity: 1; }
 .gprs[data-state="offline"], .gprs[data-state="refused"] { color: #ff9a9a; }
 .gprs[data-state="offline"] .gprs-cut, .gprs[data-state="refused"] .gprs-cut { display: block; opacity: 1; }
@@ -160,7 +161,7 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 /* frames went up (tx) or down (rx) since the last notice */
 .gprs[data-tx], .gprs[data-rx] { background: rgba(62, 207, 111, 0.35); }
 .gprs[data-tx] .gprs-up, .gprs[data-rx] .gprs-down { fill: #ffffff; }
-@keyframes gprs-pulse { 50% { opacity: 0.3; } }
+@keyframes gprs-pulse { 50% { opacity: 0.35; } }
 
 .pill-action { display: flex; }
 .pill-btn {
