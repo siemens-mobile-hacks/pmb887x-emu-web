@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { pageCall } from "./lib/page.mjs";
+import { runStamp } from "./lib/results.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const argv = process.argv.slice(2);
@@ -24,7 +25,8 @@ const port = process.env.PORT || "8080";
 const flash = [here + "../fullflashes/SL65v49lg1_TIM.bin", here + "../../fullflashes/SL65v49lg1_TIM.bin"].find(existsSync);
 if (!flash) throw new Error("SL65v49lg1_TIM.bin not found");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
+// to the second, with the pid: two runs in one minute must not collide
+const stamp = runStamp();
 const outBase = path.join(here, `../tests/results/recprobe-${stamp}`);
 
 const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });

@@ -102,6 +102,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { median } from "./lib/stats.mjs";
 import { guestGone, pageCall } from "./lib/page.mjs";
+import { runStamp } from "./lib/results.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, dflt) => {
@@ -324,7 +325,8 @@ function crossAt(samples, x, col = 1) {
 const insnKey = (i) => `${i / 1e9}G`;
 
 // same stamp as the JSON below, so screenshots sort next to their run
-const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
+// to the second, with the pid: two runs in one minute must not collide
+const stamp = runStamp();
 
 // end-state screenshot -> tests/results (page + LCD). Never fatal: a
 // wedged/crashed page just means no shot.  The LCD is the canvas at its
