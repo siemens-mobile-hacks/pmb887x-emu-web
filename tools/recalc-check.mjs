@@ -195,7 +195,9 @@ ok("verify rejects its neighbour",
   //     not — the canonical form is what both recalc passes produce
   replaced = M._sr_recalc(imeiBuf, trueEsn, id.skey, completeOut, logBuf, logCap);
   const ptr = M._sr_flash_ptr();
-  const round = M.HEAPU8.subarray(ptr, ptr + bytes.length);
+  // a copy: the second pass below must be compared with this state, not
+  // with a view of the same heap it rewrites
+  const round = M.HEAPU8.slice(ptr, ptr + bytes.length);
   let diff = 0;
   for (let i = 0; i < bytes.length; i++) if (round[i] !== bytes[i]) diff++;
   if (canonical) {
