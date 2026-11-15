@@ -988,7 +988,22 @@ if (!process.env.SKIP_BOOT) {
       gapIsPill: getComputedStyle(gap).stroke === getComputedStyle(document.getElementById("status")).backgroundColor,
       color: getComputedStyle(ant).color,
     };
-    return { x: Math.round(t.left * 10) / 10, y: Math.round(t.top * 10) / 10, inside, apart, antenna,
+    // what must stay put in every state (the status line is not shown in
+    // the phone layout, so its box is empty there), and the antenna's
+    // drawing: its scale and the box of its own parts
+    const at = (e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map((v) => Math.round(v * 100) / 100).join(); };
+    const ink = own.map((e) => e.getBoundingClientRect());
+    const drawn = { left: Math.min(...ink.map((r) => r.left)), right: Math.max(...ink.map((r) => r.right)),
+      top: Math.min(...ink.map((r) => r.top)), bottom: Math.max(...ink.map((r) => r.bottom)) };
+    const box = document.getElementById("gprs").getBoundingClientRect();
+    const fixed = { badge: at(document.getElementById("gprs")), line: at(document.getElementById("gsm-status")),
+      stop: at(document.getElementById("btn-stop")) };
+    const antScale = ant.getScreenCTM().a;
+    const antDraw = { scale: Math.round(antScale * 1000) / 1000, w: Math.round(ant.getBoundingClientRect().width * 100) / 100,
+      dx: Math.round(((drawn.left + drawn.right) - (box.left + box.right)) / 2 * 100) / 100,
+      dy: Math.round(((drawn.top + drawn.bottom) - (box.top + box.bottom)) / 2 * 100) / 100,
+      tag: getComputedStyle(document.querySelector("#gprs .gsm-tag")).display !== "none" };
+    return { x: Math.round(t.left * 10) / 10, y: Math.round(t.top * 10) / 10, inside, apart, antenna, fixed, antDraw,
       state: document.getElementById("gprs").dataset.state, net: document.getElementById("gprs").dataset.net,
       gprs: document.getElementById("gprs").dataset.gprs, status: document.getElementById("gsm-status").textContent };
   });
@@ -1006,6 +1021,28 @@ if (!process.env.SKIP_BOOT) {
     ok(`gprs: ${name}: the uptime does not move in any badge state`,
       seen.every((p) => p.x === seen[0].x && p.y === seen[0].y),
       JSON.stringify(seen.map((p) => `${p.stage} ${p.x},${p.y}`)));
+    // nor does the badge's box, the status line or Stop: also not when the
+    // antenna that filled the badge shrinks over the tag (registered to
+    // attached) or grows back
+    ok(`gprs: ${name}: the badge, the status line and Stop do not move in any badge state`,
+      seen.every((p) => JSON.stringify(p.fixed) === JSON.stringify(seen[0].fixed)),
+      JSON.stringify(seen.map((p) => `${p.stage} ${JSON.stringify(p.fixed)}`)));
+    const reg = seen.find((p) => p.stage === "registered"), att = seen.find((p) => p.stage === "attached");
+    ok(`gprs: ${name}: registered to attached moves nothing but the antenna and the tag`,
+      reg.x === att.x && reg.y === att.y && JSON.stringify(reg.fixed) === JSON.stringify(att.fixed)
+      && !reg.antDraw.tag && att.antDraw.tag,
+      JSON.stringify([reg, att].map((p) => [p.stage, p.x, p.y, p.fixed, p.antDraw])));
+    // without a tag the antenna fills the badge: as wide as it, 4/3 of its
+    // size over a tag, centred both ways; with the tag it is 24 units wide
+    // at the badge's scale (1, or 3/4 in the phone layout)
+    const zoom = name === "1770x1000" ? 1 : 0.75;
+    ok(`gprs: ${name}: the antenna fills the badge until the tag comes, then sits over it`,
+      seen.every((p) => p.antDraw.tag
+        ? p.antDraw.scale === zoom && p.antDraw.w === 24 * zoom
+        : p.antDraw.scale === Math.round(zoom * 4 / 3 * 1000) / 1000 && p.antDraw.w === 32 * zoom
+          && Math.abs(p.antDraw.dx) <= 0.5 && Math.abs(p.antDraw.dy) <= 1)
+      && seen.filter((p) => !p.antDraw.tag).map((p) => p.stage).join() === "nonet,registered",
+      JSON.stringify(seen.map((p) => `${p.stage} ${JSON.stringify(p.antDraw)}`)));
     ok(`gprs: ${name}: the pill's parts stay inside it, side by side`, seen.every((p) => p.inside && p.apart),
       JSON.stringify(seen.filter((p) => !p.inside || !p.apart).map((p) => p.stage)));
     // no network (also "connected, cell lost"): the whole antenna, muted

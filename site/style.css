@@ -162,9 +162,10 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
    geometry is in SVG units: 32x37 at 1x, antenna 24x22, a 2px gap, tag
    32x13. Every size here is times --gsm-z: in the phone layout the badge
    and the slot beside it are 3/4 of that, 24x27.75, which the 32px pill
-   holds inside its border; the SVG strokes scale with their boxes. */
+   holds inside its border; the SVG strokes scale with their boxes. Until
+   there is a tag the antenna alone fills the badge (below). */
 .gsm-badge {
-  flex: none; width: calc(32px * var(--gsm-z));
+  flex: none; width: calc(32px * var(--gsm-z)); height: calc(37px * var(--gsm-z));
   display: flex; flex-direction: column; align-items: center; gap: calc(2px * var(--gsm-z));
   color: var(--text);
 }
@@ -199,8 +200,12 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .gsm-tag-gap, .gsm-tag-strike { display: none; fill: none; stroke-linecap: round; }
 .gsm-tag-gap { stroke: var(--pill-bg); stroke-width: 2.8; }
 .gsm-tag-strike { stroke: currentColor; stroke-width: 1.2; }
-/* no data link yet: no tag, its place kept so nothing moves when it comes */
-.gsm-badge[data-gprs="none"] .gsm-tag { visibility: hidden; }
+/* no data link yet: no tag, and the antenna takes the whole badge, scaled
+   as one (the viewBox's meet) until the badge's width stops it, 4/3 of its
+   size over a tag (32x28 at 1x), centred. The badge keeps its box, so
+   nothing beside it moves when the tag comes; the swap is not animated. */
+.gsm-badge[data-gprs="none"] .gsm-tag { display: none; }
+.gsm-badge[data-gprs="none"] .gsm-ant { width: 100%; height: 100%; }
 .gsm-badge[data-gprs="connecting"] .gsm-tag { color: var(--warn); animation: gsm-pulse 1.2s ease-in-out infinite; }
 .gsm-badge[data-gprs="online"] .gsm-tag { color: var(--good); --gsm-ink: #0b2a16; }
 .gsm-badge[data-gprs="online"] .gsm-tag-box { fill: currentColor; }

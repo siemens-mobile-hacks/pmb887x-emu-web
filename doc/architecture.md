@@ -229,7 +229,14 @@ thread is using them).
   (antenna 24x22, a 2 px gap, tag 32x13; the owner's mockup package of
   2026-11-14). In the phone layout the icon and the slot beside it are
   drawn at 3/4 (`--gsm-z`): 24x27.75 px, shapes and proportions kept, inside
-  the 32 px pill's border. A run without the network (option unticked, a
+  the 32 px pill's border. Until there is a tag (No network, Registered, a
+  dist that cannot read the cell) the antenna alone fills the icon,
+  scaled as one by 4/3 (the badge's width is the limit) and centred:
+  32x28 px, 24x21 in the phone layout, its strike scaled with it (the
+  owner's change of 2026-11-15). From GPRS attach on, in every link
+  state, it is the small antenna over the tag. The icon keeps its box
+  either way and the swap is not animated, so the uptime, the status line
+  and Stop never move. A run without the network (option unticked, a
   board without a radio, a dist without `_wasm_net_attach`) shows none and
   keeps the dot, which then sits in the icon's place (32 px, 24 in the phone
   layout), so the uptime starts at the same x either way.
@@ -243,9 +250,9 @@ thread is using them).
     line, round caps (the owner's change of 2026-11-15; the mockups'
     dotted waves are gone). Registered, it is lit and not struck. A dist
     without `_wasm_gsm_state` shows it muted, not struck.
-  - The **tag** (`data-gprs`) follows the link: absent (its place kept)
-    until GPRS attaches (GMM ATTACH ACCEPT); outlined once attached;
-    amber and pulsing (steady with reduced motion) while `gprs-net.js`
+  - The **tag** (`data-gprs`) follows the link: absent (the antenna
+    fills its place) until GPRS attaches (GMM ATTACH ACCEPT); outlined
+    once attached; amber and pulsing (steady with reduced motion) while `gprs-net.js`
     dials the gateway, which it does only for a frame from the phone;
     filled green with dark letters while
     the gateway's WebSocket is open; pink and struck through when offline

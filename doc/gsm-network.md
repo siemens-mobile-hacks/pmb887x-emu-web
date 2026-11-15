@@ -190,7 +190,8 @@ phone layout, whose pill stays 32 px tall. The antenna is the
 cell, read from the bits below for the whole run: muted and struck
 through until the phone is registered, lit after, and muted and struck
 through again if the phone loses the cell, also while a link is up ("GPRS
-Connected · no network" on desktop). The tag is the data link: none before GPRS attaches, then
+Connected · no network" on desktop). The tag is the data link: none before GPRS attaches
+(the antenna, larger, fills the badge alone until then), then
 attached, connecting, connected (▴/▾ for traffic), offline or refused. On
 desktop a status line says the state in words and, from the phone's
 first data until Stop, the amounts sent and received sit beside the
