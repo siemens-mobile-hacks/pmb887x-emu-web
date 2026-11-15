@@ -1132,6 +1132,9 @@ fieldset:disabled .advanced summary { pointer-events: none; }
    pill buttons drop their glyph and keep their word. */
 @media (max-width: 360px) {
   .status-row { gap: 4px; }
+  /* ...and the pill's own parts sit closer, so the uptime beside the
+     network badge keeps its digits */
+  .status { gap: 4px; padding-left: 6px; }
   .pill-btn .ico { display: none; }
   .pill-btn { padding: 0 0.55rem; }
   .rec-pill { padding-left: 5px; gap: 0.3rem; }
