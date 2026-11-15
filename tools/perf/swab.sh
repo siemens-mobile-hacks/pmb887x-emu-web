@@ -1,7 +1,8 @@
 #!/bin/bash
 # Paired free-run A/B, all pairs at once: pair p runs leg A and leg B together
 # on two whole physical cores each (with their SMT siblings, from the host's
-# topology: tools/perf/coresets.sh); A/B sides alternate between pairs.  V8 explicit bounds checks on (Android),
+# topology: tools/perf/coresets.sh); A/B core sides and which leg starts
+# first alternate between pairs.  V8 explicit bounds checks on (Android),
 # free-run switched on when the measurement starts: both dists must be built
 # with tools/perf/freerun.diff applied (see doc/performance.md).
 #   swab.sh <scene> <distA> <distB> [pairs 1-4] [measure s]
@@ -20,6 +21,11 @@ bf="--js-flags=--wasm-enforce-bounds-checks"
 [ "${BFLAGS:-1}" = 0 ] && bf=""
 out=${OUT:-$(mktemp -d "${TMPDIR:-/tmp}/swab.XXXX")}
 mkdir -p "$out"
+# serve.mjs gzips a dist's wasm on its first request; a dist built moments
+# ago would make its legs wait for that compress while the other side runs
+pa=${PORT_A:-8080}; pb=${PORT_B:-8080}
+curl -s -H "Accept-Encoding: gzip" -o /dev/null "http://127.0.0.1:$pa/$A/qemu-system-arm.wasm"
+curl -s -H "Accept-Encoding: gzip" -o /dev/null "http://127.0.0.1:$pb/$B/qemu-system-arm.wasm"
 # the runs are background jobs: a signal stops them as well, and the script
 # exits 128+n
 runs=()
@@ -32,15 +38,21 @@ stop_runs() {
 trap 'stop_runs HUP 1' HUP
 trap 'stop_runs INT 2' INT
 trap 'stop_runs TERM 15' TERM
+leg_a() {
+  PORT=$pa SCENEBENCH_CHROME_ARGS="$bf ${ARGS_A:-}" taskset -c "$ca" node tools/scenebench.mjs "$sc" "$A" --runs 1 --measure "$m" > "$out/a$p.log" 2>&1 &
+  runs+=($!)
+}
+leg_b() {
+  PORT=$pb SCENEBENCH_CHROME_ARGS="$bf ${ARGS_B:-}" taskset -c "$cb" node tools/scenebench.mjs "$sc" "$B" --runs 1 --measure "$m" > "$out/b$p.log" 2>&1 &
+  runs+=($!)
+}
 for p in $(seq 1 "$n"); do
   ORD=(0 4 2 6); o=${ORD[$((p - 1))]}
   s0=${SETS[$o]}; s1=${SETS[$((o + 1))]}
   if [ $((p % 2)) = 1 ]; then ca=$s0; cb=$s1; else ca=$s1; cb=$s0; fi
-  PORT=${PORT_A:-8080} SCENEBENCH_CHROME_ARGS="$bf ${ARGS_A:-}" taskset -c "$ca" node tools/scenebench.mjs "$sc" "$A" --runs 1 --measure "$m" > "$out/a$p.log" 2>&1 &
-  runs+=($!)
-  PORT=${PORT_B:-8080} SCENEBENCH_CHROME_ARGS="$bf ${ARGS_B:-}" taskset -c "$cb" node tools/scenebench.mjs "$sc" "$B" --runs 1 --measure "$m" > "$out/b$p.log" 2>&1 &
-  runs+=($!)
-  echo "$ca $cb" > "$out/cores$p"
+  # the later-started leg does better (doc/performance.md, position bias)
+  if [ $((p % 2)) = 1 ]; then leg_a; leg_b; first=A; else leg_b; leg_a; first=B; fi
+  echo "$ca $cb, $first first" > "$out/cores$p"
 done
 wait
 get() { grep -h "\] $sc .* r1: " "$1" | head -1 | sed -nE "s/.* $metric=([0-9.]+).*/\1/p"; }

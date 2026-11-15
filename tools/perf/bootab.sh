@@ -1,7 +1,8 @@
 #!/bin/bash
 # Paired boot A/B with tools/bootbench.mjs, all pairs at once: pair p boots
-# leg A and leg B together on two whole physical cores each, A/B sides
-# alternating between pairs (the core sets of tools/perf/swab.sh).  The boot
+# leg A and leg B together on two whole physical cores each, A/B core sides
+# and which leg starts first alternating between pairs (the core sets of
+# tools/perf/swab.sh).  The boot
 # is paced as on the page (no free-run): while the guest is behind real time
 # the wall clock between two guest-time marks is the emulator's raw speed.
 #   bootab.sh <phone> <distA> <distB> [pairs 1-4]
@@ -44,15 +45,21 @@ stop_runs() {
 trap 'stop_runs HUP 1' HUP
 trap 'stop_runs INT 2' INT
 trap 'stop_runs TERM 15' TERM
+leg_a() {
+  PORT=$pa BOOTBENCH_CHROME_ARGS="$bf ${ARGS_A:-}" taskset -c "$ca" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$A" --runs 1 --after 0 $warm > "$out/a$p.log" 2>&1 &
+  runs+=($!)
+}
+leg_b() {
+  PORT=$pb BOOTBENCH_CHROME_ARGS="$bf ${ARGS_B:-}" taskset -c "$cb" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$B" --runs 1 --after 0 $warm > "$out/b$p.log" 2>&1 &
+  runs+=($!)
+}
 for p in $(seq 1 "$n"); do
   ORD=(0 4 2 6); o=${ORD[$((p - 1))]}
   s0=${SETS[$o]}; s1=${SETS[$((o + 1))]}
   if [ $((p % 2)) = 1 ]; then ca=$s0; cb=$s1; else ca=$s1; cb=$s0; fi
-  PORT=$pa BOOTBENCH_CHROME_ARGS="$bf ${ARGS_A:-}" taskset -c "$ca" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$A" --runs 1 --after 0 $warm > "$out/a$p.log" 2>&1 &
-  runs+=($!)
-  PORT=$pb BOOTBENCH_CHROME_ARGS="$bf ${ARGS_B:-}" taskset -c "$cb" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$B" --runs 1 --after 0 $warm > "$out/b$p.log" 2>&1 &
-  runs+=($!)
-  echo "$ca $cb" > "$out/cores$p"
+  # the later-started leg does better (doc/performance.md, position bias)
+  if [ $((p % 2)) = 1 ]; then leg_a; leg_b; first=A; else leg_b; leg_a; first=B; fi
+  echo "$ca $cb, $first first" > "$out/cores$p"
 done
 wait
 python3 - "$out" "$n" "${SPAN:-6,12}" <<'EOF' | tee "$out/summary.txt"

@@ -380,7 +380,8 @@ always revert with `git apply -R`.
 - **Noise:** one pair is ±3 %. Below ~2 %, use 8–12 pairs or paired V8
   `--prof` profiles (see Profiling).
 - **Position bias:** ~±1.5 %; the later-started leg does better. swab.sh
-  alternates the sides. When running by hand, run both orders, and never
+  and bootab.sh alternate the core sides and which leg starts first between
+  pairs (until 2026-11-14, TB-19, A always started first). When running by hand, run both orders, and never
   sweep more than two dists at once.
 - **Do an A/A first** when the method is in doubt (2026-11-04: +0.3 % and
   +0.1 %).
