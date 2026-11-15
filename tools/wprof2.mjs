@@ -31,10 +31,17 @@ for (const p of symPaths) {
     break;
   } catch {}
 }
-const symOf = (name) => {
-  const m = /wasm-function\[(\d+)\]/.exec(name || "");
+// The map numbers the main module's functions. A TB module
+// (wasm://wasm/<hash>) numbers its own from 0, so only frames of
+// qemu-system-arm.wasm are looked up; a TB frame keeps wasm-function[N].
+const symOf = (cf) => {
+  const name = cf?.functionName || "";
+  if (!/qemu-system-arm\.wasm(?:[?#]|$)/.test(cf?.url || "")) return name;
+  const m = /wasm-function\[(\d+)\]/.exec(name);
   return m ? fnSyms.get(m[1]) || name : name;
 };
+// symOf, plus the module of a TB frame, for views that key on the name alone
+const frameName = (cf) => symOf(cf) + ((cf?.url || "").startsWith("wasm://") ? " @" + cf.url.slice(-8) : "");
 
 const secs = Number(process.argv[2] || 40);
 const query = process.argv[3] || "";
@@ -159,7 +166,7 @@ try {
       const node = byId.get(profile.samples[j]);
       if (!node) continue;
       const cf = node.callFrame;
-      const key = symOf(cf.functionName) + " " + (cf.url || "").slice(-24);
+      const key = symOf(cf) + " " + (cf.url || "").slice(-24);
       wtotals.set(key, (wtotals.get(key) || 0) + (profile.timeDeltas[j] || 0));
       wsum += profile.timeDeltas[j] || 0;
       if ((cf.functionName || "").includes("throw_longjmp")) {
@@ -181,11 +188,9 @@ try {
   }
   const topN = Number(process.env.PROF_TOP || 40);
   const workerLabel = (w) => w === "main" ? "page main thread" : "worker #" + Number(w);
-  // Which module a frame belongs to, which is the only attribution here
-  // that is trustworthy.  A dynamically instantiated TB module has no
-  // symbol table, so V8 reports the nearest name from the main module's
-  // -- "helper_gvec_smax32 wasm://wasm/002e024e" is emitted TB code, not
-  // that helper.  The url is right even when the name is nonsense.
+  // Which module a frame belongs to, by its url.  A TB module has no
+  // symbol table: its frames are wasm-function[N] in wasm://wasm/<hash>,
+  // where N counts that module's own functions.
   const bucketOf = (key) => {
     if (key.includes("wasm://wasm/")) return "emitted TB code";
     if (key.includes("qemu-system-arm.wasm")) return "main module (C)";
@@ -248,7 +253,7 @@ try {
         while (cur !== undefined) {
           const n = byId.get(cur);
           if (!n) break;
-          const name = symOf(n.callFrame.functionName) || "?";
+          const name = frameName(n.callFrame) || "?";
           if (!seen.has(name)) { seen.add(name); incl.set(name, (incl.get(name) || 0) + dt); }
           cur = parent.get(cur);
         }
@@ -271,12 +276,12 @@ try {
     for (const n of profile.nodes) for (const c of n.children || []) parent.set(c, n.id);
     for (let j = 0; j < profile.samples.length; j++) {
       const node = byId.get(profile.samples[j]);
-      if (!node || !symOf(node.callFrame.functionName).includes(want) && !(node.callFrame.functionName || "").includes(want)) continue;
+      if (!node || !frameName(node.callFrame).includes(want)) continue;
       const chain = [];
       let cur = parent.get(profile.samples[j]);
       while (cur !== undefined && chain.length < 14) {
         const anc = byId.get(cur);
-        if (anc) chain.push(symOf(anc.callFrame.functionName) || "?");
+        if (anc) chain.push(frameName(anc.callFrame) || "?");
         cur = parent.get(cur);
       }
       const sk = chain.join(" <- ");

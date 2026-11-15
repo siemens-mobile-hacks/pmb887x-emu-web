@@ -495,8 +495,14 @@ and wait for its "measuring" line. Then run
   `tcg_qemu_tb_exec` read 4.7 % of stopwatch; under `--prof` it was 0.36 %.
   Its real self time is the inlined w64 interpreter tier (the first
   `W64_INTERP_THRESH` = 64 entries of every TB), not dispatch.
-- JIT-compiled DSP code can show up under wrong wasm names (index
-  collisions), for example `emscripten_get_now` under `tcg_qemu_tb_exec`.
+- A frame of a TB module (url `wasm://wasm/<hash>`, ARM or DSP code) is
+  `wasm-function[N]`, numbered within its own module, and wprof2 leaves it
+  so; only frames of `qemu-system-arm.wasm` are named from the symbols.
+  Before 2026-11-14 (TB-6) it looked every index up in the main module's
+  map, which named TB code after unrelated C functions (for example
+  `emscripten_get_now` under `tcg_qemu_tb_exec`); that, not an index
+  collision in V8, is where those names came from. The module buckets
+  (by url) were right throughout.
 - Without `PROF_DIST`, wprof2 takes `site/dist-jit`'s symbols.
 - Fixed-length windows cover different instruction counts, so compare
   per-subsystem deltas with care.
