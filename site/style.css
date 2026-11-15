@@ -142,62 +142,76 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* The phone's network (app.js, renderGprs) while a run has the GSM
-   network: a boxed G, the GPRS mark of a phone's status bar. It takes the
-   dot's place, which says nothing the pill's own colour does not, so the
-   uptime keeps its width at 390px. Shape as well as colour tells the
-   states apart (dashed, outlined, lit, filled, struck), and the box's own
-   dark ground keeps it legible on the green, amber and red pills alike. */
-.gprs {
-  flex: none; display: inline-flex; align-items: center; gap: 2px;
-  color: var(--muted);
-  font-size: 0.65rem; font-variant-numeric: tabular-nums; white-space: nowrap;
+/* The phone's network (#gprs, renderGprs in app.js) while a run has the
+   GSM network, in the dot's place: an antenna for the cell (`data-net`)
+   over a boxed bearer tag for the data link (`data-gprs`). Shape as well
+   as colour tells the states apart (dotted or full waves; no tag,
+   outlined, filled, struck through), so they read in greyscale too. The
+   geometry is in SVG units: 32x37 at 1x, antenna 24x22, a 2px gap, tag
+   32x13. */
+.gsm-badge {
+  flex: none; width: 32px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  color: var(--text);
 }
-.status:has(> .gprs:not([hidden])) > .status-dot { display: none; }
-.gprs-g {
-  position: relative; flex: none; box-sizing: border-box;
-  display: grid; place-items: center; width: 11px; height: 13px;
-  border: 1px solid currentColor; border-radius: 2px;
-  background: rgba(0, 0, 0, 0.4);
-  font: 700 9px/1 system-ui, "Segoe UI", Roboto, sans-serif;
+.status:has(> .gsm-badge:not([hidden])) > .status-dot { display: none; }
+/* A run keeps the badge's place whether or not it shows (GSM off, no
+   radio), so the uptime starts at the same x either way */
+.status:is([data-state="running"], [data-state="paused"]) > .status-dot { margin-inline: 13px; }
+.status[data-state="booting"] > .status-dot { margin-inline: 12px; }
+
+.gsm-ant {
+  width: 24px; height: 22px;
+  fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
 }
-/* offline and refused strike the G through, over a dark gap that keeps
-   the stroke apart from the letter */
-.gprs-cut {
-  position: absolute; inset: 0; width: 100%; height: 100%; display: none; overflow: visible;
-  fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round;
+.gsm-ant-dot { fill: currentColor; stroke: none; }
+.gsm-waves-off { display: none; }
+/* no network: muted, the inner waves only and dotted */
+.gsm-badge[data-net="nonet"] .gsm-ant { color: var(--muted); }
+.gsm-badge[data-net="nonet"] .gsm-waves-on { display: none; }
+.gsm-badge[data-net="nonet"] .gsm-waves-off { display: inline; }
+/* a dist without _wasm_gsm_state cannot read the cell: muted, full waves */
+.gsm-badge[data-net="unknown"] .gsm-ant { color: var(--muted); }
+
+.gsm-tag { width: 32px; height: 13px; overflow: visible; }
+.gsm-tag-box { fill: none; stroke: currentColor; stroke-width: 1.2; }
+.gsm-tag-letters { fill: none; stroke: var(--gsm-ink, currentColor); stroke-width: 1.25; stroke-linejoin: round; }
+/* offline and refused strike the word through, over a wider stroke in the
+   colour behind the letters that keeps the line apart from them */
+.gsm-tag-gap, .gsm-tag-strike { display: none; fill: none; stroke-linecap: round; }
+.gsm-tag-gap { stroke: var(--pill-bg); stroke-width: 2.8; }
+.gsm-tag-strike { stroke: currentColor; stroke-width: 1.2; }
+/* no data link yet: no tag, its place kept so nothing moves when it comes */
+.gsm-badge[data-gprs="none"] .gsm-tag { visibility: hidden; }
+.gsm-badge[data-gprs="connecting"] .gsm-tag { color: var(--warn); animation: gsm-pulse 1.2s ease-in-out infinite; }
+.gsm-badge[data-gprs="online"] .gsm-tag { color: var(--good); --gsm-ink: #0b2a16; }
+.gsm-badge[data-gprs="online"] .gsm-tag-box { fill: currentColor; }
+.gsm-badge[data-gprs="offline"] .gsm-tag { color: #ff9a9a; }
+.gsm-badge[data-gprs="offline"] :is(.gsm-tag-gap, .gsm-tag-strike) { display: inline; }
+/* darker than --bad, so the white letters reach 4.5:1 */
+.gsm-badge[data-gprs="refused"] .gsm-tag { color: #d63a3a; --gsm-ink: #ffffff; }
+.gsm-badge[data-gprs="refused"] .gsm-tag-box { fill: currentColor; }
+.gsm-badge[data-gprs="refused"] .gsm-tag-gap { display: inline; stroke: currentColor; }
+.gsm-badge[data-gprs="refused"] .gsm-tag-strike { display: inline; stroke: #ffffff; }
+@keyframes gsm-pulse { 50% { opacity: 0.35; } }
+
+/* Beside the badge, for the whole run: the redial countdown while one
+   waits, the two activity arrows while connected, else empty. Its place
+   and the arrows' are always kept, so neither traffic nor a state change
+   moves the uptime. */
+.gsm-slot {
+  display: none; flex: none; width: 28px; align-items: center;
+  font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap;
+  color: #ffb0b0;
 }
-.gprs-cut path { vector-effect: non-scaling-stroke; }
-.gprs-cut .gprs-cut-gap { stroke: rgba(0, 0, 0, 0.7); stroke-width: 3; }
-.gprs-arrows { display: none; flex: none; width: 4px; height: 12px; margin-left: -1px; fill: #ffffff; }
-.gprs-arrows path { opacity: 0; }
-.gprs-wait:empty { display: none; }
-/* At 390px the pill has room for the G and the arrows (18px with the
-   dot's place, where 16 are used) but not for the redial countdown beside
-   them: in the phone layout it goes under the G instead. */
-@media (width < 900px), (height < 621px) {
-  .gprs:has(> .gprs-wait:not(:empty)) { flex-direction: column; gap: 1px; }
-  .gprs:has(> .gprs-wait:not(:empty)) .gprs-g { height: 11px; }
-  .gprs-wait { font-size: 8px; line-height: 8px; }
-}
-/* no network yet: faint and dashed; registered: outlined (the default
-   above); GPRS attached: lit, neutral */
-.gprs[data-state="nonet"] .gprs-g { opacity: 0.6; border-style: dashed; }
-.gprs[data-state="attached"] { color: var(--text); }
-.gprs[data-state="connecting"] { color: var(--warn); }
-.gprs[data-state="connecting"] .gprs-g { animation: gprs-pulse 1.2s ease-in-out infinite; }
-.gprs[data-state="online"] { color: var(--good); }
-.gprs[data-state="online"] .gprs-g { background: var(--good); color: #0b2a16; }
-/* the arrows' place is kept while connected, so traffic never moves the
-   uptime; each shows while frames went that way since the last notice */
-.gprs[data-state="online"] .gprs-arrows { display: block; }
-.gprs[data-tx] .gprs-up, .gprs[data-rx] .gprs-down { opacity: 1; }
-.gprs[data-state="offline"], .gprs[data-state="refused"] { color: #ff9a9a; }
-.gprs[data-state="offline"] .gprs-cut,
-.gprs[data-state="refused"] .gprs-cut { display: block; }
-.gprs[data-state="refused"] .gprs-g { background: var(--bad); border-color: var(--bad); color: #ffffff; }
-.gprs[data-state="refused"] .gprs-cut-gap { stroke: var(--bad); }
-@keyframes gprs-pulse { 50% { opacity: 0.35; } }
+.status:is([data-state="booting"], [data-state="running"], [data-state="paused"]) > .gsm-slot { display: flex; }
+.gsm-wait:empty { display: none; }
+.gsm-arrows { display: none; flex-direction: column; gap: 2px; }
+.gsm-badge[data-gprs="online"] ~ .gsm-slot .gsm-arrows { display: flex; }
+/* dim while idle, lit for 400 ms after frames went that way */
+.gsm-arrow { display: block; flex: none; width: 10px; height: 8px; fill: #ffffff; opacity: 0.25; }
+.status[data-gsm-tx] .gsm-up, .status[data-gsm-rx] .gsm-down { opacity: 1; }
 
 .pill-action { display: flex; }
 .pill-btn {
@@ -212,6 +226,9 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 .pill-btn.outline { background: transparent; border-color: currentColor; color: inherit; }
 .pill-btn.outline:not(:disabled):hover { background: rgba(255, 255, 255, 0.1); }
 .pill-btn.danger { color: #ffb0b0; border-color: #ffb0b0; }
+
+/* a sprite of SVG symbols: in the document, taking no space */
+.svg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
 
 /* screen-reader-only live region + anything else that must be announced
    without taking space */
@@ -1091,5 +1108,5 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 .sheet legend { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .sheet, .sheet-scrim { transition: none; }
-  .gprs[data-state="connecting"] .gprs-g { animation: none; }
+  .gsm-badge[data-gprs="connecting"] .gsm-tag { animation: none; }
 }

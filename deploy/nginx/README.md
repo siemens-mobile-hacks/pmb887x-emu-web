@@ -19,7 +19,8 @@ the top of `scripts/bundle-dist.sh`, which refuses to bundle while a
 tracked file under `site/` (outside `site/dist*`) is missing from it:
 `index.html`, `style.css`, `app.js` and the modules it imports
 (`boards.js`, `exit-report.js`, `otp.js`, `ua.js`, `keyboards.js`,
-`fullflashes.js`, `siemensfw.js`, `recalc.js`, `gprs-net.js`),
+`fullflashes.js`, `siemensfw.js`, `recalc.js`, `gprs-net.js`,
+`gsm-badge.js`),
 `recalc-worker.js` (the ESN sweep's workers), `audio-worklet.js`
 (drained by the AudioWorklet — leave it out and the page is silent) and
 `img/ke970-wheel.webp`; then `dist/boards.tar` and the Siemens key module

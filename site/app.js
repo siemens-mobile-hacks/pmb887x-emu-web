@@ -20,6 +20,7 @@ import {
 } from "./recalc.js";
 import { loadSiemensFW } from "./siemensfw.js";
 import { GprsNet } from "./gprs-net.js";
+import { badgeLook, bearerOf } from "./gsm-badge.js";
 import { buildShortUA } from "./ua.js";
 import { esnToOtp0, imeiToOtp1 } from "./otp.js";
 import { serialMessages, parseExit } from "./exit-report.js";
@@ -1932,14 +1933,16 @@ function showGprsStatus() {
 }
 
 /* ---- network badge ---- */
-// The pill's network badge (#gprs), a boxed G, renders gprs-net.js: the
-// phone's registration and GPRS attach as the cell sees them (read there
-// once a second, from the relay's own poll) and the relay's link to the
-// gateway. It is written on a change of either, from the relay's traffic
-// notices (at most four a second) and by a 1 Hz countdown while a redial
-// waits; nothing here runs per frame, per key or per paint.
+// The pill's network badge (#gprs: an antenna over a bearer tag, what each
+// shows is gsm-badge.js's) renders gprs-net.js: the phone's registration
+// and GPRS attach as the cell sees them (read there once a second, from the
+// relay's own poll) and the relay's link to the gateway. It is written on a
+// change of either, from the relay's traffic notices (at most four a
+// second) and by a 1 Hz countdown while a redial waits; nothing here runs
+// per frame, per key or per paint.
 const gprsEl = $("gprs");
 const gprsWaitEl = $("gprs-wait");
+const gprsLettersEl = gprsEl.querySelector(".gsm-tag-letters");
 const GPRS_LIT_MS = 400;      // how long an arrow stays lit after a notice
 const gprsLit = { tx: false, rx: false };
 const gprsSeen = { in: 0, out: 0 };
@@ -1994,6 +1997,13 @@ function renderGprs() {
   if (gprsEl.hidden !== (badge === "off")) gprsEl.hidden = badge === "off";
   if (gprsEl.dataset.state !== badge) gprsEl.dataset.state = badge;
   if (gprsEl.getAttribute("aria-label") !== label) gprsEl.setAttribute("aria-label", label);
+  if (badge !== "off") {
+    const { net, gprs } = badgeLook(badge, g);
+    if (gprsEl.dataset.net !== net) gprsEl.dataset.net = net;
+    if (gprsEl.dataset.gprs !== gprs) gprsEl.dataset.gprs = gprs;
+    const letters = `#gsm-bearer-${bearerOf(gprsEl.dataset.bearer)}`;
+    if (gprsLettersEl.getAttribute("href") !== letters) gprsLettersEl.setAttribute("href", letters);
+  }
   if (badge !== "online") {
     gprsLight(false, false);
     clearTimeout(gprsLitTimer);
@@ -2039,9 +2049,10 @@ function gprsTraffic() {
   gprsTitle();
 }
 
+// on the pill: the arrows are beside the badge, not in it
 function gprsLight(tx, rx) {
-  if (tx !== gprsLit.tx) gprsEl.toggleAttribute("data-tx", gprsLit.tx = tx);
-  if (rx !== gprsLit.rx) gprsEl.toggleAttribute("data-rx", gprsLit.rx = rx);
+  if (tx !== gprsLit.tx) statusEl.toggleAttribute("data-gsm-tx", gprsLit.tx = tx);
+  if (rx !== gprsLit.rx) statusEl.toggleAttribute("data-gsm-rx", gprsLit.rx = rx);
 }
 
 const kb = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
