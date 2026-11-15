@@ -4,8 +4,8 @@
 // boots stay the final gates; this is the A/B loop (seconds per leg).
 //
 //   node tools/tcgbench.mjs                       # native-jit + dist-jit
-//   LEGS=native-jit,native-tci,dist-jit,dist node tools/tcgbench.mjs
-//   EXTRA_Q="env=W64_TBSTATS=1" node tools/tcgbench.mjs   # wasm knob
+//   LEGS=native-jit,native-tci,dist-jit node tools/tcgbench.mjs
+//   EXTRA_Q="env=NAME=VAL" node tools/tcgbench.mjs   # page query: env= sets qemu's environment
 //   SUITE=quick node tools/tcgbench.mjs           # ÷4-iteration smoke image
 //     (tcgbench-quick.bin, `make -C tests/tcgbench quick install`): ~3 s per
 //     wasm64 leg, TCI leg ~25 s; serial poll 40 ms (POLL_MS) so the 0.3–1.2 s
@@ -26,6 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { NATIVE_JIT_BIN, NATIVE_TCI_BIN } from "./lib/build-dirs.mjs";
 import { resultName } from "./lib/results.mjs";
+import { UI_READ, guestGone } from "./lib/page.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = path.resolve(here, "..");
@@ -87,22 +88,25 @@ async function runWasm(dist, browser, icount) {
   }
   const phases = [];
   const serial = [];
-  let insns = null, done = false;
+  let insns = null, done = false, why = null;
   const t0 = stamp();
   try {
     await page.goto(`http://127.0.0.1:${port}/?${q}`, { waitUntil: "domcontentloaded", timeout: 120000 });
     let seen = 0;
     for (;;) {
       await new Promise((r) => setTimeout(r, pollMs));
-      const s = await page.evaluate(() => {
-        const m = window.__qemu;
+      // the page state is read before the log, so a guest that has gone
+      // has also left all its lines in it
+      const r = await page.evaluate(`(() => {
+        const ui = ${UI_READ};
         try {
-          return new TextDecoder("latin1").decode(m.FS.readFile("/serial.log"));
+          return { ui, s: new TextDecoder("latin1").decode(window.__qemu.FS.readFile("/serial.log")) };
         } catch {
-          return "";
+          return { ui, s: "" };
         }
-      }).catch(() => null);
-      if (s == null) break; // page died
+      })()`).catch(() => null);
+      if (r == null) { why = "the page died"; break; }
+      const { s } = r;
       const t = stamp();
       const lines = s.split("\n");
       while (seen < lines.length - 1) {
@@ -118,13 +122,15 @@ async function runWasm(dist, browser, icount) {
         } catch {}
         break;
       }
-      if (t - t0 > 600) break; // 10 min cap
+      why = guestGone(r.ui);
+      if (why) break;
+      if (t - t0 > 600) { why = "10 min cap"; break; }
     }
   } finally {
     try { await page.close(); } catch {}
   }
   // a page that died or hit the cap did not finish the bench
-  return { phases, serial, rc: done ? 0 : 1, insns };
+  return { phases, serial, rc: done ? 0 : 1, insns, why };
 }
 
 // phases -> per-phase seconds (a phase's line lands when it completes)
@@ -160,7 +166,7 @@ try {
         if (m) ITERS[m[1]] = Number(m[2]);
       }
       const entry = {
-        leg, icount, run: r + 1, rc: res.rc, total: +total.toFixed(3),
+        leg, icount, run: r + 1, rc: res.rc, why: res.why ?? undefined, total: +total.toFixed(3),
         wasm: leg.startsWith("native-") ? undefined : path.join("site", leg, "qemu-system-arm.wasm"),
         wasmSha: leg.startsWith("native-") ? null : (() => {
           try { return createHash("sha256").update(fs.readFileSync(path.join(ROOT, "site", leg, "qemu-system-arm.wasm"))).digest("hex").slice(0, 16); } catch { return null; }
@@ -178,7 +184,7 @@ try {
       results.push(entry);
       console.log(`== ${leg}${icount ? "+icount" : ""} run${r + 1}: total ${entry.total}s` +
         (entry.mips ? ` (${entry.mips} MIPS, ${(entry.insns / 1e6).toFixed(0)}M insns)` : "") +
-        `  cksum=${cksum}`);
+        `  cksum=${cksum}` + (entry.why ? `  FAILED: ${entry.why}` : ""));
       for (const { n, s, nsPerAccess } of entry.phases) {
         console.log(`   ${n.padEnd(8)} ${s.toFixed(3)}s` +
           (nsPerAccess ? `  (${nsPerAccess} ns/access)` : ""));
@@ -241,7 +247,7 @@ console.log(cksumOk
   ? `checksums identical across legs (${[...cksums][0]})`
   : `!! CHECKSUM MISMATCH: ${[...cksums].join(" ")}`);
 const failed = results.filter((e) => e.rc !== 0);
-for (const e of failed) console.log(`!! ${e.leg}${e.icount ? "+icount" : ""} run${e.run} did not finish (rc ${e.rc})`);
+for (const e of failed) console.log(`!! ${e.leg}${e.icount ? "+icount" : ""} run${e.run} did not finish (rc ${e.rc}${e.why ? ": " + e.why : ""})`);
 const ok = cksumOk && !failed.length;
 if (!ok) process.exitCode = 1;
 
