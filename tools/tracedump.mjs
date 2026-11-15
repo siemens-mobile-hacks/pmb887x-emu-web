@@ -14,7 +14,9 @@ await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflashFiles);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, waitS * 1000));
-const out = lines.filter((l) => l.startsWith("[qemu]") || l.startsWith("[log]"));
+// without debug=1 the page prints a repeated line as "[qemu x<n>]" every
+// 500th time
+const out = lines.filter((l) => /^\[(qemu( x\d+)?|log)\]/.test(l));
 console.log(`total log lines: ${out.length}; last ${maxLines}:`);
 console.log(out.slice(-maxLines).join("\n"));
 await browser.close();
