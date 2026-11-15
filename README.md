@@ -26,7 +26,8 @@ under 0.80× real time — the **Run** panel holds the keypad/HUD settings,
 **Copy diagnostics** and the flash + EFA exports, a two-line performance
 strip sits on the top edge of the screen while the guest runs, and the
 on-screen keypad has every phone key as its own `<button>` (plus
-physical-keyboard mapping). With **Type letters on the phone** (Run ▸
+physical-keyboard mapping; F5 is not mapped and reloads the page, so the
+music key is on the screen only). With **Type letters on the phone** (Run ▸
 Keyboard; on by default wherever the keyboard has a multi-tap table, and
 remembered once unticked), a letter, space or punctuation mark typed on the
 computer presses

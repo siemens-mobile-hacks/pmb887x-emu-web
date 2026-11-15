@@ -257,6 +257,17 @@ ok("3.1 shortcut checkbox copy",
   (await $eval("#kbd-hints", (e) => e.parentElement.textContent.trim())) === "Show shortcuts on keys");
 ok("3.1 typing checkbox copy, on by default", await $eval("#kbd-typing", (e) =>
   e.parentElement.textContent.trim() === "Type letters on the phone" && e.checked));
+// F5 reloads the page; F6 is still the phone's play key (taken from the browser)
+ok("3.1 F5 is the browser's, F6 a phone key", await evaluate(() => {
+  const taken = (code) => {
+    const e = new KeyboardEvent("keydown", { code, key: code, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(e);
+    document.body.dispatchEvent(new KeyboardEvent("keyup", { code, key: code, bubbles: true }));
+    return e.defaultPrevented;
+  };
+  return !taken("F5") && taken("F6")
+    && !document.querySelector('#keypad [data-key="music"] .key-hint, .aux-keys-left [data-key="music"] .key-hint, .aux-keys-right [data-key="music"] .key-hint');
+}));
 // multi-tap: a character is the key it is on, pressed as often as the
 // firmware cycles to it; on a Russian table each script counts from its own
 // input language

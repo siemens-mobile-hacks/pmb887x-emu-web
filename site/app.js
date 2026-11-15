@@ -51,7 +51,8 @@ const CODE_TO_KEY = {
   ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
   Enter: "center", NumpadEnter: "center",
   F1: "left_soft", F2: "right_soft", F3: "send", F4: "end",
-  F5: "music", F6: "play", F7: "ptt", F8: "camera", F9: "browser",
+  // F5 is left to the browser (reload); the music key is on-screen only
+  F6: "play", F7: "ptt", F8: "camera", F9: "browser",
   Backspace: "clear",
   NumpadAdd: "vol_up", NumpadSubtract: "vol_down", Equal: "vol_up", Minus: "vol_down",
   Digit0: "0", Digit1: "1", Digit2: "2", Digit3: "3", Digit4: "4",
