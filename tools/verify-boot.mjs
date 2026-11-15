@@ -9,7 +9,7 @@
 // page has named the device (default: the page's own, recalc); as-is boots
 // a broken image such as fullflashes/BROKEN)S66_no_recalc.bin into its EXIT.
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 import { bounded, guestGone, pageCall, PAGE_CALL_MS } from "./lib/page.mjs";
 
 const tag = process.argv[2] || "run";
@@ -27,7 +27,7 @@ page.on("crash", () => { pageErr ??= "the renderer crashed"; });
 await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", "ONLINE");
 await page.click("#ff-mode-own");
-await page.setInputFiles("#fullflash", fullflash);
+await page.setInputFiles("#fullflash", fullflashFiles);
 const mode = process.env.SIEMENS_MODE;
 if (mode) {
   await page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 }).catch(() => {});

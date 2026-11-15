@@ -1,6 +1,7 @@
 // The test fullflashes under fullflashes/, one entry per image, keyed by the
 // short ids the tools take on their command lines. efa: the LG EEPROM
 // sidecar that goes in next to the image.
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -42,6 +43,11 @@ export async function expectedBoard(name) {
   }
   return null;
 }
+
+// a fullflash path plus the .cfi-efa sidecar next to it when there is one
+// (LG fullflashes need the EFA block: without it the firmware factory-resets
+// its EEPROM), as the page's file picker takes them
+export const withSidecar = (f) => (existsSync(f + ".cfi-efa") ? [f, f + ".cfi-efa"] : [f]);
 
 // the image and its sidecar, as the page's file picker takes them
 export function flashFiles(id) {

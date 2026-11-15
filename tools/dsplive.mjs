@@ -1,7 +1,7 @@
 // Live DSP-trace watcher: page pushes serial status + NEW filtered trace hits
 // via console.log every 10s (no final evaluate needed).
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 import { QEMULOG_COUNT, QEMULOG_SINCE } from "./lib/page.mjs";
 const waitS = Number(process.argv[2] || 600);
 const extra = process.argv[3] || "trace=dsp&tracebuf=1";
@@ -35,7 +35,7 @@ await page.addScriptTag({ content: `
   }, 10000);
 `});
 await page.click("#ff-mode-own");
-await page.setInputFiles("#fullflash", fullflash);
+await page.setInputFiles("#fullflash", fullflashFiles);
 await page.click("#btn-start");
 console.log("booted [" + extra + "]");
 await new Promise((r) => setTimeout(r, waitS * 1000));

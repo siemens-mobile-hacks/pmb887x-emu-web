@@ -4,6 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withSidecar } from "./lib/boards.mjs";
 
 const toolsDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(toolsDir, "..");
@@ -27,7 +28,6 @@ if (!existsSync(p)) throw new Error(`test fullflash not found: ${p}`);
 
 export const fullflash = p;
 
-// The fullflash plus its .cfi-efa sidecar when one sits next to it
-// (LG fullflashes need the EFA block — without it the firmware
-// factory-resets its EEPROM). Used for multi-select page boots.
-export const files = existsSync(p + ".cfi-efa") ? [p, p + ".cfi-efa"] : [p];
+// The fullflash plus its .cfi-efa sidecar when one sits next to it (LG
+// fullflashes need it): what every boot puts in the page's file picker.
+export const files = withSidecar(p);

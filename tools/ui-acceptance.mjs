@@ -823,7 +823,7 @@ ok("v5.4 the chosen file's name reopens the picker", await fc);
 
 /* ---------------- boot ---------------- */
 if (!process.env.SKIP_BOOT) {
-  const fullflash = FLASH ? flashFiles(FLASH) : (await import("./testflash.mjs")).fullflash;
+  const fullflash = FLASH ? flashFiles(FLASH) : (await import("./testflash.mjs")).files;
   await page.click("#ff-mode-own");
   await page.setInputFiles("#fullflash", fullflash);
   await page.waitForFunction(() => window.__ui.ready);

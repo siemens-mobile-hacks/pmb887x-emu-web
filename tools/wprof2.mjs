@@ -3,7 +3,7 @@
 // attach Profiler to emscripten's module workers.
 // Usage: node wprof2.mjs [seconds] [query] [sampleIntervalUs]
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 import WebSocket from "ws";
 import fs from "node:fs";
 import net from "node:net";
@@ -79,7 +79,7 @@ try {
   `});
   if (!query.includes("suite=")) {
     await page.click("#ff-mode-own");
-    await page.setInputFiles("#fullflash", fullflash);
+    await page.setInputFiles("#fullflash", fullflashFiles);
     await page.click("#btn-start");
   }
   }

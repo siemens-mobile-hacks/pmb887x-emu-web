@@ -6,7 +6,7 @@
 // when the sizes do not match, when the guest EXITed, or when the page stops
 // answering.
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 import fs from "node:fs";
 import { bounded, pageCall, PageUnresponsive } from "./lib/page.mjs";
 
@@ -22,7 +22,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/`, { waitUntil: "networkidle", timeout: 120000 });
 await page.selectOption("#startup", "ONLINE");
 await page.click("#ff-mode-own");
-await page.setInputFiles("#fullflash", fullflash);
+await page.setInputFiles("#fullflash", fullflashFiles);
 await page.click("#btn-start");
 
 let last = {};

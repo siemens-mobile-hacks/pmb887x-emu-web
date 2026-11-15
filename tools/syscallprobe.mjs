@@ -1,7 +1,7 @@
 // Count console.error volume per worker + identify which syscalls burn CPU.
 // Usage: node tools/syscallprobe.mjs [secs]
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 import WebSocket from "ws";
 import net from "node:net";
 
@@ -17,7 +17,7 @@ try {
   const page = await server.newPage();
   await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/`, { waitUntil: "networkidle" });
   await page.click("#ff-mode-own");
-  await page.setInputFiles("#fullflash", fullflash);
+  await page.setInputFiles("#fullflash", fullflashFiles);
   await page.click("#btn-start");
 
   const devtools = await (await fetch(`http://127.0.0.1:${dbgPort}/json/version`)).json();

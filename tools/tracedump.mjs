@@ -1,7 +1,7 @@
 // Boots with ?trace=...&debug=1 and prints the qemu log lines.
 //   node tracedump.mjs <query> <waitSeconds> <maxLines>
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 const q = process.argv[2] || "trace=dsp,dsp.*&debug=1";
 const waitS = Number(process.argv[3] || 60);
 const maxLines = Number(process.argv[4] || 400);
@@ -11,7 +11,7 @@ const lines = [];
 page.on("console", (m) => { if (m.type() === "log") lines.push(m.text()); });
 await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/?` + q, { waitUntil: "networkidle", timeout: 120000 });
 await page.click("#ff-mode-own");
-await page.setInputFiles("#fullflash", fullflash);
+await page.setInputFiles("#fullflash", fullflashFiles);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, waitS * 1000));
 const out = lines.filter((l) => l.startsWith("[qemu]") || l.startsWith("[log]"));

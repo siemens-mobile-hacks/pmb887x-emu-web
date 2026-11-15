@@ -1,11 +1,11 @@
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 page.on("console", (m) => console.log("[page]", m.text().slice(0, 120)));
 await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/?qargs=` + encodeURIComponent("-d exec -D /exec.log"), { waitUntil: "networkidle" });
 await page.click("#ff-mode-own");
-await page.setInputFiles("#fullflash", fullflash);
+await page.setInputFiles("#fullflash", fullflashFiles);
 await page.click("#btn-start");
 await new Promise((r) => setTimeout(r, 30000));
 const d = await page.evaluate(() => {

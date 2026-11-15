@@ -18,7 +18,7 @@
 //   TIMEOUT no verdict within AB_TIMEOUT s (default 90) — treated as PASS,
 //          like the old "OK(35s)" (survived, splash just hadn't arrived)
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 
 const PORT = process.env.PORT || "8080";
 const TIMEOUT = Number(process.env.AB_TIMEOUT || 90);
@@ -50,7 +50,7 @@ async function runVariant(browser, tag, q) {
     await page.goto(`http://127.0.0.1:${PORT}/?${q}`, { waitUntil: "networkidle", timeout: 120000 });
     await page.selectOption("#startup", "ONLINE");
     await page.click("#ff-mode-own");
-    await page.setInputFiles("#fullflash", fullflash);
+    await page.setInputFiles("#fullflash", fullflashFiles);
     await page.click("#btn-start");
   } catch (e) {
     console.log(`[${tag}] FAIL: page setup: ${String(e).slice(0, 200)}`);

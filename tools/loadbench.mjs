@@ -26,7 +26,7 @@ import { chromium } from "playwright-core";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 
 const secs = Number(process.argv[2] || process.env.SECS || 60);
 const port = process.env.PORT || "8080";
@@ -75,7 +75,7 @@ let lastStatus = "";
 await p.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
 tPage = (Date.now() - t0) / 1000;
 await p.click("#ff-mode-own");
-await p.setInputFiles("#fullflash", fullflash);
+await p.setInputFiles("#fullflash", fullflashFiles);
 await p.click("#btn-start");
 
 while ((Date.now() - t0) / 1000 < secs) {

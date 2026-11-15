@@ -2,7 +2,7 @@
 // per worker + call-tree fingerprints + duty cycles (timeDeltas).
 // Usage: node tools/threadmap.mjs [sampleSecs] [query]
 import { chromium } from "playwright-core";
-import { fullflash } from "./testflash.mjs";
+import { files as fullflashFiles } from "./testflash.mjs";
 import WebSocket from "ws";
 import fs from "node:fs";
 import net from "node:net";
@@ -23,7 +23,7 @@ try {
   const page = await server.newPage();
   await page.goto(`http://127.0.0.1:${port}/${query ? "?" + query : ""}`, { waitUntil: "networkidle" });
   await page.click("#ff-mode-own");
-  await page.setInputFiles("#fullflash", fullflash);
+  await page.setInputFiles("#fullflash", fullflashFiles);
   await page.click("#btn-start");
 
   const devtools = await (await fetch(`http://127.0.0.1:${dbgPort}/json/version`)).json();
