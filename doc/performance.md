@@ -922,6 +922,7 @@ unless noted).
 
 | Idea | Result | Date |
 |---|---|---|
+| `TCG_TARGET_{extract,sextract,deposit}_valid` as `1`, so the emitters take every field (Known open issues) | Neutral, not landed. A census in `tcg_gen_code` (`build/experiments/fcens-census.diff`) shows the mechanism: per 90 112 TBs of towerblox or bobby, extract ops 162 → ~81 500, shifts −9 %, ands −24 %, all ops −0.1 to −0.17 %, and no deposit either way. Each extract saves one `local.set`/`local.get` pair, which TurboFan's register allocation takes out anyway. Free-run, candidate against base: stopwatch −0.6 % (8 pairs, se 0.7), towerblox +0.7 % (8, se 0.9), midi +0.3 % (8, se 0.2), bobby +1.0 % (16, se 0.6), video MIPS +0.2 % (16, se 0.4) but fps −0.7 % (16, se 0.3); EL71 boot burst −0.2 % (4 rounds of 4 pairs). 482 function bodies change size and one function goes, so the indices move (placement, ~1 %). `build/experiments/w64-field-ops-valid.diff` | 2026-11-14 |
 | Removing the wasm64 superblock code under vt (`3bd45ab9d0`) | Reverted by `2ff4e374c3`: superblocks with exact CF_COUNT_CYCLES accounting took stopwatch vratio 0.58 → 0.87 (parbench, under contention) | 2026-10-30, 11-01 |
 | ARM self-loop back-edge via `translator_loop_begin/back`, separate from superblocks | Correct, but loop passes were 4.7 % of video insns; neutral everywhere | 2026-10-31 |
 | `W64_INTERP_THRESH` 16 / 32 / 256 | Neutral in steady state and at the EL71 boot | 2026-10-31, 11-05 |
@@ -1030,7 +1031,9 @@ that exists.
   is lowered to shifts and masks by `tcg-op.c`. The emitters read correct
   for every width. Making the test `1` (as TCI does) changes every TB's
   code, so it needs the gate, lockstep and a whole-candidate A/B; dropping
-  the emitters needs the same. Left as found 2026-11-10.
+  the emitters needs the same. Making the test `1` was tried on
+  2026-11-14: neutral, not landed (Closed ideas, ARM translator); the macros
+  stay as found.
 - **An evicted batch has only been exercised with a lowered cap:**
   `W64_LIVE_MAX` 48 boots S75 (2026-11-10), slowly, and at 256 a wasm
   lockstep of 1e9 instructions is clean (`bed67ff185`, which fixed an
@@ -1275,6 +1278,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-11 | `9bf917bb6e` (`d5421c70af`) | Not a speed change: the built-in cell's uplink LLC buffer, 251 bytes, held less than the N201-U the phone negotiates (1520), so every IP packet over about 240 bytes was lost ([gsm-network.md](gsm-network.md), `tools/gprscheck.mjs`). Only GPRS data takes that path, and the browser build carries none |
 | 2026-11-12 | `47d1ff26aa` (`9bf917bb6e`) | smh/master `0539060008`: the HD15515X transceivers (`hd155153np` moved, `hd155155npeb` added), the DSP modulator per hardware version (E001/E101 reset, MSTAT and read rate), gprscu reads of unknown registers. No conflict, no fast path touched. Free-run A/B, 8 pairs each (two rounds of 4): towerblox +0.8 %, stopwatch +0.1 %, bobby −0.1 %, video +1.4 %, midi −0.2 %, every round within its spread (sd 0.6–7.1) |
 | 2026-11-12 | `9de7811900` (`47d1ff26aa`) | Not a speed change: `ui/wasm.c` gets a network port for the page, the GSM cell's IP side in the browser (`site/gprs-net.js`, [gsm-network.md](gsm-network.md)). Nothing runs unless the page attaches, which it does only with the GSM option on, so no benchmark scene sees it; with it on, the page polls the port every 20 ms on its main thread |
+| 2026-11-14 | `48858038d9`, `133f91266b` (`7dd5289`, `1d34feb`) | Not a speed change, checked afterwards with the 419 parent commits of the review rounds (a9b40fe → b1c2a53), both legs built the same way with `tools/perf/freerun.diff` and served side by side. No benchmark runs the changed code: the exit wrap runs at exit, and the page polls `wasm_gsm_state` once a second only with the GSM option on, which the benchmarks untick. Free-run, HEAD against a9b40fe, pairs in both orders: stopwatch +1.2 % (8 pairs, se 1.5), towerblox +0.4 % (8, se 0.8), midi −0.2 % (8, se 0.2), bobby −1.5 % (16, se 0.4), video MIPS −0.7 % (16, se 0.4) and fps −0.7 % (16, se 0.2); the A/A rounds read −1.0 to +1.0 %. Paced, host CPU (lower is better): stopwatch −0.9 %, towerblox +0.3 %, bobby +0.3 % (8 pairs each, se 0.4–0.7). EL71 boot burst (`bootab.sh`): +0.3 % and −2.0 % in the two orders, so HEAD was 0.85 % faster on average; tIdle 30.6 s on both. idlebench, S75, 4 runs each: tIdle 23.4 s on both, guest 1G at 17.3 s on both. uibench MIPS, keylag (v/wall 1.00 on both) and loadbench are the same. The bobby and video differences are placement. The hot DSP functions have the same bodies, but 20326 of 20715 functions changed index: `__wrap_exit`, `wasm_gsm_state` and the uint8 property accessors come early. The qemu-only legs carry the difference (bobby −0.9 %, se 0.9), and the page-only legs do not (+0.1 %, se 1.3). There is nothing to fix |
 
 ## 2026-11-04 deviation cleanup
 
