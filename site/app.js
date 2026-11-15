@@ -1408,13 +1408,30 @@ async function launch(spec) {
   }
 }
 
+// The loader starts its pthread pool (new Worker, four times) before its
+// first await, so the workers a factory call creates are the ones made while
+// it runs synchronously. A call that never starts its guest would leave them
+// running, holding its Module and heap, for the life of the page.
+function withPoolWorkers(pool, call) {
+  const Worker = window.Worker;
+  window.Worker = new Proxy(Worker, {
+    construct(target, args) {
+      const w = Reflect.construct(target, args);
+      pool.push(w);
+      return w;
+    },
+  });
+  try { return call(); } finally { window.Worker = Worker; }
+}
+
 function startQemu({ factory, engine, args, opts, setup, report }) {
   let modRef = null; // FS access in onExit (qemuModule not yet assigned)
   let fail = null;
   const failed = new Promise((_, reject) => {
     fail = (e) => reject(new EngineInstantiateError(String(e), { cause: e }));
   });
-  const started = factory({
+  const pool = [];
+  const started = withPoolWorkers(pool, () => factory({
     arguments: args,
     ...engineInstantiate(engine, fail),
     ...opts,
@@ -1441,8 +1458,14 @@ function startQemu({ factory, engine, args, opts, setup, report }) {
         if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
       }
     },
+  }));
+  // a failed start (its factory promise rejects, or the prefetched engine
+  // did not instantiate and the call never settles) ends its pool before
+  // launch() retries or reports it
+  return (engine ? Promise.race([started, failed]) : started).catch((e) => {
+    for (const w of pool.splice(0)) w.terminate();
+    throw e;
   });
-  return engine ? Promise.race([started, failed]) : started;
 }
 
 let exitCode = null;
