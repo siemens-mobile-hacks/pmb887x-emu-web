@@ -2,13 +2,25 @@
 # reap.py CMD ARGS...: runs CMD as a child subreaper, so the orphans it leaves
 # (chrome helpers) are reaped here instead of piling up as zombies under the
 # container's PID 1 (sleep infinity, which never reaps).
-import ctypes, os, sys, time
+import ctypes, os, signal, sys, time
 
 PR_SET_CHILD_SUBREAPER = 36
 ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
 pid = os.fork()
 if pid == 0:
     os.execvp(sys.argv[1], sys.argv[1:])
+
+
+# a signal to the reaper is meant for the command it runs
+def forward(sig, frame):
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+for s in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(s, forward)
 code = 0
 while True:
     try:
@@ -17,6 +29,8 @@ while True:
         break
     if p == pid:
         code = os.waitstatus_to_exitcode(st)
+        if code < 0:
+            code = 128 - code   # killed by a signal, as a shell reports it
         break
 deadline = time.time() + 15
 while time.time() < deadline:

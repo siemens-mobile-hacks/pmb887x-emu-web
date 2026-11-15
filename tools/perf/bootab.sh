@@ -32,12 +32,26 @@ mkdir -p "$out"
 pa=${PORT_A:-${PORT:-8080}}; pb=${PORT_B:-${PORT:-8080}}
 curl -s -H "Accept-Encoding: gzip" -o /dev/null "http://127.0.0.1:$pa/$A/qemu-system-arm.wasm"
 curl -s -H "Accept-Encoding: gzip" -o /dev/null "http://127.0.0.1:$pb/$B/qemu-system-arm.wasm"
+# the runs are background jobs: a signal stops them as well, and the script
+# exits 128+n
+runs=()
+stop_runs() {
+  trap - HUP INT TERM
+  kill -"$1" "${runs[@]}" 2>/dev/null
+  wait
+  exit $((128 + $2))
+}
+trap 'stop_runs HUP 1' HUP
+trap 'stop_runs INT 2' INT
+trap 'stop_runs TERM 15' TERM
 for p in $(seq 1 "$n"); do
   ORD=(0 4 2 6); o=${ORD[$((p - 1))]}
   s0=${SETS[$o]}; s1=${SETS[$((o + 1))]}
   if [ $((p % 2)) = 1 ]; then ca=$s0; cb=$s1; else ca=$s1; cb=$s0; fi
   PORT=$pa BOOTBENCH_CHROME_ARGS="$bf ${ARGS_A:-}" taskset -c "$ca" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$A" --runs 1 --after 0 $warm > "$out/a$p.log" 2>&1 &
+  runs+=($!)
   PORT=$pb BOOTBENCH_CHROME_ARGS="$bf ${ARGS_B:-}" taskset -c "$cb" python3 tools/perf/reap.py node tools/bootbench.mjs "$ph" "$B" --runs 1 --after 0 $warm > "$out/b$p.log" 2>&1 &
+  runs+=($!)
   echo "$ca $cb" > "$out/cores$p"
 done
 wait

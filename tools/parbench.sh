@@ -21,12 +21,25 @@ fi
 cd "$(dirname "$0")/.."
 export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-$PWD/tools/chrome}
 out=$(mktemp -d "${TMPDIR:-/tmp}/parbench.XXXX")
+# the runs are background jobs: a signal stops them as well, and the script
+# exits 128+n
+runs=()
+stop_runs() {
+  trap - HUP INT TERM
+  kill -"$1" "${runs[@]}" 2>/dev/null
+  wait
+  exit $((128 + $2))
+}
+trap 'stop_runs HUP 1' HUP
+trap 'stop_runs INT 2' INT
+trap 'stop_runs TERM 15' TERM
 i=0
 IFS=, read -ra D <<< "$dists"
 for r in $(seq 1 "$n"); do
   for d in "${D[@]}"; do
     i=$((i+1))
     node tools/scenebench.mjs "$sc" "$d" --runs 1 --measure "$m" > "$out/$i.log" 2>&1 &
+    runs+=($!)
     echo "$i $d" >> "$out/runs"
     sleep 1.1
   done

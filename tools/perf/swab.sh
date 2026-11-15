@@ -20,12 +20,26 @@ bf="--js-flags=--wasm-enforce-bounds-checks"
 [ "${BFLAGS:-1}" = 0 ] && bf=""
 out=${OUT:-$(mktemp -d "${TMPDIR:-/tmp}/swab.XXXX")}
 mkdir -p "$out"
+# the runs are background jobs: a signal stops them as well, and the script
+# exits 128+n
+runs=()
+stop_runs() {
+  trap - HUP INT TERM
+  kill -"$1" "${runs[@]}" 2>/dev/null
+  wait
+  exit $((128 + $2))
+}
+trap 'stop_runs HUP 1' HUP
+trap 'stop_runs INT 2' INT
+trap 'stop_runs TERM 15' TERM
 for p in $(seq 1 "$n"); do
   ORD=(0 4 2 6); o=${ORD[$((p - 1))]}
   s0=${SETS[$o]}; s1=${SETS[$((o + 1))]}
   if [ $((p % 2)) = 1 ]; then ca=$s0; cb=$s1; else ca=$s1; cb=$s0; fi
   PORT=${PORT_A:-8080} SCENEBENCH_CHROME_ARGS="$bf ${ARGS_A:-}" taskset -c "$ca" node tools/scenebench.mjs "$sc" "$A" --runs 1 --measure "$m" > "$out/a$p.log" 2>&1 &
+  runs+=($!)
   PORT=${PORT_B:-8080} SCENEBENCH_CHROME_ARGS="$bf ${ARGS_B:-}" taskset -c "$cb" node tools/scenebench.mjs "$sc" "$B" --runs 1 --measure "$m" > "$out/b$p.log" 2>&1 &
+  runs+=($!)
   echo "$ca $cb" > "$out/cores$p"
 done
 wait
