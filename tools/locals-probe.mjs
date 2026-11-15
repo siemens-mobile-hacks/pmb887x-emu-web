@@ -1,16 +1,17 @@
-// What do the wasm64 backend's 70 declared locals cost?
+// What do the wasm64 backend's declared locals cost?
 //
 //   PORT=8080 node tools/locals-probe.mjs [--funcs 4096] [--iters 20e6]
 //                                         [--sweep 0,8,16,32,64,69]
 //                                         [--liftoff]  (pin the baseline tier)
 //
-// Every TB function declares TCG_TARGET_NB_REGS i32 locals + the same
-// number of i64 locals + $bp + four scratch = ~70 (tcg/wasm64/
-// tcg-target.c.inc, W64_L32/W64_L64).  A TB of 3-4 guest insns touches a
+// When this was written every TB function declared ~70 locals.  Today
+// (tcg/wasm64/tcg-target.c.inc, the TB header) it is 13 i32 + 13 i64
+// register locals, $bp, four scratch and two table locals -- 33 -- plus a
+// run of i64 frame locals sized per TB; the sweep still reaches 69.  A TB of 3-4 guest insns touches a
 // handful of them, but wasm requires locals to be zero at entry and the
 // baseline tier has no liveness analysis, so it zeroes every declared
 // local on every call -- at ~11 M TB entries/s.  It also has to *emit*
-// that zeroing, 128 times per batch module, against a compile budget the
+// that zeroing for every member of a batch module, against a compile budget the
 // hand-off prices at 83 us per module.
 //
 // So: per-call cost and per-module compile cost as a function of the
@@ -24,7 +25,7 @@ const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const FUNCS = Number(opt("funcs", 4096));
 const ITERS = Number(opt("iters", 20e6));
-const SPLIT = Number(opt("split", 128));        // W64_BATCH_N
+const SPLIT = Number(opt("split", 128));        // W64_BATCH_N when written (1024 now)
 const SWEEP = opt("sweep", "0,8,16,32,64,69").split(",").map(Number);
 const LIFTOFF = argv.includes("--liftoff");
 const PORT = process.env.PORT || "8080";

@@ -1,4 +1,6 @@
-// Count console.error volume per worker + identify which syscalls burn CPU.
+// Per worker: how many console messages (any level) it sent in the window,
+// its three most frequent texts, and its three hottest self-time frames by
+// raw name (wasm frames stay wasm-function[N]; wprof2.mjs resolves them).
 // Usage: node tools/syscallprobe.mjs [secs]
 import { chromium } from "playwright-core";
 import { files as fullflashFiles } from "./testflash.mjs";

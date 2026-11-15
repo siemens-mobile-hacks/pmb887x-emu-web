@@ -5,7 +5,7 @@
 // Every helper a TB calls -- the lookup helper, the ld/st slow paths, the
 // MMIO callbacks -- is an *import* of the TB's own module, resolved at
 // instantiation to `wasmTable.get(fptr)` on the main qemu module's table
-// (tcg/wasm64/wasm64.c, w64_instantiate / w64_batch_instantiate).  So the
+// (tcg/wasm64/wasm64.c, w64_batch_instantiate).  So the
 // call leaves one module instance and enters another.  Round eighteen
 // timed helper_lookup_tb_ptr_lc at 102 ns a call at an 84 % inline-cache
 // hit rate; that is ~300 cycles for a jump-cache probe, so either the

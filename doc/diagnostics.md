@@ -33,7 +33,7 @@ option they do not know (exit 2).
 | `?env=NAME=VAL` | extra environment for the build (repeatable) — what qemu still reads is its own section below |
 | `?suite=<url>` | boot a bare-metal versatilepb image instead of a phone (`dist/tcgisa.bin`, `dist/tcgbench.bin`); with `?icount=1` the suite runs under `-icount shift=3,sleep=off` (the tcgbench icount-tax leg) |
 | `?lockstep=1` (+ `ls-*`) | built-in guest-state fold on the wasm64 backend — the b-side of `tools/lockstep-wasm.mjs`; `ls-*` params (`insns`, `period`, `epoch`, `meminsns`, `mem`, `from`, `to`) set the insn budget and grid |
-| `?sound=off` | no audiodev at all (the benchmarks use it, so the audio timer never enters a measurement) |
+| `?sound=off` | no audiodev at all. lockstep-wasm uses it, because the native leg it is compared with boots without one. The benchmarks keep sound on: bootbench and scenebench measure the audio (site/app.js's comment at the option still says otherwise) |
 | `?serialpoll=1` | don't tap the serial log's MEMFS ops — read the file on a 1 Hz timer instead (the page's fallback path; `SERIAL_POLL=1 tools/exitcheck.mjs` takes it through the EXIT checks) |
 | `?vp=1` | draw the viewport height budget on the page (it also shows itself on a real overflow; see architecture.md § Page) |
 

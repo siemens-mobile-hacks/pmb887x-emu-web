@@ -1,5 +1,8 @@
-// Classify the real threads of the wasm qemu build: synchronized CPU profiles
-// per worker + call-tree fingerprints + duty cycles (timeDeltas).
+// Profile every thread of a booting wasm qemu at once: one CPU profile per
+// worker over the same sampleSecs, saved as tests/results/threadmap-[<query>-]
+// <ts>-<pid>/prof-<worker>.json for profcat.mjs and the like.  It prints the
+// CDP targets, the worker count and the guest insns of the window; nothing
+// is classified here.
 // Usage: node tools/threadmap.mjs [sampleSecs] [query]
 import { chromium } from "playwright-core";
 import { files as fullflashFiles } from "./testflash.mjs";

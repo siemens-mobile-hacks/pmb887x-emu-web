@@ -6,7 +6,8 @@
 // Every TB entry in the wasm64 backend is a `return_call_indirect` through
 // the shared chain table (tcg_out_goto_ptr / tcg_out_goto_tb), and the
 // callee almost always lives in a *different* module instance: a batch
-// holds W64_BATCH_N=128 TBs and the guest chains across batches freely.
+// holds up to W64_BATCH_N TBs (128 when this was written; 1024 now,
+// tcg/wasm64/wasm64.h) and the guest chains across batches freely.
 // The hand-off has priced compile, MMIO, hflags and the lookup helper; the
 // dispatch itself has never been priced, and at ~11 M TB entries/s (EL71
 // boot: ~44 MIPS over 3.8 insns per TB) even 2 ns of it is 2 % of wall.
@@ -26,7 +27,8 @@
 //   direct      return_call to a fixed neighbour, 1 module    (call floor)
 //   ind-same    return_call_indirect, constant index          (predictable)
 //   ind/K       return_call_indirect, random index, K funcs per module
-//               -- K=128 is the shipping W64_BATCH_N, K=FUNCS is one module
+//               -- K=128 was the shipping W64_BATCH_N (now 1024), K=FUNCS
+//               is one module
 import { chromium, firefox } from "playwright-core";
 
 const argv = process.argv.slice(2);

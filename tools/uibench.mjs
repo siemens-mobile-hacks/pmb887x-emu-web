@@ -31,7 +31,8 @@
 //     Another clock goes in through EXTRA_Q (bank=0, icount=…), which the
 //     JSON records.
 //
-// Results: tests/results/uibench-<ts>-<board>-<dist>.json + LCD shots.
+// Results: tests/results/uibench-<board>-<dist>[-<EXTRA_Q>]-<ts>-<pid>.json
+// + LCD shots.
 // Comparable only within one board: boards run different firmware.
 import { chromium } from "playwright-core";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -140,7 +141,8 @@ const bootTrace = [[0, 0]];    // [wall s since start, insns]
 if (settleS) {
   while ((Date.now() - t0) / 1000 < settleS) {
     await sleep(1000);
-    await snap("boot");
+    const s = await snap("boot");
+    bootTrace.push([(Date.now() - t0) / 1000, s.insns]);
   }
   tIdle = settleS;
   last = await snap("boot");

@@ -3,8 +3,10 @@
 //
 //   t_page    page load (goto domcontentloaded) done
 //   t_module  window.__qemu appears (fetch+compile+instantiate+runtime init)
-//   t_v05/2   wall secs from page load until guest virtual time crosses
-//             0.5 / 2.0 — time-to-first-guest-work, the user-facing number
+//   t_v05/2   wall secs from the start of the navigation (the page load, the
+//             Start click and the boot all count) until guest virtual time
+//             crosses 0.5 / 2.0, polled every 250 ms — time-to-first-guest-
+//             work, the user-facing number
 //   compile   secs of the page's compileStreaming of the engine — where
 //             Chromium's wasm code cache shows on a warm visit
 //   wasm      resource-timing for qemu-system-arm.wasm (transferSize,

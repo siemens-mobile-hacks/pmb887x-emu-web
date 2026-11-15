@@ -32,7 +32,8 @@ const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[
 const FUNCS = Number(opt("funcs", 4096));
 const ITERS = Number(opt("iters", 30e6));
 const SPLITS = opt("splits", "32,128,512").split(",").filter(Boolean).map(Number);
-// A real TB function declares ~70 locals.  Merging the bodies into one
+// A real TB function declares 33 locals plus its frame locals (~70 when
+// this was written; tcg/wasm64/tcg-target.c.inc).  Merging the bodies into one
 // function makes every one of them loop-carried as far as the compiler can
 // tell, so the merged variant -- and only it -- pays for whatever phis and
 // spills that costs.  --xlocals declares that many extra i64 locals and has

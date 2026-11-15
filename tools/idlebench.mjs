@@ -136,8 +136,10 @@ const distQuery = (spec) => {
   return i < 0 ? "" : spec.slice(i + 1);
 };
 // Per-board protocol.  insnMilestones: "wall s until N insns"; cmpInsns:
-// the LCD comparison starts there at the latest; icount: the board runs
-// the icount timing model (v is guest time, the v-window is meaningful).
+// the LCD comparison starts there at the latest; icount: report the
+// v-window for the board.  The name is historical: the page now runs the
+// vcpu-timers clock (?icount= selects icount), whose guest time is paced to
+// wall time, so the window measures speed only while the guest is behind.
 const BOARDS = {
   s75: {
     flash: "S75v40lg1.bin", sidecars: [], ref: "S75v40lg1_idle.png", rows: 139,

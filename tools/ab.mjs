@@ -4,7 +4,9 @@
 //
 // Variants are booted in PARALLEL TABS of one browser (the old workflow ran
 // them one after another, each with a fixed 35 s wait). Named variants:
-//   fast          ?x=1                — stock build, cache-busted
+//   fast          ?x=1                — the stock build (x=1 is an inert query
+//                                       param: serve.mjs revalidates every file
+//                                       by ETag, so nothing needs busting)
 //   key=value     any other token     — appended as a query param (e.g. bank=0)
 // Repeat a variant (e.g. `node ab.mjs fast fast`) to get two parallel samples
 // of the same build — replaces the old "run it twice to be sure".
@@ -59,7 +61,7 @@ async function runVariant(browser, tag, q) {
   }
 
   const t0 = Date.now();
-  let lastInsns = 0, verdict = null, detail = "";
+  let lastInsns = 0, verdict = null, detail = "", nextBeat = 10;
   while (!verdict) {
     await new Promise((r) => setTimeout(r, POLL_MS));
     const s = await page
@@ -92,8 +94,10 @@ async function runVariant(browser, tag, q) {
     else if (PASS_INSNS && s.insns >= PASS_INSNS) { verdict = "PASS"; detail = `insns=${fmtM(s.insns)}`; }
     else if (t >= TIMEOUT) { verdict = "TIMEOUT"; detail = `still running, insns=${fmtM(s.insns)} fb=${s.fb}`; }
 
-    if (!verdict && Number.isInteger(t / 10))
+    if (!verdict && t >= nextBeat) {
+      nextBeat += 10;
       console.log(`[${tag}] t=${t.toFixed(0)}s insns=${fmtM(s.insns)} fb=${s.fb} serlen=${s.ser.length}`);
+    }
   }
   const rate = Math.round(lastInsns / ((Date.now() - t0) / 1000));
   console.log(`[${tag}] ${verdict} (${((Date.now() - t0) / 1000).toFixed(0)}s): ${detail} | ~${fmtM(rate)} insns/s avg`);

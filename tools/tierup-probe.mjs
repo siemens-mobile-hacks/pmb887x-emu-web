@@ -1,7 +1,7 @@
 // How many calls does a wasm function need before it leaves the baseline
 // tier, and does that number depend on its size?
 //
-//   PORT=8080 node tools/tierup-probe.mjs [--sizes 20,80,320,1280]
+//   PORT=8080 node tools/tierup-probe.mjs [--sizes 60,240,960,3840]
 //                                         [--chunk 5000] [--chunks 120]
 //
 // ~3.6 % of this emulator's TB entries execute baseline-tier code at ~2x
