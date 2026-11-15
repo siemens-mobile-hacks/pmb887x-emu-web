@@ -150,8 +150,9 @@ if os.environ.get("V8T_TIMELINE"):
         n = sum(c.values())
         tb = sum(v for k, v in c.items() if k.startswith("TB-"))
         lw = sum(v for k, v in c.items() if k.startswith("lib "))
+        mw = sum(v for k, v in c.items() if k.startswith("main-module wasm"))
         print(f"t={b * step / 1e6:6.0f}s ticks={n:6d} TB {100 * tb / n:5.1f} "
-              f"C {100 * c['main-module wasm'] / n:5.1f} libs {100 * lw / n:5.1f} "
+              f"C {100 * mw / n:5.1f} libs {100 * lw / n:5.1f} "
               f"chrome {100 * c['chrome C++'] / n:5.1f}")
 # V8T_WIN=<from>,<to>: seconds since the first tick; replaces last-secs
 if os.environ.get("V8T_WIN"):
@@ -177,7 +178,7 @@ for us, pc, vms, nm, *_ in win:
     bucket[cat] += 1
     if nm is None:
         fn[cat] += 1
-    elif cat == "main-module wasm":
+    elif cat.startswith("main-module wasm"):
         fn["C " + sym.get(nm[2], "wasm-function[" + nm[2] + "]")] += 1
     elif nm[0] != "W":
         fn[nm[0] + " " + nm[1]] += 1
