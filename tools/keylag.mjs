@@ -26,6 +26,7 @@
 import { chromium } from "playwright-core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { median } from "./lib/stats.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -134,7 +135,7 @@ for (let i = 0; i < presses; i++) {
   await sleep(gapMs);
 }
 
-const med = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : NaN; };
+const med = (a) => median(a) ?? NaN;
 // the first press wakes paths nothing else has touched (translation, menus);
 // report it, but let the steady-state median come from the rest
 const st = rows.slice(1);

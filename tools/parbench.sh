@@ -55,7 +55,8 @@ for d in "${U[@]}"; do
   want=$(awk -v d="$d" '$2 == d' "$out/runs" | wc -l)
   done_=$(grep -l "SCENEBENCH $sc $d median" $logs 2>/dev/null | wc -l)
   fails=$(( $(echo "$lines" | grep -c "ok=0") + want - done_ ))
-  med=$(echo $vals | awk '{n=split($0,a," "); if(n) print a[int((n+1)/2)]}')
+  # an even count takes the mean of the two middle values (tools/lib/stats.mjs)
+  med=$(echo $vals | awk '{n=split($0,a," "); if(n%2) print a[(n+1)/2]; else if(n) printf "%g\n", (a[n/2]+a[n/2+1])/2}')
   und=$(echo "$lines" | sed -nE 's/.*underruns=([0-9]+).*/\1/p' | tr '\n' ' ')
   echo "PAR $sc $d $metric=[$vals] median=$med underruns=[$und] fails=$fails"
 done

@@ -40,6 +40,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { UI_READ, guestGone } from "./lib/page.mjs";
 import { resultName, runStamp } from "./lib/results.mjs";
+import { median } from "./lib/stats.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const argv = process.argv.slice(2);
@@ -246,7 +247,6 @@ for (let r = 1; r <= runs; r++) {
   }
 }
 
-const median = (xs) => { const s = xs.filter((x) => x != null).sort((a, b) => a - b); return s.length ? s[(s.length - 1) >> 1] : null; };
 const summary = {};
 for (const d of dists) {
   const ok = results.filter((x) => x.dist === d && x.ok);

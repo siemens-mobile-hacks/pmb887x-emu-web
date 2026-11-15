@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { NATIVE_JIT_BIN, NATIVE_TCI_BIN } from "./lib/build-dirs.mjs";
 import { resultName } from "./lib/results.mjs";
 import { UI_READ, guestGone } from "./lib/page.mjs";
+import { median } from "./lib/stats.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = path.resolve(here, "..");
@@ -206,12 +207,11 @@ for (const e of results) {
 console.log("\n=== medians ===");
 const med = {};
 for (const [leg, es] of byLeg) {
-  const t = es.map((e) => e.total).sort((a, b) => a - b);
-  med[leg] = t[Math.floor(t.length / 2)];
+  med[leg] = median(es.map((e) => e.total));
   const ph = {};
   for (const { n, s } of es.flatMap((e) => e.phases)) (ph[n] ||= []).push(s);
   console.log(`${leg.padEnd(12)} total ${med[leg].toFixed(3)}s  ` +
-    Object.entries(ph).map(([n, v]) => `${n}=${v.sort((a, b) => a - b)[Math.floor(v.length / 2)].toFixed(2)}`).join(" "));
+    Object.entries(ph).map(([n, v]) => `${n}=${median(v).toFixed(2)}`).join(" "));
 }
 
 // device-tax summary: ns/access for the poll mirrors, per leg+icount
@@ -224,9 +224,8 @@ for (const [leg, es] of byLeg) {
       if (p.nsPerAccess) (acc[p.n] ||= []).push(p.nsPerAccess);
     }
     if (Object.keys(acc).length) {
-      const medOf = (a) => a.sort((x, y) => x - y)[Math.floor(a.length / 2)];
       const r = {};
-      for (const n of Object.keys(acc)) r[n] = medOf(acc[n]);
+      for (const n of Object.keys(acc)) r[n] = median(acc[n]);
       rows.push([leg, r]);
       const ram = r.rampoll, mmio = r.mmiopoll;
       const extra = ram && mmio ? `  MMIO/RAM = ${(mmio / ram).toFixed(0)}x, dispatch tax = ${(mmio - ram).toFixed(0)} ns/access` : "";

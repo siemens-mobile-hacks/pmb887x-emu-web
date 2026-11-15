@@ -67,6 +67,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import { UI_READ, guestGone } from "./lib/page.mjs";
+import { median } from "./lib/stats.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const argv = process.argv.slice(2);
@@ -530,7 +531,6 @@ for (let r = 1; r <= runs; r++) {
   }
 }
 
-const median = (xs) => { const s = xs.filter((x) => x != null).sort((a, b) => a - b); return s.length ? s[(s.length - 1) >> 1] : null; };
 const keys = ["vratio", "mips", "fps", "cpu", "underruns", "gapMs", "gapPct", "produced", "cushionMs", "minFillMs", "maxFillMs", "drainedMs", "cutMs", "stretchedMs"];
 const summary = {};
 for (const d of dists) {

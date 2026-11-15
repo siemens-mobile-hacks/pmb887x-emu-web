@@ -51,13 +51,13 @@
 //   - --quick: = --runs 1 --max 60 --noref — ~1 min per dist, reports
 //     window + t0.1G/t0.25G/t0.5G (the phase where backend regressions
 //     show first).  Use it as the iteration loop; full runs are gates.
-//   - Every invocation compares itself against the previous
-//     idlebench-latest.json (quick runs: idlebench-quick-latest.json; or
-//     --baseline <json>; runs with JS_FLAGS/EXTRA_Q never become the
-//     baseline) per dist and prints
-//     the deltas of tIdle / window / t0.5G / t1.3G medians; |delta| >
-//     --regress (5) % is flagged REGRESSION / IMPROVEMENT on stdout, so
-//     a slower build cannot pass silently.
+//   - An A/B is two or more dists in one invocation: their runs
+//     interleave and the summary prints each metric's ratio against the
+//     first dist.  A run is never compared with an earlier run by default
+//     (doc/performance.md: never compare against yesterday's number);
+//     --baseline <json> prints the deltas of tIdle / window / tInsns
+//     medians against that file per dist, labelled as not an A/B, with
+//     |delta| > --regress (5) % flagged REGRESSION / IMPROVEMENT.
 //   - BANK env: guest seconds of the vcpu-timers clock bank the page boots
 //     with (?bank=); unset = the page's own default, the "what a user gets"
 //     leg.  BANK=0 is upstream's clock (lag is never caught up).  Like
@@ -99,6 +99,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { median } from "./lib/stats.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, dflt) => {
@@ -310,7 +311,6 @@ function crossAt(samples, x, col = 1) {
   return null;
 }
 const insnKey = (i) => `${i / 1e9}G`;
-const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
 
 // same stamp as the JSON below, so screenshots sort next to their run
 const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
@@ -568,8 +568,8 @@ for (const dist of dists) {
     if (ts.length) tInsns[k] = { n: ts.length, min: Math.min(...ts), median: median(ts), max: Math.max(...ts) };
   }
   summary[dist] = {
-    idle: rs.length ? { n: rs.length, min: rs[0], median: rs[Math.floor(rs.length / 2)], max: rs[rs.length - 1] } : null,
-    window: ws.length ? { n: ws.length, min: ws[0], median: ws[Math.floor(ws.length / 2)], max: ws[ws.length - 1] } : null,
+    idle: rs.length ? { n: rs.length, min: rs[0], median: median(rs), max: rs[rs.length - 1] } : null,
+    window: ws.length ? { n: ws.length, min: ws[0], median: median(ws), max: ws[ws.length - 1] } : null,
     tInsns,
     hashes: hashesOf(dist),
     nonIdle: results.filter((r) => r.dist === dist && r.cls !== "IDLE").map((r) => `${r.run}:${r.cls}`),
@@ -589,9 +589,12 @@ const out = {
 const latestPath = here + `../tests/results/idlebench-${boardId === "s75" ? "" : boardId + "-"}${quick ? "quick-" : ""}latest.json`;
 const knobRun = !!(jsFlags || extraQ || bankS !== undefined ||
                    dists.some((d) => d.includes("@")));
-const baselinePath = opt("baseline", latestPath);
+const baselinePath = opt("baseline");
 let baseline = null;
-try { baseline = JSON.parse(readFileSync(baselinePath, "utf8")); } catch {}
+if (baselinePath) {
+  try { baseline = JSON.parse(readFileSync(baselinePath, "utf8")); }
+  catch (e) { console.log(`(--baseline ${baselinePath} not read: ${e.message})`); }
+}
 const outPath = here + `../tests/results/idlebench-${stamp}.json`;
 writeFileSync(outPath, JSON.stringify(out, null, 2));
 // a run where every boot crashed measured nothing and must not become the
@@ -616,13 +619,13 @@ if (dists.length > 1) {
   for (const dist of dists.slice(1)) {
     const b = pick(summary[dist]);
     const parts = Object.keys(a).filter((k) => a[k] != null && b[k] != null)
-      .map((k) => `${k} ${b[k]}/${a[k]} = ${(100 * (b[k] / a[k] - 1)).toFixed(0).replace(/^(\d)/, "+$1")} %`);
+      .map((k) => `${k} ${b[k]}/${a[k]} = ${(100 * (b[k] / a[k] - 1)).toFixed(1).replace(/^(\d)/, "+$1")} %`);
     if (parts.length) console.log(`A/B ${dist} vs ${dists[0]}: ` + parts.join(" | ") + "   (positive = slower)");
   }
 }
-// regression check vs the previous latest (or --baseline): same flash + protocol only
+// --baseline: an earlier run's medians, same flash + protocol only
 if (baseline && baseline.flashSha === out.flashSha && baseline.config?.startup === "ONLINE") {
-  console.log(`\n=== vs baseline ${path.basename(baselinePath)} (${baseline.ts}) ===`);
+  console.log(`\n=== vs baseline ${path.basename(baselinePath)} (${baseline.ts}): another run, another host load; not an A/B ===`);
   for (const dist of dists) {
     const b = baseline.summary?.[dist];
     if (!b) { console.log(`${dist}: no baseline runs`); continue; }
@@ -635,7 +638,7 @@ if (baseline && baseline.flashSha === out.flashSha && baseline.config?.startup =
     const parts = rows.map(([k, x, y]) => {
       const d = 100 * (x / y - 1);
       const tag = d > regressPct ? " REGRESSION" : d < -regressPct ? " IMPROVEMENT" : "";
-      return `${k} ${y}->${x} (${d >= 0 ? "+" : ""}${d.toFixed(0)} %${tag})`;
+      return `${k} ${y}->${x} (${d >= 0 ? "+" : ""}${d.toFixed(1)} %${tag})`;
     });
     const hashNote = b.hashes && b.hashes.wasm !== summary[dist].hashes.wasm ? ` [wasm ${b.hashes.wasm} -> ${summary[dist].hashes.wasm}]` : " [same wasm]";
     console.log(`${dist}${hashNote}: ` + parts.join(" | "));
