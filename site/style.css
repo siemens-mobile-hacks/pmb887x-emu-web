@@ -157,7 +157,7 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 /* The phone's network (#gprs, renderGprs in app.js) while a run has the
    GSM network, in the dot's place: an antenna for the cell (`data-net`)
    over a boxed bearer tag for the data link (`data-gprs`). Shape as well
-   as colour tells the states apart (dotted or full waves; no tag,
+   as colour tells the states apart (antenna struck through or not; no tag,
    outlined, filled, struck through), so they read in greyscale too. The
    geometry is in SVG units: 32x37 at 1x, antenna 24x22, a 2px gap, tag
    32x13. Every size here is times --gsm-z: in the phone layout the badge
@@ -180,11 +180,14 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   stroke-linecap: round; stroke-linejoin: round;
 }
 .gsm-ant-dot { fill: currentColor; stroke: none; }
-.gsm-waves-off { display: none; }
-/* no network: muted, the inner waves only and dotted */
+/* no network (also under a link that outlived the cell): the whole antenna,
+   muted, struck through from bottom left to top right as the tag is when
+   offline, over a wider stroke in the pill's colour */
+.gsm-ant-gap, .gsm-ant-strike { display: none; }
+.gsm-ant-gap { stroke: var(--pill-bg); stroke-width: 2.8; }
+.gsm-ant-strike { stroke-width: 1.2; }
 .gsm-badge[data-net="nonet"] .gsm-ant { color: var(--muted); }
-.gsm-badge[data-net="nonet"] .gsm-waves-on { display: none; }
-.gsm-badge[data-net="nonet"] .gsm-waves-off { display: inline; }
+.gsm-badge[data-net="nonet"] :is(.gsm-ant-gap, .gsm-ant-strike) { display: inline; }
 /* a dist without _wasm_gsm_state cannot read the cell: muted, full waves */
 .gsm-badge[data-net="unknown"] .gsm-ant { color: var(--muted); }
 

@@ -142,8 +142,8 @@
           <span class="status-dot"></span>
           <!-- the phone's network while a run has the GSM network
                (gprs-net.js, renderGprs in app.js), in the dot's place: an
-               antenna for the cell (muted with dotted waves until the phone
-               is registered) over a boxed bearer tag for the data link
+               antenna for the cell (muted and struck through while the
+               phone is not registered) over a boxed bearer tag for the data link
                (absent until GPRS attaches, then outlined, amber while the
                gateway is dialled, filled green while connected, struck
                through when offline or refused). data-bearer names the
@@ -156,8 +156,9 @@
             <svg class="gsm-ant" viewBox="0 1 24 21" aria-hidden="true">
               <circle class="gsm-ant-dot" cx="12" cy="9" r="1.7"/>
               <path d="M12 11 9 21M12 11l3 10M10.2 17h3.6"/>
-              <path class="gsm-waves-on" d="M8.6 12.4a4.8 4.8 0 0 1 0-6.8M15.4 5.6a4.8 4.8 0 0 1 0 6.8M5.8 15.2a8.8 8.8 0 0 1 0-12.4M18.2 2.8a8.8 8.8 0 0 1 0 12.4"/>
-              <path class="gsm-waves-off" d="M8.6 12.4a4.8 4.8 0 0 1 0-6.8M15.4 5.6a4.8 4.8 0 0 1 0 6.8" stroke-dasharray="1 3"/>
+              <path d="M8.6 12.4a4.8 4.8 0 0 1 0-6.8M15.4 5.6a4.8 4.8 0 0 1 0 6.8M5.8 15.2a8.8 8.8 0 0 1 0-12.4M18.2 2.8a8.8 8.8 0 0 1 0 12.4"/>
+              <path class="gsm-ant-gap" d="M4 20 20 3"/>
+              <path class="gsm-ant-strike" d="M4 20 20 3"/>
             </svg>
             <svg class="gsm-tag" viewBox="0 0 32 13" aria-hidden="true">
               <rect class="gsm-tag-box" x=".6" y=".6" width="30.8" height="11.8" rx="2.5"/>

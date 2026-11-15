@@ -976,7 +976,19 @@ if (!process.env.SKIP_BOOT) {
       .map((e) => e.getBoundingClientRect());
     const inside = parts.every((r) => r.left >= pill.left && r.right <= pill.right && r.top >= pill.top && r.bottom <= pill.bottom);
     const apart = parts.every((r, i) => i === 0 || r.left >= parts[i - 1].right - 0.5);
-    return { x: Math.round(t.left * 10) / 10, y: Math.round(t.top * 10) / 10, inside, apart,
+    // the antenna: its own parts (dot, mast, both waves) solid in every
+    // state, struck through over a gap in the pill's colour while "nonet"
+    const ant = document.querySelector("#gprs .gsm-ant");
+    const shown = (e) => getComputedStyle(e).display !== "none";
+    const gap = ant.querySelector(".gsm-ant-gap"), strike = ant.querySelector(".gsm-ant-strike");
+    const own = [...ant.children].filter((e) => e !== gap && e !== strike);
+    const antenna = {
+      own: own.filter(shown).length === 3 && own.every((e) => getComputedStyle(e).strokeDasharray === "none"),
+      struck: shown(gap) && shown(strike),
+      gapIsPill: getComputedStyle(gap).stroke === getComputedStyle(document.getElementById("status")).backgroundColor,
+      color: getComputedStyle(ant).color,
+    };
+    return { x: Math.round(t.left * 10) / 10, y: Math.round(t.top * 10) / 10, inside, apart, antenna,
       state: document.getElementById("gprs").dataset.state, net: document.getElementById("gprs").dataset.net,
       gprs: document.getElementById("gprs").dataset.gprs, status: document.getElementById("gsm-status").textContent };
   });
@@ -996,6 +1008,13 @@ if (!process.env.SKIP_BOOT) {
       JSON.stringify(seen.map((p) => `${p.stage} ${p.x},${p.y}`)));
     ok(`gprs: ${name}: the pill's parts stay inside it, side by side`, seen.every((p) => p.inside && p.apart),
       JSON.stringify(seen.filter((p) => !p.inside || !p.apart).map((p) => p.stage)));
+    // no network (also "connected, cell lost"): the whole antenna, muted
+    // (the registered colour differs), struck through over the pill's colour
+    const lit = seen.find((p) => p.net === "registered").antenna.color;
+    ok(`gprs: ${name}: the antenna is whole in every state, struck through and muted only without the cell`,
+      seen.every((p) => p.antenna.own && p.antenna.struck === (p.net === "nonet")
+        && (p.net !== "nonet" || (p.antenna.gapIsPill && p.antenna.color !== lit))),
+      JSON.stringify(seen.map((p) => `${p.stage} ${p.net} ${JSON.stringify(p.antenna)}`)));
     if (size.width === 1770) {
       ok("gprs: the status line names each state", JSON.stringify(seen.map((p) => p.status)) === JSON.stringify([
         "No network", "Registered", "GPRS attached", "GPRS attached · context active", "GPRS connecting…",

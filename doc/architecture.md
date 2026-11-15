@@ -234,10 +234,15 @@ thread is using them).
   keeps the dot, which then sits in the icon's place (32 px, 24 in the phone
   layout), so the uptime starts at the same x either way.
   - The **antenna** (`data-net`) follows the cell for the whole run, also
-    after the phone's first data: muted with dotted inner waves until the
-    cell has registered the phone (LOCATION UPDATING ACCEPT, or a GPRS
-    attach), lit with full waves after. A dist without `_wasm_gsm_state`
-    shows it muted with full waves.
+    after the phone's first data. Until the cell has registered the phone
+    (LOCATION UPDATING ACCEPT, or a GPRS attach), and whenever it loses the
+    cell again (also under a link that is up), it is the whole antenna
+    (dot, mast, inner and outer waves, all solid) in the muted colour,
+    struck through from bottom left to top right as the tag is when
+    offline: a 2.8-unit stroke in `--pill-bg`, then a thin (1.2) muted
+    line, round caps (the owner's change of 2026-11-15; the mockups'
+    dotted waves are gone). Registered, it is lit and not struck. A dist
+    without `_wasm_gsm_state` shows it muted, not struck.
   - The **tag** (`data-gprs`) follows the link: absent (its place kept)
     until GPRS attaches (GMM ATTACH ACCEPT); outlined once attached;
     amber and pulsing (steady with reduced motion) while `gprs-net.js`
@@ -247,7 +252,7 @@ thread is using them).
     (it will redial); filled red (#d63a3a, so white reaches 4.5:1) and
     struck when refused for the run (4003, 4004, 4009). The strike's gap
     is drawn in `--pill-bg`, the colour of the pill behind it. Shape tells
-    the states apart as well as colour (dotted or full waves; no tag,
+    the states apart as well as colour (antenna struck or not; no tag,
     outlined, filled, struck), so they read in greyscale.
   - The tag's letters are stroked paths, symbols `#gsm-bearer-GPRS` and
     `#gsm-bearer-EDGE` in index.html (4.4x7 glyphs on a 5.7 advance), never
