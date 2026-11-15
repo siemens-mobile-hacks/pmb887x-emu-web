@@ -140,6 +140,20 @@
       <div class="status-row">
         <div id="status" class="status idle" data-state="idle">
           <span class="status-dot"></span>
+          <!-- the phone's GPRS while a run has the GSM network (gprs-net.js),
+               in the dot's place: dim arrows idle, pulsing connecting, solid
+               online, lit while frames go up or down, slashed offline with
+               the redial countdown beside them. Its name says the state, its
+               title the counts and the reason; changes are said in
+               #live-region. -->
+          <span id="gprs" class="gprs" data-state="off" role="img" aria-label="GPRS off" hidden>
+            <svg class="gprs-arrows" viewBox="0 0 8 12" aria-hidden="true">
+              <path class="gprs-up" d="M4 0 7.5 4.6H.5z"/>
+              <path class="gprs-down" d="M4 12 .5 7.4h7z"/>
+              <path class="gprs-cut" d="M.6 11.4 7.4.6"/>
+            </svg>
+            <span id="gprs-wait" class="gprs-wait"></span>
+          </span>
           <!-- at phone widths the state text doubles as the way into the
                Firmware sheet while idle; on desktop it is inert text -->
           <button type="button" id="status-open" class="status-open"

@@ -844,6 +844,7 @@ function render() {
     ready: firmwareReady(), error: errorMsg, exitCode, slow,
     bank: banked ? "banked" : "off",
     serialTap: serialTapped,
+    get gprs() { return gprsInfo(); },
     exit: exitReport && {
       type: exitReport.type, code: exitReport.code,
       fields: Object.fromEntries(exitReport.rows),
@@ -1909,9 +1910,10 @@ async function boot() {
   attachAudio();   // needs liveModule(); the worklet loads on its own time
   // a dist built before the export existed runs without the phone's Internet
   if (gsm && qemuModule._wasm_net_attach) {
-    gprsNet = new GprsNet(qemuModule, { onChange: (what) => what === "state" && showGprsStatus() });
+    gprsNet = new GprsNet(qemuModule, { onChange: onGprsChange });
     window.__gprsNet = gprsNet; // debugging and tools/gprscheck.mjs --web
     gprsNet.start();
+    renderGprs();
   }
   // Stop came while the factory was starting the guest: stop it the usual way
   if (bootCancelled) stop();
@@ -1927,6 +1929,121 @@ function showGprsStatus() {
   cap.hidden = !cap.textContent;
 }
 
+/* ---- GPRS indicator ---- */
+// The pill's GPRS chip (#gprs) renders gprs-net.js's state. It is written
+// on a change of state, from the module's traffic notices (at most four a
+// second) and by a 1 Hz countdown while a redial waits; nothing here runs
+// per frame, per key or per paint.
+const gprsEl = $("gprs");
+const gprsWaitEl = $("gprs-wait");
+const GPRS_LIT_MS = 400;      // how long an arrow stays lit after a notice
+const gprsLit = { tx: false, rx: false };
+const gprsSeen = { in: 0, out: 0 };
+let gprsLitTimer = 0, gprsWaitTimer = 0;
+let gprsSaid = "";            // the last announcement, so a redial loop says it once
+
+function onGprsChange(what) {
+  if (what === "traffic") gprsTraffic();
+  else { showGprsStatus(); renderGprs(); }
+}
+
+// what the chip shows: a close that will not be dialled again is "refused"
+function gprsShown() {
+  const g = gprsNet;
+  if (!g || g.state === "off") return "off";
+  if (g.state === "offline" && g.retryAt === Infinity) return "refused";
+  if (g.state === "online" && (gprsLit.tx || gprsLit.rx)) return "active";
+  return g.state;
+}
+
+const gprsRetryIn = (g) => g?.state === "offline" && Number.isFinite(g.retryAt)
+  ? Math.max(0, Math.ceil((g.retryAt - Date.now()) / 1000)) : 0;
+
+function renderGprs() {
+  const g = gprsNet;
+  const shown = gprsShown();
+  gprsEl.hidden = shown === "off";
+  gprsEl.dataset.state = shown;
+  gprsEl.setAttribute("aria-label", {
+    off: "GPRS off", idle: "GPRS not used yet", connecting: "GPRS connecting",
+    online: "GPRS connected", active: "GPRS connected",
+    offline: `GPRS offline: ${g?.reason}`, refused: `GPRS refused: ${g?.reason}`,
+  }[shown]);
+  if (shown !== "online" && shown !== "active") gprsLight(false, false);
+  clearInterval(gprsWaitTimer);
+  gprsWaitTimer = gprsRetryIn(g) > 0 ? setInterval(gprsWait, 1000) : 0;
+  gprsWait();
+  if (shown === "off") {
+    gprsSaid = "";
+    gprsSeen.in = gprsSeen.out = 0;
+    return;
+  }
+  const news = shown === "online" ? "GPRS connected"
+    : shown === "offline" ? `GPRS offline: ${g.reason}`
+    : shown === "refused" ? `GPRS refused: ${g.reason}` : "";
+  if (news && news !== gprsSaid) say(gprsSaid = news);
+}
+
+// the redial countdown, and the title that carries it
+function gprsWait() {
+  const s = gprsRetryIn(gprsNet);
+  const text = s > 0 ? `${s}s` : "";
+  if (gprsWaitEl.textContent !== text) gprsWaitEl.textContent = text;
+  if (!s && gprsWaitTimer) { clearInterval(gprsWaitTimer); gprsWaitTimer = 0; }
+  gprsTitle();
+}
+
+// each arrow is lit when frames went that way since the last notice
+function gprsTraffic() {
+  const g = gprsNet;
+  if (!g) return;
+  const tx = g.frames.out !== gprsSeen.out, rx = g.frames.in !== gprsSeen.in;
+  gprsSeen.out = g.frames.out;
+  gprsSeen.in = g.frames.in;
+  gprsLight(tx, rx);
+  clearTimeout(gprsLitTimer);
+  gprsLitTimer = setTimeout(() => gprsLight(false, false), GPRS_LIT_MS);
+  gprsTitle();
+}
+
+function gprsLight(tx, rx) {
+  if (tx !== gprsLit.tx) gprsEl.toggleAttribute("data-tx", gprsLit.tx = tx);
+  if (rx !== gprsLit.rx) gprsEl.toggleAttribute("data-rx", gprsLit.rx = rx);
+}
+
+const kb = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+
+function gprsTitle() {
+  const g = gprsNet;
+  const shown = gprsShown();
+  if (shown === "off") {
+    gprsEl.title = "";
+    return;
+  }
+  const s = gprsRetryIn(g);
+  const head = {
+    idle: "GPRS: not used yet. The link is dialled when the phone first sends.",
+    connecting: g.reason ? `GPRS: connecting again. ${g.reason}.` : "GPRS: connecting",
+    online: "GPRS: connected", active: "GPRS: connected",
+    offline: `GPRS: offline. ${g.reason}. Dialled again when the phone sends`
+      + (s > 0 ? `, in ${s} s.` : "."),
+    refused: `GPRS: refused. ${g.reason}. Not dialled again in this run.`,
+  }[shown];
+  const title = `${head}\nSent ${g.frames.out} frames (${kb(g.bytes.out)}), `
+    + `received ${g.frames.in} frames (${kb(g.bytes.in)})`;
+  if (gprsEl.title !== title) gprsEl.title = title;
+}
+
+// window.__ui.gprs, for tools/
+function gprsInfo() {
+  const g = gprsNet;
+  return {
+    state: gprsShown(), reason: g?.reason ?? "", code: g?.code ?? 0, retryIn: gprsRetryIn(g),
+    txFrames: g?.frames.out ?? 0, rxFrames: g?.frames.in ?? 0,
+    txBytes: g?.bytes.out ?? 0, rxBytes: g?.bytes.in ?? 0,
+  };
+}
+
 function onGuestExit(code) {
   running = false;
   acc = null;
@@ -1935,6 +2052,7 @@ function onGuestExit(code) {
   window.__gprsNet = null;
   lastRelease = null;       // names this run's module, which must not outlive it
   showGprsStatus();
+  renderGprs();
   exitCode = code;
   refreshTyping();
   stopGuestOutput();

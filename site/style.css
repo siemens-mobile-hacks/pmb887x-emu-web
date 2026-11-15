@@ -133,6 +133,35 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* The phone's GPRS (app.js, renderGprs) while a run has the GSM network.
+   It takes the dot's place, which says nothing the pill's own colour does
+   not, so the uptime keeps its width at 390px. Shape as well as colour
+   tells the states apart, and its own dark ground keeps it legible on the
+   green, amber and red pills alike. */
+.gprs {
+  flex: none; display: inline-flex; align-items: center; gap: 3px;
+  height: 16px; min-width: 12px; padding: 0 3px; border-radius: 8px;
+  background: rgba(0, 0, 0, 0.4); color: #aab2c0;
+  font-size: 0.65rem; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.status:has(> .gprs:not([hidden])) > .status-dot { display: none; }
+.gprs-arrows { flex: none; width: 6px; height: 10px; fill: currentColor; }
+.gprs-arrows path { opacity: 0.45; }
+.gprs-cut { display: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
+.gprs-wait:empty { display: none; }
+.gprs[data-state="connecting"] { color: var(--warn); }
+.gprs[data-state="connecting"] .gprs-arrows { animation: gprs-pulse 1.2s ease-in-out infinite; }
+.gprs[data-state="online"] { color: var(--good); }
+.gprs[data-state="online"] .gprs-arrows path { opacity: 1; }
+.gprs[data-state="offline"], .gprs[data-state="refused"] { color: #ff9a9a; }
+.gprs[data-state="offline"] .gprs-cut, .gprs[data-state="refused"] .gprs-cut { display: block; opacity: 1; }
+.gprs[data-state="refused"] { background: rgba(255, 93, 93, 0.3); }
+.gprs[data-state="refused"] .gprs-arrows path:not(.gprs-cut) { opacity: 0.25; }
+/* frames went up (tx) or down (rx) since the last notice */
+.gprs[data-tx], .gprs[data-rx] { background: rgba(62, 207, 111, 0.35); }
+.gprs[data-tx] .gprs-up, .gprs[data-rx] .gprs-down { fill: #ffffff; }
+@keyframes gprs-pulse { 50% { opacity: 0.3; } }
+
 .pill-action { display: flex; }
 .pill-btn {
   display: inline-flex; align-items: center; gap: 0.3rem;
@@ -1025,4 +1054,5 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 .sheet legend { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .sheet, .sheet-scrim { transition: none; }
+  .gprs[data-state="connecting"] .gprs-arrows { animation: none; }
 }
