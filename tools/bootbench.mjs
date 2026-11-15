@@ -266,3 +266,5 @@ writeFileSync(`${outBase}.json`, JSON.stringify({
   summary, results,
 }, null, 1));
 console.log(`results: ${outBase}.json`);
+// as scenebench: a dist none of whose boots worked fails the run
+if (dists.some((d) => summary[d].ok === 0)) process.exitCode = 1;
