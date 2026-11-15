@@ -222,40 +222,52 @@ thread is using them).
   Start/Stop/Cancel there is (`window.__ui` mirrors that state for the
   drivers in `tools/`). A capture in progress is a second pill beside it,
   ended with **Finish** — "Stop" only ever means the emulator.
-- **GPRS indicator** (`#gprs`, `renderGprs()` in app.js). While a run has
-  the GSM network, a 12px glyph of two arrows takes the place of the
-  pill's dot, which only repeats the pill's own colour, so it costs the
-  row no width and "Running · 0:17" stays whole at 390px. A run without
-  the network (option unticked, a board without a radio, a dist without
-  `_wasm_net_attach`) shows none and keeps the dot. What it shows:
-  - **idle**, dim arrows: the phone has not used GPRS, so there is no
-    link. `gprs-net.js` dials the gateway only when the phone sends its
-    first frame, and after a close only when it sends again;
-  - **connecting**, pulsing amber;
-  - **connected**, green;
-  - **active**: the up arrow lights while frames go to the gateway, the
-    down arrow while they come back;
-  - **offline**, slashed red, with the redial countdown beside it while
-    the backoff runs. After that the link is dialled when the phone next
-    sends;
-  - **refused**, slashed on red: a close that is final for the run
-    (4003, 4004, 4009).
+- **Network badge** (`#gprs`, `renderGprs()` in app.js). While a run has
+  the GSM network, a boxed **G**, the GPRS mark of a phone's status bar,
+  takes the place of the pill's dot, which only repeats the pill's own
+  colour. A run without the network (option unticked, a board without a
+  radio, a dist without `_wasm_net_attach`) shows none and keeps the dot.
+  What it shows, the phone's state first, then the gateway link:
+  - **no network**, faint with a dashed box: the cell has not registered
+    the phone. Every run starts here;
+  - **registered**, outlined and dim: the cell sent LOCATION UPDATING
+    ACCEPT;
+  - **GPRS attached**, lit and neutral: the cell sent GMM ATTACH ACCEPT.
+    The phone has not sent an IP packet, so there is no link;
+  - **connecting**, pulsing amber: the phone sent its first frame and
+    `gprs-net.js` is dialling the gateway (it dials only for a frame, and
+    after a close only when the phone sends again);
+  - **connected**, filled green: the gateway's WebSocket is open. A tiny ▴
+    shows while frames go to the gateway, ▾ while they come back;
+  - **offline**, struck through in red, with the redial countdown: beside
+    the G on desktop, under it in the phone layout, where the pill has no
+    room beside it;
+  - **refused**, struck through on a red ground: a close that is final for
+    the run (4003, 4004, 4009).
 
-  The glyph's accessible name (`role="img"`) says the state and the close
-  reason. Its title adds the frames and bytes each way. `#live-region`
-  says "GPRS connected" and "GPRS offline: …" or "GPRS refused: …" once
-  per change: a redial loop that fails the same way says it once, and
-  traffic says nothing. Advanced ▸ GSM network keeps its caption with the
-  same reason. `window.__ui.gprs` gives tools the shown state, reason,
-  close code, `retryIn` and the counts.
+  At 390x844 "Running · 0:17" keeps 2.5 px (connected, the widest at
+  16 px) to 7.5 px to spare; the dot left 12.5. The badge's accessible
+  name (`role="img"`) says the state and the close reason, its title adds
+  the network line ("Registered, GPRS attached, data context active"),
+  the link and the frames and bytes each way. `#live-region` says
+  "Registered on the network", "GPRS attached", "GPRS connected", "GPRS
+  offline: …" or "GPRS refused: …", and "No network" when registration is
+  lost, once per change: a redial loop that fails the same way says it
+  once, and traffic says nothing. Advanced ▸ GSM network keeps its caption
+  with the close reason. `window.__ui.gprs` gives tools the link `state`,
+  the `badge`, reason, close code, `retryIn` and the counts;
+  `window.__ui.gsm` gives `{known, registered, gprsAttached, pdpActive}`.
 
   It costs the hot paths nothing. `GprsNet` (no DOM) keeps `state`,
-  `reason`, `code`, `retryAt` and `frames`/`bytes` both ways, and calls
-  `onChange("state")` on each change. From its existing 20 ms poll it
-  calls `onChange("traffic")` when frames were counted, at most every
-  250 ms. The page writes the DOM only from those calls, from a 400 ms
-  timer that puts the arrows out, and from a 1 Hz countdown while a
-  redial waits. Nothing runs from the paint loop, the key path or audio.
+  `reason`, `code`, `retryAt`, `frames`/`bytes` both ways and `ms`, the
+  cell's bits from `_wasm_gsm_state()` (qemu: gsm-bts's read-only
+  `ms-state`, read under the BQL in a bottom half), which it reads at most
+  once a second from its existing 20 ms poll. It calls `onChange("state")`
+  and `onChange("gsm")` on each change and `onChange("traffic")` when
+  frames were counted, at most every 250 ms. The page writes the DOM only
+  from those calls, only what changed, from a 400 ms timer that puts the
+  arrows out, and from a 1 Hz countdown while a redial waits. Nothing runs
+  from the paint loop, the key path or audio.
 - **The phone column is the same view at every size, and it is laid out in
   CSS alone.** One `100dvh` page that never scrolls: a single 32px control
   row (state/firmware pill, screenshot, record, sound, fullscreen, and the

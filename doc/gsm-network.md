@@ -23,6 +23,24 @@ bsp 191612c (2026-11-13). Upstream's cell now defaults to DCS1800 ARFCN 512
 | CX70 | boots, no firmware EXIT in 24 runs of 240 s; at 150 s it is in its first-boot "Phone Pilot" (registration not read) |
 | KE800, KE970 | boot (bootcheck); registration not read this time. On 2026-11-11 (qemu 47d1ff26aa) both stayed on "No network", native build included |
 
+When the cell registered each phone, read from the cell itself
+(`_wasm_gsm_state()`, below) on qemu 133f91266b, bsp 191612c, 2026-11-14,
+seconds after Start; the page's badge follows within a second. EL71 and
+S75v40 were each the only run on the host, the others ran five at a time:
+
+| image | registered | GPRS attached | the LCD at the end |
+|---|---|---|---|
+| `EL71v41lg91.bin` | 15.8 s (16.3 s in a second run, 17 s through the gateway run) | only when the browser goes online: 130 s into gprscheck, PDP context 3 s later | idle screen, operator and signal |
+| `S75v40lg1.bin` | 9.8 s | not in 150 s | |
+| `CX70v56lg3.bin` | 9.3 s | not in 240 s | |
+| `SL65v49lg1_TIM.bin` | 9.3 s | not in 240 s | |
+| `KE800v11b.bin` | 17 s | not in 240 s | "Test Network", full signal |
+| `KE970v10d.bin` | 16.5 s | not in 240 s | "Test Network", full signal |
+| `s75_working20060710172101.bin` (the gate's S75) | not in 240 s | | "Поиск сети" (searching) |
+
+So the LG phones register now (the 2026-11-11 "No network" above is
+history), and no phone attaches to GPRS until something on it uses it.
+
 ## The built-in network
 
 Nothing to start: press Start. About 23 s later (EL71,
@@ -129,7 +147,9 @@ Two things the check had to get past:
 - **qemu.** The page adds `-object gsm-bts,id=gsm0` and
   `-machine pmb887x,gsm-network=gsm0`. The fork's qemu has no GSM code of
   its own: `hw/gsm` is upstream's with one fix, the uplink LLC buffer (GPRS
-  data, above).
+  data, above), and the registration state below, which the owner
+  approved for the page's badge: twelve lines, each marked
+  `WASM PORT (removable)`.
 - **The board.** A board gets the cell when its config chain has a
   transceiver of a type qemu models (`RADIO_TYPE_RE` in `site/app.js`:
   hd155153np, hd155155npeb, hd155165bp, pmb6270, pmb6272, bright-6pla). Since
@@ -138,6 +158,49 @@ Two things the check had to get past:
 - **The accessory.** Every run boots with the board's default accessory, the
   data cable; see the deep-sleep entry below. Picking another accessory in
   the control still works and is the user's choice.
+
+### The page's network badge, and the phone's registration
+
+The status pill shows a boxed G while a run has the network
+(doc/architecture.md, "Network badge"): no network, registered, GPRS
+attached, then the gateway link (connecting, connected with ▴/▾ for
+traffic, offline, refused).
+
+- **What the cell records** (qemu 133f91266b). `gsm-bts` keeps a byte,
+  the read-only property `ms-state` (`GSM_BTS_MS_*` in gsm-bts.h): bit 0
+  set when it sends LOCATION UPDATING ACCEPT and cleared by an IMSI DETACH
+  INDICATION; bit 1 set when it sends GMM ATTACH ACCEPT and cleared by a
+  GMM DETACH REQUEST (power-off or not); bit 2 a PDP context, set with
+  ACTIVATE PDP CONTEXT ACCEPT and cleared by DEACTIVATE PDP CONTEXT or a
+  new attach or detach, as the model's own `pdp_active`. Those are all
+  the model's ways out: it never rejects a location update, has no
+  periodic-update timer and no network-side detach, so nothing else
+  clears a bit. It is "the cell answered", not "the phone took it": a
+  phone that loses the accept would still read registered.
+- **How the page reads it.** `ui/wasm.c`'s `wasm_gsm_state()` returns the
+  bits as of the last call and schedules a bottom half that reads the
+  property under the BQL for the next, at most one pending. `gprs-net.js`
+  calls it at most once a second from its existing 20 ms poll, so a change
+  shows within about a second (0.5 s in the timings above).
+
+**The "connected during boot" report (2026-11-14).** The owner saw the
+old two-arrow GPRS glyph go to "connected" while the phone booted. No
+frame causes it: a trace of every frame the relay took from qemu and
+handed back, from Start on, with the real gateway behind serve.mjs, found
+none on EL71 or S75 in 150 s, nor on CX70, SL65, S75v40, KE800 and KE970
+in 240 s; the page opened no WebSocket and `__ui.gprs` stayed "idle". The
+cell itself never sends a frame on its own (its only frames are the
+phone's uplink IP packets, which need a PDP context, and ARP replies to
+the gateway's requests, which need a link), the hub adds none, and the
+phones above do not even attach to GPRS at boot. What the owner saw was
+the "idle" glyph: two dim arrows on a dark chip, appearing the moment the
+run starts, which read as a data link. The badge that replaced it starts
+at "no network", moves to "registered" when the cell says so, and turns
+green only while the gateway's WebSocket is open, which the phone's first
+IP frame dials. ui-acceptance records every badge of its GSM boot with
+the frames the phone had handed the relay and fails a link state
+reached before the phone sent one. Real traffic is relayed and shown as
+it was.
 
 ### Where it runs, and why not in a worker
 
@@ -223,7 +286,11 @@ So the built-in cell stays where upstream runs it.
   firmware `>>EXIT<<` from `l1bbcsg` (layer 1); with the page's clock
   (`ICOUNT=vt`) it registers. Seen once on `d5421c70af`, not looked into.
 - **LG boards**: KE800 and KE970 stayed on "No network" at qemu
-  47d1ff26aa, native build included; not read again since.
+  47d1ff26aa, native build included. At 133f91266b (bsp 191612c) both
+  register and show "Test Network" (table above).
+- **The gate's S75 image** (`s75_working20060710172101.bin`) does not
+  register: after 240 s it still searches. S75v40lg1.bin registers in
+  10 s. Not looked into.
 - **Deep sleep.** With the radio enabled and an accessory that lets the
   firmware deep-sleep (music cable, or none) EL71 hangs about a minute after
   boot: the firmware waits for `SCCUCLKSTA.GSMCLK` to clear after writing

@@ -104,8 +104,11 @@ is open), `_wasm_audio_ring_ptr()` (the ring `audio-worklet.js` reads),
 `headset-stereo` or `none` at the buffer, then plug it), `_wasm_net_attach()`,
 `_wasm_net_buf()`, `_wasm_net_take()`, `_wasm_net_put(len)` (the GSM cell's
 IP side; the page's relay is `window.__gprsNet`, with `frames` and `bytes`
-counted both ways, its `state` and the last close's `reason`; what the
-pill's GPRS indicator shows is `window.__ui.gprs`), and the runtime's `FS`,
+counted both ways, its `state` and the last close's `reason`),
+`_wasm_gsm_state()` (the cell's view of the phone: 1 registered, 2 GPRS
+attached, 4 PDP context active, as of the last call, which asks for the
+next; `window.__gprsNet.ms`; what the pill's network badge shows is
+`window.__ui.gprs.badge`, the phone's state `window.__ui.gsm`), and the runtime's `FS`,
 `ENV`, `HEAPU8`, `TTY`, `addFunction`/`removeFunction`. A dist built with
 `tools/perf/freerun.diff` also has `_wasm_free_run`.
 
