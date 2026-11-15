@@ -10,7 +10,7 @@
 // a broken image such as fullflashes/BROKEN)S66_no_recalc.bin into its EXIT.
 import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
-import { bounded, guestGone, PAGE_CALL_MS } from "./lib/page.mjs";
+import { bounded, guestGone, pageCall, PAGE_CALL_MS } from "./lib/page.mjs";
 
 const tag = process.argv[2] || "run";
 const secs = Number(process.argv[3] || 90);
@@ -31,7 +31,7 @@ await page.setInputFiles("#fullflash", fullflash);
 const mode = process.env.SIEMENS_MODE;
 if (mode) {
   await page.waitForFunction(() => window.__ui.ready, null, { timeout: 30000 }).catch(() => {});
-  const radio = await page.$(`input[name="siemens-mode"][value="${mode}"]`);
+  const radio = await pageCall(page.$(`input[name="siemens-mode"][value="${mode}"]`), "the Siemens mode radio");
   if (radio) await radio.check();
   console.log(`[${tag}] Siemens keys: ${radio ? mode : "no such mode for this device"}`);
 }
@@ -76,7 +76,7 @@ for (let t = 10; t <= secs; t += 10) {
 verdict ??= !last || last.insns <= 0 ? "FAIL: the guest never started"
   : last.fb.updates <= 0 ? "FAIL: no framebuffer activity"
   : "PASS (still running)";
-await page.screenshot({ path: `verify-${tag}.png` }).catch(() => {});
+await bounded(page.screenshot({ path: `verify-${tag}.png` }), null);
 console.log(`[${tag}] verdict: ${verdict}`);
-await browser.close();
+await bounded(browser.close(), undefined);
 process.exit(verdict.startsWith("FAIL") ? 1 : 0);

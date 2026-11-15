@@ -11,6 +11,7 @@
 // modes, so a run over such an image is expected to come back non-zero.
 import { chromium } from "playwright-core";
 import { fullflash } from "./testflash.mjs";
+import { bounded, pageCall, PageUnresponsive } from "./lib/page.mjs";
 
 const arg = (name, dflt) => {
   const i = process.argv.indexOf("--" + name);
@@ -61,37 +62,43 @@ for (const mode of modes) {
   const t0 = Date.now();
   await page.click("#btn-start");
 
-  let last = { fb: 0, insns: 0, exit: "" }, pillSeen = "";
+  let last = { fb: 0, insns: 0, exit: "" }, pillSeen = "", frozen = "";
   const deadline = Date.now() + secs * 1000;
-  while (Date.now() < deadline) {
-    await page.waitForTimeout(1000);
-    const pill = await page.$eval("#status-text", (e) => e.textContent);
-    if (pill.startsWith("Recovering")) pillSeen = pill;
-    const ov = await page.$eval("#ov-msg", (e) => e.textContent).catch(() => "");
-    if (ov === "Failed") break;
-    last = await page.evaluate(probe);
-    if (last.exit) break;
-    // same bar as tools/bootcheck.mjs: the LCD drew and the guest is still
-    // executing. A key check the firmware fails ends in an EXIT, which is
-    // what the modes are here to avoid — not in a dark screen.
-    if (last.fb > 0 && last.insns > 5e8) break;
+  try {
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(1000);
+      const pill = await pageCall(page.$eval("#status-text", (e) => e.textContent), "the pill");
+      if (pill.startsWith("Recovering")) pillSeen = pill;
+      const ov = await pageCall(page.$eval("#ov-msg", (e) => e.textContent), "the overlay")
+        .catch((e) => { if (e instanceof PageUnresponsive) throw e; return ""; });
+      if (ov === "Failed") break;
+      last = await pageCall(page.evaluate(probe), "probe");
+      if (last.exit) break;
+      // same bar as tools/bootcheck.mjs: the LCD drew and the guest is still
+      // executing. A key check the firmware fails ends in an EXIT, which is
+      // what the modes are here to avoid — not in a dark screen.
+      if (last.fb > 0 && last.insns > 5e8) break;
+    }
+  } catch (e) {
+    frozen = String(e.message || e).slice(0, 160);
   }
 
-  const ovMsg = await page.$eval("#ov-msg", (e) => e.textContent).catch(() => "");
-  const ovSub = await page.$eval("#ov-sub", (e) => e.textContent).catch(() => "");
-  const esn = await page.$eval("#esn", (e) => e.value);
-  const pass = !last.exit && last.fb > 0 && last.insns > 5e8 && ovMsg !== "Failed";
+  const read = (sel, prop) => frozen ? "" : bounded(page.$eval(sel, (e, p) => e[p], prop), "");
+  const ovMsg = await read("#ov-msg", "textContent");
+  const ovSub = await read("#ov-sub", "textContent");
+  const esn = await read("#esn", "value");
+  const pass = !frozen && !last.exit && last.fb > 0 && last.insns > 5e8 && ovMsg !== "Failed";
   const took = ((Date.now() - t0) / 1000).toFixed(0);
 
   console.log(`${pass ? "PASS" : "FAIL"} ${mode.padEnd(11)} ` +
     `esn=${esn} fb=${last.fb} insns=${(last.insns / 1e9).toFixed(2)}G ` +
     `${took}s` + (last.exit ? `  ${last.exit.split("\n")[0].slice(0, 60)}` : "") +
     (pillSeen ? `  [${pillSeen}]` : "") +
-    (ovMsg === "Failed" ? `  — ${ovSub}` : ""));
+    (ovMsg === "Failed" ? `  — ${ovSub}` : "") + (frozen ? `  — ${frozen}` : ""));
   if (errs.length) { console.log("  pageerrors:", errs.join(" | ")); fails++; }
   if (!pass) fails++;
-  await page.close();
+  await bounded(page.close(), undefined);
 }
 
-await browser.close();
+await bounded(browser.close(), undefined);
 process.exit(fails ? 1 : 0);

@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { fullflash as defaultFlash } from "./testflash.mjs";
+import { bounded } from "./lib/page.mjs";
 
 const TOOLS = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(TOOLS, "..");
@@ -96,7 +97,11 @@ while ((Date.now() - t0) / 1000 < secs) {
   await new Promise((res) => setTimeout(res, poll * 1000));
   const t = ((Date.now() - t0) / 1000).toFixed(0);
   for (const p of pages) {
-    const mx = await p.page.evaluate(() => window.__mx).catch(() => null);
+    if (p.unresponsive) continue;
+    const mx = await bounded(p.page.evaluate(() => window.__mx), null, {
+      onError: (e) => { p.unresponsive = String(e.message || e).slice(0, 120); },
+    });
+    if (p.unresponsive) console.log(`[${p.label}] t=${t}s the page does not answer: ${p.unresponsive}`);
     if (!mx) continue;
     results.set(p.label, mx);
     const flag = mx.exit ? " *** EXIT ***" : "";
@@ -105,12 +110,13 @@ while ((Date.now() - t0) / 1000 < secs) {
 }
 
 for (const p of pages) {
+  if (p.unresponsive) continue;
   const shot = path.join(TOOLS, `matrix-${p.label}.png`);
-  await p.page.screenshot({ path: shot }).catch(() => {});
-  const lcd = await p.page.$("#lcd");
-  if (lcd) await lcd.screenshot({ path: path.join(TOOLS, `matrix-${p.label}-lcd.png`) }).catch(() => {});
+  await bounded(p.page.screenshot({ path: shot }), null);
+  const lcd = await bounded(p.page.$("#lcd"), null);
+  if (lcd) await bounded(lcd.screenshot({ path: path.join(TOOLS, `matrix-${p.label}-lcd.png`) }), null);
 }
 const out = {};
 for (const [label, mx] of results) out[label] = mx;
 console.log("BOOTMATRIX " + JSON.stringify(out));
-await browser.close();
+await bounded(browser.close(), undefined);

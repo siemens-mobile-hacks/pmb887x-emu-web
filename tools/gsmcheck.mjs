@@ -31,7 +31,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import { parseArgs } from "./lib/argv.mjs";
-import { bootOwnFlash } from "./lib/page.mjs";
+import { bootOwnFlash, bounded, pageCall } from "./lib/page.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { opt } = parseArgs(process.argv.slice(2), {
@@ -114,17 +114,18 @@ if (GSM === "0") await page.evaluate(() => {
 // an LG image goes in with the EFA block that sits next to it
 await bootOwnFlash(page, [file, file + ".cfi-efa"].filter((f) => fs.existsSync(f)), { startup: "ONLINE" });
 
-const press = (key) => page.evaluate(async (code) => {
+// every page call is bounded (pageCall): a frozen page throws instead of hanging
+const press = (key) => pageCall(page.evaluate(async (code) => {
   window.__qemu._wasm_send_key(code, 1);
   await new Promise((r) => setTimeout(r, 200));
   window.__qemu._wasm_send_key(code, 0);
-}, KEYCODE[key]);
+}, KEYCODE[key]), `key ${key}`);
 
-const lcdPixels = () => page.evaluate(() => {
+const lcdPixels = () => pageCall(page.evaluate(() => {
   const c = document.querySelector("#lcd");
   const d = c.getContext("2d").getImageData(0, 0, c.width, c.height);
   return { width: d.width, height: d.height, data: Array.from(d.data) };
-});
+}), "LCD read");
 // % of the pixels in the left half of ROWS with any channel off by > 48
 const statusDiff = (live) => {
   if (live.width !== ref.width || live.height !== ref.height) return 100;
@@ -140,31 +141,31 @@ const keys = [...KEYS];
 const t0 = Date.now();
 let last = { insns: 0, exit: "" };
 let registered = null;
-while ((Date.now() - t0) / 1000 < SECS && !last.exit && !errors.length) {
-  await new Promise((r) => setTimeout(r, 5000));
-  const t = (Date.now() - t0) / 1000;
-  while (keys.length && t >= keys[0][0]) await press(keys.shift()[1]);
-  const mx = await Promise.race([
-    page.evaluate(probe).catch((e) => ({ err: String(e).slice(0, 120) })),
-    new Promise((r) => setTimeout(() => r({ err: "page unresponsive" }), 20000)),
-  ]);
-  if (mx.err) { errors.push(mx.err); break; }
-  last = mx;
-  let status = null;
-  if (ref) {
-    status = statusDiff(await lcdPixels());
-    if (registered == null && status <= 2) registered = Math.round(t);
+try {
+  while ((Date.now() - t0) / 1000 < SECS && !last.exit && !errors.length) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const t = (Date.now() - t0) / 1000;
+    while (keys.length && t >= keys[0][0]) await press(keys.shift()[1]);
+    const mx = await pageCall(page.evaluate(probe), "probe");
+    last = mx;
+    let status = null;
+    if (ref) {
+      status = statusDiff(await lcdPixels());
+      if (registered == null && status <= 2) registered = Math.round(t);
+    }
+    console.log(`[${id}] t=${t.toFixed(0)}s insns=${(mx.insns / 1e6).toFixed(0)}M fb=${mx.fb}` +
+      (ref ? ` status icons off by ${status.toFixed(1)} %${registered != null ? " registered" : ""}` : ""));
+    if (registered != null && t - registered > HOLD) break;
   }
-  console.log(`[${id}] t=${t.toFixed(0)}s insns=${(mx.insns / 1e6).toFixed(0)}M fb=${mx.fb}` +
-    (ref ? ` status icons off by ${status.toFixed(1)} %${registered != null ? " registered" : ""}` : ""));
-  if (registered != null && t - registered > HOLD) break;
+} catch (e) {
+  errors.push(String(e).slice(0, 200));
 }
 
 const shot = path.join(ROOT, "tests", "results", `gsmcheck-${DIST}-${path.basename(file).replace(/\W+/g, "_")}.png`);
 fs.mkdirSync(path.dirname(shot), { recursive: true });
-const lcd = await page.$("#lcd");
-if (lcd) await lcd.screenshot({ path: shot }).catch(() => {});
-if (SAVEREF && lcd) {
+const lcd = await bounded(page.$("#lcd"), null);
+if (lcd) await bounded(lcd.screenshot({ path: shot }), null);
+if (SAVEREF && lcd && !errors.length) {
   const live = await lcdPixels();
   const png = new PNG({ width: live.width, height: live.height });
   png.data.set(live.data);
@@ -177,17 +178,21 @@ if (SAVEREF && lcd) {
 const pixels = async () => Array.from(new Uint32Array(Uint8Array.from((await lcdPixels()).data).buffer));
 let changed = 0;
 if (!last.exit && !errors.length) {
-  const before = await pixels();
-  await press("1");
-  await new Promise((r) => setTimeout(r, 3000));
-  const after = await pixels();
-  changed = after.filter((px, i) => px !== before[i]).length / after.length;
-  await press("end");
+  try {
+    const before = await pixels();
+    await press("1");
+    await new Promise((r) => setTimeout(r, 3000));
+    const after = await pixels();
+    changed = after.filter((px, i) => px !== before[i]).length / after.length;
+    await press("end");
+  } catch (e) {
+    errors.push(String(e).slice(0, 200));
+  }
 }
 
 // Thread list: every emscripten pthread is a dedicated worker of the page.
 const workers = page.workers().length;
-await browser.close();
+await bounded(browser.close(), undefined);
 
 const checks = [
   ["no firmware exit", !last.exit, last.exit.replace(/[\x00-\x1f\xfe\xff]/g, " ")],
