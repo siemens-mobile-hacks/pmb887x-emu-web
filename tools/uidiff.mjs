@@ -7,7 +7,12 @@
 // keypad and the side keys exactly where they were.
 import { chromium } from "playwright-core";
 
-const [a = "8099", b = "8080", w = "1770", h = "1000"] = process.argv.slice(2);
+// both ports are required: a default would point at someone's own server
+const [a, b, w = "1770", h = "1000"] = process.argv.slice(2);
+if (!/^\d+$/.test(a ?? "") || !/^\d+$/.test(b ?? "")) {
+  console.error("usage: node tools/uidiff.mjs <portA> <portB> [width] [height]");
+  process.exit(2);
+}
 
 // Everything is measured against the LCD's own corner and normalised by the
 // screen box, so the comparison is of the keypad's proportions rather than of
