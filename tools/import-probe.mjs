@@ -12,11 +12,13 @@
 // helper body is slower than it looks or the boundary is.
 //
 // This prices the boundary and nothing else: the same trivial callee,
-// reached four ways.
+// reached three ways.
 //
 //   local        plain call inside the caller's own module   (floor)
-//   import-exp   imported as instance.exports.h
-//   import-tab   imported as table.get(i) -- what qemu does
+//   import       imported from the other instance, as table.get(i) -- what
+//                qemu does; table.get returns the very function object
+//                instance.exports.h is, so there is no separate exports row
+//                (until 2026-11-14, TB-26, there was one, measuring the same)
 //   indirect     call_indirect through a shared table
 //
 // Run it twice, plain and --liftoff: TB modules mostly execute in the
@@ -99,8 +101,7 @@ function callerBytes(kind) {
 async function measure(kind) {
   const host = new WebAssembly.Instance(new WebAssembly.Module(hostBytes()), {});
   let imports = {};
-  if (kind === "import-exp") imports = { e: { h: host.exports.h } };
-  if (kind === "import-tab") imports = { e: { h: host.exports.t.get(0) } };
+  if (kind === "import")     imports = { e: { h: host.exports.t.get(0) } };
   if (kind === "indirect")   imports = { e: { t: host.exports.t } };
   const inst = new WebAssembly.Instance(
     new WebAssembly.Module(callerBytes(kind)), imports);
@@ -117,7 +118,7 @@ async function measure(kind) {
 }
 
 const out = [];
-for (const k of ["local", "import-exp", "import-tab", "indirect"]) {
+for (const k of ["local", "import", "indirect"]) {
   try { out.push(await measure(k)); }
   catch (e) { out.push({ kind: k, err: String(e).slice(0, 160) }); }
 }

@@ -36,12 +36,17 @@ const SPLITS = opt("splits", "32,128,512").split(",").filter(Boolean).map(Number
 // function makes every one of them loop-carried as far as the compiler can
 // tell, so the merged variant -- and only it -- pays for whatever phis and
 // spills that costs.  --xlocals declares that many extra i64 locals and has
-// each body read-modify-write three of them.
+// each body read-modify-write --work of them.
 const XLOCALS = Number(opt("xlocals", 0));
-// --work N puts N local read-modify-writes in every body: a real TB body is
-// ~400 bytes, and at 1024 of them per module the instruction footprint --
-// not the call itself -- may be most of what a hand-off costs.
-const WORK = Number(opt("work", 3));
+// --work N (default 3) puts N local read-modify-writes in every body: a real
+// TB body is ~400 bytes, and at 1024 of them per module the instruction
+// footprint -- not the call itself -- may be most of what a hand-off costs.
+// The work lives in the --xlocals locals, so without them there is none.
+if (argv.includes("--work") && !XLOCALS) {
+  console.error("merge-probe: --work needs --xlocals N (the work uses those locals)");
+  process.exit(2);
+}
+const WORK = XLOCALS ? Number(opt("work", 3)) : 0;
 const PORT = process.env.PORT || "8080";
 const browsers = opt("browsers", "chromium").split(",");
 
