@@ -32,6 +32,7 @@
 // G:distinct+cold the 30 variants G:distinct had just compiled: those
 // results measured the cache.
 import { chromium } from "playwright-core";
+import { gotoBlank } from "./lib/page.mjs";
 
 const port = process.env.PORT || "8080";
 
@@ -158,7 +159,7 @@ const probe = () => {
 
 const b = await chromium.launch({ headless: true });
 const p = await b.newPage();
-await p.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+await gotoBlank(p, `http://127.0.0.1:${port}`);
 const r = await p.evaluate(probe);
 await b.close();
 

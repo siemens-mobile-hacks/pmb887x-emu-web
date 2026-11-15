@@ -98,3 +98,18 @@ export const QEMULOG_SINCE = `((log, seen) => {
   const from = Math.max(seen, first);
   return { lines: log.slice(from - first), total, lost: from - seen };
 })`;
+
+// An empty page at origin (e.g. "http://127.0.0.1:19100"), answered by the
+// browser itself: the wasm probes time compiles and calls with that origin's
+// storage and headers, and index.html would fetch and compile the engine in
+// the background meanwhile (its prefetch). No request reaches the server.
+export async function gotoBlank(page, origin, ms = 60000) {
+  const url = new URL("/probe-blank.html", origin).href;
+  await page.route(url, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    headers: { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp" },
+    body: "<!doctype html><title>probe</title>",
+  }));
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: ms });
+}

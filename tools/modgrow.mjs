@@ -19,6 +19,7 @@
 // drop them and re-measure, which separates "the live set is the cost"
 // from "the isolate got dirty and stays dirty".
 import { chromium } from "playwright-core";
+import { gotoBlank } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -105,7 +106,7 @@ return { rows, bytes, dropUs, kept: after.length };
 const b = await chromium.launch({ headless: true, args: process.env.JS_FLAGS ? [`--js-flags=${process.env.JS_FLAGS}`] : [] });
 const p = await b.newPage();
 p.on("pageerror", (e) => console.log(`pageerror: ${String(e).slice(0, 300)}`));
-await p.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "domcontentloaded", timeout: 120000 });
+await gotoBlank(p, `http://127.0.0.1:${PORT}`, 120000);
 let r;
 try {
   r = await p.evaluate(`(async () => { ${PROBE.replaceAll("__TOTAL__", String(TOTAL))

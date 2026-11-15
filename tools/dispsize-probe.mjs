@@ -31,6 +31,7 @@
 // its low bits: over 4096 functions it reached about 84, and the array's
 // 8192 entries capped every larger F.  Its results need re-measurement.
 import { chromium } from "playwright-core";
+import { gotoBlank } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -120,7 +121,7 @@ return out;
 const b = await chromium.launch({ headless: true });
 const p = await b.newPage();
 p.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 300)));
-await p.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "domcontentloaded" });
+await gotoBlank(p, `http://127.0.0.1:${PORT}`);
 const rows = await p.evaluate(`(() => { ${PROBE.replace("__SIZES__", JSON.stringify(SIZES))
   .replace("__ITERS__", String(ITERS)).replace("__REPS__", String(REPS))} })()`);
 console.log(`${ITERS} dispatches per point, ns each`);

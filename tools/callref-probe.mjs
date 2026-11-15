@@ -22,6 +22,7 @@
 // one per function) shuffled with xorshift32, and the results of that time
 // need re-measurement.
 import { chromium } from "playwright-core";
+import { gotoBlank } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -114,7 +115,7 @@ return out;
 const b = await chromium.launch({ headless: true });
 const p = await b.newPage();
 p.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 300)));
-await p.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "domcontentloaded" });
+await gotoBlank(p, `http://127.0.0.1:${PORT}`);
 const r = await p.evaluate(`(() => { ${PROBE.replace("__FUNCS__", String(FUNCS))
   .replace("__ITERS__", String(ITERS)).replace("__REPS__", String(REPS))} })()`);
 console.log(`funcs=${FUNCS}, ${ITERS} dispatches, random walk`);

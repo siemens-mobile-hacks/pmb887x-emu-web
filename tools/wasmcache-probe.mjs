@@ -27,6 +27,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, firefox } from "playwright-core";
+import { gotoBlank } from "./lib/page.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -69,11 +70,11 @@ async function run(count, phase, tag) {
 `;
 const src = (phase, tag, count) => `(async () => {\n${BODY}\nreturn run(${count}, ${JSON.stringify(phase)}, ${JSON.stringify(tag)});\n})()`;
 
-// a browser on the profile in dir, and a page of the site in it
+// a browser on the profile in dir, and an empty page of the site's origin in it
 async function open(B, dir) {
   const ctx = await B.launchPersistentContext(dir, { headless: true });
   const p = ctx.pages()[0] || await ctx.newPage();
-  await p.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+  await gotoBlank(p, url);
   return { ctx, p };
 }
 
