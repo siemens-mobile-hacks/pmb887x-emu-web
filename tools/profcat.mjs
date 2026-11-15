@@ -9,6 +9,12 @@ for (const l of fs.readFileSync(new URL(`../site/${dist}/qemu-system-arm.js.symb
   const m = l.match(/^(\d+):(.*)$/); if (m) syms.set(m[1], m[2]);
 }
 const MAIN = /qemu-system-arm\.wasm$/;
+const DSP_EXEC = new RegExp("^(teak_(data_map_|tcg_service_interrupt|update_modulo_steps|tcg_execute|tcg_request_|tcg_set_interrupt|tcg_update_irq)" +
+  "|tcg_(execute_|fast_(?!discover|verify|relocate|init$|invalidate|words_at|supported|walk)|find_cached_|find_chained_|cached_" +
+  "|check_block_cache|context_(store|restore)|swap_context|restore_shadow|pack_|unpack_|read_|write_|mov_(read|write)_register" +
+  "|set_accumulator_|sign_extend_accumulator|data_bus_saturate|accumulator$|alb_(result|accumulator)|pending_interrupts" +
+  "|synchronize_data_access|add_data_wait_cycles|mapped_data_|shift_bus|shifted_product_low|pop_block_repeat" +
+  "|complete_block_repeat|repeat_stop_repc|flush_cycles|chain_exit_(select_)?link))");
 const classify = (fr) => {
   const url = fr.url || "";
   const fn = fr.functionName || "";
@@ -18,6 +24,12 @@ const classify = (fr) => {
   if (/^tcg_qemu_tb_exec$/.test(name)) return ["jit-guest", "tcg_qemu_tb_exec"];
   if (/^(Module|Instance)$/.test(name)) return ["compile-" + name, name];
   if (/w64_batch_instantiate|w64_assemble|w64_batch_close|w64_batch_member|w64_instantiate|imports\.<computed>/.test(name)) return ["compile-glue", name];
+  // the DSP (teak, hw/arm/pmb887x/dsp/tcg.c) names its runtime tcg_* too:
+  // its executor and the state helpers its blocks call are execution, only
+  // its decoder, emitters, op passes and precompile are translation
+  if (DSP_EXEC.test(name)) return ["dsp-exec", name];
+  if (/^tcg_tb_lookup$/.test(name)) return ["tb-lookup", name];
+  if (/^tcg_(cpu_exec|handle_interrupt|kick_vcpu_thread|vcpu_timers_)/.test(name)) return ["cpu-loop+devices", name];
   if (/^(tcg_|liveness|reachable_code|tb_gen_code|setjmp_gen_code|translator_|arm_tr_|disas_|gen_|thumb_|decode_|tcg_out|w64_spec|tb_link|tb_page|tb_add|tb_remove|tcg_temp|temp_|op_|la_|tcg_gen)/.test(name) || /trans_|translate/.test(name)) return ["translate", name];
   if (/lookup_tb_ptr|tb_lookup|tb_htable_lookup|qht_|tb_lookup_cmp|arm_get_tb_cpu_state|curr_cflags|jmp_cache/.test(name)) return ["tb-lookup", name];
   if (/_mmu$|mmu_lookup|_mmio_|tlb_|probe_access|io_prepare|io_read|io_write|address_space|memory_region|flatview|get_page_addr_code|victim_tlb|ram_block|iotlb|phys_page_find|section/.test(name)) return ["memory", name];
@@ -52,8 +64,8 @@ for (let j = 0; j < p.samples.length; j++) {
 console.log(`profile #${pick}, total ${(sum / 1e3).toFixed(0)} ms`);
 for (const [k, v] of [...cat.entries()].sort((a, b) => b[1] - a[1]))
   console.log((v / 1e3).toFixed(0).padStart(8) + " ms " + (100 * v / sum).toFixed(1).padStart(5) + " %  " + k);
-console.log("\n-- top 'other' / 'cpu-loop+devices' symbols --");
-for (const [k, v] of [...top.entries()].filter(([k]) => /^(other|cpu-loop)/.test(k)).sort((a, b) => b[1] - a[1]).slice(0, 30))
+console.log("\n-- top 'other' / 'cpu-loop+devices' / 'dsp-exec' symbols --");
+for (const [k, v] of [...top.entries()].filter(([k]) => /^(other|cpu-loop|dsp-exec)/.test(k)).sort((a, b) => b[1] - a[1]).slice(0, 30))
   console.log((v / 1e3).toFixed(0).padStart(8) + " ms  " + k);
 
 // FN=<substr>: caller stacks (self samples) of matching functions
