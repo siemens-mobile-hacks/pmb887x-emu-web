@@ -96,8 +96,8 @@
 //   PORT=8094 node tools/idlebench.mjs dist-jit --board ke800 --max 240
 import { chromium } from "playwright-core";
 import { createHash } from "node:crypto";
-import { execFileSync, execSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync, readdirSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { median } from "./lib/stats.mjs";
@@ -221,30 +221,34 @@ const sha256 = (p) => {
 let chromeVer = "unknown";
 
 // summed RSS (MB) of the chromium process tree spawned by this run.
-// browser.process() is gone in playwright-core 1.63, so we tag each
-// browser with a unique launch arg and find its pid via pgrep.
+// browser.process() is gone in playwright-core 1.63, so each browser gets a
+// unique launch arg, and its root is the process whose command line has it
+// and whose parent's does not.  Read from /proc in-process: this runs in the
+// sampling loop, where forking pgrep and ps would load the host it measures.
+const proc = (pid, f) => { try { return readFileSync(`/proc/${pid}/${f}`, "latin1"); } catch { return null; } };
+const rssRoots = new Map();
 function rssMB(marker) {
   try {
-    let pid;
-    // no shell: the marker carries the dist spec, which may hold any query
-    const pattern = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    try { pid = +execFileSync("pgrep", ["-f", pattern], { encoding: "ascii" }).split("\n")[0]; } catch { return null; }
-    if (!pid) return null;
-    const out = execSync("ps -eo pid=,ppid=,rss=,comm=", { encoding: "ascii" });
-    const rowsArr = [];
-    for (const l of out.split("\n")) {
-      const m = l.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/);
-      if (m) rowsArr.push({ pid: +m[1], ppid: +m[2], rss: +m[3] });
+    const all = [];
+    for (const d of readdirSync("/proc")) {
+      if (!/^\d+$/.test(d)) continue;
+      const st = proc(d, "status");
+      if (!st) continue;
+      all.push({ pid: +d, ppid: +(/^PPid:\s+(\d+)/m.exec(st)?.[1] ?? 0),
+        rss: +(/^VmRSS:\s+(\d+) kB/m.exec(st)?.[1] ?? 0) });
+    }
+    let root = rssRoots.get(marker);
+    if (!root || !all.some((r) => r.pid === root)) {
+      const has = new Set(all.filter((r) => (proc(r.pid, "cmdline") || "").includes(marker)).map((r) => r.pid));
+      root = all.find((r) => has.has(r.pid) && !has.has(r.ppid))?.pid;
+      if (!root) return null;
+      rssRoots.set(marker, root);
     }
     const kids = new Map();
-    for (const r of rowsArr) if (!kids.has(r.ppid)) kids.set(r.ppid, []);
-    for (const r of rowsArr) kids.get(r.ppid).push(r.pid);
+    for (const r of all) (kids.get(r.ppid) || kids.set(r.ppid, []).get(r.ppid)).push(r);
     let sum = 0;
-    const walk = (p) => {
-      for (const r of rowsArr) if (r.pid === p) sum += r.rss;
-      for (const k of kids.get(p) || []) walk(k);
-    };
-    walk(pid);
+    const walk = (r) => { sum += r.rss; for (const k of kids.get(r.pid) || []) walk(k); };
+    walk(all.find((r) => r.pid === root));
     return Math.round(sum / 1024);
   } catch { return null; }
 }
@@ -348,7 +352,7 @@ async function runOne(dist, hashes, r) {
     const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
     const rec = {
       board: boardId, dist, run: r, hashes, chromeVer, started: new Date().toISOString(),
-      loadavg: (execSync("cat /proc/loadavg", { encoding: "ascii" }).split(" ").slice(0, 3).join(" ")),
+      loadavg: readFileSync("/proc/loadavg", "ascii").split(" ").slice(0, 3).join(" "),
     };
     const w64lines = [];
     let crashed = null;
@@ -505,8 +509,8 @@ async function runOne(dist, hashes, r) {
     rec.shots = await shoot(p, tag);
 
     if (rec.cls !== "IDLE") {
-      const dir = `/tmp/idlebench-${tag}`;
-      try { mkdirSync(dir, { recursive: true }); } catch {}
+      // a directory of its own per run, made only when there is a file
+      let dir = null;
       try {
         const names = await p.evaluate(() => {
           const m = window.__qemu;
@@ -515,12 +519,13 @@ async function runOne(dist, hashes, r) {
         for (const n of names || []) {
           try {
             const bytes = await p.evaluate((f) => window.__qemu.FS.readFile("/" + f), n);
+            dir ??= mkdtempSync(path.join(os.tmpdir(), `idlebench-${tag}-`));
             writeFileSync(`${dir}/${n}`, Buffer.from(bytes));
             console.log(`  [${tag}] salvaged ${n} (${bytes.length} B) -> ${dir}`);
           } catch {}
         }
       } catch {}
-      rec.salvageDir = dir;
+      if (dir) rec.salvageDir = dir;
     }
     const ms = Object.entries(rec.tInsns).map(([k, t]) => `${k}:${t}`).join(" ");
     const perMi = rec.last && rec.last.ctr && rec.last.insns
