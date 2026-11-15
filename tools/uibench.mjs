@@ -198,7 +198,8 @@ async function measure(name, drive) {
 let stopDriving = false;
 const driveKeys = () => (async () => {
   for (let i = 0; !stopDriving; i++) {
-    try { await p.click(`[data-key="${keys[i % keys.length]}"]`, { timeout: 5000 }); } catch {}
+    // a hold: the firmware's keypad scan misses about one instant click in three
+    try { await p.click(`[data-key="${keys[i % keys.length]}"]`, { delay: 80, timeout: 5000 }); } catch {}
     for (let w = 0; w < periodMs && !stopDriving; w += 100) await sleep(100);
   }
 })();
