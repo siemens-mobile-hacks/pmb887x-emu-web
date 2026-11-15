@@ -133,34 +133,61 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* The phone's GPRS (app.js, renderGprs) while a run has the GSM network.
-   It takes the dot's place, which says nothing the pill's own colour does
-   not, so the uptime keeps its width at 390px. Shape as well as colour
-   tells the states apart, and its own dark ground keeps it legible on the
-   green, amber and red pills alike. */
+/* The phone's network (app.js, renderGprs) while a run has the GSM
+   network: a boxed G, the GPRS mark of a phone's status bar. It takes the
+   dot's place, which says nothing the pill's own colour does not, so the
+   uptime keeps its width at 390px. Shape as well as colour tells the
+   states apart (dashed, outlined, lit, filled, struck), and the box's own
+   dark ground keeps it legible on the green, amber and red pills alike. */
 .gprs {
-  flex: none; display: inline-flex; align-items: center; gap: 3px;
-  height: 16px; min-width: 12px; padding: 0 3px; border-radius: 8px;
-  background: rgba(0, 0, 0, 0.4); color: #aab2c0;
+  flex: none; display: inline-flex; align-items: center; gap: 2px;
+  color: var(--muted);
   font-size: 0.65rem; font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .status:has(> .gprs:not([hidden])) > .status-dot { display: none; }
-.gprs-arrows { flex: none; width: 6px; height: 10px; fill: currentColor; }
-.gprs-arrows path { opacity: 0.6; }
-.gprs-cut { display: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
+.gprs-g {
+  position: relative; flex: none; box-sizing: border-box;
+  display: grid; place-items: center; width: 11px; height: 13px;
+  border: 1px solid currentColor; border-radius: 2px;
+  background: rgba(0, 0, 0, 0.4);
+  font: 700 9px/1 system-ui, "Segoe UI", Roboto, sans-serif;
+}
+/* offline and refused strike the G through, over a dark gap that keeps
+   the stroke apart from the letter */
+.gprs-cut {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: none; overflow: visible;
+  fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round;
+}
+.gprs-cut path { vector-effect: non-scaling-stroke; }
+.gprs-cut .gprs-cut-gap { stroke: rgba(0, 0, 0, 0.7); stroke-width: 3; }
+.gprs-arrows { display: none; flex: none; width: 4px; height: 12px; margin-left: -1px; fill: #ffffff; }
+.gprs-arrows path { opacity: 0; }
 .gprs-wait:empty { display: none; }
+/* At 390px the pill has room for the G and the arrows (18px with the
+   dot's place, where 16 are used) but not for the redial countdown beside
+   them: in the phone layout it goes under the G instead. */
+@media (width < 900px), (height < 621px) {
+  .gprs:has(> .gprs-wait:not(:empty)) { flex-direction: column; gap: 1px; }
+  .gprs:has(> .gprs-wait:not(:empty)) .gprs-g { height: 11px; }
+  .gprs-wait { font-size: 8px; line-height: 8px; }
+}
+/* no network yet: faint and dashed; registered: outlined (the default
+   above); GPRS attached: lit, neutral */
+.gprs[data-state="nonet"] .gprs-g { opacity: 0.6; border-style: dashed; }
+.gprs[data-state="attached"] { color: var(--text); }
 .gprs[data-state="connecting"] { color: var(--warn); }
-.gprs[data-state="connecting"] .gprs-arrows { animation: gprs-pulse 1.2s ease-in-out infinite; }
+.gprs[data-state="connecting"] .gprs-g { animation: gprs-pulse 1.2s ease-in-out infinite; }
 .gprs[data-state="online"] { color: var(--good); }
-.gprs[data-state="connecting"] .gprs-arrows path,
-.gprs[data-state="online"] .gprs-arrows path { opacity: 1; }
+.gprs[data-state="online"] .gprs-g { background: var(--good); color: #0b2a16; }
+/* the arrows' place is kept while connected, so traffic never moves the
+   uptime; each shows while frames went that way since the last notice */
+.gprs[data-state="online"] .gprs-arrows { display: block; }
+.gprs[data-tx] .gprs-up, .gprs[data-rx] .gprs-down { opacity: 1; }
 .gprs[data-state="offline"], .gprs[data-state="refused"] { color: #ff9a9a; }
-.gprs[data-state="offline"] .gprs-cut, .gprs[data-state="refused"] .gprs-cut { display: block; opacity: 1; }
-.gprs[data-state="refused"] { background: rgba(255, 93, 93, 0.3); }
-.gprs[data-state="refused"] .gprs-arrows path:not(.gprs-cut) { opacity: 0.25; }
-/* frames went up (tx) or down (rx) since the last notice */
-.gprs[data-tx], .gprs[data-rx] { background: rgba(62, 207, 111, 0.35); }
-.gprs[data-tx] .gprs-up, .gprs[data-rx] .gprs-down { fill: #ffffff; }
+.gprs[data-state="offline"] .gprs-cut,
+.gprs[data-state="refused"] .gprs-cut { display: block; }
+.gprs[data-state="refused"] .gprs-g { background: var(--bad); border-color: var(--bad); color: #ffffff; }
+.gprs[data-state="refused"] .gprs-cut-gap { stroke: var(--bad); }
 @keyframes gprs-pulse { 50% { opacity: 0.35; } }
 
 .pill-action { display: flex; }
@@ -1055,5 +1082,5 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 .sheet legend { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .sheet, .sheet-scrim { transition: none; }
-  .gprs[data-state="connecting"] .gprs-arrows { animation: none; }
+  .gprs[data-state="connecting"] .gprs-g { animation: none; }
 }

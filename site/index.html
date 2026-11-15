@@ -140,17 +140,21 @@
       <div class="status-row">
         <div id="status" class="status idle" data-state="idle">
           <span class="status-dot"></span>
-          <!-- the phone's GPRS while a run has the GSM network (gprs-net.js),
-               in the dot's place: dim arrows idle, pulsing connecting, solid
-               online, lit while frames go up or down, slashed offline with
-               the redial countdown beside them. Its name says the state, its
-               title the counts and the reason; changes are said in
+          <!-- the phone's network while a run has the GSM network
+               (gprs-net.js), in the dot's place: a boxed G as on a phone's
+               status bar. Dashed and faint with no network, outlined once
+               registered, lit once GPRS is attached, pulsing amber while
+               the gateway is dialled, green while connected with a ▴ or ▾
+               while frames go up or down, struck through when offline (with
+               the redial countdown) or refused. Its name says the state,
+               its title the reason and the counts; changes are said in
                #live-region. -->
-          <span id="gprs" class="gprs" data-state="off" role="img" aria-label="GPRS off" hidden>
-            <svg class="gprs-arrows" viewBox="0 0 8 12" aria-hidden="true">
-              <path class="gprs-up" d="M4 0 7.5 4.6H.5z"/>
-              <path class="gprs-down" d="M4 12 .5 7.4h7z"/>
-              <path class="gprs-cut" d="M.6 11.4 7.4.6"/>
+          <span id="gprs" class="gprs" data-state="off" role="img" aria-label="Network off" hidden>
+            <span class="gprs-g" aria-hidden="true">G<svg class="gprs-cut" viewBox="0 0 9 11"
+                preserveAspectRatio="none"><path class="gprs-cut-gap" d="M.5 10.5 8.5.5"/><path d="M.5 10.5 8.5.5"/></svg></span>
+            <svg class="gprs-arrows" viewBox="0 0 5 12" aria-hidden="true">
+              <path class="gprs-up" d="M2.5 0 5 4H0z"/>
+              <path class="gprs-down" d="M2.5 12 0 8h5z"/>
             </svg>
             <span id="gprs-wait" class="gprs-wait"></span>
           </span>
