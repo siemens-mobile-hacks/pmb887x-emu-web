@@ -66,7 +66,7 @@ git submodule update --init qemu   # build.sh does this too; the qemu
                                    # tree is ~1 GB with history
 ./build.sh          # ~30-60 min first run: emsdk 4.0.10 + glib/pixman/zlib/libffi
                     # built for wasm64, then qemu → site/dist/
-                    # qemu-system-arm.wasm
+                    # qemu-system-arm.wasm, then the deploy bundle → dist/
 ./serve.mjs         # http://127.0.0.1:8080 (COOP/COEP headers for pthreads)
                     # phone/LAN: auto-redirected to https://<lan-ip>:6808
                     # (self-signed — accept the browser warning once; browsers

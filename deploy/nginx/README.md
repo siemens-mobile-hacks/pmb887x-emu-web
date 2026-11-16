@@ -15,6 +15,9 @@ The moving parts:
 scripts/bundle-dist.sh          # → dist/ (see -- usage header for flags)
 ```
 
+`./build.sh` runs it as its last step; after `scripts/ninja-fast.sh` or
+another partial rebuild, run it yourself before deploying `dist/`.
+
 Ships exactly what the page loads. The list is `page` and `images` at
 the top of `scripts/bundle-dist.sh`, which refuses to bundle while a
 tracked file under `site/` (outside `site/dist*`) is missing from it:
