@@ -10,3 +10,7 @@
 	path = bsp
 	url = https://github.com/Azq2/pmb887x-dev
 	branch = master
+[submodule "deploy/gprs-gw/bts-emulator"]
+	path = deploy/gprs-gw/bts-emulator
+	url = https://github.com/siemens-mobile-hacks/bts-emulator
+	branch = gprs-gw

@@ -1,0 +1,37 @@
+# LAN mode: the page and the GPRS gateway without the nginx-proxy front, at
+# https://<this host>:8443 with a self-signed certificate (README.md, "4. LAN").
+#
+#   docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d --build
+#
+# or COMPOSE_FILE=docker-compose.yml:docker-compose.lan.yml in .env.
+services:
+  pmb887x-web:
+    ports:
+      - ${LAN_ADDRESS:-0.0.0.0}:${LAN_HTTPS_PORT:-8443}:443
+    environment:
+      LAN_TLS: "1"
+      # names and addresses the certificate covers, comma separated
+      LAN_HOSTS: ${LAN_HOSTS:-}
+      # keep a running nginx-proxy and letsencrypt companion away from it
+      VIRTUAL_HOST: ""
+      LETSENCRYPT_HOST: ""
+    volumes:
+      - lan-cert:/etc/nginx/lan-cert
+
+  pmb887x-gprs-gw:
+    environment:
+      # the page's origin is https://<lan address>:<port>; empty allows any
+      GPRS_GW_ORIGINS: ${GPRS_GW_ORIGINS:-}
+      GPRS_GW_PAGE_ORIGIN: ""
+      # browsers reach the gateway through pmb887x-web only
+      GPRS_GW_TRUSTED_PROXIES: ${GPRS_GW_TRUSTED_PROXIES:-1}
+
+networks:
+  # an ordinary network instead of the external nginx-proxy one; named, since
+  # Compose v2 merges this with the base definition and would keep its name
+  default:
+    name: pmb887x-web-lan
+    external: false
+
+volumes:
+  lan-cert:

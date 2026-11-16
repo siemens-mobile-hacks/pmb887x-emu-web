@@ -14,29 +14,36 @@ stack, next to the page's nginx (`deploy/nginx`), which passes `/gprs` to it.
 | file | what it is |
 |---|---|
 | `Dockerfile` | `node:24.22.1-trixie-slim` (pinned by digest), libslirp 4.9.7 built from its release tarball (sha256-checked), `slirp-pipe` linked against it, `ws` from `package-lock.json`; runs as `node` (uid 1000) |
-| `gprs-gw.sha256` | the gateway's two source files at bts-emulator commit `55c911aba7be4d00a7e6ada36e73a55e21a2e931`; the build fails on any other content |
+| `bts-emulator/` | submodule, branch `gprs-gw`; the image uses only `gprs-gw/server.mjs` and `gprs-gw/slirp-pipe.c` |
 | `package.json`, `package-lock.json` | `ws` 8.21.3, the version the repository's own gateway checks run with |
 | `healthcheck.mjs` | `HEALTHCHECK`: a plain GET, which the gateway answers with 426 (not logged, not counted) |
-| `../nginx/docker-compose.yml` | the `pmb887x-gprs-gw` service (profile `gprs`) |
+| `../nginx/docker-compose.yml` | the `pmb887x-gprs-gw` service |
 | `../nginx/site.conf` | `location = /gprs`, the WebSocket proxy |
 
 ## Where the source comes from
 
-The gateway lives on branch `gprs-gw` of a bts-emulator checkout
-(`55c911a`, three commits on top of `1a124e7`). That branch is not on
-GitHub yet: upstream `main`, and the `pmb887x-emu/bts` submodule that pins
-it (`01955ac`), have no `gprs-gw/`. So the image takes the two files from a
-named build context, `bts`, and checks them against `gprs-gw.sha256`. Nothing
-else from the checkout is used, so its other files and its checked-out
-branch do not matter as long as `gprs-gw/` matches.
+The gateway lives on branch `gprs-gw` of bts-emulator (`55c911a`, three
+commits on top of `1a124e7`); upstream `main`, and the `pmb887x-emu/bts`
+submodule that pins it (`01955ac`), have no `gprs-gw/`. `bts-emulator/` here
+is a submodule pinned to a commit of that branch, inside the image's build
+context, so a plain build (compose v1 or v2, or `docker build`) finds the
+two files without a named build context. Nothing else from the submodule is
+used.
 
-- Compose: `BTS_EMULATOR` (in `deploy/nginx/.env`), default
-  `../../../bts-emulator`, a checkout next to this repository.
-- Once the branch is pushed, a pinned git URL works the same way:
-  `BTS_EMULATOR=https://github.com/siemens-mobile-hacks/bts-emulator.git#55c911aba7be4d00a7e6ada36e73a55e21a2e931`.
-- When the gateway changes, update `gprs-gw.sha256` (and the commit named
-  in it and in the `Dockerfile`) from the new commit:
-  `git -C ../bts-emulator show <commit>:gprs-gw/server.mjs | sha256sum`.
+```sh
+git submodule update --init deploy/gprs-gw/bts-emulator
+```
+
+Without it the build stops at `COPY bts-emulator/gprs-gw/...`.
+
+When the gateway changes, move the submodule to the new commit and commit
+that:
+
+```sh
+git -C deploy/gprs-gw/bts-emulator fetch origin gprs-gw
+git -C deploy/gprs-gw/bts-emulator checkout <commit>
+git add deploy/gprs-gw/bts-emulator
+```
 
 `slirp-pipe.c` needs libslirp 4.9 or newer (`slirp_pollfds_fill_socket`,
 `slirp_os_socket`). Debian 13 ships 4.8.0, which fails to compile it, so the
@@ -59,11 +66,10 @@ in `deploy/nginx/.env`:
 VIRTUAL_HOST=emu.example.org
 LETSENCRYPT_HOST=emu.example.org
 LETSENCRYPT_EMAIL=you@example.org
-COMPOSE_PROFILES=gprs
-# BTS_EMULATOR=/path/to/bts-emulator    # if not next to this repository
 ```
 
 ```sh
+git submodule update --init deploy/gprs-gw/bts-emulator
 cd deploy/nginx
 docker compose up -d --build
 docker compose ps          # pmb887x-gprs-gw should become "healthy"
@@ -72,16 +78,17 @@ docker compose logs -f pmb887x-gprs-gw
 
 The gateway joins only the stack's own `gprs` network, shared with
 `pmb887x-web`; it publishes no port and is not on the `nginx-proxy`
-network. Without the `gprs` profile, the stack is the static page as before,
-and `/gprs` answers 502: the phone has no Internet, nothing else changes.
-nginx looks the gateway's name up per request, so the order containers
-start in does not matter.
+network. The stack always builds and starts it, so it needs the
+submodule. nginx looks the gateway's name up per request, so the
+order containers start in does not matter, and while the gateway is down
+`/gprs` answers 502: the phone has no Internet, the page still works.
 
 On its own, for `serve.mjs` on the same host (it passes `/gprs` to
 `GPRS_GW`, default `127.0.0.1:5751`, adding one `X-Forwarded-For` hop):
 
 ```sh
-docker build --build-context bts=../bts-emulator -t pmb887x-gprs-gw deploy/gprs-gw
+git submodule update --init deploy/gprs-gw/bts-emulator
+docker build -t pmb887x-gprs-gw deploy/gprs-gw
 docker run -d --name pmb887x-gprs-gw --init --read-only --cap-drop ALL \
   --security-opt no-new-privileges -p 127.0.0.1:5751:5751 \
   -v pmb887x-gprs-gw-state:/var/lib/gprs-gw \
@@ -97,7 +104,7 @@ All settings are environment variables. In compose they come from
 | variable | default | meaning |
 |---|---|---|
 | `GPRS_GW_LISTEN` | `0.0.0.0:5751` | listen address in the container (nginx expects port 5751) |
-| `GPRS_GW_ORIGINS` | compose: `https://$VIRTUAL_HOST`; gateway: empty = any | page origins allowed to connect, comma separated; others are closed with 4009, which the page takes as final. Set it explicitly when `VIRTUAL_HOST` lists several names |
+| `GPRS_GW_ORIGINS` | compose: `https://$VIRTUAL_HOST` (`GPRS_GW_PAGE_ORIGIN`), LAN mode: empty; gateway: empty = any | page origins allowed to connect, comma separated; others are closed with 4009, which the page takes as final. Set it explicitly when `VIRTUAL_HOST` lists several names |
 | `GPRS_GW_TRUSTED_PROXIES` | compose: `2`; gateway: `0` | proxies in front that each append to `X-Forwarded-For` (below) |
 | `GPRS_GW_PER_IP` | `2` | connections at once per client address (IPv6: per /64) |
 | `GPRS_GW_MAX_SESSIONS` | `100` | connections at once in total (raise `pids_limit` and `mem_limit` with it) |

@@ -10,6 +10,11 @@
 # to the daemon.
 FROM nginx:stable-alpine
 
+# openssl and lan-tls.sh: the self-signed https of docker-compose.lan.yml
+COPY deploy/nginx/lan-tls.sh /docker-entrypoint.d/40-lan-tls.sh
+RUN apk add --no-cache openssl \
+    && chmod 755 /docker-entrypoint.d/40-lan-tls.sh \
+    && mkdir -p /etc/nginx/lan-tls
 COPY deploy/nginx/site.conf /etc/nginx/conf.d/default.conf
 COPY dist/ /usr/share/nginx/html/
 

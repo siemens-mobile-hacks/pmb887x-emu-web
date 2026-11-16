@@ -16,8 +16,8 @@
 # `docker compose up -d --build`.
 #
 # The phone's Internet (GPRS gateway at /gprs, ../gprs-gw/README.md) is the
-# `gprs` profile: COMPOSE_PROFILES=gprs, plus a bts-emulator checkout of
-# branch gprs-gw at BTS_EMULATOR (default ../../../bts-emulator).  The front
+# pmb887x-gprs-gw service, built from the ../gprs-gw/bts-emulator submodule
+# (git submodule update --init deploy/gprs-gw/bts-emulator).  The front
 # must not close an idle /gprs after nginx's default 60 s: the proxy-timeout
 # label below (README.md, "What the front is").
 services:
@@ -54,11 +54,8 @@ services:
       - gprs
 
   pmb887x-gprs-gw:
-    profiles: [gprs]
     build:
       context: ../gprs-gw
-      additional_contexts:
-        bts: ${BTS_EMULATOR:-../../../bts-emulator}
     image: pmb887x-gprs-gw
     container_name: pmb887x-gprs-gw
     restart: unless-stopped
@@ -72,9 +69,13 @@ services:
     mem_limit: 1g
     expose:
       - "5751"
+    # GPRS_GW_ORIGINS falls back to GPRS_GW_PAGE_ORIGIN here, in the shell:
+    # docker-compose v1 has no nested ${A:-${B}}.
+    command: ["sh", "-c", "export GPRS_GW_ORIGINS=\"$${GPRS_GW_ORIGINS:-$$GPRS_GW_PAGE_ORIGIN}\"; exec node /opt/gprs-gw/server.mjs"]
     # An empty value leaves the gateway's default (../gprs-gw/README.md).
     environment:
-      GPRS_GW_ORIGINS: ${GPRS_GW_ORIGINS:-https://${VIRTUAL_HOST:-emu.example.org}}
+      GPRS_GW_ORIGINS: ${GPRS_GW_ORIGINS:-}
+      GPRS_GW_PAGE_ORIGIN: https://${VIRTUAL_HOST:-emu.example.org}
       # nginx-proxy front + pmb887x-web, each appending to X-Forwarded-For
       GPRS_GW_TRUSTED_PROXIES: ${GPRS_GW_TRUSTED_PROXIES:-2}
       GPRS_GW_PER_IP: ${GPRS_GW_PER_IP:-}

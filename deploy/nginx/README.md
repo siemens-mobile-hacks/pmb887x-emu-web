@@ -1,12 +1,13 @@
 # Deploying the emulator page behind perk11/nginx-proxy
 
-Three moving parts:
+The moving parts:
 
 | piece | what it is |
 |---|---|
 | `scripts/bundle-dist.sh` | assembles the self-contained bundle in `<repo>/dist` (gitignored) |
 | `Dockerfile` + `site.conf` | `nginx:stable-alpine` image serving that bundle with the same headers/contract as `serve.mjs` |
-| `docker-compose.yml` | runs it on the external `nginx-proxy` network with `VIRTUAL_HOST` env, so the front (jwilder/nginx-proxy + letsencrypt companion) picks it up; with profile `gprs`, also the GPRS gateway (`../gprs-gw`) |
+| `docker-compose.yml` | runs it on the external `nginx-proxy` network with `VIRTUAL_HOST` env, so the front (jwilder/nginx-proxy + letsencrypt companion) picks it up, and the GPRS gateway (`../gprs-gw`) |
+| `docker-compose.lan.yml` + `lan-tls.sh` | LAN mode instead of the front: https with a self-signed certificate on a published port (section 4) |
 
 ## 1. Bundle
 
@@ -46,9 +47,11 @@ docker run -d --name nginx-letsencrypt --restart=always \
   --volumes-from nginx-proxy jrcs/letsencrypt-nginx-proxy-companion
 ```
 
-Then, from `deploy/nginx/` here:
+Then check out the GPRS gateway's submodule once (`../gprs-gw/README.md`,
+"Where the source comes from") and, from `deploy/nginx/` here:
 
 ```bash
+git submodule update --init ../gprs-gw/bts-emulator
 VIRTUAL_HOST=emu.example.org \
 LETSENCRYPT_HOST=emu.example.org \
 LETSENCRYPT_EMAIL=you@example.org \
@@ -58,6 +61,11 @@ LETSENCRYPT_EMAIL=you@example.org \
 (or put those in `deploy/nginx/.env`, which is gitignored).  TLS is
 terminated at the front; http→https redirects appear automatically once
 the cert is issued.
+
+Both compose files and both Dockerfiles also work with the legacy
+`docker-compose` v1 (1.27 or newer, for files without `version:`) and its
+classic builder: no named build contexts, no `!reset`, no nested
+`${A:-${B}}`, no BuildKit-only Dockerfile flags. Keep it that way.
 
 ### What the front is
 
@@ -124,16 +132,16 @@ template differs only where noted.
 
 The page relays the phone's GPRS to `wss://<host>/gprs`, which `site.conf`
 passes to bts-emulator's GPRS gateway in the `pmb887x-gprs-gw` container
-(`deploy/gprs-gw`). It is the compose profile `gprs`: add
-`COMPOSE_PROFILES=gprs` to `.env`, with a bts-emulator checkout of branch
-`gprs-gw` next to this repository (or at `BTS_EMULATOR`), and
-`docker compose up -d --build`. `deploy/gprs-gw/README.md` has its settings
-(origins, trusted proxies, limits), networking and security notes.
+(`deploy/gprs-gw`), which `docker compose up -d --build` builds and starts
+with the page, from the `deploy/gprs-gw/bts-emulator` submodule (branch
+`gprs-gw`). `deploy/gprs-gw/README.md`
+has its settings (origins, trusted proxies, limits), networking and security
+notes. While the gateway is down the emulator runs as before, only without
+Internet on the phone (`/gprs` answers 502).
 
-The alternative is bts-emulator's full stack with its `compose.web.yaml` and
-the same host name: the front then routes `/gprs` there (`VIRTUAL_PATH`),
-past this container. Use one or the other. Without either the emulator runs
-as before, only without Internet on the phone (`/gprs` answers 502).
+Do not also run bts-emulator's full stack with its `compose.web.yaml` for the
+same host name: the front would then route `/gprs` there (`VIRTUAL_PATH`),
+past this container.
 
 ## 3. Standalone (no proxy mesh)
 
@@ -146,7 +154,52 @@ docker run --rm -p 8080:80 pmb887x-web     # http://localhost:8080
 Same caveat as `serve.mjs`: browsers ignore COOP/COEP on plain http for
 anything but localhost, so cross-origin isolation (and therefore the
 emulator) only works via `http://localhost…` or via the front's TLS —
-not over `http://<lan-ip>:8080`.
+not over `http://<lan-ip>:8080`. For other machines use LAN mode (section 4).
+
+## 4. LAN (no front, self-signed https)
+
+The page and the GPRS gateway for the machines on your network, without
+the front, a domain or Let's Encrypt:
+
+```bash
+scripts/bundle-dist.sh
+git submodule update --init deploy/gprs-gw/bts-emulator
+cd deploy/nginx
+docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d --build
+# open https://<lan-ip>:8443 and accept the certificate warning once
+```
+
+To make it the default for this directory, put
+`COMPOSE_FILE=docker-compose.yml:docker-compose.lan.yml` in `.env`; then a
+plain `docker compose up -d --build` uses it.
+
+`docker-compose.lan.yml` on top of the normal stack:
+
+- publishes `pmb887x-web`'s port 443 on `LAN_ADDRESS:LAN_HTTPS_PORT`
+  (default `0.0.0.0:8443`), and nothing on plain http;
+- sets `LAN_TLS=1`, so `lan-tls.sh` (run by the image's entrypoint) adds
+  `listen 443 ssl` to `site.conf` with a self-signed certificate. The
+  certificate is kept in the `lan-cert` volume and regenerated only when
+  `LAN_HOSTS` changes, so browsers keep their exception across rebuilds.
+  `LAN_HOSTS` (comma separated names and addresses, e.g.
+  `192.168.1.10,emu.lan`) only adds them to the certificate; self-signed, it
+  needs the browser's exception either way;
+- replaces the external `nginx-proxy` network with an ordinary one
+  (`pmb887x-web-lan`), and
+  empties `VIRTUAL_HOST` and `LETSENCRYPT_HOST`, so a front running on the
+  same Docker host ignores the container;
+- runs the gateway with `GPRS_GW_TRUSTED_PROXIES=1` (only `pmb887x-web` in
+  front) and `GPRS_GW_ORIGINS` empty (any origin, since the page's origin
+  is whatever LAN address it is opened at). Set `GPRS_GW_ORIGINS` in `.env`
+  to `https://<lan-ip>:8443` to restrict it.
+
+Without `LAN_TLS`, `lan-tls.sh` does nothing and the image is the
+front's plain port-80 server as before.
+
+Anyone who can reach the port gets the page and, through the gateway, a
+NATed way out to the Internet from this host (`../gprs-gw/README.md`).
+Set `LAN_ADDRESS` to one interface's address, or firewall the port, if the
+host is on more than the LAN.
 
 ## What `site.conf` sends, and why
 
