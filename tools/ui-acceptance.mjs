@@ -6,7 +6,7 @@
 //   node tools/ui-acceptance.mjs [--flash id]   # everything, including a real boot
 //   SKIP_BOOT=1 node tools/ui-acceptance.mjs
 //
-// The boot section needs a built site/dist-jit and a Siemens fullflash:
+// The boot section needs a built site/dist and a Siemens fullflash:
 // --flash names one by its tools/lib/boards.mjs id (the gate pins one),
 // else the test fullflash (tools/testflash.local.json or TESTFLASH=).
 // Everything else is pure UI.

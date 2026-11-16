@@ -3,7 +3,7 @@
 #
 # Builds the emscripten wasm64 qemu (memory64, pthreads, ASYNCIFY) into
 # build/qemu-wasm64/ and deploys qemu-system-arm.{js,wasm} into
-# site/dist-jit/ (the emulator page's dist).
+# site/dist/ (the emulator page's dist).
 #
 # The memory model is the 32-bit address limit (-sMEMORY64=2): i64
 # pointers, i32 memory index.  It is worth +19.2 % on J2ME (round thirty-six)
@@ -44,7 +44,7 @@ SRC="$ROOT/qemu"
 # The build dir is never reconfigured once it exists (the configure guard
 # below), so a flags change means wiping build/qemu-wasm64 first.
 BUILD_DIR="$BUILD/qemu-wasm64"
-DIST="site/dist-jit"
+DIST="site/dist"
 
 if [ ! -f "$BUILD_DIR/build.ninja" ] || [ ! -f "$BUILD_DIR/meson-private/coredata.dat" ]; then
   echo "== configuring $BUILD_DIR"

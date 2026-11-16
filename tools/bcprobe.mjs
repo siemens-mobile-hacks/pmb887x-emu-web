@@ -18,7 +18,7 @@
 //           actually change (ours is initial == max).
 //
 // So four modules, both axes crossed, identical code otherwise.  The
-// production engine is the -sMEMORY64=2 build: site/dist-jit imports an
+// production engine is the -sMEMORY64=2 build: site/dist imports an
 // i32 shared memory (initial == max), so i32+shared is the production leg
 // and i64+shared is what a -sMEMORY64=1 build would give.  If i32+shared is
 // much faster, the lowering pays for itself; if only i64+unshared is fast,

@@ -4,7 +4,7 @@
 # `nginx-proxy` docker network.
 #
 # Build order matters: scripts/bundle-dist.sh must have produced ./dist
-# (the webroot: page + dist/, dist-jit/ artifacts + .gz sidecars).
+# (the webroot: page + dist/ artifacts + .gz sidecars).
 # The build context is the repo root — /.dockerignore trims it to just
 # dist/ + deploy/nginx/, so the multi-GB qemu/ submodule is never sent
 # to the daemon.

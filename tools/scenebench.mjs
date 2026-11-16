@@ -74,7 +74,7 @@ const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf("--" + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const positional = argv.filter((a, i) => !a.startsWith("--") && !(i > 0 && argv[i - 1].startsWith("--")));
 const scenarioName = positional[0];
-const dists = (positional[1] || "dist-jit").split(",");
+const dists = (positional[1] || "dist").split(",");
 const runs = Number(opt("runs", 3));
 const port = process.env.PORT || "8080";
 const keyScale = Number(opt("keyscale", 1));

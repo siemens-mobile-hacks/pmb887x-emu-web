@@ -9,7 +9,7 @@
 // ever showed there), KE800 and KE970 are the LG boards, CX70 the x65
 // one.
 //
-//   node tools/bootcheck.mjs [--dist dist-jit] [--secs 150] [--flash id,id]
+//   node tools/bootcheck.mjs [--dist dist] [--secs 150] [--flash id,id]
 //       [--query q] [--port P (default $PORT, else 8080)]
 //
 // PASS for a board, after --secs:
@@ -32,11 +32,11 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 fs.mkdirSync(path.join(ROOT, "tests", "results"), { recursive: true });
 const args = parseArgs(process.argv.slice(2), {
   values: ["dist", "secs", "flash", "query", "port"],
-  usage: "node tools/bootcheck.mjs [--dist dist-jit] [--secs 150] [--flash id,id] [--query q] [--port P]",
+  usage: "node tools/bootcheck.mjs [--dist dist] [--secs 150] [--flash id,id] [--query q] [--port P]",
 });
 const opt = args.opt;
 
-const DIST = opt("dist", "dist-jit");
+const DIST = opt("dist", "dist");
 const SECS = Number(opt("secs", 150));
 const PORT = opt("port", process.env.PORT || "8080");
 const ONLY = opt("flash", "").split(",").filter(Boolean);

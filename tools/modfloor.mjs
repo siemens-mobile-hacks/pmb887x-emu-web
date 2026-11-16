@@ -31,7 +31,7 @@ const busy = process.env.BUSY === "1";
 const b = await chromium.launch({ headless: true });
 const p = await b.newPage();
 // BUSY boots on the real page; otherwise nothing else compiles meanwhile
-if (busy) await p.goto(`http://127.0.0.1:${port}/?dist=dist-jit`, { waitUntil: "domcontentloaded" });
+if (busy) await p.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
 else await gotoBlank(p, `http://127.0.0.1:${port}`);
 if (busy) {
   await p.click("#ff-mode-own");

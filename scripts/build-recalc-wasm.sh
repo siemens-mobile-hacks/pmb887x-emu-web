@@ -7,9 +7,8 @@
 # ESN recovery — sr_read_identity/sr_recalc/sr_scan/sr_verify) and the
 # Siemens half of device detection (sr_probe → probeFullflash).
 #
-# It deploys to site/dist/ and not site/dist-jit/: that is the directory the
-# page fetches unconditionally whatever ?dist= selects, the same rule
-# boards.tar follows (see scripts/pack-boards.sh).
+# It deploys to site/dist/: the page fetches it from there whatever ?dist=
+# selects, the same rule boards.tar follows (see scripts/pack-boards.sh).
 #
 # wasm32, unlike qemu — this module stands alone, so there is no reason to
 # pay MEMORY64 for it. No -pthread either: the page spreads the sweep over

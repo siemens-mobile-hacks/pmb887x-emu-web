@@ -65,15 +65,15 @@ fi
 # ---- 3. rebuild + bundle ------------------------------------------------
 
 # build.sh: deps (cached unless DEPS_CLEAN) → submodule init/sync-bsp →
-# build-qemu-wasm64 → site/dist-jit, whose deploy also packs boards.tar and
+# build-qemu-wasm64 → site/dist, whose deploy also packs boards.tar and
 # builds the key module into site/dist.  Native build dirs
 # (qemu-native*) are not part of the deploy path and are left alone.
 bash ./build.sh
 
-built="$(cat site/dist-jit/qemu-source.txt 2>/dev/null || true)"
+built="$(cat site/dist/qemu-source.txt 2>/dev/null || true)"
 pin="$(submodule_pin qemu)"
 if [ "$built" != "$pin" ]; then
-  echo "build-release.sh: site/dist-jit was built from qemu ${built:-<no qemu-source.txt>}, not its gitlink $pin" >&2
+  echo "build-release.sh: site/dist was built from qemu ${built:-<no qemu-source.txt>}, not its gitlink $pin" >&2
   exit 1
 fi
 

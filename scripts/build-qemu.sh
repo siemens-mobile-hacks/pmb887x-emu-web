@@ -4,7 +4,7 @@
 # Builds the qemu/ submodule as it is checked out (its gitlink is the pin;
 # a checkout ahead of it is the normal state while developing, and is only
 # warned about), then:
-# the wasm64 TCG backend -> site/dist-jit/, plus site/dist/boards.tar
+# the wasm64 TCG backend -> site/dist/, plus site/dist/boards.tar
 # (board configs from bsp; the page always fetches it from dist/).
 # site/ is served directly by serve.mjs — nothing is copied for it.
 set -euo pipefail
@@ -33,9 +33,9 @@ done
 # --- board configs from the bsp/ submodule ---
 bash "$WEB_DIR/scripts/sync-bsp.sh"
 
-# --- build: wasm64 TCG backend (site/dist-jit/, the page default) ---
+# --- build: wasm64 TCG backend (site/dist/, the page default) ---
 # Its deploy (deploy-dist.sh) also packs boards.tar and builds the Siemens
 # key module into site/dist/.
 bash "$WEB_DIR/scripts/build-qemu-wasm64.sh"
 
-echo "=== web dist ready: $WEB_DIR/site/dist-jit ==="
+echo "=== web dist ready: $WEB_DIR/site/dist ==="

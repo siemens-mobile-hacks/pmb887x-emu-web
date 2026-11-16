@@ -4,7 +4,7 @@
 //
 // The suite *image* comes from site/dist/tcgisa.bin, or TCGISA_IMAGE (a
 // path under site/); the *engine* is whichever dist the page is pointed
-// at (`dist-jit`, the wasm64 backend, by default).
+// at (`dist`, the wasm64 backend, by default).
 // scripts/run-tcg-isa.sh's wasm leg runs this, with an image of its own.
 //
 // The suite boots -M versatilepb, prints TAP + value dumps into
@@ -25,7 +25,7 @@ import { chromium } from "playwright-core";
 import { bounded, pageCall } from "./lib/page.mjs";
 
 const port = process.argv[2] || "8080";
-const dist = process.argv[3] || "dist-jit";
+const dist = process.argv[3] || "dist";
 const outFile = process.argv[4] || null;
 const envs = process.argv.slice(5);
 const image = process.env.TCGISA_IMAGE || "dist/tcgisa.bin";

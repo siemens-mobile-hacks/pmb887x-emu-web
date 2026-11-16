@@ -2,7 +2,7 @@
 # Run a command as if every core were RUN/(RUN+STOP) as fast: the command and
 # all its descendants are stopped for STOP ms out of every RUN+STOP ms.
 #
-#   RUN=2 STOP=8 tools/dutyhost.sh node tools/scenebench.mjs bobby dist-jit --keyscale 3
+#   RUN=2 STOP=8 tools/dutyhost.sh node tools/scenebench.mjs bobby dist --keyscale 3
 #
 # Unlike tools/slowhost.sh, whose spinners share each core with the command
 # so a woken thread can wait a whole scheduler slice for its core, all of

@@ -2,7 +2,7 @@
 # Assemble the deployable static bundle in <repo>/dist (gitignored):
 # everything the page loads, plus a pre-gzip'd .gz sidecar next to every
 # compressible file — so the nginx image (deploy/nginx/, gzip_static on)
-# or any other static host serves the ~12 MB dist-jit wasm as its ~4 MB
+# or any other static host serves the ~12 MB dist wasm as its ~4 MB
 # sidecar without ever compressing on the fly (same idea as serve.mjs'
 # gz sidecars, but frozen at bundle time).
 #
@@ -40,8 +40,8 @@ page="index.html app.js boards.js exit-report.js otp.js ua.js style.css keyboard
 # page images (style.css references them by relative path)
 images="img/ke970-wheel.webp"
 
-# The engine: dist-jit = the wasm64 TCG backend build.
-engines="dist-jit"
+# The engine: dist = the wasm64 TCG backend build.
+engines="dist"
 
 for f in $page $images; do
   [ -f "$SITE/$f" ] || fail "site/$f missing"
@@ -59,8 +59,8 @@ fi
 # app.js fetches "dist/boards.tar" unconditionally, whatever ?dist= selects
 [ -f "$SITE/dist/boards.tar" ] ||
   fail "site/dist/boards.tar missing — run scripts/build-qemu.sh (or scripts/pack-boards.sh)"
-[ -f "$SITE/dist-jit/qemu-system-arm.wasm" ] ||
-  fail "site/dist-jit/qemu-system-arm.wasm missing — run scripts/build-qemu.sh"
+[ -f "$SITE/dist/qemu-system-arm.wasm" ] ||
+  fail "site/dist/qemu-system-arm.wasm missing — run scripts/build-qemu.sh"
 # the Siemens key module lives in dist/ for the same reason boards.tar does
 [ -f "$SITE/dist/siemens-recalc.wasm" ] ||
   fail "site/dist/siemens-recalc.wasm missing — run scripts/build-recalc-wasm.sh"
@@ -73,14 +73,14 @@ if [ -e "$OUT" ] && { [ ! -d "$OUT" ] || { [ -n "$(ls -A "$OUT")" ] && [ ! -f "$
   fail "$OUT is not empty and has no manifest.sha256, so it is no bundle; not deleting it"
 fi
 rm -rf "$OUT"
-mkdir -p "$OUT/dist" "$OUT/dist-jit" "$OUT/img"
+mkdir -p "$OUT/dist" "$OUT/img"
 
 for f in $page $images; do
   cp "$SITE/$f" "$OUT/$f"
 done
 
-# boards.tar only ever lives in dist/ (pack-boards.sh drops stale copies
-# next to the other engine) — the page expects it there.
+# boards.tar only ever lives in dist/, whatever ?dist= selects — the page
+# expects it there.
 cp "$SITE/dist/boards.tar" "$OUT/dist/boards.tar"
 for f in siemens-recalc.js siemens-recalc.wasm; do
   cp "$SITE/dist/$f" "$OUT/dist/$f"
@@ -93,7 +93,7 @@ for d in $engines; do
 done
 
 if [ "${BUNDLE_TESTS:-0}" = 1 ]; then
-  for f in "$SITE"/dist/tcgisa.bin "$SITE"/dist/tcgbench*.bin "$SITE"/dist-jit/tcgisa.bin; do
+  for f in "$SITE"/dist/tcgisa.bin "$SITE"/dist/tcgbench*.bin; do
     if [ -f "$f" ]; then cp "$f" "$OUT/${f#"$SITE"/}"; fi
   done
 fi
@@ -108,7 +108,7 @@ fi
 
 # -n: no filename/timestamp in the header → byte-deterministic bundles.
 # Level 9 is build-time-only cost, worth it for the wasm (the wire
-# bottleneck per README: dist-jit ~12 MB → ~4 MB).
+# bottleneck per README: dist ~12 MB → ~4 MB).
 gz_re='\.(html?|css|m?js|json|wasm|tar|bin|svg|txt|symbols)$'
 while IFS= read -r -d '' f; do
   [[ $f =~ $gz_re ]] || continue

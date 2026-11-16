@@ -1,6 +1,6 @@
 // Per-board UI throughput meter — the S75 stopwatch for every phone.
 //
-//   PORT=8080 node tools/uibench.mjs --board el71 [--dist dist-jit]
+//   PORT=8080 node tools/uibench.mjs --board el71 [--dist dist]
 //
 // idlebench measures boots.  Nothing
 // measured the *steady-state* cost of a board's UI, which is what a user
@@ -64,7 +64,7 @@ if (!board && !opt("flash", null)) {
 const FLASH = opt("flash", null) ?? here + "../fullflashes/" + board.flash;
 const SIDECARS = opt("flash") ? [] : board.sidecars.map((f) => here + "../fullflashes/" + f);
 
-const dist = opt("dist", "dist-jit");
+const dist = opt("dist", "dist");
 const measureS = Number(opt("measure", 20));
 const idleMax = Number(opt("idlemax", 300));
 const idleFloor = Number(opt("floor", 20));

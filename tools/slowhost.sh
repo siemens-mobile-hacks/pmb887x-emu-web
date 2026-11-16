@@ -8,7 +8,7 @@
 # count.  cgroup cpu.max would be cleaner but /sys/fs/cgroup is read-only
 # in this container.
 #
-#   CORES=0-3 SPIN=1 tools/slowhost.sh node tools/idlebench.mjs dist-jit --quick
+#   CORES=0-3 SPIN=1 tools/slowhost.sh node tools/idlebench.mjs dist --quick
 #
 # Env: CORES (default 0-3), SPIN spinners per core (default 1 = 50 %).
 set -euo pipefail

@@ -7,7 +7,7 @@
 //     values: ["dist", "secs"], flags: ["keep"], positional: 0,
 //     usage: "node tools/x.mjs [--dist d] [--secs s] [--keep]",
 //   });
-//   args.opt("dist", "dist-jit")   the value, or the default when the option
+//   args.opt("dist", "dist")   the value, or the default when the option
 //                                  is absent or given an empty value
 //   args.flag("keep")              whether the flag was given
 //   args.positional                the bare arguments, in order

@@ -2,7 +2,7 @@
 // worker: self time per class, so "where does the vCPU go" is one table.
 //   node tools/profcat.mjs <prof.json> [dist]
 import fs from "node:fs";
-const [file, dist = "dist-jit"] = process.argv.slice(2);
+const [file, dist = "dist"] = process.argv.slice(2);
 const profiles = JSON.parse(fs.readFileSync(file));
 const syms = new Map();
 for (const l of fs.readFileSync(new URL(`../site/${dist}/qemu-system-arm.js.symbols`, import.meta.url), "utf8").split("\n")) {

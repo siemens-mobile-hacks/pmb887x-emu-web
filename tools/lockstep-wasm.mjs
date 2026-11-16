@@ -10,7 +10,7 @@
 //   node tools/lockstep-wasm.mjs --keep                 # keep the run dirs
 //
 // Requires: the wasm64 dist served on --port (see serve.mjs),
-// scripts/build-qemu-wasm64.sh output copied to site/dist-jit/, and the
+// scripts/build-qemu-wasm64.sh output copied to site/dist/, and the
 // native reference build from scripts/build-native.sh, up to date with the
 // qemu source the dist was built from (checked through the
 // qemu-source.txt the server serves for the dist; --a-bin picks another
@@ -50,7 +50,7 @@ function parseArgs() {
     // SRAM (HARD) + a 1MB SDRAM slice (SOFT): keep the 16MB full-range
     // default out — the M-digest reads were the first full-gate timeout
     mem: "800000+18000:a8000000+100000",
-    port: process.env.PORT || "8080", dist: "dist-jit",
+    port: process.env.PORT || "8080", dist: "dist",
     aBin: NATIVE_JIT_BIN,
     label: "wasm",
     env: [],

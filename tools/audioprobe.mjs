@@ -14,13 +14,13 @@
 // back-pressured the guest's PCM pipeline instead of draining it. A second
 // toggle checks that playback comes back.
 //
-// Usage: TESTFLASH=<fullflash> [PORT=8080] [MAX=120] [DIST=dist-jit] \
+// Usage: TESTFLASH=<fullflash> [PORT=8080] [MAX=120] [DIST=dist] \
 //        [TOGGLE_AT=20,30] node audioprobe.mjs [extraQuery]
 import { chromium } from "playwright-core";
 import { files as fullflashFiles } from "./testflash.mjs";
 import { QEMULOG_COUNT, QEMULOG_SINCE } from "./lib/page.mjs";
 
-const dist = process.env.DIST || "dist-jit";
+const dist = process.env.DIST || "dist";
 const port = process.env.PORT || "8080";
 const maxSecs = Number(process.env.MAX || 120);
 const toggleAt = (process.env.TOGGLE_AT || "")

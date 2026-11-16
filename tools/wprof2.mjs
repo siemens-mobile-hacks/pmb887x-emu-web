@@ -14,13 +14,13 @@ import { BUILD } from "./lib/build-dirs.mjs";
 // wasm-function[N] -> C symbol map (emcc --emit-symbol-map sidecar; the
 // wasm binary carries no name section). It has to be the map of the build
 // being served: ?dist=<d> (or PROF_DIST) reads site/<d>/ and nothing else;
-// without one, the page's default site/dist-jit/, then the build tree it is
+// without one, the page's default site/dist/, then the build tree it is
 // copied from ($WEB_BUILD/qemu-wasm64, scripts/ninja-fast.sh).
 const qDist = (/(?:^|&)dist=([^&]+)/.exec(process.argv[3] || "") || [])[1] || process.env.PROF_DIST;
 const SYMS = "qemu-system-arm.js.symbols";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const symPaths = qDist ? [path.join(ROOT, "site", qDist, SYMS)]
-  : [path.join(ROOT, "site", "dist-jit", SYMS), path.join(BUILD, "qemu-wasm64", SYMS)];
+  : [path.join(ROOT, "site", "dist", SYMS), path.join(BUILD, "qemu-wasm64", SYMS)];
 const fnSyms = new Map();
 for (const p of symPaths) {
   try {

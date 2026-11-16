@@ -26,7 +26,7 @@ tracked file under `site/` (outside `site/dist*`) is missing from it:
 (drained by the AudioWorklet — leave it out and the page is silent) and
 `img/ke970-wheel.webp`; then `dist/boards.tar` and the Siemens key module
 `dist/siemens-recalc.{js,wasm}` (always fetched from `dist/`) and the
-engine `dist-jit/qemu-system-arm.{js,wasm}`. Every text and wasm file
+engine `dist/qemu-system-arm.{js,wasm}`. Every text and wasm file
 gets a `.gz` sidecar (the ~12 MB wasm ships as ~4 MB), and
 `manifest.sha256` covers every file — `cd dist && sha256sum -c
 manifest.sha256` verifies a copy/deploy.  Dev-only extras

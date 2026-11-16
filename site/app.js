@@ -1209,12 +1209,12 @@ async function applyFullflashFile(file) {
  * suite prints TAP + value dumps on the PL011 and then parks, since a
  * semihosting exit from the vCPU thread would tear the page down first;
  * tools/tcgisa.mjs reads the serial log up to its "# result:" line. */
-/* ?dist=<dir>: which build output to run (default dist-jit/; tools point
+/* ?dist=<dir>: which build output to run (default dist/; tools point
  * this at side-by-side builds).  boards.tar is always served from dist/.
  * Only a directory name under site/ is taken, anything else blocks Start;
  * the wasm fetch and the loader import both resolve against ENGINE_DIR,
  * since fetch() and import() resolve a free-form value differently. */
-const DIST_DEFAULT = "dist-jit";
+const DIST_DEFAULT = "dist";
 const DIST = QS.get("dist") || null;
 const DIST_OK = !DIST || (/^[\w.-]+$/.test(DIST) && !/^\.\.?$/.test(DIST));
 const ENGINE_DIR = new URL(`${DIST_OK && DIST || DIST_DEFAULT}/`, import.meta.url);

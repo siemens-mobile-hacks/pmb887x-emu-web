@@ -22,7 +22,7 @@ option they do not know (exit 2).
 
 | Param | Effect |
 |---|---|
-| `?dist=<dir>` | build output under `site/` to run: default `dist-jit` (wasm64 TCG backend); any `dist-*` A/B snapshot. Only a bare directory name (letters, digits, `_`, `.`, `-`; not `.` or `..`) is taken; anything else blocks Start with a message |
+| `?dist=<dir>` | build output under `site/` to run: default `dist` (wasm64 TCG backend); any `dist-*` A/B snapshot. Only a bare directory name (letters, digits, `_`, `.`, `-`; not `.` or `..`) is taken; anything else blocks Start with a message |
 | `?icount=<spec>` | run `-icount <spec>` instead of the default `-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on` (`shift=3,sleep=off` = the deterministic, unpaced model the lockstep tools use; `none` = plain realtime clock). A `?qargs=` that carries its own `-accel` also drops the default |
 | `?bank=<s>` | `vcpu-timers-bank`: for the guest's first `<s>` seconds of its own clock (default 30, the boot) time lost to a slow host is caught up — whenever the guest idles — instead of dropped; `0` = upstream (lag over 100 ms is dropped). The clock never runs ahead of wall time. While banked the pill's `slow` warning stays off (see below) |
 | `?idlelead=<us>` | `vcpu-timers-idle-lead`: while the guest waits for an interrupt, its virtual timers run in batches up to `<us>` ahead of wall time, so the vCPU thread sleeps once per batch instead of once per timer (the DSP sync timer fires every 100 us). Default 2000; `0` = the idle clock follows wall time exactly. A build older than the option needs `?qargs=` with its own `-accel` |
@@ -252,5 +252,5 @@ argument. `-device gsm-sim` plugs into the board's empty
 `iso7816-slot`.) A wasm run under `?icount=shift=3,sleep=off` replays the
 same instruction stream: diff the trace sequences (`COM_SET` →
 `DSP_CFR cleared` → `SCU_DSP_INT` → …) between the native build and
-`dist-jit` to find where they diverge and bisect a wasm-only failure.
+`dist` to find where they diverge and bisect a wasm-only failure.
 Remember: `>>EXIT<<` on serial = phone crashed; stop there.

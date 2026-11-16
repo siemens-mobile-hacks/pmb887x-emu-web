@@ -4,7 +4,7 @@ The perf counterpart of the op-suite ([../tcg-isa/](../tcg-isa/)): a
 fixed bare-metal ARM926EJ-S workload on `-M versatilepb` whose phases hit
 the wasm64 TCG backend's per-op paths directly, timed by timestamping
 each phase's serial line. A run takes ~3.5 s on the native JIT and ~90 s
-on the wasm page (dist-jit, 2026-11), with per-phase attribution and a
+on the wasm page (dist, 2026-11), with per-phase attribution and a
 cross-backend checksum.
 It has no phone devices and no DSP, so it says nothing about a phone
 scene: the keep/revert meter for a change is the free-run A/B in
@@ -58,8 +58,8 @@ make -C tests/tcgbench quick install   # + tcgbench-quick*.bin (ITERS_DIV=4) -> 
 
 SUITE=quick node tools/tcgbench.mjs                      # ÷4 smoke image, 40 ms poll
 
-node tools/tcgbench.mjs                                  # native-jit + dist-jit (wasm64)
-LEGS=native-jit,native-tci,dist-jit,dist-x node tools/tcgbench.mjs
+node tools/tcgbench.mjs                                  # native-jit + dist (wasm64)
+LEGS=native-jit,native-tci,dist,dist-x node tools/tcgbench.mjs
 ICOUNTS=0,1 node tools/tcgbench.mjs                      # icount-tax matrix
 RUNS=3 node tools/tcgbench.mjs                           # medians
 ```

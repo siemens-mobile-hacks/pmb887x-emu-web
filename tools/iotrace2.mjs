@@ -25,7 +25,7 @@ if (!board) { console.error("unknown --board"); process.exit(2); }
 
 const from = Number(opt("from", 30));   // ignore the boot: count only after this
 const spec = process.env.TRACE || "scu,dif,ssc,dmac,gptu,tpu,vic";
-const dist = opt("dist", "dist-jit");
+const dist = opt("dist", "dist");
 const port = process.env.PORT || "8080";
 
 const b = await chromium.launch({ headless: true });

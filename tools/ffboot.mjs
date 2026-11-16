@@ -18,7 +18,7 @@ const args = parseArgs(process.argv.slice(2), {
   values: ["flash"], positional: 2,
   usage: "node tools/ffboot.mjs [--flash id] [dist] [extraQ]",
 });
-const dist = args.positional[0] || "dist-jit";
+const dist = args.positional[0] || "dist";
 const extraQ = args.positional[1] || "";
 const flashId = args.opt("flash", "");
 const fullflash = flashId ? flashFiles(flashId) : (await import("./testflash.mjs")).files;

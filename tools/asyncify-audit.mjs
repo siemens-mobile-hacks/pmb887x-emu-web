@@ -16,7 +16,7 @@
 //             "it did not this run"
 //
 // Capture a log first, e.g.
-//   EXTRA_Q="env=QEMU_COSTACK=1" DIST=dist-jit MATCH=COSTACK \
+//   EXTRA_Q="env=QEMU_COSTACK=1" MATCH=COSTACK \
 //     node tools/conlog.mjs 120 > costack.txt
 // then
 //   node tools/asyncify-audit.mjs costack.txt <dist>

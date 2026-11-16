@@ -1,7 +1,7 @@
 // A key event that arrives before the machine exists must not take the
 // module down.
 //
-//   node tools/earlykey.mjs [--dist dist-jit] [--board cx70] [--port P (default $PORT, else 8080)]
+//   node tools/earlykey.mjs [--dist dist] [--board cx70] [--port P (default $PORT, else 8080)]
 //
 // wasm_send_key() is exported the moment the module instantiates, which is
 // long before wasm_display_init() creates the bottom half it schedules --
@@ -29,7 +29,7 @@ import { bootOwnFlash, bounded, pageCall } from "./lib/page.mjs";
 
 const { opt } = parseArgs(process.argv.slice(2), {
   values: ["board", "dist", "port"],
-  usage: "node tools/earlykey.mjs [--dist dist-jit] [--board s75|el71|ke800|ke970|cx70] [--port P]",
+  usage: "node tools/earlykey.mjs [--dist dist] [--board s75|el71|ke800|ke970|cx70] [--port P]",
 });
 
 // --board -> tools/lib/boards.mjs id (this check boots the other S75 image)
@@ -40,7 +40,7 @@ if (!flash) { console.error(`unknown --board ${boardId}`); process.exit(2); }
 const files = flashFiles(flash);
 const missing = files.filter((f) => !fs.existsSync(f));
 if (missing.length) { console.error(`fullflash not found: ${missing.join(", ")}`); process.exit(2); }
-const dist = opt("dist", "dist-jit");
+const dist = opt("dist", "dist");
 const port = opt("port", process.env.PORT || "8080");
 
 const b = await chromium.launch({ headless: true });

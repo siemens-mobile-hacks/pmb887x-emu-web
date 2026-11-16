@@ -35,7 +35,7 @@ build/qemu-native-build/qemu-system-arm -M versatilepb \
 
 On the wasm page: `make install` then open
 `http://127.0.0.1:8080/?suite=dist/tcgisa.bin` (or
-`node tools/tcgisa.mjs 8080 dist-jit out.log` headlessly).
+`node tools/tcgisa.mjs 8080 dist out.log` headlessly).
 
 ## Machine & conventions
 

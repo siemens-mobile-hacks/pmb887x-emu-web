@@ -88,12 +88,12 @@
 //
 // Usage:
 //   PORT=8094 node tools/idlebench.mjs [dists] [--runs N] [--max S]
-//     dists: comma list, default "dist-jit" (the dist the page ships)
+//     dists: comma list, default "dist" (the dist the page ships)
 //   PORT=8094 node tools/idlebench.mjs --quick             # ~2 min A/B
 //   PORT=8094 node tools/idlebench.mjs dist --runs 3
-//   PORT=8094 node tools/idlebench.mjs dist-jit --runs 3 --max 1800
+//   PORT=8094 node tools/idlebench.mjs dist --runs 3 --max 1800
 //   PORT=8094 node tools/idlebench.mjs --baseline tests/results/idlebench-<ts>.json
-//   PORT=8094 node tools/idlebench.mjs dist-jit --board ke800 --max 240
+//   PORT=8094 node tools/idlebench.mjs dist --board ke800 --max 240
 import { chromium } from "playwright-core";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync, readdirSync } from "node:fs";
@@ -123,9 +123,9 @@ const positional = argv.filter((a, i) => {
   const prev = argv[i - 1];
   return !(prev && prev.startsWith("--") && VALUE_OPTS.has(prev.slice(2)));
 });
-const dists = (positional[0] || "dist-jit").split(",");
+const dists = (positional[0] || "dist").split(",");
 // A dist may be written "<dir>@<query>" to append per-dist query parameters
-// (e.g. "dist-jit@env=W64_COMPACT_MEMBERS=100000000").  That makes a KNOB
+// (e.g. "dist@env=W64_COMPACT_MEMBERS=100000000").  That makes a KNOB
 // A/B interleavable the way a two-build A/B is: EXTRA_Q applies to every
 // dist of the invocation and so can only compare across invocations, which
 // on a shared host is exactly the unpaired comparison doc/performance.md
@@ -558,7 +558,7 @@ for (const d of dists) {
   if (hashesOf(d).wasm === "MISSING") {
     console.error(`no such dist: site/${distDir(d)}/qemu-system-arm.wasm is missing.\n` +
       `The dist list is the first positional argument, e.g.\n` +
-      `  node tools/idlebench.mjs dist-jit-a,dist-jit-b --board ke800`);
+      `  node tools/idlebench.mjs dist-a,dist-b --board ke800`);
     process.exit(2);
   }
 }

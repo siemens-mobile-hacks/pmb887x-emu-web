@@ -1,7 +1,7 @@
 #!/bin/bash
 # Phase-0a gate runner: build the guest
 # op-suite image, run it on every backend — native TCG JIT, native TCI and
-# the wasm64 page (site/dist-jit, or TCGISA_DIST) — and byte-compare all
+# the wasm64 page (site/dist, or TCGISA_DIST) — and byte-compare all
 # serial logs against the native JIT.
 #
 #   scripts/run-tcg-isa.sh            # skips the wasm leg if it cannot run
@@ -153,7 +153,7 @@ else
   # versatilepb machine-init path; the 0090 commit on the qemu branch
   # added the missing onlylist names.)
   # TCGISA_DIST re-points the wasm64 leg at a variant build.  It was hard
-  # wired to dist-jit, which made this gate silently test the wrong binary
+  # wired to dist, which made this gate silently test the wrong binary
   # whenever a variant was under evaluation: `gate.sh --dist X` passes X to
   # every other job, so the summary read PASS for a dist nobody had run.
   if ! start_serve "$ROOT" "$PORT_TCG"; then
@@ -161,7 +161,7 @@ else
     fail=1
   else
     echo "== serve.mjs on port $PORT_TCG, image site/dist/${IMG##*/}"
-    run_wasm_leg "wasm64 (page, ${TCGISA_DIST:-dist-jit})" "${TCGISA_DIST:-dist-jit}" \
+    run_wasm_leg "wasm64 (page, ${TCGISA_DIST:-dist})" "${TCGISA_DIST:-dist}" \
         tcgisa.mjs "$T/wasm64.log" || fail=1
     kill "$SRV" 2>/dev/null || true
     SRV=""

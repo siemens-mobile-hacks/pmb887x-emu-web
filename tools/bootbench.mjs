@@ -63,7 +63,7 @@ if (!ph) {
   console.error(`usage: node bootbench.mjs <${Object.keys(phones).join("|")}> [dists] [--runs N] [--warm]`);
   process.exit(2);
 }
-const dists = (positional[1] || "dist-jit").split(",");
+const dists = (positional[1] || "dist").split(",");
 const runs = Number(opt("runs", 3));
 const warm = flag("warm");
 const afterS = Number(opt("after", 5));

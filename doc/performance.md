@@ -234,7 +234,7 @@ adb=build/android-emu/sdk/platform-tools/adb     # any adb 1.0.41
 $adb shell svc power stayon usb                   # undo: svc power stayon false
 node tools/perf/adbtun.mjs raw "reverse:forward:tcp:8080;tcp:$(hostname -i):8080"
 node tools/perf/adbtun.mjs listen 9222 localabstract:chrome_devtools_remote &
-SCENEBENCH_CDP=http://127.0.0.1:9222 node tools/scenebench.mjs stopwatch dist-jit \
+SCENEBENCH_CDP=http://127.0.0.1:9222 node tools/scenebench.mjs stopwatch dist \
   --runs 1 --measure 30 --keyscale 3
 ```
 
@@ -505,7 +505,7 @@ and wait for its "measuring" line. Then run
   `emscripten_get_now` under `tcg_qemu_tb_exec`); that, not an index
   collision in V8, is where those names came from. The module buckets
   (by url) were right throughout.
-- Without `PROF_DIST`, wprof2 takes `site/dist-jit`'s symbols.
+- Without `PROF_DIST`, wprof2 takes `site/dist`'s symbols.
 - Fixed-length windows cover different instruction counts, so compare
   per-subsystem deltas with care.
 

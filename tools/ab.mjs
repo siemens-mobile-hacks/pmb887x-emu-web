@@ -1,4 +1,4 @@
-// A/B boot-survival check against the page's default build (site/dist-jit/).
+// A/B boot-survival check against the page's default build (site/dist/).
 //
 //   node ab.mjs [variant ...]      (default: fast)
 //

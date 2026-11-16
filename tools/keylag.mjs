@@ -1,6 +1,6 @@
 // Key-press response latency, per board.
 //
-//   PORT=8080 node tools/keylag.mjs --board el71 [--dist dist-jit] [--presses 12]
+//   PORT=8080 node tools/keylag.mjs --board el71 [--dist dist] [--presses 12]
 //
 // uibench measures throughput while keys are pressed; nothing measured the
 // thing a user actually calls lag: how long after the press the screen
@@ -44,7 +44,7 @@ const boardId = opt("board", "el71");
 const board = BOARDS[boardId];
 if (!board) { console.error(`unknown --board ${boardId} (${Object.keys(BOARDS).join(", ")})`); process.exit(2); }
 
-const dist = opt("dist", "dist-jit");
+const dist = opt("dist", "dist");
 const presses = Number(opt("presses", 12));
 const settleS = Number(opt("settle", 90));
 const gapMs = Number(opt("gap", 2500));       // quiet time between presses

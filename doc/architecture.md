@@ -16,7 +16,7 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
                                             (src/siemens) → site/dist/siemens-recalc.wasm
                                             (Advanced ▸ Siemens keys + device detection)
   site/                                     served web root (index.html / app.js / keyboards.js /
-                                            fullflashes.js / siemensfw.js); dist-jit/ = the wasm
+                                            fullflashes.js / siemensfw.js); dist/ = the wasm
                                             build, dist/ = boards.tar + key module + suite
                                             images, dist-*/ = A/B snapshots (all gitignored)
   tests/                                    native boot suite (run.mjs), tcg-isa op-suite,
@@ -30,7 +30,7 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
 `qemu-system-arm` (arm-softmmu) is compiled to WebAssembly (wasm64 with
 `-sMEMORY64=2`, pthreads, Asyncify) and driven from a page.
 
-- `site/dist-jit/` — the engine, built around the **wasm64 TCG backend**
+- `site/dist/` — the engine, built around the **wasm64 TCG backend**
   (`tcg/wasm64/`). A new TB runs in an interpreter tier for its first 64
   entries (`tcg/wasm64/w64-interp.c`), then the batch of TBs staged so far
   is compiled into one wasm module. TBs chain by tail calls through a
@@ -65,7 +65,7 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
    --with-coroutine=wasm`) in `build/qemu-wasm64`, link at `-O3` with the
    Asyncify onlylist (`configs/meson/asyncify-only.txt`) and
    `qom_cast_debug=false`, and deploy atomically (tmp+rename) to
-   `site/dist-jit/`, symbol map included, plus `qemu-source.txt`: the
+   `site/dist/`, symbol map included, plus `qemu-source.txt`: the
    identity of the qemu source the dist was built from
    (`scripts/qemu-source-id.sh`: HEAD, plus a hash of the uncommitted diff
    when there is one), which the lockstep driver matches against the
@@ -75,7 +75,7 @@ The Siemens/LG phone emulator runs entirely in the browser. Repo layout:
    (SharedArrayBuffer), a gzip sidecar + ETag revalidation for the wasm,
    and an https port for phone/LAN access.
 
-Incremental iteration: `scripts/ninja-fast.sh` (wasm64 → `site/dist-jit`;
+Incremental iteration: `scripts/ninja-fast.sh` (wasm64 → `site/dist`;
 rebuild + atomic deploy + `qemu-source.txt` + boards.tar refresh, no tree
 reset). One-shot: `./build.sh`.
 
@@ -504,7 +504,7 @@ a quiet host.
 |---|---|---|
 | unit tests | the page modules' pure logic (board configs, device rules, keyboards, OTP words, exit reports, browser names) | `node --test tests/unit/*.test.mjs` |
 | native boot suite | s75/el71/c81/ke800/ke970 boot-init/progress/no-exit | `node tests/run.mjs` |
-| browser boot gate | s75/el71/ke800/ke970/cx70 boot on a wasm dist (progress in executed insns) | `node tools/bootcheck.mjs --dist dist-jit` |
+| browser boot gate | s75/el71/ke800/ke970/cx70 boot on a wasm dist (progress in executed insns) | `node tools/bootcheck.mjs` |
 | early key | a key delivered before the machine exists does not kill the module | `node tools/earlykey.mjs --board <b>` |
 | guest op-suite | (value, NZCV) cases byte-identical across every backend built, the wasm64 page leg included | `scripts/run-tcg-isa.sh` |
 | lockstep | whole-boot cross-backend value equality (regs + SRAM/SDRAM digests) against a native reference built from the dist's own source (`qemu-source.txt`); full 2.5e9-insn gate | `scripts/run-lockstep.sh`, `tools/lockstep-wasm.mjs` |

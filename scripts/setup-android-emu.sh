@@ -287,7 +287,7 @@ cmd_devtools() {
 }
 
 cmd_browser() {
-  local url="${1:-http://127.0.0.1:$PAGE_PORT/?dist=dist-jit}"
+  local url="${1:-http://127.0.0.1:$PAGE_PORT/}"
   local mark="/data/local/tmp/$PKG.rev"
   if [ "$(adb shell "cat $mark 2>/dev/null" | tr -d '\r')" != "$CHROMIUM_REV" ] ||
      ! adb shell pm path "$PKG" 2>/dev/null | grep package: >/dev/null; then
@@ -404,7 +404,7 @@ EOF
 }
 
 cmd_linux_browser() {
-  local url="${1:-http://127.0.0.1:$PAGE_PORT/?dist=dist-jit}" pin=()
+  local url="${1:-http://127.0.0.1:$PAGE_PORT/}" pin=()
   # Android's V8 has no wasm trap handler: explicit bounds checks, no guard
   # regions.  The Linux build gets the same from this feature switch
   # (--js-flags=--no-wasm-trap-handler does not do it).

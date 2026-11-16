@@ -1,12 +1,12 @@
 #!/bin/bash
 # Fast incremental rebuild + deploy of the default wasm build
-# (build/qemu-wasm64, the wasm64 TCG backend -> site/dist-jit).
+# (build/qemu-wasm64, the wasm64 TCG backend -> site/dist).
 # Skips the submodule, bsp and meson configure steps of
 # scripts/build-qemu.sh, and builds qemu/ as it is, uncommitted edits
 # included: the iteration loop.
 #
 # With no arguments: builds qemu-system-arm.js and DEPLOYS the emscripten
-# artifacts to $WEB_DIST (default site/dist-jit/) so the
+# artifacts to $WEB_DIST (default site/dist/) so the
 # next page load runs the
 # new build — no manual cp, no stale-wasm traps (also drops stale .gz
 # sidecars, which serve.mjs would otherwise prefer over the fresh file).
@@ -23,7 +23,7 @@ source "$WEB_DIR/scripts/build-dirs.sh"
 TARGET="$DEPS_ROOT/target"
 BUILD_DIR="$BUILD/qemu-wasm64"
 # absolute: the build below runs in the build dir
-DIST="$(realpath -m -- "${WEB_DIST:-$WEB_DIR/site/dist-jit}")"
+DIST="$(realpath -m -- "${WEB_DIST:-$WEB_DIR/site/dist}")"
 
 use_emsdk
 export PATH="$HOME/.local/bin:$PATH"

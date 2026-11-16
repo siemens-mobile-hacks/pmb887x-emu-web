@@ -3,7 +3,7 @@
 import { chromium } from "playwright-core";
 
 const port = process.argv[2] || "8080";
-const dist = process.argv[3] || "dist-jit";
+const dist = process.argv[3] || "dist";
 const timeoutMs = 180 * 1000;
 
 const browser = await chromium.launch({ headless: true });

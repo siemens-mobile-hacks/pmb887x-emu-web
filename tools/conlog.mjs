@@ -1,5 +1,5 @@
 // Boot a dist and capture qemu console lines matching a prefix.
-//   PORT=8080 DIST=dist-jit MATCH=COSTACK EXTRA_Q="env=QEMU_COSTACK=1" \
+//   PORT=8080 MATCH=COSTACK EXTRA_Q="env=QEMU_COSTACK=1" \
 //     node conlog.mjs <secs>
 import { chromium } from "playwright-core";
 import { files } from "./testflash.mjs";
@@ -14,7 +14,7 @@ p.on("console", m => {
   if (t.startsWith("[qemu") && (!match || t.includes(match)))
     console.log(((Date.now() - t0) / 1000).toFixed(1) + "s " + t);
 });
-await p.goto(`http://127.0.0.1:${port}/?dist=${process.env.DIST || "dist-jit"}${process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : ""}`, { waitUntil: "domcontentloaded" });
+await p.goto(`http://127.0.0.1:${port}/?dist=${process.env.DIST || "dist"}${process.env.EXTRA_Q ? "&" + process.env.EXTRA_Q : ""}`, { waitUntil: "domcontentloaded" });
 await p.click("#ff-mode-own");
 await p.setInputFiles("#fullflash", files);
 await p.click("#btn-start");

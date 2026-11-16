@@ -2,7 +2,7 @@
 // the phone's browser, and watch it arrive (doc/gsm-network.md).
 //
 //   node tools/gprscheck.mjs [--phone el71] --flash <EL71v41lg91.bin> [--secs 300] [--keep] [--trace]
-//   PORT=8080 node tools/gprscheck.mjs --web [--dist dist-jit] [--gateway <dir>] --flash ...
+//   PORT=8080 node tools/gprscheck.mjs --web [--dist dist] [--gateway <dir>] --flash ...
 //       [--gateway-listen 127.0.0.1:5751] [--host-port 0] [--phone el71|s75|cx70|sl65] [--try]
 //
 // --phone picks the firmware whose menus the keys walk and whose LCD
@@ -273,7 +273,7 @@ async function nativeBackend() {
 async function webBackend() {
   const { chromium } = await import("playwright-core");
   const PORT = process.env.PORT || "8080";
-  const DIST = opt("dist", "dist-jit");
+  const DIST = opt("dist", "dist");
   // HMP key names -> the linux keycodes the page's keypad sends
   const KEYCODE = { ret: 28, f1: 59, f2: 60, f4: 62, up: 103, down: 108, right: 106, kp_divide: 98,
     0: 11, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7, 7: 8, 8: 9, 9: 10 };

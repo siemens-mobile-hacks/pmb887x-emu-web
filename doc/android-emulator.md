@@ -47,9 +47,9 @@ What else was tried, with the message each attempt ended in:
 export ANDROID_EMU_CPUS=12-15,28-31          # taskset list; unset = not pinned
 scripts/setup-android-emu.sh install
 scripts/setup-android-emu.sh start
-scripts/setup-android-emu.sh browser 'http://127.0.0.1:8080/?dist=dist-jit&suite=dist/tcgbench-quick.bin'
+scripts/setup-android-emu.sh browser 'http://127.0.0.1:8080/?suite=dist/tcgbench-quick.bin'
 curl http://127.0.0.1:9222/json/version
-PROF_ATTACH=9222 PROF_DIST=dist-jit node tools/wprof2.mjs 45 "" 10000
+PROF_ATTACH=9222 node tools/wprof2.mjs 45 "" 10000
 scripts/setup-android-emu.sh stop
 ```
 
@@ -142,8 +142,8 @@ Android. Still 10–30x slower than desktop.
 
 ```bash
 scripts/setup-android-emu.sh linux-install
-scripts/setup-android-emu.sh linux-browser 'http://127.0.0.1:8080/?dist=dist-jit&suite=dist/tcgbench-quick.bin'
-PROF_ATTACH=9333 PROF_DIST=dist-jit node tools/wprof2.mjs 20 "" 1000
+scripts/setup-android-emu.sh linux-browser 'http://127.0.0.1:8080/?suite=dist/tcgbench-quick.bin'
+PROF_ATTACH=9333 node tools/wprof2.mjs 20 "" 1000
 scripts/setup-android-emu.sh linux-stop
 ```
 

@@ -5,7 +5,7 @@ qemu-system-arm compiled to WebAssembly (`./build.sh` + `./serve.mjs`) —
 splash draws, keypad/serial/sound work, every board reaches its idle
 screen (the timing model below gives the firmware its full timing budgets
 however slow the host is — a slow host merely boots slower). The engine is
-the wasm64 TCG JIT backend (`site/dist-jit/`, every board — guest TBs
+the wasm64 TCG JIT backend (`site/dist/`, every board — guest TBs
 compiled to wasm at runtime, ~12 MB wasm, ~4 MB gzip'd). The documentation
 index is [doc/README.md](doc/README.md).
 
@@ -65,7 +65,7 @@ reconcile an own-file Siemens fullflash with the ESN the phone is handed
 git submodule update --init qemu   # build.sh does this too; the qemu
                                    # tree is ~1 GB with history
 ./build.sh          # ~30-60 min first run: emsdk 4.0.10 + glib/pixman/zlib/libffi
-                    # built for wasm64, then qemu → site/dist-jit/
+                    # built for wasm64, then qemu → site/dist/
                     # qemu-system-arm.wasm
 ./serve.mjs         # http://127.0.0.1:8080 (COOP/COEP headers for pthreads)
                     # phone/LAN: auto-redirected to https://<lan-ip>:6808
@@ -74,7 +74,7 @@ git submodule update --init qemu   # build.sh does this too; the qemu
                     # for any host other than localhost/127.0.0.1)
 ```
 
-`serve.mjs` keeps a gzip'd sidecar of the wasm (dist-jit: ~12 MB → ~4 MB
+`serve.mjs` keeps a gzip'd sidecar of the wasm (dist: ~12 MB → ~4 MB
 on the wire; `GZIP=0` disables) and revalidates with ETags, so repeat
 visits skip the re-download (`tools/loadbench.mjs` measures the startup
 path). The page also prefetches the engine wasm (plus the small Siemens
@@ -225,12 +225,12 @@ still points one run at another binary.
                         board configs (lib/data/board) that boards.tar,
                         run-native.sh and the native tests boot with
   build.sh              one-shot WASM build (toolchain → deps → qemu →
-                        site/dist-jit)
+                        site/dist)
   serve.mjs             static server for the WASM page (COOP/COEP); serves
                         site/ — static files are edited in place, build
                         artifacts (qemu wasm/js, boards.tar) live in
                         site/dist/ (boards.tar, key module) and
-                        site/dist-jit/ (the wasm64 backend)
+                        site/dist/ (the wasm64 backend)
   scripts/
     build-deps.sh       emsdk + glib/pixman/zlib/libffi built with emcc (wasm64)
     build-dirs.sh       the directories the build scripts share (WEB_BUILD,
@@ -243,7 +243,7 @@ still points one run at another binary.
     build-qemu.sh       check the qemu, pmb887x-emu and bsp submodules out
                         when they are not yet, pack boards.tar, build
                         siemensfw and the wasm dist (wasm64 backend →
-                        site/dist-jit/), from the submodules as checked out
+                        site/dist/), from the submodules as checked out
     sync-bsp.sh         checks the bsp/ submodule out the first time
     pack-boards.sh      bsp/ board configs → site/dist/boards.tar (run by
                         every deploy path)
@@ -277,7 +277,7 @@ still points one run at another binary.
     run-native.sh       native launcher (the web page's boot recipe, icount
                         clock by default)
     ninja-fast.sh       incremental rebuild + deploy (wasm64 →
-                        site/dist-jit) — the iteration loop
+                        site/dist) — the iteration loop
     iterate.sh          one-command edit→rebuild→browser-verdict loop
     gate.sh             builds the native references, then every
                         correctness gate, run concurrently, one verdict
@@ -315,7 +315,7 @@ still points one run at another binary.
   site/                 the served web root — editable static page (index.html /
                         app.js / style.css / keyboards.js; fullflashes.js holds
                         the preset-fullflash inventory + Cache API handling)
-                        plus dist/, dist-jit/ — build artifacts (gitignored);
+                        plus dist/ — build artifacts (gitignored);
                         dist-*/ are A/B snapshots
   tools/                headless-browser test/bench/probe helpers (playwright);
                         the ones that matter are listed in doc/diagnostics.md.
@@ -480,7 +480,7 @@ s75/el71/c81/ke800/ke970 natively and benchmarks before/after, and
 rules, the measuring method, the cost model, closed ideas and history.
 
 - Fast iteration: `scripts/ninja-fast.sh` (incremental build and atomic
-  deploy to `site/dist-jit` or `$WEB_DIST`), then
+  deploy to `site/dist` or `$WEB_DIST`), then
   `tools/perf/swab.sh <scene> <distA> <distB>` (paired free-run A/B of two
   builds on pinned cores; both dists need `tools/perf/freerun.diff`) or
   `tools/perf/bootab.sh` for the boot.

@@ -1,7 +1,7 @@
 // GSM network check: boot a phone on a wasm dist with the GSM option on and
 // watch it register (doc/gsm-network.md).
 //
-//   node tools/gsmcheck.mjs [--dist dist-jit] [--flash <image>] [--secs 240]
+//   node tools/gsmcheck.mjs [--dist dist] [--flash <image>] [--secs 240]
 //       [--gsm 1|0] [--ref <png>] [--saveref <png>] [--rows 0,20]
 //       [--hold 60] [--keys 75:right_soft,82:left_soft] [--query q]
 //       [--port P (default $PORT, else 8080)]
@@ -40,7 +40,7 @@ const { opt } = parseArgs(process.argv.slice(2), {
     + " [--saveref png] [--rows a,b] [--hold s] [--keys s:key,...] [--query q] [--port P]",
 });
 
-const DIST = opt("dist", "dist-jit");
+const DIST = opt("dist", "dist");
 const SECS = Number(opt("secs", 240));
 const PORT = opt("port", process.env.PORT || "8080");
 const GSM = opt("gsm", "1");

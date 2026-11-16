@@ -25,10 +25,4 @@ mkdir -p "$DIST"
 tar -cf "$DIST/.boards.tar.tmp" -C "$BOARDS" .
 mv -f "$DIST/.boards.tar.tmp" "$DIST/boards.tar"
 
-# Per-dist copies are never fetched; an old one next to a build is a trap
-# for anyone reading the tree, so drop them as we refresh the real one.
-for stale in "$WEB_DIR"/site/dist-jit/boards.tar; do
-  [ -f "$stale" ] && rm -f "$stale"
-done
-
 echo "pack-boards: site/dist/boards.tar <- $(basename "$BOARDS") ($(tar tf "$DIST/boards.tar" | grep -c '\.toml$') configs)"

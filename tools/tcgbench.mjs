@@ -3,8 +3,8 @@
 // timed by timestamping each phase's serial line.  The phone-firmware
 // boots stay the final gates; this is the A/B loop (seconds per leg).
 //
-//   node tools/tcgbench.mjs                       # native-jit + dist-jit
-//   LEGS=native-jit,native-tci,dist-jit node tools/tcgbench.mjs
+//   node tools/tcgbench.mjs                       # native-jit + dist
+//   LEGS=native-jit,native-tci,dist node tools/tcgbench.mjs
 //   EXTRA_Q="env=NAME=VAL" node tools/tcgbench.mjs   # page query: env= sets qemu's environment
 //   SUITE=quick node tools/tcgbench.mjs           # ÷4-iteration smoke image
 //     (tcgbench-quick.bin, `make -C tests/tcgbench quick install`): ~3 s per
@@ -32,7 +32,7 @@ import { median } from "./lib/stats.mjs";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = path.resolve(here, "..");
 const port = process.env.PORT || "8080";
-const legs = (process.env.LEGS || "native-jit,dist-jit").split(",");
+const legs = (process.env.LEGS || "native-jit,dist").split(",");
 const icounts = (process.env.ICOUNTS || "0").split(","); // e.g. "0,1": tax matrix
 const extraQ = process.env.EXTRA_Q || "";
 const runs = Number(process.env.RUNS || 1);

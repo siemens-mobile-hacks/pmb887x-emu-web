@@ -13,7 +13,7 @@
 # jobs of quick sum to 763 s and those of keep to 1009 s; the board boots
 # (150 s each) are the longest of them.
 #
-#   --dist D     dist under site/ to gate (default dist-jit)
+#   --dist D     dist under site/ to gate (default dist)
 #   --port P     server port for the browser gates (default 8080).  opsuite
 #                starts a server of its own on P+13 (8093 by default), so
 #                gates that run at the same time need ports 14 or more apart
@@ -42,7 +42,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST=dist-jit
+DIST=dist
 PORT=8080
 JOBS_MAX=6
 TIER=keep
@@ -94,7 +94,7 @@ export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$ROOT/tools/chrome}
 # not whatever TESTFLASH or the gitignored testflash.local.json names, so
 # they run on a fresh clone and boot the same image everywhere.
 #
-# ui always drives the page's default dist (dist-jit): --dist does not reach
+# ui always drives the page's default dist (dist): --dist does not reach
 # it.  It is here because nothing else runs it, and a UI check nobody runs
 # rots -- its slow-warning check failed unnoticed because a page-level CPU
 # throttle does not reach the guest's workers.
