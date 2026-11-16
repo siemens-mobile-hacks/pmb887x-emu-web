@@ -37,5 +37,8 @@ ssl_certificate $dir/cert.pem;
 ssl_certificate_key $dir/key.pem;
 # the published port differs from 443, so redirects must not name one
 absolute_redirect off;
+# the webroot is a live site/ (docker-compose.lan.yml): its .gz sidecars can be
+# older than a new build, so compress on the fly instead
+gzip_static off;
 EOF
 echo "$0: https on 443, certificate $(openssl x509 -in "$dir/cert.pem" -noout -fingerprint -sha256)"

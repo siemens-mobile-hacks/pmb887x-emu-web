@@ -1,5 +1,6 @@
 # LAN mode: the page and the GPRS gateway without the nginx-proxy front, at
-# https://<this host>:8443 with a self-signed certificate (README.md, "4. LAN").
+# https://<this host>:8443 with a self-signed certificate, serving site/ as it
+# is (README.md, "4. LAN").
 #
 #   docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d --build
 #
@@ -17,6 +18,9 @@ services:
       LETSENCRYPT_HOST: ""
     volumes:
       - lan-cert:/etc/nginx/lan-cert
+      # the latest build, as serve.mjs serves it, instead of the image's
+      # bundle; LAN_SITE_DIR=../../dist serves the bundle
+      - ${LAN_SITE_DIR:-../../site}:/usr/share/nginx/html:ro
 
   pmb887x-gprs-gw:
     environment:

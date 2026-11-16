@@ -162,7 +162,7 @@ The page and the GPRS gateway for the machines on your network, without
 the front, a domain or Let's Encrypt:
 
 ```bash
-scripts/bundle-dist.sh
+scripts/bundle-dist.sh        # once: the image build copies dist/
 git submodule update --init deploy/gprs-gw/bts-emulator
 cd deploy/nginx
 docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d --build
@@ -177,6 +177,13 @@ plain `docker compose up -d --build` uses it.
 
 - publishes `pmb887x-web`'s port 443 on `LAN_ADDRESS:LAN_HTTPS_PORT`
   (default `0.0.0.0:8443`), and nothing on plain http;
+- mounts `site/` read-only as the webroot instead of the image's bundle, so
+  the page is always the latest build, as `serve.mjs` serves it: a rebuild
+  shows on the next reload, without `bundle-dist.sh` or an image rebuild.
+  `LAN_SITE_DIR` picks another directory (`../../dist` for the bundle).
+  `gzip_static` is off, since `serve.mjs` only refreshes `site/`'s `.gz`
+  sidecars when it serves them; nginx compresses on the fly instead. The
+  image build still copies `dist/`, so it must exist once;
 - sets `LAN_TLS=1`, so `lan-tls.sh` (run by the image's entrypoint) adds
   `listen 443 ssl` to `site.conf` with a self-signed certificate. The
   certificate is kept in the `lan-cert` volume and regenerated only when
