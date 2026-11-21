@@ -23,7 +23,7 @@ import { GprsNet } from "./gprs-net.js";
 import { badgeView } from "./gsm-badge.js";
 import { buildShortUA } from "./ua.js";
 import { esnToOtp0, imeiToOtp1 } from "./otp.js";
-import { serialMessages, parseExit } from "./exit-report.js";
+import { serialMessages, parseExit, EXIT_MARK, EXIT_HEAD } from "./exit-report.js";
 import {
   untar, boardText, readPanel, readBoardName, readAccessories,
   boardCpu, gsmBoardHasRadio, boardHasDisplay, boardHasSimSlot,
@@ -2576,6 +2576,7 @@ let serialTapped = false;    // the callback is in place for this run
 let serialText = "";         // that tail, exactly as the guest printed it
 let serialWork = 0, serialDraw = 0;
 let serialPolled = 0;        // the log's size at the last poll (no tap)
+let exitScanned = 0;         // serialText up to here holds no EXIT marker
 
 function tapSerial(mod) {
   try {
@@ -2621,7 +2622,10 @@ function tapSerial(mod) {
 // Off the syscall, once per batch of writes.
 function onSerial() {
   serialWork = 0;
-  if (serialText.length > SERIAL_KEEP * 2) serialText = serialText.slice(-SERIAL_KEEP);
+  if (serialText.length > SERIAL_KEEP * 2) {
+    exitScanned = Math.max(0, exitScanned - (serialText.length - SERIAL_KEEP));
+    serialText = serialText.slice(-SERIAL_KEEP);
+  }
   if (!serialDraw) serialDraw = setTimeout(drawSerial, 200);  // the DOM, at 5 Hz
   watchForExit();
 }
@@ -2642,7 +2646,7 @@ function drawSerial() {
 function resetSerial() {
   clearInterval(serialTimer);
   clearTimeout(serialDraw);
-  serialWork = serialDraw = serialPolled = 0;
+  serialWork = serialDraw = serialPolled = exitScanned = 0;
   serialText = "";
   $("serial").textContent = "";
   $("serial-box").hidden = true;
@@ -2672,6 +2676,7 @@ function pollSerial() {
     try { m.FS.read(fd, data, 0, data.length, size - data.length); }
     finally { m.FS.close(fd); }
     serialText = new TextDecoder("latin1").decode(data);
+    exitScanned = 0;
     drawSerial();
     watchForExit();
   } catch { /* not there yet */ }
@@ -2974,6 +2979,13 @@ let exitPending = null;   // { at, timer } while one is still being printed
 function watchForExit() {
   if (exitReport || !ranDevice?.startsWith("siemens-")) return;
   if (!exitPending) {
+    // only what is new can hold a marker, so the whole tail is parsed only
+    // once one has arrived (backed off so one split across writes is seen)
+    const from = Math.max(0, exitScanned - EXIT_MARK.length + 1);
+    if (serialText.indexOf(EXIT_MARK, from) < 0 && serialText.indexOf(EXIT_HEAD, from) < 0) {
+      exitScanned = serialText.length;
+      return;
+    }
     if (!parseExit(serialMessages(serialText))) return;
     exitPending = { at: performance.now(), timer: 0 };
   }
