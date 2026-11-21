@@ -757,7 +757,10 @@ function renderAction() {
     b.append(kind === "start" ? "Start" : kind === "stop" ? "Stop"
       : kind === "force" ? "Force stop" : "Cancel");
     b.addEventListener("click", kind === "start" ? () => startRun() : stop);
+    // the focus goes with the action, or it falls to <body>
+    const focused = pillActionEl.contains(document.activeElement);
     pillActionEl.replaceChildren(b);
+    if (focused) b.focus();
   }
   const btn = pillActionEl.firstElementChild;
   if (btn && kind === "start") btn.disabled = !firmwareReady();
