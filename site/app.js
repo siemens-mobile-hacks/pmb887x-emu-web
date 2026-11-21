@@ -1653,12 +1653,12 @@ async function boot() {
   exitCode = null;
   clearExit();            // a new run, a screen that is lit again
   serialTapped = false;   // until this run's preRun says otherwise
-  exportsReady = false;   // this run is about to replace the MEMFS image
-  keyReport = null;
-  ranDevice = device;
-  ranFlashName = ffMode === "own"
+  // The last run's exports stay until this run replaces its image (launch
+  // below): a Start that fails or is cancelled before that leaves them be.
+  const flashName = ffMode === "own"
     ? ownBin?.name ?? null
     : preset?.files[0] ?? null;
+  let report = null;
   bootCancelled = false;
   setEmuState("booting");
   showOverlay("Loading…");
@@ -1747,7 +1747,7 @@ async function boot() {
     if (keyMode === "recalc") {
       showOverlay("Recalculating keys…", device);
       const r = await recalc(flashBytes, imei, parseInt(esn, 16));
-      keyReport = { mode: keyMode, changed: r.changed, complete: r.complete };
+      report = { mode: keyMode, changed: r.changed, complete: r.complete };
       if (!r.complete) {
         say("Some EEPROM key blocks were not found — booting anyway");
         console.warn("[recalc]", r.log);
@@ -1769,7 +1769,7 @@ async function boot() {
       esn = (found.esn >>> 0).toString(16).padStart(8, "0");
       $("imei").value = imei;   // show what the image actually boots with
       $("esn").value = esn;
-      keyReport = { mode: keyMode, esn, cached: found.cached, seconds: found.seconds };
+      report = { mode: keyMode, esn, cached: found.cached, seconds: found.seconds };
       say(`ESN ${esn}${found.cached ? " (remembered)" : ""}`);
       refreshSiemensKeys();
       showOverlay("Booting…", device);
@@ -1888,6 +1888,11 @@ async function boot() {
       ...extraArgs,
     ];
 
+    // the point of no return: this run's image replaces the last one's
+    exportsReady = false;
+    keyReport = report;
+    ranDevice = device;
+    ranFlashName = flashName;
     // the last run's module must not hold its heap while the loader allocates
     // this one's
     qemuModule = null;
