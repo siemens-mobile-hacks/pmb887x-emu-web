@@ -918,8 +918,10 @@ let openSheetEl = null, sheetOpener = null;
 // the sheet whose close animation is still running, and its timer
 let closingSheet = null, closeTimer = 0;
 
-const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), ' +
-  'select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])';
+// tab stops only: the unchecked segment and a locked summary are tabindex -1
+const FOCUSABLE = 'a[href], button:not(:disabled):not([tabindex="-1"]), input:not(:disabled), ' +
+  'select:not(:disabled), textarea:not(:disabled), summary:not([tabindex="-1"]), ' +
+  '[tabindex]:not([tabindex="-1"])';
 
 function openSheet(el, opener) {
   if (openSheetEl) closeSheet(true);
@@ -929,6 +931,9 @@ function openSheet(el, opener) {
   closingSheet = null;
   openSheetEl = el;
   sheetOpener = opener ?? null;
+  // aria-modal in fact: the panels are in the sheet, the page behind is out
+  // of reach (the phone's physical keys are handled on window and still work)
+  mainEl.inert = true;
   el.hidden = false;
   scrim.hidden = false;
   requestAnimationFrame(() => {
@@ -942,6 +947,7 @@ function closeSheet(immediate = false) {
   const el = openSheetEl;
   if (!el) return;
   openSheetEl = null;
+  mainEl.inert = false;
   el.classList.remove("open");
   scrim.classList.remove("open");
   el.style.transform = "";
