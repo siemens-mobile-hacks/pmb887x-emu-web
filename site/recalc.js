@@ -85,7 +85,8 @@ export async function recalc(flashBytes, imei, esn) {
     const rc = M._sr_recalc(imeiPtr, esn >>> 0, SKEY, completePtr, logPtr, LOG_CAP);
     const log = M.UTF8ToString(logPtr);
     if (rc < 0) {
-      const e = new Error("Not a recognizable Siemens fullflash layout");
+      const e = new Error("Not a recognizable Siemens fullflash layout — "
+        + "pick “Run as is” under Advanced ▸ Siemens keys, or check the device");
       e.recalcLog = log;
       throw e;
     }

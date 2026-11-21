@@ -297,8 +297,20 @@ export async function entryCacheState(entry) {
 }
 
 // fetch -> Blob, reporting (file, loadedBytes, totalBytes) while the body
-// streams in. An aborted signal rejects the pending read with AbortError.
+// streams in. An aborted signal rejects the pending read with AbortError; a
+// network failure (fetch's bare "TypeError: Failed to fetch") is said in
+// words.
 async function fetchWithProgress(file, onProgress, signal) {
+  try {
+    return await fetchBlob(file, onProgress, signal);
+  } catch (e) {
+    if (!(e instanceof TypeError) || signal?.aborted) throw e;
+    throw new Error(`Could not download ${file} from ${new URL(fileUrl(file)).host}`
+      + " — check the connection and press Start again", { cause: e });
+  }
+}
+
+async function fetchBlob(file, onProgress, signal) {
   const url = fileUrl(file);
   const res = await fetch(url, { mode: "cors", signal });
   if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);

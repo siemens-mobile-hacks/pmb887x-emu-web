@@ -1717,16 +1717,18 @@ async function boot() {
         // a 64 MiB fullflash is a long wait — Cancel stops it (the catch
         // below turns the AbortError into a plain "cancelled")
         downloadAbort = new AbortController();
-        dlLoaded = 0;
+        dlLoaded = st.totalSize;   // the files already cached
         dlTotal = preset.size;
         dlWhat = "fullflash";
         setEmuState("downloading");
         await refreshPresetUi(); // say so on the preset line before byte one
-        let doneBytes = 0, curFile = null, curTotal = 0;
+        // what is already here counts as done: the cached files, then each
+        // finished file at what it actually brought
+        let doneBytes = st.totalSize, curFile = null, curLoaded = 0;
         try {
           fetched = await downloadEntry(preset, (name, loaded, total) => {
-            if (name !== curFile) { doneBytes += curTotal; curFile = name; }
-            curTotal = total;
+            if (name !== curFile) { doneBytes += curLoaded; curFile = name; }
+            curLoaded = loaded;
             dlLoaded = doneBytes + loaded;
             dlTotal = preset.size || (doneBytes + total);
             const pct = dlTotal ? Math.round((dlLoaded / dlTotal) * 100) : null;
@@ -2481,8 +2483,10 @@ const REC_AV_TYPES = [
 // H.264 first: where the browser can record it the file plays anywhere,
 // and the mp4 container is the one Safari writes. VP9/VP8 webm remain
 // the fallback, so the extension follows whatever isTypeSupported picks.
-const recType = (sound = true) => typeof MediaRecorder === "undefined" ? undefined
-  : (sound ? REC_AV_TYPES : REC_TYPES).find((t) => MediaRecorder.isTypeSupported(t));
+// asked once: the answers cannot change, and render() wants one every time
+const recTypes = typeof MediaRecorder === "undefined" ? []
+  : [REC_TYPES, REC_AV_TYPES].map((list) => list.find((t) => MediaRecorder.isTypeSupported(t)));
+const recType = (sound = true) => recTypes[sound ? 1 : 0];
 const recExt = (t) => t?.startsWith("video/mp4") ? ".mp4" : ".webm";
 let recorder = null;
 let recDone = [];     // run after the file has been handed over
