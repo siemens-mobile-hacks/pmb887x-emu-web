@@ -19,6 +19,14 @@ test("inferDevice: substring rules, longer tokens first", () => {
   assert.equal(inferDevice("BROKEN)S66_no_recalc.bin"), null, "S66 runs as the S65, flagged");
   assert.equal(inferDevice("CF75v23.bin"), "siemens-cf75");
   assert.equal(inferDevice("unknown.bin"), null);
+  // whole tokens, as the page reads a picked file's name
+  const whole = (n) => inferDevice(n, { whole: true });
+  for (const [n, dev] of [["S75v40lg1.bin", "siemens-s75"], ["SL65v49lg1_TIM.bin", "siemens-sl65"],
+    ["KE800v11b.bin", "lg-ke800"], ["rr_ff_el71_stock.bin", "siemens-el71"], ["cl61a.bin", "siemens-cl61a"],
+    ["CL61.bin", "siemens-cl61"], ["E71_v45.bin", "siemens-e71"]]) assert.equal(whole(n), dev, n);
+  for (const n of ["fullflash_3fe71a.bin", "devs7.bin", "my_CS75_x.bin", "MC60_VS75.bin", "rrC81 .bin"]) {
+    assert.equal(whole(n), null, n);
+  }
 });
 
 test("variantFor: exact model names only, rebadges flagged inexact", () => {

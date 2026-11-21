@@ -84,9 +84,16 @@ const MODEL_VARIANTS = [
   ["CX66", "siemens-cx65", false],
 ];
 
-export function inferDevice(filename) {
+// `whole`: a token counts only where it is not part of a longer run of
+// letters and digits (CS75, VS75, the hex in fullflash_3fe71a), which is how
+// the page reads a picked file's name; a name that gives nothing away is
+// left to detectDevice(). The tools keep the substring rule, which their
+// own fullflash names rely on ("rrC81 .bin").
+export function inferDevice(filename, { whole = false } = {}) {
   const up = filename.toUpperCase();
-  for (const [pat, dev] of DEVICE_RULES) if (up.includes(pat)) return dev;
+  for (const [pat, dev] of DEVICE_RULES) {
+    if (whole ? new RegExp(`(?<![A-Z0-9])${pat}(?![0-9])`).test(up) : up.includes(pat)) return dev;
+  }
   return null;
 }
 

@@ -152,8 +152,9 @@ thread is using them).
   plugged into the board's empty `"iso7816-slot"` (a board without one runs
   with no SIM). The panel is `disabled` while a guest runs.
 - Which phone a fullflash came from (`detectDevice()` in `fullflashes.js`):
-  the filename first (`DEVICE_RULES`), then the image itself, so a dump named
-  `dump.bin` still selects its board:
+  the filename first (`DEVICE_RULES`, whole tokens only: `CS75`, `VS75` or
+  the hex in `fullflash_3fe71a` name no model), then the image itself, so a
+  dump named `dump.bin` still selects its board:
   - `0x3C` `"CJKT"` — every pmb887x NOR dump, LG included
     (`bsp/boot/fakesign.py`). Separates "not a fullflash" from
     "a fullflash I can't identify".

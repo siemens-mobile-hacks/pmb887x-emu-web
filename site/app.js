@@ -1137,7 +1137,7 @@ function syncKeyboardToDevice(dev) {
 // Device + on-screen keyboard inference from a fullflash filename (the user
 // can still change the dropdown).
 function applyFullflashName(name) {
-  const dev = inferDevice(name);
+  const dev = inferDevice(name, { whole: true });
   applyDevice(dev);
   return !!dev;
 }
