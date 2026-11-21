@@ -564,9 +564,15 @@ function applyPicked(list) {
     else { setNote(O.note, "err", tooMany); return; }
   } else {
     ownBin = bins[0];
+    // the device and the sidecar are the new file's own: one the page cannot
+    // place stays unset rather than keep the last file's, and a sidecar comes
+    // only with the file it was picked with
+    O.device.value = "";
+    pendingDevice = null;
+    ownEfa = efas.length === 1 ? efas[0] : null;
+    if (!ownEfa) O.efaInput.value = "";
     // async: reading the image to name the device settles after this returns
     applyFullflashFile(ownBin).catch(() => {});
-    if (efas.length === 1) ownEfa = efas[0];
     if (others.length) setNote(O.note, null, `Ignored ${others.length} other file(s).`);
   }
   warnEfaDevice();
@@ -602,6 +608,7 @@ O.clear.addEventListener("click", () => {
   ownBin = null;
   O.input.value = "";
   setNote(O.note, null, "");
+  setNote(O.devNote, null, "");
   renderOwn();
   render();
 });
