@@ -257,15 +257,16 @@ ok("3.1 shortcut checkbox copy",
   (await $eval("#kbd-hints", (e) => e.parentElement.textContent.trim())) === "Show shortcuts on keys");
 ok("3.1 typing checkbox copy, on by default", await $eval("#kbd-typing", (e) =>
   e.parentElement.textContent.trim() === "Type letters on the phone" && e.checked));
-// F5 reloads the page; F6 is still the phone's play key (taken from the browser)
-ok("3.1 F5 is the browser's, F6 a phone key", await evaluate(() => {
+// F5 reloads the page; F6 is the phone's play key, but only while a guest
+// runs (2.2 checks that half): with none every key is the browser's
+ok("3.1 F5 is the browser's, F6 too with no guest", await evaluate(() => {
   const taken = (code) => {
     const e = new KeyboardEvent("keydown", { code, key: code, bubbles: true, cancelable: true });
     document.body.dispatchEvent(e);
     document.body.dispatchEvent(new KeyboardEvent("keyup", { code, key: code, bubbles: true }));
     return e.defaultPrevented;
   };
-  return !taken("F5") && taken("F6")
+  return !taken("F5") && !taken("F6") && !taken("Backspace")
     && !document.querySelector('#keypad [data-key="music"] .key-hint, .aux-keys-left [data-key="music"] .key-hint, .aux-keys-right [data-key="music"] .key-hint');
 }));
 // multi-tap: a character is the key it is on, pressed as often as the
@@ -906,6 +907,20 @@ if (!process.env.SKIP_BOOT) {
   // been under 0.80x for three seconds
   ok("2.2 running pill", /^Running · \d+:\d\d( · slow)?$/.test(await text("#status-text")), await text("#status-text"));
   ok("2.2 Stop replaced Start", !(await has("#btn-start")) && (await has("#btn-stop")));
+  // the send is caught here, so the phone itself sees no play key
+  ok("3.1 F6 is a phone key while the guest runs, F5 the browser's", await evaluate(() => {
+    const m = window.__qemu, send = m._wasm_send_key, sent = [];
+    m._wasm_send_key = (k, d) => { sent.push([k, d]); };
+    try {
+      const taken = (code) => {
+        const e = new KeyboardEvent("keydown", { code, key: code, bubbles: true, cancelable: true });
+        document.body.dispatchEvent(e);
+        document.body.dispatchEvent(new KeyboardEvent("keyup", { code, key: code, bubbles: true }));
+        return e.defaultPrevented;
+      };
+      return !taken("F5") && taken("F6") && JSON.stringify(sent) === "[[64,1],[64,0]]";
+    } finally { m._wasm_send_key = send; }
+  }));
   // the phone has not used GPRS, so no link was dialled: the badge shows
   // what the cell says of the phone (no network, registered or attached),
   // in the dot's place: the antenna for the cell over the bearer tag

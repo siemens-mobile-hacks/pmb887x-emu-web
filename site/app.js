@@ -3912,6 +3912,8 @@ document.addEventListener("focusin", (e) => {
 // physical keyboard -> phone keys
 const heldKeys = new Set();
 window.addEventListener("keydown", (e) => {
+  // no guest, no phone: the keys stay the browser's
+  if (!running) return;
   if (takesText(e.target)) return;
   // a key a handler has already taken, such as the Escape that closes a sheet
   if (e.defaultPrevented) return;
