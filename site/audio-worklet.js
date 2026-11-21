@@ -73,8 +73,8 @@ const PV_ONSET = 8;
 const PV_ONSET_FLOOR = 64 * 200 * 200;
 const PV_BLK = 64;
 
-// Whether this scope's vocoder code has run once (see warmUp). The scope and
-// its compiled code outlive a processor: every boot makes a new one.
+// Whether this scope's vocoder code has run once (see warmUp). Every run has
+// its own AudioContext and so its own scope: warmUp runs once per boot.
 let warmedUp = false;
 
 class QemuAudio extends AudioWorkletProcessor {

@@ -84,9 +84,6 @@ for (const [code, key] of Object.entries(CODE_TO_KEY)) {
   KEY_HINT[key] ??= CODE_LABEL[code] ?? code;
 }
 
-// Fullflash sidecars (SIDE_CAR_RE) + filename -> device inference now
-// live in fullflashes.js.
-
 /* ------------------------------------------------------------------ */
 /* state                                                                */
 /* ------------------------------------------------------------------ */
@@ -1773,7 +1770,8 @@ async function boot() {
     checkCancel();
     const engineWasmMod = await ensureEngine();
     checkCancel();
-    // Compile the factory fresh per boot (the emscripten ES6 factory is
+    // The loader module is imported once and cached; what is new per boot
+    // is the instance the factory call returns (one per run: it is
     // single-use once main() has run through exit()).
     showOverlay("Loading emulator…");
     const factory = (await import(engineUrl("qemu-system-arm.js"))).default;

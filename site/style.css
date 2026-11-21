@@ -322,6 +322,7 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   animation: pulse 1.6s ease-in-out infinite;
 }
 .rec-pill-time { font-variant-numeric: tabular-nums; }
+@keyframes pulse { 50% { opacity: 0.35; } }
 
 .icon-btn {
   flex: none; display: grid; place-items: center; width: 28px; height: 28px;
@@ -1190,4 +1191,5 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .sheet, .sheet-scrim { transition: none; }
   .gsm-badge[data-gprs="connecting"] .gsm-tag { animation: none; }
+  .rec-pill-dot { animation: none; }
 }

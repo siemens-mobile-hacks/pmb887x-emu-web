@@ -269,15 +269,7 @@
     <!-- side-key column | screen | side-key column -->
     <div class="screen-row">
       <!-- keyboards.js fills these per phone layout -->
-      <div id="aux-keys-left" class="aux-keys-left">
-        <button data-key="music"   title="Media key (note)">♪</button>
-        <button data-key="play"    title="Play / pause">▶</button>
-        <button data-key="ptt"     title="Push to talk">PTT</button>
-        <button data-key="camera"  title="Camera">CAM</button>
-        <button data-key="browser" title="Browser / internet">WWW</button>
-        <button data-key="vol_up"   title="Volume up">Vol+</button>
-        <button data-key="vol_down" title="Volume down">Vol−</button>
-      </div>
+      <div id="aux-keys-left" class="aux-keys-left"></div>
 
       <!-- the cell is exactly the screen box: style.css sizes it to the
            board's own aspect ratio out of what the row has left, and the
@@ -326,46 +318,9 @@
       <div id="aux-keys-right" class="aux-keys-right"></div>
     </div>
 
-      <div id="keypad" class="keypad">
-        <!-- every phone key is its own <button data-key=...>; see app.js -->
-        <!-- soft keys sit directly under the LCD (they match its on-screen labels) -->
-        <div class="krow krow-soft">
-          <button data-key="left_soft"  title="Left soft key">L-soft</button>
-          <button data-key="up"         class="key-nav" title="Joystick up">▲</button>
-          <button data-key="right_soft" title="Right soft key">R-soft</button>
-        </div>
-        <div class="krow krow-joy">
-          <button data-key="left"     class="key-nav" title="Joystick left">◀</button>
-          <button data-key="center"   class="key-nav key-center" title="Joystick press (OK)">●</button>
-          <button data-key="right"    class="key-nav" title="Joystick right">▶</button>
-        </div>
-        <!-- send/end take the old soft-key slots, flanking joystick-down -->
-        <div class="krow krow-call">
-          <button data-key="send" class="key-send" title="Green key (call)">
-            <svg class="key-icon" viewBox="0 0 24 24"><path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
-          </button>
-          <button data-key="down" class="key-nav" title="Joystick down">▼</button>
-          <button data-key="end" class="key-end" title="Red key / power">
-            <svg class="key-icon" viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/></svg>
-          </button>
-        </div>
-        <div class="krow krow-digits">
-        <!-- static S75 English default below; app.js rebuilds the whole
-             keypad from KBD_BOARDS/KBD_KEYBOARDS on layout switches -->
-          <button data-key="1">1<span class="key-sub">␣</span></button>
-          <button data-key="2">2<span class="key-sub">abc</span></button>
-          <button data-key="3">3<span class="key-sub">def</span></button>
-          <button data-key="4">4<span class="key-sub">ghi</span></button>
-          <button data-key="5">5<span class="key-sub">jkl</span></button>
-          <button data-key="6">6<span class="key-sub">mno</span></button>
-          <button data-key="7">7<span class="key-sub">pqrs</span></button>
-          <button data-key="8">8<span class="key-sub">tuv</span></button>
-          <button data-key="9">9<span class="key-sub">wxyz</span></button>
-          <button data-key="star" title="*">*<span class="key-sub"></span></button>
-          <button data-key="0">0<span class="key-sub">+</span></button>
-          <button data-key="hash" title="#">#<span class="key-sub"></span></button>
-        </div>
-      </div>
+      <!-- every phone key is its own <button data-key=...>, built by
+           keyboards.js for the selected keyboard (see app.js) -->
+      <div id="keypad" class="keypad"></div>
   </section>
 
   <!-- ============ right: post-start ============ -->
@@ -459,8 +414,8 @@
 
 </main>
 
-<!-- what a screen reader is told about things that have no visible text of
-     their own (a capture starting and being saved) -->
+<!-- what a screen reader is told that it would not hear otherwise: run-state
+     changes, errors, captures, key recalculation, the network badge -->
 <div id="live-region" class="sr-only" role="status" aria-live="polite"></div>
 
 <!-- the network badge's bearer names (#gprs), stroked letters in a 4.4x7
