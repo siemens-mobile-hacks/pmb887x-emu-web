@@ -55,16 +55,28 @@ function paxPath(data) {
 
 export const boardText = new Map();   // "siemens-s75.toml" -> file contents
 
-// `[peripheral.LCD0] width/height` of the board or an include it `extends`
+// The size qemu's panel model (qemu/hw/lcd) gives a config that names only
+// the type; any other model takes lcd.c's default.
+const PANEL_SIZES = {
+  l2f50250: [130, 130], lh15kah2: [130, 130], pcf8882: [132, 176], ssd1286: [132, 176],
+};
+const PANEL_DEFAULT = [240, 320];
+
+// `[peripheral.LCD0] width/height` of the board or an include it `extends`,
+// else the size of the panel `type` it names
 export function readPanel(file) {
+  let type = null;
   for (const [, txt] of boardChain(file)) {
     const sec = txt.match(/\[peripheral\.LCD0\]([\s\S]*?)(?=\n\[|$)/);
     if (!sec) continue;
     const w = sec[1].match(/^[ \t]*width[ \t]*=[ \t]*(\d+)/m);
     const h = sec[1].match(/^[ \t]*height[ \t]*=[ \t]*(\d+)/m);
     if (w && h) return { w: +w[1], h: +h[1] };
+    type ??= sec[1].match(/^[ \t]*type[ \t]*=[ \t]*"([^"]+)"/m)?.[1] ?? null;
   }
-  return null;
+  if (!type) return null;
+  const [w, h] = PANEL_SIZES[type] ?? PANEL_DEFAULT;
+  return { w, h };
 }
 
 // The same configs carry the device's real name in `[board] vendor/model`,

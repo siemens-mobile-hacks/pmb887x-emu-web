@@ -1172,6 +1172,7 @@ function applyDevice(dev) {
   }
   syncKeyboardToDevice(dev);
   refreshSiemensKeys();
+  setAspect(); // a different phone, a different screen ratio
   return true;
 }
 
@@ -2898,7 +2899,9 @@ function startPainting() {
     if (w <= 0 || h <= 0) return;
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w; canvas.height = h;
-      setAspect(); // the guest's panel ratio is the real one
+      // the guest's panel ratio is the real one, for this board's later boots too
+      if (ranDevice) panelCache.set(ranDevice, { w, h });
+      setAspect();
     }
     const tPaint = performance.now();
     if (img?.width !== w || img.height !== h) {

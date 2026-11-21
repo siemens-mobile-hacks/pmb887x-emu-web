@@ -121,9 +121,20 @@ test("boardHasDisplay: an LCD0 panel anywhere in the chain, with or without a si
     "chip.toml": '[board]\ncpu.type = "pmb8876"\n[peripheral.GIMMICK]\ntype = "s1d13732"\n# [peripheral.LCD0]\n',
   });
   assert.equal(boardHasDisplay("phone"), true);
-  assert.equal(readPanel("phone.toml"), null);
   assert.equal(boardHasDisplay("chip"), false);
   assert.equal(boardHasDisplay("missing"), false);
+});
+
+test("readPanel: a panel named by type alone has its model's size", () => {
+  load({
+    "s75.toml": 'extends = "include/sg2.toml"\n[board]\nmodel = "S75"\n',
+    "include/sg2.toml": '[peripheral.LCD0]\ntype = "ssd1286"\nbus = "DIF"\n',
+    "sl65.toml": 'extends = "include/sg2.toml"\n[peripheral.LCD0]\ntype = "l2f50250"\n',
+    "big.toml": '[peripheral.LCD0]\ntype = "jbt6k71"\n',
+  });
+  assert.deepEqual(readPanel("s75.toml"), { w: 132, h: 176 });
+  assert.deepEqual(readPanel("sl65.toml"), { w: 130, h: 130 }, "the board's own type before the include's");
+  assert.deepEqual(readPanel("big.toml"), { w: 240, h: 320 }, "lcd.c's default");
 });
 
 test("boardHasSimSlot: a slot in the board or an include, not in a comment", () => {

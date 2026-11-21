@@ -354,7 +354,9 @@ thread is using them).
     for the network badge's status line and amounts).
   - The one thing CSS cannot know is the panel's aspect ratio, because that is
     board data: `setAspect()` publishes it as `--ar` on `.phone-panel` — from
-    the board config, or from the guest's own framebuffer once it is running.
+    the board config (its LCD0 size, or the size of the panel type it names),
+    or from the guest's own framebuffer once it is running, which is then
+    remembered for that board.
     That is the entire layout contribution of `app.js`.
   - A board with keys on one side only collapses the empty column
     (`.aux-keys-*:empty`), and `.phone-panel:has(.aux-keys-* button)` is what
