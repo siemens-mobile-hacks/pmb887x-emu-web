@@ -170,6 +170,9 @@ let banked = false;
 // Only the counters can tell: insns, halts and display updates frozen
 // *together* is a thread that is gone, not a guest that is idle or slow.
 let stalled = false;
+// A Stop has waited FORCE_STOP_AFTER_MS for the guest to exit: the action
+// is "Force stop" (forceStop) from then on.
+let quitStuck = false, quitTimer = 0;
 // the last thing qemu said before it stopped, and whatever killed a worker
 let fatalMsg = null;
 const logTail = [];
@@ -737,7 +740,8 @@ function showPillText() {
 let actionKind = null;
 function renderAction() {
   const kind = emuState === "idle" ? "start"
-    : (emuState === "downloading" || emuState === "recovering") ? "cancel" : "stop";
+    : (emuState === "downloading" || emuState === "recovering") ? "cancel"
+    : quitStuck ? "force" : "stop";
   if (kind !== actionKind) {
     actionKind = kind;
     const b = document.createElement("button");
@@ -752,7 +756,8 @@ function renderAction() {
         ? '<svg class="ico" viewBox="0 0 24 24"><path d="M8.5 5.6 18 12l-9.5 6.4Z"/></svg>'
         : '<svg class="ico" viewBox="0 0 24 24"><rect x="6.8" y="6.8" width="10.4" height="10.4" rx="2"/></svg>';
     }
-    b.append(kind === "start" ? "Start" : kind === "stop" ? "Stop" : "Cancel");
+    b.append(kind === "start" ? "Start" : kind === "stop" ? "Stop"
+      : kind === "force" ? "Force stop" : "Cancel");
     b.addEventListener("click", kind === "start" ? () => startRun() : stop);
     pillActionEl.replaceChildren(b);
   }
@@ -1408,21 +1413,26 @@ async function launch(spec) {
   }
 }
 
-// The loader starts its pthread pool (new Worker, four times) before its
-// first await, so the workers a factory call creates are the ones made while
-// it runs synchronously. A call that never starts its guest would leave them
-// running, holding its Module and heap, for the life of the page.
-function withPoolWorkers(pool, call) {
+// The engine's pthread workers, per factory call: the loader starts its pool
+// (new Worker, four times) before its first await, and adds more whenever
+// the guest creates a thread beyond it. A call that never starts its guest
+// would leave them running, holding its Module and heap, for the life of the
+// page, and a guest whose threads have died can only be ended by
+// terminating them (forceStop).
+let enginePool = null;   // the list of the factory call under way or live
+const engineWorkers = new WeakMap();   // Module -> its workers
+{
   const Worker = window.Worker;
   window.Worker = new Proxy(Worker, {
     construct(target, args) {
       const w = Reflect.construct(target, args);
-      pool.push(w);
+      if (enginePool && /qemu-system-arm/.test(String(args[0]))) enginePool.push(w);
       return w;
     },
   });
-  try { return call(); } finally { window.Worker = Worker; }
 }
+// modules ended by forceStop(): an onExit that still comes is not news
+const forcedModules = new WeakSet();
 
 function startQemu({ factory, engine, args, opts, setup, report }) {
   let modRef = null; // FS access in onExit (qemuModule not yet assigned)
@@ -1430,12 +1440,13 @@ function startQemu({ factory, engine, args, opts, setup, report }) {
   const failed = new Promise((_, reject) => {
     fail = (e) => reject(new EngineInstantiateError(String(e), { cause: e }));
   });
-  const pool = [];
-  const started = withPoolWorkers(pool, () => factory({
+  const pool = enginePool = [];
+  const started = factory({
     arguments: args,
     ...engineInstantiate(engine, fail),
     ...opts,
     onExit: (code) => {
+      if (forcedModules.has(modRef)) return;
       // before the runtime tears the page down
       if (modRef) {
         const read = (p) => {
@@ -1449,6 +1460,7 @@ function startQemu({ factory, engine, args, opts, setup, report }) {
     },
     preRun: (mod) => {
       modRef = mod;
+      engineWorkers.set(mod, pool);
       tapSerial(mod);   // every byte the guest prints, as it prints it
       setup(mod);
       // ?env=NAME=VAL (repeatable): extra environment — e.g.
@@ -1458,7 +1470,7 @@ function startQemu({ factory, engine, args, opts, setup, report }) {
         if (i > 0) mod.ENV[kv.slice(0, i)] = kv.slice(i + 1);
       }
     },
-  }));
+  });
   // a failed start (its factory promise rejects, or the prefetched engine
   // did not instantiate and the call never settles) ends its pool before
   // launch() retries or reports it
@@ -2193,6 +2205,8 @@ function onGuestExit(code) {
   window.__gprsNet = null;
   lastRelease = null;       // names this run's module, which must not outlive it
   caseState = { m: null, state: "lower" };   // likewise
+  clearTimeout(quitTimer);
+  quitStuck = false;
   showGprsStatus();
   renderGprs();
   exitCode = code;
@@ -2240,9 +2254,29 @@ function stop() {
     // put the page back to idle
     const m = liveModule();
     if (!m?._wasm_quit) return;
+    // a guest whose threads are gone cannot act on a quit request
+    if (stalled || quitStuck) { forceStop(m); return; }
     m._wasm_quit();
     showOverlay("Stopping…");
+    clearTimeout(quitTimer);
+    quitTimer = setTimeout(() => {
+      if (liveModule() === m) { quitStuck = true; render(); }
+    }, FORCE_STOP_AFTER_MS);
   });
+}
+
+// Stop's last resort, for a guest that does not act on _wasm_quit(): its
+// workers are terminated and the page does the exit handling itself. MEMFS
+// lives on the page's thread, so the exports still work afterwards. Not the
+// first thing Stop does: qemu's own shutdown is what writes back the flash.
+const FORCE_STOP_AFTER_MS = 5000;
+
+function forceStop(m) {
+  forcedModules.add(m);
+  for (const w of engineWorkers.get(m) ?? []) w.terminate();
+  onGuestExit(-1);
+  releaseHeap(m);
+  if (!exitReport) showOverlay("Ready to boot", "Stopped by force — the guest was not answering");
 }
 
 $("boot-form").addEventListener("submit", (e) => { e.preventDefault(); startRun(); });
