@@ -3588,6 +3588,25 @@ function bindKeypad() {
     btn.addEventListener("pointerup", release);
     btn.addEventListener("pointerleave", release);
     btn.addEventListener("pointercancel", release);
+    // a click no pointer made (detail 0): Enter or Space on a focused key, or
+    // an assistive technology's "activate"; a pointer's own click is ignored,
+    // its press and release went out above
+    btn.addEventListener("click", (ev) => { if (ev.detail === 0) tapKey(key); });
+  }
+}
+
+// one press of a phone key, held as long as the phone takes a tap
+function tapKey(key) {
+  const m = liveModule();
+  if (!m) return;
+  if (typeBusy) { typeQueue.push({ key, down: true }, { key, down: false }); return; }
+  const hold = tapTiming()?.hold ?? 100;
+  if (canQueueKeys(m)) {
+    sendKey(key, true, 0);
+    sendKey(key, false, hold);
+  } else {
+    sendKey(key, true);
+    setTimeout(() => { if (liveModule() === m) sendKey(key, false); }, hold);
   }
 }
 
@@ -3869,15 +3888,15 @@ function eraseKey(e) {
 const takesText = (el) => el.isContentEditable || el.tagName === "TEXTAREA"
   || el.tagName === "SELECT" || (el.tagName === "INPUT" && el.type !== "checkbox");
 
-// The control outside the phone's keys that the keyboard last focused: Enter
-// and Space are its own. One focused by a click is left out, or a mouse user
-// typing into the phone after muting it would toggle the sound with each
-// space. :focus-visible tells the two apart only at focus time, since any
+// The control that the keyboard last focused: Enter and Space are its own (on
+// a phone key they press that key, tapKey). One focused by a click is left
+// out, or a mouse user typing into the phone after muting it would toggle the
+// sound with each space. :focus-visible tells the two apart only at focus time, since any
 // keydown makes the focused element match it.
 let keyboardFocus = null;
 document.addEventListener("focusin", (e) => {
   const t = e.target;
-  keyboardFocus = t.matches?.("button, summary, a[href]") && !t.dataset.key
+  keyboardFocus = t.matches?.("button, summary, a[href]")
     && t.matches(":focus-visible") ? t : null;
 });
 
