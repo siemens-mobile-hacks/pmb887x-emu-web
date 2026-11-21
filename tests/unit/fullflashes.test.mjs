@@ -110,3 +110,24 @@ test("readCachedEntry: an entry cached at another size is dropped", async (t) =>
   await assert.rejects(readCachedEntry(entry), /512 bytes, but the inventory says 1000/);
   assert.equal(store.size, 0);
 });
+
+test("downloadEntry: a file the cache will not keep is handed back from memory", async (t) => {
+  const entry = { files: ["Q.bin", "Q.bin.cfi-efa"], size: 1000 + 24 };
+  const store = fakeRepo(t, { "Q.bin": new Uint8Array(1000).fill(7), "Q.bin.cfi-efa": new Uint8Array(24) });
+  const { open } = globalThis.caches;
+  globalThis.caches.open = async () => {
+    const c = await open();
+    return { ...c, put: async (url, res) => {
+      if (url.endsWith(".bin")) throw new DOMException("quota", "QuotaExceededError");
+      return c.put(url, res);
+    } };
+  };
+  const files = await downloadEntry(entry);
+  assert.deepEqual(files.map((f) => [f.name, f.bytes.length, f.bytes[0]]),
+    [["Q.bin", 1000, 7], ["Q.bin.cfi-efa", 24, 0]]);
+  assert.equal(store.size, 1, "the sidecar the cache took stays cached");
+
+  globalThis.caches.open = async () => { throw new DOMException("denied", "SecurityError"); };
+  assert.equal((await downloadEntry(entry)).length, 2, "a refusing cache: everything from memory");
+  assert.deepEqual(await entryCacheState(entry), { complete: false, count: 0, totalSize: 0 });
+});

@@ -13,7 +13,7 @@
 import { KBD_KEYBOARDS, DEFAULT_KEYBOARD, pickVariant, applyKbdLayout, tapTable, forDevice, caseStep } from "./keyboards.js";
 import {
   PRESET_FULLFLASHES, SIDE_CAR_RE, inferDevice, detectDevice,
-  cacheAvailable, entryCacheState, downloadEntry, deleteEntry, readCachedEntry,
+  cacheAvailable, cacheChecked, entryCacheState, downloadEntry, deleteEntry, readCachedEntry,
 } from "./fullflashes.js";
 import {
   readIdentity, recalc, recoverEsn, cachedEsnCount, clearEsnCache, workerCount,
@@ -469,17 +469,6 @@ if (selectedPreset) P.sel.value = selectedPreset.id;
 // two helper paragraphs and the "— cached" option suffix.
 async function refreshPresetUi() {
   const entry = selectedPreset;
-  if (!cacheAvailable()) {
-    P.sel.disabled = true;
-    presetState = { complete: false, count: 0, totalSize: 0 };
-    P.status.className = "ff-status";
-    P.status.textContent = "Browser cache unavailable — pick Own file";
-    P.clear.hidden = true;
-    P.device.textContent = "";
-    refreshSiemensKeys();
-    render();
-    return;
-  }
   const state = entry ? await entryCacheState(entry)
     : { complete: false, count: 0, totalSize: 0 };
   // a newer selection has its own refresh under way
@@ -499,6 +488,8 @@ async function refreshPresetUi() {
       (dlTotal ? Math.min(100, (dlLoaded / dlTotal) * 100) : 0) + "%";
   } else if (presetState.complete) {
     P.status.textContent = `✓ Cached · ${fmtMiB(presetState.totalSize || entry.size)}`;
+  } else if (!cacheAvailable()) {
+    P.status.textContent = `Browser cache unavailable · fetches ${fmtMiB(entry.size)} on every Start`;
   } else if (presetState.count) {
     P.status.textContent = "Partly downloaded · fetches the rest on Start";
   } else {
@@ -678,7 +669,7 @@ function currentDevice() {
 // The sidecar never gates Start.
 function firmwareReady() {
   if (startBlocked) return false;
-  if (ffMode === "preset") return !!selectedPreset && cacheAvailable();
+  if (ffMode === "preset") return !!selectedPreset;
   // pendingDevice counts: boot() awaits boards.tar before reading the
   // dropdown, so a device inferred while the list was still loading is as
   // good as one already in it
@@ -776,8 +767,7 @@ function captionText() {
   }
   if (emuState !== "idle" || firmwareReady()) return "";
   if (ffMode === "own") return "Choose a file and device to start";
-  return cacheAvailable() ? "Choose a firmware to start"
-    : "Browser cache unavailable — switch to Own file";
+  return "Choose a firmware to start";
 }
 
 // one place every part of the UI that depends on the run state is drawn
@@ -807,7 +797,6 @@ function render() {
   // the blanket re-enable above would undo the IMEI/ESN lock that
   // "Brute-force ESN" needs (their values come from the image there)
   if (!panelLocked) refreshSiemensKeys();
-  if (!cacheAvailable()) P.sel.disabled = true;
   for (const b of segButtons) {
     b.tabIndex = panelLocked ? -1 : (b.getAttribute("aria-checked") === "true" ? 0 : -1);
   }
@@ -1689,6 +1678,8 @@ async function boot() {
       // (live progress; later boots come straight from the cache).
       const st = await entryCacheState(preset);
       checkCancel();
+      // the files from memory when the browser would not cache them
+      let fetched = null;
       if (!st.complete) {
         presetBusy = true;
         // a 64 MiB fullflash is a long wait — Cancel stops it (the catch
@@ -1701,7 +1692,7 @@ async function boot() {
         await refreshPresetUi(); // say so on the preset line before byte one
         let doneBytes = 0, curFile = null, curTotal = 0;
         try {
-          await downloadEntry(preset, (name, loaded, total) => {
+          fetched = await downloadEntry(preset, (name, loaded, total) => {
             if (name !== curFile) { doneBytes += curTotal; curFile = name; }
             curTotal = total;
             dlLoaded = doneBytes + loaded;
@@ -1725,8 +1716,12 @@ async function boot() {
         await refreshPresetUi();
         checkCancel();
       }
+      if (fetched) {
+        say(`${preset.files[0]} is not cached: the browser would not store it`);
+        console.warn("[preset] not cached, booting from memory:", preset.id);
+      }
       showOverlay("Reading fullflash…");
-      const cached = await readCachedEntry(preset); // main .bin first
+      const cached = fetched ?? await readCachedEntry(preset); // main .bin first
       const shim = (f) => ({ name: f.name, arrayBuffer: async () => f.bytes.buffer });
       file = shim(cached[0]);
       sidecars = cached.slice(1).map(shim);
@@ -3973,6 +3968,8 @@ if (!DIST_OK) {
   setError(`?dist= must name a build directory under the site, such as ${DIST_DEFAULT} — not “${DIST}”`,
     { block: true });
 }
+// a cache that turns out to refuse has its own preset line
+cacheChecked.then(() => { if (!cacheAvailable() && ffMode === "preset") refreshPresetUi(); });
 boardsReady = loadBoards().catch((e) => {
   setError("boards.tar: " + e, { block: true });
   return null; // resolved-with-null: boot() re-checks boardsBuf below

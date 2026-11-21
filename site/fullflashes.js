@@ -259,19 +259,29 @@ const CACHE_NAME = "fullflashes-v1";
 // without pulling the whole body out of the cache
 const SIZE_HEADER = "x-fullflash-size";
 
+// `caches` can be there and refuse every call (site data blocked, some
+// private modes): one open at start-up says which. Without a cache a preset
+// is fetched on every Start instead.
+let cacheRefused = false;
+export const cacheChecked = typeof caches !== "undefined"
+  ? caches.open(CACHE_NAME).then(() => {}, () => { cacheRefused = true; })
+  : Promise.resolve();
+
 export function cacheAvailable() {
-  return typeof caches !== "undefined";
+  return typeof caches !== "undefined" && !cacheRefused;
 }
+
+const openCache = async () => (cacheAvailable() ? caches.open(CACHE_NAME).catch(() => null) : null);
 
 // Which of the entry's files are already cached. Returned state:
 //   { complete, count, totalSize } — totalSize sums the stored sizes (0 if
 //   a file was cached by an older revision without the size header).
 export async function entryCacheState(entry) {
-  if (!cacheAvailable()) return { complete: false, count: 0, totalSize: 0 };
-  const cache = await caches.open(CACHE_NAME);
+  const cache = await openCache();
+  if (!cache) return { complete: false, count: 0, totalSize: 0 };
   let count = 0, totalSize = 0, complete = true;
   for (const file of entry.files) {
-    const res = await cache.match(fileUrl(file));
+    const res = await cache.match(fileUrl(file)).catch(() => null);
     if (!res) { complete = false; continue; }
     count++;
     totalSize += Number(res.headers.get(SIZE_HEADER)) || 0;
@@ -279,18 +289,18 @@ export async function entryCacheState(entry) {
   return { complete, count, totalSize };
 }
 
-// fetch -> Response, reporting (file, loadedBytes, totalBytes) while the
-// body streams in. Returns a Response built from the collected chunks
-// (cache.put stores constructed responses fine; it only rejects opaque ones).
-// An aborted signal rejects the pending read with AbortError.
+// fetch -> Blob, reporting (file, loadedBytes, totalBytes) while the body
+// streams in. An aborted signal rejects the pending read with AbortError.
 async function fetchWithProgress(file, onProgress, signal) {
   const url = fileUrl(file);
   const res = await fetch(url, { mode: "cors", signal });
   if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
+  const type = res.headers.get("content-type") ?? "application/octet-stream";
   const total = Number(res.headers.get("content-length")) || 0;
-  if (!res.body) { // no streaming support: nothing to report, put as-is
-    onProgress?.(file, total, total);
-    return res;
+  if (!res.body) { // no streaming support: nothing to report until the end
+    const blob = await res.blob();
+    onProgress?.(file, blob.size, blob.size);
+    return blob;
   }
   const reader = res.body.getReader();
   const chunks = [];
@@ -302,13 +312,14 @@ async function fetchWithProgress(file, onProgress, signal) {
     loaded += value.byteLength;
     onProgress?.(file, loaded, total);
   }
-  return new Response(new Blob(chunks), {
-    headers: {
-      "Content-Type": res.headers.get("content-type") ?? "application/octet-stream",
-      [SIZE_HEADER]: String(loaded),
-    },
-  });
+  return new Blob(chunks, { type });
 }
+
+// what the cache keeps for a file (cache.put stores constructed responses
+// fine; it only rejects opaque ones)
+const cacheResponse = (blob) => new Response(blob, {
+  headers: { "Content-Type": blob.type, [SIZE_HEADER]: String(blob.size) },
+});
 
 // The inventory's `size` is the entry's files together. An entry cached at
 // another size is not the image the inventory names (a truncated transfer,
@@ -326,14 +337,36 @@ async function checkEntrySize(cache, entry, got) {
 // cache.put is atomic per file, a cached file is always complete). Aborting
 // the optional signal throws AbortError; whatever finished stays cached, so
 // pressing Start again resumes at the next file. Throws when the files
-// together are not the inventory's size.
+// together are not the inventory's size. Returns null when the entry is
+// cached; when the cache is unavailable or would not keep a file (a quota),
+// the entry's files as readCachedEntry() gives them, from memory.
 export async function downloadEntry(entry, onProgress, signal) {
-  const cache = await caches.open(CACHE_NAME);
+  const cache = await openCache();
+  const kept = new Map();   // file -> the Blob the cache did not take
   for (const file of entry.files) {
     signal?.throwIfAborted();
     const url = fileUrl(file);
-    if (await cache.match(url)) continue;
-    await cache.put(url, await fetchWithProgress(file, onProgress, signal));
+    if (await cache?.match(url).catch(() => null)) continue;
+    const blob = await fetchWithProgress(file, onProgress, signal);
+    try {
+      if (!cache) throw new Error("no cache");
+      await cache.put(url, cacheResponse(blob));
+    } catch {
+      kept.set(file, blob);
+    }
+  }
+  if (kept.size) {
+    const out = [];
+    for (const file of entry.files) {
+      const blob = kept.get(file) ?? await (await cache.match(fileUrl(file)))?.blob();
+      if (!blob) throw new Error(`${file} is not cached — download it again`);
+      out.push({ name: file, bytes: new Uint8Array(await blob.arrayBuffer()) });
+    }
+    const got = out.reduce((n, f) => n + f.bytes.length, 0);
+    if (entry.size && got !== entry.size) {
+      throw new Error(`${entry.files[0]}: ${got} bytes, but the inventory says ${entry.size}`);
+    }
+    return out;
   }
   let got = 0;
   for (const file of entry.files) {
@@ -341,6 +374,7 @@ export async function downloadEntry(entry, onProgress, signal) {
     got += Number(res?.headers.get(SIZE_HEADER)) || (res ? (await res.blob()).size : 0);
   }
   await checkEntrySize(cache, entry, got);
+  return null;
 }
 
 export async function deleteEntry(entry) {
