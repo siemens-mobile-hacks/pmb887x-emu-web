@@ -120,6 +120,7 @@ const BOOT_CANCELLED = Symbol("boot cancelled");
 // boot() and bootSuite() call this before every step that can take a while
 const checkCancel = () => { if (bootCancelled) throw BOOT_CANCELLED; };
 let boardsReady = null;   // loadBoards() promise — boot() awaits it
+let boardsLoaded = false; // ...and it has filled the device list
 let pendingDevice = null; // device inferred from a fullflash picked before
                           // boards.tar finished loading (slow links)
 
@@ -1109,6 +1110,7 @@ async function loadBoards() {
       opt.textContent = b.label;
       return opt;
     }));
+  boardsLoaded = true;
   // A fullflash picked before boards.tar arrived (slow link) could not set
   // the device — apply the deferred inference now that the options exist.
   if (pendingDevice) {
@@ -1168,7 +1170,14 @@ function applyDevice(dev) {
         `${boardLabel(dev)} has no display in its board config, so it cannot run here.`);
       refreshSiemensKeys();
       return false;
-    } else if (boardsReady) pendingDevice = dev; // boards.tar still loading
+    } else if (!boardsLoaded) {
+      pendingDevice = dev;   // applied once boards.tar is in
+    } else {
+      O.device.value = "";
+      setNote(O.devNote, "warn", `There is no board config for ${dev}, so it cannot run here.`);
+      refreshSiemensKeys();
+      return false;
+    }
   }
   syncKeyboardToDevice(dev);
   refreshSiemensKeys();
@@ -1652,6 +1661,7 @@ async function boot() {
   if (!firmwareReady()) { render(); return; }
 
   const device = currentDevice();
+  if (!device) { render(); return; }
   const preset = selectedPreset;
   // "as-is" wherever the radio is not offered: a non-Siemens board (only
   // Siemens firmware binds itself to the flash ESN) or a preset, which the
