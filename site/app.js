@@ -3318,18 +3318,21 @@ function hudTick() {
 // All three counters must be still: a guest asleep in WFI stops retiring
 // instructions, but the halt count moves every time it wakes, and the
 // display keeps being read.
+// The time is counted per sample, at most two sampling periods each, so a
+// tab or machine suspended for longer than STALL_MS is not a stall.
 const STALL_MS = 15000;
-let stallMark = null, stallSince = 0;
+let stallMark = null, stallMs = 0;
 
 function trackStall(s) {
   if (!stallMark || s.insns !== stallMark.insns || s.halts !== stallMark.halts
       || s.fb !== stallMark.fb) {
     stallMark = s;
-    stallSince = s.t;
+    stallMs = 0;
     if (stalled) { stalled = false; hideOverlay(); render(); }
     return;
   }
-  if (stalled || s.t - stallSince < STALL_MS) return;
+  stallMs += Math.min(s.t - (hudLast?.t ?? s.t), 2 * HUD_MS);
+  if (stalled || stallMs < STALL_MS) return;
   stalled = true;
   showOverlay("Guest stopped", stallReason());
   render();
@@ -3338,7 +3341,7 @@ function trackStall(s) {
 // The guest is gone and the page is the only witness: say what the last
 // thing qemu managed to say was, so a report from a phone carries it.
 function stallReason() {
-  const secs = Math.round((performance.now() - stallSince) / 1000);
+  const secs = Math.round(stallMs / 1000);
   const why = fatalMsg ? `Failed with: ${fatalMsg}`
     : logTail.length ? `Last log: ${logTail.at(-1)}`
     : "Nothing was logged.";
@@ -3377,7 +3380,7 @@ function hudReset() {
   hudLast = null; hudNow = null; hudV0 = null; hudT0 = performance.now();
   lagV0 = null; lagT0 = hudT0;
   slowSince = 0; fastSince = 0; slow = false; banked = false;
-  stalled = false; stallMark = null; stallSince = hudT0; fatalMsg = null;
+  stalled = false; stallMark = null; stallMs = 0; fatalMsg = null;
   logTail.length = 0;
   if (!hudEl.hidden) drawHud();
 }
