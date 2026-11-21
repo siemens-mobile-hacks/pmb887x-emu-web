@@ -1001,6 +1001,8 @@ label:has(> input:disabled), label:has(> select:disabled) { color: var(--muted);
 .dropzone-slim { flex-direction: row; padding: 0.55rem 0.8rem; }
 .dropzone:hover { border-color: var(--accent); color: var(--accent); }
 .dropzone.drag { border-color: var(--accent); color: var(--accent); background: #1a2430; }
+/* the hidden picker takes the focus; its label shows it */
+.file-input:focus-visible + .dropzone { outline: 2px solid var(--accent); outline-offset: 2px; }
 :disabled + .dropzone { opacity: 0.45; cursor: not-allowed; }
 :disabled + .dropzone:hover { border-color: var(--border); color: var(--muted); }
 
