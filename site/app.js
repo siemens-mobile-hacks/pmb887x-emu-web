@@ -1230,6 +1230,17 @@ const DIST = QS.get("dist") || null;
 const DIST_OK = !DIST || (/^[\w.-]+$/.test(DIST) && !/^\.\.?$/.test(DIST));
 const ENGINE_DIR = new URL(`${DIST_OK && DIST || DIST_DEFAULT}/`, import.meta.url);
 const engineUrl = (file) => new URL(file, ENGINE_DIR).href;
+// ?suite= likewise takes only a file under the site, the way the tools name
+// it (dist/tcgisa.bin): the page boots it at load, with no click
+const SUITE = QS.get("suite") || null;
+const SUITE_URL = (() => {
+  if (!SUITE || SUITE.split(/[/\\]/).includes("..")) return null;
+  try {
+    const u = new URL(SUITE, import.meta.url);
+    return u.origin === location.origin
+      && u.pathname.startsWith(new URL(".", import.meta.url).pathname) ? u.href : null;
+  } catch { return null; }
+})();
 
 /* ---- engine prefetch ------------------------------------------------ */
 /* The qemu wasm (~12 MB, ~4 on the wire) is the long pole of a first
@@ -1616,12 +1627,9 @@ async function runEsnRecovery(identity, device) {
 async function boot() {
   if (!DIST_OK) return;   // the overlay already says why
   // guest op-suite mode: no fullflash, no boards.tar needed
-  {
-    const suiteUrl = QS.get("suite");
-    if (suiteUrl) {
-      await bootSuite(suiteUrl);
-      return;
-    }
+  if (SUITE) {
+    if (SUITE_URL) await bootSuite(SUITE_URL);
+    return;   // otherwise the overlay already says why
   }
 
   if (!firmwareReady()) { render(); return; }
@@ -4049,6 +4057,9 @@ boardsReady = loadBoards().catch((e) => {
 
 // ?suite= runs headlessly (tools/tcgisa.mjs): submit the boot form — the
 // same path as pressing Start. Last, so the whole UI is wired before it fires.
-if (QS.get("suite")) {
+if (SUITE_URL) {
   $("boot-form").requestSubmit();
+} else if (SUITE) {
+  setError(`?suite= must name a file under the site, such as dist/tcgisa.bin — not “${SUITE}”`,
+    { block: true });
 }
