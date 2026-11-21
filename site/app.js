@@ -1738,7 +1738,7 @@ async function boot() {
     checkCancel();
     showOverlay("Booting…", device);
 
-    const flashBytes = new Uint8Array(await file.arrayBuffer());
+    let flashBytes = new Uint8Array(await file.arrayBuffer());
     checkCancel();
 
     // Advanced ▸ Siemens keys. The image only ever lives in this run's
@@ -1919,9 +1919,10 @@ async function boot() {
           mod.FS.writeFile(path, data);
         });
         mod.FS.mkdirTree("/data");
-        mod.FS.writeFile(FULLFLASH_PATH, flashBytes);
+        // canOwn: MEMFS takes these buffers as they are instead of a copy
+        mod.FS.writeFile(FULLFLASH_PATH, flashBytes, { canOwn: true });
         for (const [suffix, bytes] of sidecarBytes)
-          mod.FS.writeFile(FULLFLASH_PATH + suffix, bytes);
+          mod.FS.writeFile(FULLFLASH_PATH + suffix, bytes, { canOwn: true });
         mod.ENV.PMB887X_BOARD = `/boards/${device}.toml`;
         mod.ENV.PMB887X_STARTUP = startup;
         mod.ENV.PMB887X_FLASH0_OTP0 = otp0;
@@ -1939,6 +1940,10 @@ async function boot() {
         }
       },
     });
+    // the module's onExit keeps setup() and with it this scope alive for the
+    // whole run: MEMFS has the image now, so the page lets go of it (not in
+    // setup, which launch() may run a second time)
+    flashBytes = null;
   } catch (e) {
     setEmuState("idle");
     if (!startCancelled(e)) {
@@ -1951,6 +1956,7 @@ async function boot() {
 
   // LG firmware without the EFA block factory-resets its EEPROM; warn but boot.
   const noEfa = device.startsWith("lg-") && !sidecarBytes.some(([s]) => s === ".cfi-efa");
+  sidecarBytes = null;
   hideOverlay();
   window.__qemu = qemuModule; // debugging hook
   startPainting();
