@@ -1511,6 +1511,10 @@ async function bootSuite(url) {
      * tax on the tcgbench workload (TB icount-capping + accounting +
      * virtual-timer runs) against the same run without it */
     const icount = QS.get("icount") === "1";
+    // the last run's module must not hold its heap while the loader allocates
+    // this one's
+    qemuModule = null;
+    window.__qemu = null;
     qemuModule = await launch({
       factory,
       engine: engineWasmMod,
@@ -1884,6 +1888,10 @@ async function boot() {
       ...extraArgs,
     ];
 
+    // the last run's module must not hold its heap while the loader allocates
+    // this one's
+    qemuModule = null;
+    window.__qemu = null;
     qemuModule = await launch({
       factory,
       // the prefetched module, when there is one: instantiation only —
@@ -2173,6 +2181,7 @@ function onGuestExit(code) {
   gprsNet = null;
   window.__gprsNet = null;
   lastRelease = null;       // names this run's module, which must not outlive it
+  caseState = { m: null, state: "lower" };   // likewise
   showGprsStatus();
   renderGprs();
   exitCode = code;
