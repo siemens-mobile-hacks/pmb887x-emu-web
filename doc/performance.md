@@ -423,6 +423,9 @@ always revert with `git apply -R`.
 - **Profile shares across builds:** function shares are not comparable,
   because Binaryen inlining shifts (`helper_teak_tcg_chain` read 1.5 % vs
   5.9 % after a peripheral-only change). Use an A/B.
+- **A missing flash:** on 2026-11-21 the container had no `EL71v41lg91.bin`,
+  so stopwatch, music, idle and the EL71 boot (bootbench `el71`) could not
+  run; the boot A/Bs used the S75 and KE970 boots.
 - **Dist names:** the host mount is case-insensitive, so dists whose names
   differ only in case collide. Use unique lowercase names.
 - **`WEB_DIST` must be absolute.** A relative path lands in
@@ -611,7 +614,7 @@ bash scripts/gate.sh close --dist dist-x           # before the last commit of a
   The DSP state matches at every common slice point (2026-11-03).
 - **The fold counts instructions at TB entry.** The wasm64 prologue adds
   the whole TB, and an unwind (io_recompile rewind, SMC restart, fault)
-  hands back what did not run (`w64_acct_unwind`). Before `4fc6ac6dc7` it
+  hands back what did not run (`w64_acct_adjust()`). Before `4fc6ac6dc7` it
   did not, each rewind left the count ahead, and the `LS_QARGS` run diverged
   wherever rewinds were frequent, which is what A5's barriers prevented.
 
@@ -630,7 +633,7 @@ counts instructions that the native plugin does not count**, so from
 1. **TB-start exits.** The prologue charges a TB's instructions before the
    TB's own exit check (`gen_tb_start`: icount budget, exit request). A TB
    that leaves there runs nothing, but the charge stays: `cpu_tb_exec` does
-   not hand it back on `TB_EXIT_REQUESTED`, and `w64_acct_unwind` covers
+   not hand it back on `TB_EXIT_REQUESTED`, and `w64_acct_adjust()` covers
    unwinds only. The plugin's inline counter sits after that check. Such
    exits are deterministic (the icount refill every 65,535 instructions,
    deadlines, interrupts) plus host-timed exit requests. The first one is
@@ -1279,6 +1282,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-12 | `47d1ff26aa` (`9bf917bb6e`) | smh/master `0539060008`: the HD15515X transceivers (`hd155153np` moved, `hd155155npeb` added), the DSP modulator per hardware version (E001/E101 reset, MSTAT and read rate), gprscu reads of unknown registers. No conflict, no fast path touched. Free-run A/B, 8 pairs each (two rounds of 4): towerblox +0.8 %, stopwatch +0.1 %, bobby −0.1 %, video +1.4 %, midi −0.2 %, every round within its spread (sd 0.6–7.1) |
 | 2026-11-12 | `9de7811900` (`47d1ff26aa`) | Not a speed change: `ui/wasm.c` gets a network port for the page, the GSM cell's IP side in the browser (`site/gprs-net.js`, [gsm-network.md](gsm-network.md)). Nothing runs unless the page attaches, which it does only with the GSM option on, so no benchmark scene sees it; with it on, the page polls the port every 20 ms on its main thread |
 | 2026-11-14 | `48858038d9`, `133f91266b` (`7dd5289`, `1d34feb`) | Not a speed change, checked afterwards with the 419 parent commits of the review rounds (a9b40fe → b1c2a53), both legs built the same way with `tools/perf/freerun.diff` and served side by side. No benchmark runs the changed code: the exit wrap runs at exit, and the page polls `wasm_gsm_state` once a second only with the GSM option on, which the benchmarks untick. Free-run, HEAD against a9b40fe, pairs in both orders: stopwatch +1.2 % (8 pairs, se 1.5), towerblox +0.4 % (8, se 0.8), midi −0.2 % (8, se 0.2), bobby −1.5 % (16, se 0.4), video MIPS −0.7 % (16, se 0.4) and fps −0.7 % (16, se 0.2); the A/A rounds read −1.0 to +1.0 %. Paced, host CPU (lower is better): stopwatch −0.9 %, towerblox +0.3 %, bobby +0.3 % (8 pairs each, se 0.4–0.7). EL71 boot burst (`bootab.sh`): +0.3 % and −2.0 % in the two orders, so HEAD was 0.85 % faster on average; tIdle 30.6 s on both. idlebench, S75, 4 runs each: tIdle 23.4 s on both, guest 1G at 17.3 s on both. uibench MIPS, keylag (v/wall 1.00 on both) and loadbench are the same. The bobby and video differences are placement. The hot DSP functions have the same bodies, but 20326 of 20715 functions changed index: `__wrap_exit`, `wasm_gsm_state` and the uint8 property accessors come early. The qemu-only legs carry the difference (bobby −0.9 %, se 0.9), and the page-only legs do not (+0.1 %, se 1.3). There is nothing to fix |
+| 2026-11-21 | `94754705d1` (`133f91266b`) | Review of the fork against smh/master `3403936c99`: 29 defects fixed, 49 reductions towards upstream (version-pins.md has the list, wasm-fast-paths.md the rows; the numbers are in 2026-11-21 review cleanup, below). Whole candidate against `133f91266b`, free-run, 4 pairs a round: towerblox +1.5 % (4 rounds), bobby +1.7 % (2), midi +0.7 % (2), video MIPS −0.5 % over 12 rounds (se ~0.35; 8 of them on the scene-identical tree `bf626e1fcd`). Boot (bootab.sh, lower = faster): S75 burst +0.1 %, audioMs +0.5 % (4 rounds); KE970 burst −0.35 %, audioMs +1.5 % (2 rounds, se ~3). stopwatch, music, idle and the EL71 boot were not measured: `EL71v41lg91.bin` was missing from the container |
 
 ## 2026-11-04 deviation cleanup
 
@@ -1372,3 +1376,95 @@ quantum has 2.7–2.9 ms.
   scope has no `performance`, `Date` sees the dutyhost stops, and its console
   output does not reach Playwright (stats have to go through the ring
   header).
+
+## 2026-11-21 review cleanup
+
+The round reviewed every fork deviation against smh/master `3403936c99`,
+fixed 29 defects and returned what neither speed nor correctness needs,
+without losing anything on any scene (rule 5). The base was `133f91266b`,
+the final tree `94754705d1`. What went back to upstream is listed in
+[wasm-fast-paths.md](wasm-fast-paths.md) under "Returned to upstream"; the
+rows there give the cost of removing each path that was priced and kept.
+
+All free-run (`tools/perf/swab.sh`, bounds checks, 4 pairs × 20 s per
+round), both dists built with `tools/perf/freerun.diff` from one build
+directory with `scripts/build-qemu-wasm64.sh`'s flags. Each value is one
+round's change of the candidate in vratio (video: MIPS), in percent,
+negative meaning slower than the base; rounds alternate which side runs
+which dist. The host's 32 threads were shared with other tenants; one
+stretch at load ~45–58 was discarded (video sd ~10 %). stopwatch, music and
+idle could not run: the container has no `EL71v41lg91.bin` (scenebench's
+EL71 image), and neither could bootbench's `el71`.
+
+| Scene | Rounds (candidate vs base, %) | Mean |
+|---|---|---|
+| towerblox | +1.10, +3.46, +1.35, +0.13 | +1.5 |
+| bobby | +2.67, +0.70 | +1.7 |
+| midi | +0.26, +1.19 | +0.7 |
+| video (MIPS) | −0.25, −1.00, −2.06, +0.42; scene-identical tree `bf626e1fcd`: −0.29, −0.56, −2.38, +0.19, +0.23, −1.03, −0.87, +2.05 | −0.5 over 12 (se ~0.35) |
+| A/A towerblox | −1.43; −0.04 (`bf626e1fcd`); −1.38, −1.41 (earlier) | |
+| S75 boot burst (bootab.sh, lower = faster) | −0.6, +0.4, +2.1, −1.4 | +0.1 |
+| S75 boot audioMs | −1.3, −0.3, +3.5, 0.0 | +0.5 |
+| KE970 boot burst | +0.3, −1.0 | −0.35 |
+| KE970 boot audioMs | +1.4, +1.6 (se ~3) | +1.5 |
+
+The final tree differs from `bf626e1fcd` only in the C6 stash (boot path,
+~1 flip a second in the scenes) and QBUG-14, so its video rounds are
+pooled.
+
+- **How the candidate got there.** The first candidate `012b3cae87` (with
+  QDEV-9, QDEV-12 and QDEV-16) lost: towerblox −2.2, −1.9, −3.0, −1.3,
+  −1.0, +1.3, −0.9; video −0.9, −2.1, −0.4; midi 0.0, −1.2, −1.2; bobby
+  +1.0, +0.1, +1.2, +1.4.
+- **Bisect.** The inverted-operand emitters restored: towerblox −0.3 / +0.2
+  (neutral). QDEV-9, QDEV-12 and the QBUG-3 test removed: towerblox
+  −1.0 / +0.25, video +1.2, +2.5, +1.1, +0.5 (faster without). Then
+  separately against `59f7a5f621` (QDEV-9 already out): without QDEV-12
+  video +1.7 (−0.8, +1.4, +4.1, +2.3); without the QBUG-3 condition 0.0
+  (+0.8, +0.7, −0.9, −0.5). Towerblox at the history midpoint `7e751483bb`:
+  base → mid −0.8 / +1.3, mid → candidate +1.5 / −1.9 (noise).
+- **QDEV-16** (no stash) against the stash, S75 boots: audioMs worse by
+  3.2, 18.6, 3.6, 5.3, 4.7 and 4.2 %; burst −2.0..+0.2.
+
+Pricing of the gated reductions, against `012b3cae87`, in percent:
+
+| Item | Change measured | towerblox | bobby | midi | video MIPS |
+|---|---|---|---|---|---|
+| QDEV-15 (C5) | no fill-time TLB grow | −15.4 (se 1.0) | −9.5 (se 1.6) | | |
+| QDEV-21 (A7) | `bql_unlock_mmio` always unlocks | −3.1 (se 0.8) | +0.2 (se 2.2) | | −4.9 (se 0.7) |
+| QDEV-34 | P7, P8's shift, the 14/15 arm at upstream's forms | −1.8 (se 1.4) | −1.1 (se 1.8) | −3.6 (se 0.7) | +0.05 (se 0.4) |
+
+Census (temporary counters, per guest second over the scene window):
+
+| | bobby | towerblox | midi | video | EL71 boot+idle |
+|---|---|---|---|---|---|
+| fused MMIO ld / st | 35.4k / 29.0k | 44.2k / 30.0k | 1.20M / 32.6k | 476k / 38.1k | 528k / 37.5k |
+| per-piece loop fast arms ld / st (slow: 0) | 1.7k / 0.8k | 1.5k / 0.9k | 0.8k / 0.6k | 1.1k / 0.6k | 1.2k / 0.06k |
+| i2s_tx_write / i2s_rx_read | 21.1k / 21.1k | 17.9k / 17.9k | 16.3k / 0 | 4.8k / 4.8k | 0 |
+| dmac_fifo_drain = sink_mr path | 508 | 3.7k | 44.2k | 111k | 60 |
+| 35BE flat iterations / general | 13.4k / 0 | 12.9k / 0 | 6.1k / 0 | 2.4k / 0 | 8.0k / 0 |
+| romd/readonly variant changes per run, same / different layout | 1,306 / 0 | 1,302 / 0 | 468 / 0 | 468 / 0 | 846 / 0 |
+
+- **Validation of `94754705d1`:** `scripts/gate.sh keep` and `close` on the
+  final dist, every job green except `firefox`, which cannot run in this
+  container (the Playwright Firefox needs NSS 3.126, the system has 3.120;
+  and ffboot's GPRS gateway wants a `gprs-gw` checkout at
+  `/bts-emulator/gprs-gw`). op-suite 1312/1312 on native JIT, TCI and wasm,
+  wasm serial identical; boot-ordered, the five board boots and early keys;
+  `native`; `lockstep-wasm` 250e6; `lockstep-native` 3/3 clean to 2.5e9;
+  `lockstep-full` 3/3 clean to 2.5e9 (298 SRAM digests each); detect,
+  efa-web, ui.
+- **`LS_QARGS` lockstep** (real TBs, superblocks, io_recompile rewinds): no
+  divergence over the range both legs reached, S75 to ~0.95G (113 SRAM
+  digests identical) and EL71 to ~0.80G (95 SRAM + 95 SDRAM digests
+  identical). The runs end there because `tools/lockstep-wasm.mjs` stops
+  when the wasm leg reaches the budget and assumes the native leg is the
+  faster one; on this host the one-insn-per-TB native leg runs ~23M
+  insns/s against ~60M on the wasm side, so no budget completes. Worth a
+  tool change (keep reading the native leg until it reaches the budget).
+- **Eviction:** `W64_LIVE_MAX` 256 (temporary build), `lockstep-wasm` to
+  1e9: clean (119 SRAM digests, serial identical).
+- **DSP translator changes:** native old (`133f91266b`) against new binary
+  (`tools/lockstep.mjs`), EL71 and S75 to 1e9: both clean (962 epochs + 120
+  memory digests identical). DSP unit tests (`test-pmb887x-dsp-tcg`): 53/53
+  after every DSP commit.
