@@ -54,7 +54,8 @@ What the cell does is upstream's model, unchanged: BCCH (system information
 1-4 and 13), FCCH/SCH, random access and immediate assignment of an SDCCH,
 LAPDm, Location Updating Accept, and GPRS on timeslot 7 (attach, routing area
 update, PDP context). It rejects CM service requests, so there are **no calls
-and no SMS**. Its IP side needs a qemu netdev: natively that is slirp, in
+and no SMS** (the option `relay=` adds them from an external relay server:
+doc/gsm-relay.md). Its IP side needs a qemu netdev: natively that is slirp, in
 the browser a slirp on a server the page relays to (both below).
 
 ### The phone's Internet in the browser
@@ -305,7 +306,7 @@ So the built-in cell stays where upstream runs it.
 
 ## Not supported, known gaps
 
-- **No SMS, no calls** (above).
+- **No SMS, no calls** (above), except natively with `relay=` (doc/gsm-relay.md).
 - **Without a GPRS gateway** the browser build has no Internet: the phone
   attaches and gets an address, and nothing answers.
 - **The operator profiles through the gateway are unverified.** The nftables

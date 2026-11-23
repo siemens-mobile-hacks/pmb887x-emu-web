@@ -364,6 +364,8 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   fill: none; stroke: currentColor; stroke-width: 1.8;
   stroke-linecap: round; stroke-linejoin: round;
 }
+#btn-mic[aria-pressed="false"] { color: var(--muted); opacity: 0.75; }
+#btn-mic[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 #btn-sound .snd-off { display: none; }
 #btn-sound[aria-pressed="true"] { color: var(--muted); opacity: 0.75; }
 #btn-sound[aria-pressed="true"] .snd-on { display: none; }

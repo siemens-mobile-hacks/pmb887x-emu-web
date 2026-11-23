@@ -10,6 +10,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync,
 } from "node:fs";
@@ -170,6 +171,12 @@ async function handler(req, res) {
   let path = normalize(join(root, decodeURIComponent(url.pathname)));
   if (path !== root && !path.startsWith(root + sep)) { res.writeHead(403); res.end(); return; }
   if (url.pathname === "/") path = join(root, "index.html");
+  // the page asks whether this server has a GSM relay (site/gsm-relay.js)
+  if (url.pathname === "/gsmrelay") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify({ relay: !!gsmRelay }));
+    return;
+  }
 
   // Everything below reads the one file it opened here (or the sidecar it
   // opened instead): a deploy that replaces the file mid-request cannot
@@ -308,6 +315,89 @@ const proxyGprs = (req, socket, head) => {
   }
 };
 
+// The virtual network's services (doc/gsm-relay.md): qemu's cell in the page
+// talks the relay server's byte protocol, carried in binary WebSocket
+// messages to /gsmrelay and piped here to the relay's TCP port
+// (GSM_RELAY=host:port; unset = no relay, the page leaves the option off).
+// The relay speaks plain TCP, so this end is the WebSocket server itself:
+// RFC 6455 framing, binary/continuation, ping, close; no extensions.
+const gsmRelay = process.env.GSM_RELAY
+  ? (([h, p]) => ({ host: h || "127.0.0.1", port: Number(p) }))(process.env.GSM_RELAY.split(":"))
+  : null;
+const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const WS_MAX = 1 << 20;   // a page sends a few KB at a time
+
+function wsFrame(op, data) {
+  const n = data.length;
+  const head = n < 126 ? Buffer.from([0x80 | op, n])
+    : n < 65536 ? Buffer.from([0x80 | op, 126, n >> 8, n & 255])
+    : (() => { const b = Buffer.alloc(10); b[0] = 0x80 | op; b[1] = 127; b.writeBigUInt64BE(BigInt(n), 2); return b; })();
+  return Buffer.concat([head, data]);
+}
+
+const proxyGsmRelay = (req, socket, head) => {
+  if (!gsmRelay) return refuse(socket, "404 Not Found");
+  if (!sameOrigin(req)) return refuse(socket, "403 Forbidden");
+  const key = String(req.headers["sec-websocket-key"] ?? "");
+  if (!key) return refuse(socket, "400 Bad Request");
+  const relay = net.connect(gsmRelay.port, gsmRelay.host);
+  relay.setNoDelay(true);
+  socket.setNoDelay(true);
+  let rx = head?.length ? Buffer.from(head) : Buffer.alloc(0);
+  let up = false;
+  const close = () => { relay.destroy(); socket.destroy(); };
+  relay.on("connect", () => {
+    up = true;
+    const accept = createHash("sha1").update(key + WS_GUID).digest("base64");
+    socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    if (rx.length) onData(Buffer.alloc(0));
+  });
+  // Backpressure both ways, nothing buffered here without bound: a page that
+  // does not read (a stalled tab) pauses the relay socket, and the relay's own
+  // per-phone queue then drops late speech and, if it stays stuck, the phone;
+  // a relay that does not read pauses the page.
+  relay.on("data", (d) => { if (!socket.write(wsFrame(2, d))) relay.pause(); });
+  socket.on("drain", () => relay.resume());
+  relay.on("drain", () => socket.resume());
+  relay.on("error", () => (up ? close() : refuse(socket, "502 Bad Gateway")));
+  relay.on("close", () => { if (up) socket.end(wsFrame(8, Buffer.from([0x03, 0xe8]))); });
+  socket.on("error", close);
+  socket.on("close", () => relay.destroy());
+  const onData = (d) => {
+    rx = rx.length ? Buffer.concat([rx, d]) : d;
+    if (!up) return;
+    for (;;) {
+      if (rx.length < 2) return;
+      const op = rx[0] & 15, masked = rx[1] & 128;
+      let n = rx[1] & 127, at = 2;
+      if (n === 126) { if (rx.length < 4) return; n = rx.readUInt16BE(2); at = 4; }
+      else if (n === 127) { if (rx.length < 10) return; n = Number(rx.readBigUInt64BE(2)); at = 10; }
+      if (!masked || n > WS_MAX) return close();
+      if (rx.length < at + 4 + n) return;
+      const mask = rx.subarray(at, at + 4);
+      const data = Buffer.from(rx.subarray(at + 4, at + 4 + n));
+      for (let i = 0; i < n; i++) data[i] ^= mask[i & 3];
+      rx = rx.subarray(at + 4 + n);
+      if (op === 0 || op === 2) { if (!relay.write(data)) socket.pause(); }
+      else if (op === 8) { relay.end(); socket.end(wsFrame(8, data.subarray(0, 2))); return; }
+      else if (op === 9) socket.write(wsFrame(10, data));
+    }
+  };
+  socket.on("data", onData);
+};
+
+const onUpgrade = (req, socket, head) => {
+  try {
+    if (isWebSocket(req) && new URL(req.url, "http://x").pathname === "/gsmrelay") {
+      return proxyGsmRelay(req, socket, head);
+    }
+  } catch {
+    return socket.destroy();
+  }
+  proxyGprs(req, socket, head);
+};
+
 // Any other Upgrade (h2c) is ignored, as HTTP/1.1 allows: the request is
 // answered as a plain one.
 let httpsUp = false;   // the redirect needs an https listener to go to
@@ -315,7 +405,7 @@ const httpServer = http.createServer({ shouldUpgradeCallback: isWebSocket }, (re
   if (httpsUp && redirectNonLoopbackToHttps(req, res)) return;
   serve(req, res);
 });
-httpServer.on("upgrade", proxyGprs);
+httpServer.on("upgrade", onUpgrade);
 httpServer.on("error", (e) => {
   console.error(`serve.mjs: cannot serve http on port ${port}: ${e.code === "EADDRINUSE" ? "the port is in use" : e.message}`);
   process.exit(1);
@@ -328,7 +418,7 @@ httpServer.listen(port, "0.0.0.0", () =>
 if (cert) {
   const httpsServer = https.createServer(
     { key: cert.key, cert: cert.cert, shouldUpgradeCallback: isWebSocket }, serve);
-  httpsServer.on("upgrade", proxyGprs);
+  httpsServer.on("upgrade", onUpgrade);
   httpsServer.on("error", (e) => {
     console.warn(`https disabled, serving http only: port ${httpsPort}: ` +
       `${e.code === "EADDRINUSE" ? "in use (HTTPS_PORT picks another, HTTPS=0 turns https off)" : e.message}`);

@@ -26,6 +26,9 @@
 #                        page's vcpu-timers clock instead (default
 #                        shift=3,sleep=off: deterministic, which lockstep
 #                        and the test suites need)
+#   GSM=1                qemu's GSM cell (gsm-bts, doc/gsm-network.md)
+#   GSM_RELAY=host:port  the cell with SMS, USSD and calls served by a relay
+#                        server at host:port (doc/gsm-relay.md)
 #   QEMU_BIN=path        the qemu-system-arm to run (default the JIT build's,
 #                        $QEMU_NATIVE_BUILD/qemu-system-arm: build-dirs.sh)
 set -euo pipefail
@@ -122,6 +125,15 @@ if [ "$SIM" = virtual ] && board_has '"iso7816-slot"'; then
   SIM_ARGS=(-device "gsm-sim,operator=$OPERATOR")
 fi
 
+GSM_ARGS=()
+if [ -n "${GSM_RELAY:-}" ]; then
+  GSM_ARGS=(-machine pmb887x,gsm-network=gsm0
+    -chardev "socket,id=gsmrelay,host=${GSM_RELAY%:*},port=${GSM_RELAY##*:},reconnect-ms=2000"
+    -object gsm-bts,id=gsm0,relay=gsmrelay)
+elif [ "${GSM:-0}" = 1 ]; then
+  GSM_ARGS=(-machine pmb887x,gsm-network=gsm0 -object gsm-bts,id=gsm0)
+fi
+
 # ICOUNT=none boots without -icount entirely
 ICOUNT_ARGS=()
 if [ "$ICOUNT" = "vt" ]; then
@@ -139,6 +151,7 @@ QEMU_ARGS=(
   -serial "file:$SERIAL"
   -monitor "$MONITOR"
   "${SIM_ARGS[@]}"
+  "${GSM_ARGS[@]}"
   "$@"
 )
 # the tools pass SERIAL and signal this pid as qemu's
