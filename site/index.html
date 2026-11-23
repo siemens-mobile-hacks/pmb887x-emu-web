@@ -98,6 +98,21 @@
               <p class="caption" id="gsmrelay-caption" hidden></p>
             </div>
 
+            <!-- the phone's memory card (doc/sd-card.md): a FAT16 image built
+                 from a folder and kept in sync with it, or an image file.
+                 PMB8876 boards only (EL71 tested); sdcard.js -->
+            <div class="adv-span" id="card-block">
+              <p class="adv-group-title">Memory card</p>
+              <div class="ff-status-row">
+                <button type="button" id="card-folder" class="btn">Folder…</button>
+                <button type="button" id="card-image" class="btn">Image…</button>
+                <button type="button" id="card-none" class="linkbtn" hidden>No card</button>
+                <input type="file" id="card-image-file" accept=".img,.bin,application/octet-stream" hidden>
+              </div>
+              <p class="caption" id="card-caption">No card. A folder becomes the card and stays in
+                sync with it while the phone runs (Chrome/Edge); an image is used as it is.</p>
+            </div>
+
             <!-- Siemens only: the firmware refuses to boot unless the keys
                  stored in the fullflash match the ESN it is handed. app.js
                  attaches this block only for a siemens-* device in Own file
@@ -410,6 +425,15 @@
             <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
             Flash
           </button>
+          <button type="button" id="btn-save-card" class="btn" disabled hidden
+            title="The memory card's image as the phone left it">
+            <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
+            Card
+          </button>
+          <button type="button" id="btn-sync-card" class="btn" disabled hidden
+            title="Put the folder on the card now: the phone's changes go to the folder first, then the card is taken out and put back with the folder's files">
+            Sync card
+          </button>
           <button type="button" id="btn-save-efa" class="btn" disabled
             title="EFA block (LG EEPROM) — what the firmware wrote to it">
             <svg class="ico-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
@@ -417,6 +441,8 @@
           </button>
         </div>
         <p class="caption" id="export-caption">Available once running</p>
+        <p class="caption" id="card-state" hidden></p>
+        <p class="caption" id="card-run-caption" hidden></p>
       </div>
     </div>
 
