@@ -29,6 +29,9 @@
 #   GSM=1                qemu's GSM cell (gsm-bts, doc/gsm-network.md)
 #   GSM_RELAY=host:port  the cell with SMS, USSD and calls served by a relay
 #                        server at host:port (doc/gsm-relay.md)
+#   CARD=card.img        memory card (PMB8876 boards: disk 4:), a raw SD image
+#                        opened writable: SDSC, a power-of-2 size <= 2 GB,
+#                        e.g. 64M with mkfs.fat -F 16 (doc/sd-card.md)
 #   QEMU_BIN=path        the qemu-system-arm to run (default the JIT build's,
 #                        $QEMU_NATIVE_BUILD/qemu-system-arm: build-dirs.sh)
 set -euo pipefail
@@ -101,6 +104,7 @@ fi
 echo "board:    $BOARD"
 echo "fullflash: $FLASH$([ "${RW:-0}" = 1 ] && echo ' (writable)')"
 echo "serial:   $SERIAL   monitor: $MONITOR   display: $DISPLAY_MODE"
+[ -n "${CARD:-}" ] && echo "card:     $CARD"
 echo
 
 # does the board's config, or a file it `extends`, contain this text outside
@@ -134,6 +138,12 @@ elif [ "${GSM:-0}" = 1 ]; then
   GSM_ARGS=(-machine pmb887x,gsm-network=gsm0 -object gsm-bts,id=gsm0)
 fi
 
+CARD_ARGS=()
+if [ -n "${CARD:-}" ]; then
+  [ -f "$CARD" ] || { echo "card image not found: $CARD" >&2; exit 1; }
+  CARD_ARGS=(-drive "if=sd,format=raw,file=$(realpath "$CARD")")
+fi
+
 # ICOUNT=none boots without -icount entirely
 ICOUNT_ARGS=()
 if [ "$ICOUNT" = "vt" ]; then
@@ -152,6 +162,7 @@ QEMU_ARGS=(
   -monitor "$MONITOR"
   "${SIM_ARGS[@]}"
   "${GSM_ARGS[@]}"
+  "${CARD_ARGS[@]}"
   "$@"
 )
 # the tools pass SERIAL and signal this pid as qemu's

@@ -20,9 +20,10 @@ import {
 } from "./recalc.js";
 import { loadSiemensFW } from "./siemensfw.js";
 import { GprsNet } from "./gprs-net.js";
+import { badgeView } from "./gsm-badge.js";
 import { GsmRelay, relayOffered, simImsi } from "./gsm-relay.js";
 import { Mic } from "./mic.js";
-import { badgeView } from "./gsm-badge.js";
+import { CardSync, cardImageName } from "./sdcard.js";
 import { buildShortUA } from "./ua.js";
 import { esnToOtp0, imeiToOtp1 } from "./otp.js";
 import { serialMessages, parseExit, EXIT_MARK, EXIT_HEAD } from "./exit-report.js";
@@ -190,8 +191,21 @@ function noteFatal(what) {
   fatalMsg ??= String(what);
   console.log("[qemu fatal]", what);
 }
-addEventListener("error", (e) => noteFatal(e.message || e.error || "error"));
-addEventListener("unhandledrejection", (e) => noteFatal(e.reason));
+// emscripten rethrows the worker's own ErrorEvent, which prints as
+// "Uncaught [object ErrorEvent]": say what is inside it (message, place,
+// wasm stack)
+function describeError(x, depth = 0) {
+  if (x == null) return "error";
+  if (typeof x !== "object" || depth > 2) return String(x);
+  const inner = x.error ?? x.reason;
+  const msg = x.message && !/\[object (Error)?Event\]/.test(x.message) ? x.message
+    : inner != null && inner !== x ? describeError(inner, depth + 1) : String(x);
+  const where = x.filename ? ` (${x.filename.split("/").pop()}:${x.lineno}:${x.colno})` : "";
+  const stack = depth === 0 && inner?.stack && !msg.includes(inner.stack) ? "\n" + inner.stack : "";
+  return msg + where + stack;
+}
+addEventListener("error", (e) => noteFatal(describeError(e)));
+addEventListener("unhandledrejection", (e) => noteFatal(describeError(e.reason)));
 
 const statusEl = $("status");
 const statusTextEl = $("status-text");
@@ -826,6 +840,7 @@ function render() {
   $("btn-save-efa").hidden = !exportDev?.startsWith("lg-");
   $("export-caption").textContent = "Available once running";
   $("export-caption").hidden = canExport;
+  renderCard(canExport);
   renderAccessory();
 
   $("btn-shot").disabled = !live;
@@ -1893,6 +1908,11 @@ async function boot() {
     const audioArgs = QS.get("sound") === "off"
       ? []
       : ["-audio", `wasm,out.frequency=${audioRate()},out.channels=2`];
+    // the memory card (sdcard.js): an image built from the chosen folder,
+    // or the chosen image, in MEMFS as qemu's sd drive; PMB8876 boards only
+    const cardBytes = await cardBootImage(device);
+    if (cardBytes === false) return;
+    const cardArgs = cardBytes ? ["-drive", `if=sd,format=raw,file=${CARD_PATH}`] : [];
     // the card is a device of its own, plugged into the board's empty
     // "iso7816-slot"; a board without one runs with no SIM
     const simSlot = boardHasSimSlot(device);
@@ -1940,6 +1960,7 @@ async function boot() {
       "-parallel", "none",
       ...simArgs,
       ...accArgs,
+      ...cardArgs,
       // ?trace=dsp,scu: device log lines and register accesses
       ...(trace ? ["-debug-channels", `log=${trace},io=${trace}`] : []),
       ...extraArgs,
@@ -1978,6 +1999,7 @@ async function boot() {
         mod.FS.mkdirTree("/data");
         // canOwn: MEMFS takes these buffers as they are instead of a copy
         mod.FS.writeFile(FULLFLASH_PATH, flashBytes, { canOwn: true });
+        if (cardBytes) mod.FS.writeFile(CARD_PATH, cardBytes);
         for (const [suffix, bytes] of sidecarBytes)
           mod.FS.writeFile(FULLFLASH_PATH + suffix, bytes, { canOwn: true });
         mod.ENV.PMB887X_BOARD = `/boards/${device}.toml`;
@@ -2039,6 +2061,7 @@ async function boot() {
     gsmRelay.start();
   }
   showRelayStatus();
+  cardStart(cardRun);
   // Stop came while the factory was starting the guest: stop it the usual way
   if (bootCancelled) stop();
 }
@@ -2285,6 +2308,7 @@ function onGuestExit(code) {
   mic.attach(null);
   renderMic();
   showRelayStatus();
+  cardStop();
   lastRelease = null;       // names this run's module, which must not outlive it
   caseState = { m: null, state: "lower" };   // likewise
   clearTimeout(quitTimer);
@@ -2406,6 +2430,297 @@ $("btn-save-efa").addEventListener("click", () => {
     cap.hidden = false;
   }
 });
+
+/* ------------------------------------------------------------------ */
+/* memory card (doc/sd-card.md, sdcard.js)                              */
+/* ------------------------------------------------------------------ */
+
+// The card is chosen before a run: a folder (File System Access API, read
+// and write) becomes a FAT16 image and stays in sync with it, or an image
+// file is used as it is. While the phone runs:
+//  - phone -> folder: when the phone has written to the card and then been
+//    quiet for CARD_QUIET_MS, the image is read (FAT) and new, changed and
+//    deleted files go to the folder;
+//  - folder -> phone: only on "Sync card": the card is taken out
+//    (wasm_card_eject), the phone's changes are pulled first, a new image is
+//    built from the folder and put in (wasm_card_insert). The phone drops its
+//    card cache and reads it again (hw/arm/pmb887x/mci.c turns the change
+//    into its card detect). Whether the folder has changes not on the card
+//    yet is checked when the window gets the focus and after each pull.
+// A file changed on both sides is kept twice: the phone's copy as "name~phone".
+const CARD_PATH = "/data/card.img";
+const CARD_QUIET_MS = 3000;
+let cardDir = null;          // FileSystemDirectoryHandle
+let cardImage = null;        // { name, bytes } chosen image
+let cardSync = null;         // CardSync of the running card (folder mode)
+let cardRun = false;         // this run has a card
+let cardTimer = null;
+let cardWrites = -1, cardQuietSince = 0, cardDirty = false;
+let cardBusy = false;
+let cardHostPending = false;  // the folder has changes not on the card yet
+let cardStatus = "";
+let cardState = -1;          // wasm_card_state(): what the phone knows of the card
+let cardStateSince = 0;      // performance.now() of the last state change
+const CARD_STATES = ["in", "out", "going out", "reading", "not seen by the phone"];
+// a push waits at most this long for the phone to read the card (usually
+// about a second; without the model's timer shortcut the firmware's own card
+// timer, ~13 s of phone time after the last card access, can be in the way:
+// doc/sd-card.md)
+const CARD_SETTLE_MS = 240000;
+
+function cardLog(text) {
+  cardStatus = text;
+  console.log("[card]", text);
+  const cap = $("card-run-caption");
+  cap.textContent = text;
+  cap.hidden = !text;
+}
+
+function renderCard(canExport) {
+  const folderApi = typeof window.showDirectoryPicker === "function";
+  $("card-folder").disabled = !folderApi || $("card-folder").disabled;
+  $("card-folder").title = folderApi ? "A folder on your disk becomes the card"
+    : "Needs the File System Access API (Chrome, Edge)";
+  $("card-none").hidden = !cardDir && !cardImage;
+  $("card-caption").textContent = cardDir ? `Card: the folder "${cardDir.name}" (kept in sync)`
+    : cardImage ? `Card: the image "${cardImage.name}" (${(cardImage.bytes.length / 1048576).toFixed(0)} MB)`
+    : "No card. A folder becomes the card and stays in sync with it while the phone runs (Chrome/Edge); an image is used as it is.";
+  $("btn-save-card").hidden = !cardRun;
+  $("btn-save-card").disabled = !canExport;
+  $("btn-sync-card").hidden = !cardSync;
+  $("btn-sync-card").disabled = !liveModule() || cardBusy;
+}
+
+// The image this boot starts with: null = no card, false = failed (shown)
+async function cardBootImage(device) {
+  cardRun = false;
+  cardSync = null;
+  if (!cardDir && !cardImage) return null;
+  if (boardCpu(device) !== "pmb8876") {
+    cardLog("This phone has no memory card slot in the emulator (PMB8876 phones only)");
+    return null;
+  }
+  try {
+    let bytes;
+    if (cardDir) {
+      // (a handle without the permission calls, like OPFS, is always writable)
+      if (cardDir.queryPermission &&
+          (await cardDir.queryPermission({ mode: "readwrite" })) !== "granted" &&
+          (await cardDir.requestPermission({ mode: "readwrite" })) !== "granted") {
+        throw new Error("no permission to write to the folder");
+      }
+      cardSync = new CardSync({ dir: cardDir, log: cardLog });
+      bytes = await cardSync.initialImage();
+    } else {
+      bytes = cardImage.bytes.slice();
+      // qemu's sd-card wants a power-of-two size
+      if (bytes.length & (bytes.length - 1)) {
+        let n = 1;
+        while (n < bytes.length) n *= 2;
+        const b = new Uint8Array(n);
+        b.set(bytes);
+        bytes = b;
+      }
+    }
+    cardRun = true;
+    return bytes;
+  } catch (e) {
+    setError("Memory card: " + e.message);
+    cardSync = null;
+    return false;
+  }
+}
+
+function cardStart(on) {
+  cardStop();
+  if (!on) return;
+  cardWrites = -1;
+  cardDirty = false;
+  cardHostPending = false;
+  cardState = -1;
+  cardTimer = setInterval(cardTick, 1000);
+  if (cardSync) {
+    cardLog(`Card in sync with "${cardDir.name}"`);
+  }
+  window.__card = { sync: cardSync, now: () => cardRunExclusive(cardInsertNow), path: CARD_PATH };
+  render();
+}
+
+function cardStop() {
+  if (cardTimer) clearInterval(cardTimer);
+  cardTimer = null;
+  // the phone's last writes still go to the folder
+  if (cardSync && cardDirty && qemuModule?.FS) {
+    cardDirty = false;
+    cardRunExclusive(() => cardSync.pull(qemuModule.FS.readFile(CARD_PATH)));
+  }
+}
+
+async function cardRunExclusive(fn) {
+  if (cardBusy) return;
+  cardBusy = true;
+  render();
+  try {
+    await fn();
+  } catch (e) {
+    cardLog("Card sync failed: " + e.message);
+    console.error(e);
+  } finally {
+    cardBusy = false;
+    render();
+  }
+}
+
+// the phone's view of the card (0 in, 1 out, 2 going out, 3 reading, 4 not
+// seen; | 0x10 waiting for the firmware's card timer), with a counter while
+// it changes; returns the state without the flag
+function cardShowState(m) {
+  const raw = m?._wasm_card_state ? m._wasm_card_state() : -1;
+  const st = raw < 0 ? raw : raw & 0xF;
+  const now = performance.now();
+  if (st !== cardState) {
+    cardState = st;
+    cardStateSince = now;
+    if (st >= 0) console.log("[card] state:", CARD_STATES[st]);
+  }
+  const el = $("card-state");
+  if (el) {
+    let text = "";
+    if (st >= 0) {
+      text = "Card: " + CARD_STATES[st];
+      if (st === 2 || st === 3) {
+        text += `… ${Math.round((now - cardStateSince) / 1000)} s`;
+        if (raw & 0x10) text += " (waiting for the phone's card timer, ~13 s of phone time)";
+      }
+      if (cardHostPending && st !== 2 && st !== 3) text += " · the folder has changes not on the card yet: Sync card";
+    }
+    el.textContent = text;
+    el.dataset.state = st;
+    el.hidden = !text;
+  }
+  return st;
+}
+
+// on focus (the user comes back from editing the folder): any changes?
+async function cardCheckHost() {
+  if (!cardSync || cardBusy || !liveModule()) return;
+  try {
+    cardHostPending = await cardSync.hostChanged();
+  } catch { /* the folder went away: the next sync says so */ }
+  cardShowState(liveModule());
+}
+window.addEventListener("focus", () => cardCheckHost());
+document.addEventListener("visibilitychange", () => { if (!document.hidden) cardCheckHost(); });
+
+function cardTick() {
+  const m = liveModule();
+  if (cardRun) cardShowState(m);
+  if (!m?._wasm_card_writes || !cardSync || cardBusy) return;
+  const now = performance.now();
+  const w = m._wasm_card_writes();
+  if (w !== cardWrites) {
+    if (cardWrites >= 0) cardDirty = true;
+    cardWrites = w;
+    cardQuietSince = now;
+    if (!cardDirty) cardDirty = w > 0;   // the first look: boot-time writes
+    return;
+  }
+  if (cardDirty && now - cardQuietSince >= CARD_QUIET_MS) {
+    cardDirty = false;
+    cardRunExclusive(async () => {
+      await cardSync.pull(m.FS.readFile(CARD_PATH));
+      cardHostPending = await cardSync.hostChanged();
+    });
+  }
+}
+
+function cardWait(m, done, ms = 10000) {
+  return new Promise((resolve, reject) => {
+    const t0 = performance.now();
+    const step = () => {
+      if (m._wasm_card_done() >= done) return resolve();
+      if (performance.now() - t0 > ms) return reject(new Error("the emulator did not answer"));
+      setTimeout(step, 20);
+    };
+    step();
+  });
+}
+
+// until the phone has acted on the last eject/insert (state "in"), or it
+// gave up, or CARD_SETTLE_MS: another change is not started before
+function cardSettle(m) {
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    const step = () => {
+      const st = cardShowState(m);
+      if (!m._wasm_card_state || st === 0 || st === 1 || st === 4) return resolve(st);
+      if (performance.now() - t0 > CARD_SETTLE_MS) return resolve(st);
+      setTimeout(step, 250);
+    };
+    step();
+  });
+}
+
+// folder -> phone: out, pull, rebuild, in
+async function cardPush(m) {
+  const d0 = m._wasm_card_done();
+  m._wasm_card_eject();
+  await cardWait(m, d0 + 1);
+  await cardSync.pull(m.FS.readFile(CARD_PATH));
+  const img = await cardSync.rebuild();
+  m.FS.writeFile(CARD_PATH, img);
+  // NUL-terminated, ASCII (as the accessory name)
+  const at = Number(m._wasm_card_buf());
+  for (let i = 0; i < CARD_PATH.length; i++) m.HEAPU8[at + i] = CARD_PATH.charCodeAt(i);
+  m.HEAPU8[at + CARD_PATH.length] = 0;
+  m._wasm_card_insert();
+  await cardWait(m, d0 + 2);
+  // the new image is the base; what the phone writes from now on is pulled
+  cardWrites = m._wasm_card_writes();
+  cardDirty = false;
+  cardLog(`Card updated from "${cardDir.name}", the phone reads it...`);
+  const st = await cardSettle(m);
+  cardLog(st === 0 ? `Card updated from "${cardDir.name}" (${new Date().toLocaleTimeString()})`
+    : `Card updated from "${cardDir.name}", but the phone has not read it (${CARD_STATES[st] ?? "?"})`);
+}
+
+// "Sync card": the folder onto the card at once (the phone's own changes
+// go to the folder first, in cardPush), even when nothing seems changed:
+// the phone then reads the card again in any case
+async function cardInsertNow() {
+  const m = liveModule();
+  if (!m || !cardSync) return;
+  cardLog(`Putting "${cardDir.name}" on the card…`);
+  await cardPush(m);
+  cardHostPending = false;
+  cardShowState(m);
+}
+
+$("card-folder").addEventListener("click", async () => {
+  try {
+    cardDir = await window.showDirectoryPicker({ id: "phone-card", mode: "readwrite" });
+    cardImage = null;
+  } catch (e) {
+    if (e.name !== "AbortError") setError("Memory card: " + e.message);
+  }
+  render();
+});
+$("card-image").addEventListener("click", () => $("card-image-file").click());
+$("card-image-file").addEventListener("change", async (ev) => {
+  const f = ev.target.files?.[0];
+  if (!f) return;
+  cardImage = { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) };
+  cardDir = null;
+  ev.target.value = "";
+  render();
+});
+$("card-none").addEventListener("click", () => {
+  cardDir = null;
+  cardImage = null;
+  render();
+});
+$("btn-save-card").addEventListener("click", () => downloadMemfs(CARD_PATH, cardImageName()));
+$("btn-sync-card").addEventListener("click", () => cardRunExclusive(cardInsertNow));
 
 /* ------------------------------------------------------------------ */
 /* accessory: what is plugged into the phone's system connector         */
