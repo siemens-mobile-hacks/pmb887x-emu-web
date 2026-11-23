@@ -84,6 +84,20 @@
               <p class="caption" id="gsm-caption" hidden></p>
             </div>
 
+            <!-- the cell's SMS, calls and USSD through the server's relay
+                 (doc/gsm-relay.md); shown only when serve.mjs has one.
+                 Needs the GSM network and the virtual SIM. -->
+            <div class="adv-span" id="gsmrelay-block" hidden>
+              <label class="checkbox-label">
+                <input type="checkbox" id="gsmrelay" checked>
+                <span>Virtual network (SMS, calls, USSD)
+                  <small>Text and call the other phones on this server's
+                    relay; 7777 answers SMS, 300 is an echo call, *100#
+                    a USSD menu. Needs the virtual SIM</small></span>
+              </label>
+              <p class="caption" id="gsmrelay-caption" hidden></p>
+            </div>
+
             <!-- Siemens only: the firmware refuses to boot unless the keys
                  stored in the fullflash match the ESN it is handed. app.js
                  attaches this block only for a siemens-* device in Own file
@@ -242,6 +256,16 @@
           <svg class="snd-off" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 9.5v5h3.2L12 18.8V5.2L7.2 9.5H4z"/>
             <path class="snd-wave" d="M15 9.5l5 5M20 9.5l-5 5"/>
+          </svg>
+        </button>
+        <!-- The phone's microphone from the computer's (mic.js): asked for
+             only when pressed; shown while a run has the input. -->
+        <button type="button" id="btn-mic" class="icon-btn"
+          title="Use your microphone as the phone's" aria-label="Microphone"
+          aria-pressed="false" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 14.5a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5.5a3 3 0 0 0 3 3z"/>
+            <path d="M18 11.5h-1.6a4.4 4.4 0 0 1-8.8 0H6a6 6 0 0 0 5.2 5.9V20h1.6v-2.6a6 6 0 0 0 5.2-5.9z"/>
           </svg>
         </button>
         <!-- The browser and system bars are most of the height the keypad is

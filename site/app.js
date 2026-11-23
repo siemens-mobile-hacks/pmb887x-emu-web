@@ -20,6 +20,8 @@ import {
 } from "./recalc.js";
 import { loadSiemensFW } from "./siemensfw.js";
 import { GprsNet } from "./gprs-net.js";
+import { GsmRelay, relayOffered, simImsi } from "./gsm-relay.js";
+import { Mic } from "./mic.js";
 import { badgeView } from "./gsm-badge.js";
 import { buildShortUA } from "./ua.js";
 import { esnToOtp0, imeiToOtp1 } from "./otp.js";
@@ -100,6 +102,9 @@ const store = {
 let qemuModule = null;   // current emscripten module instance
 let running = false;     // a guest is live (the module object outlives it)
 let gprsNet = null;      // the GSM cell's IP side (gprs-net.js) while it runs
+let gsmRelay = null;     // the cell's link to the virtual network's relay (gsm-relay.js)
+let relayAvail = false;  // does this server pipe /gsmrelay to a relay?
+let relayRun = false;    // does this run's cell have the relay chardev?
 // The module object outlives the guest, but its wasm exports do not:
 // emscripten replaces them with stubs that abort ("called after runtime
 // exit") once main() has returned, and the stale module of a finished run is
@@ -845,6 +850,7 @@ function render() {
   // down like fullscreen (the recording takes the sound whether or not the
   // speaker plays it, and the pill needs the room at 320px).
   soundBtn.hidden = pillRec;
+  micBtn.hidden = pillRec || !running || !qemuModule?._wasm_mic_put;
   const finishing = !!recorder && !pillRec;
   const recFmt = recExt(recType()).slice(1);
   recBtn.title = finishing ? `Finish recording and save the .${recFmt}`
@@ -1890,8 +1896,15 @@ async function boot() {
     // the card is a device of its own, plugged into the board's empty
     // "iso7816-slot"; a board without one runs with no SIM
     const simSlot = boardHasSimSlot(device);
+    // Virtual network (doc/gsm-relay.md): the cell's SMS, calls and USSD
+    // go to the server's relay, which knows the phone by its IMSI's last
+    // digits: each page gets an IMSI of its own (gsm-relay.js simImsi)
+    const relay = relayAvail && $("gsmrelay").checked && gsmFor(device) &&
+      simSlot && sim === "virtual";
+    const imsi = relay ? await simImsi(operator) : null;
+    relayRun = relay;
     const simArgs = simSlot && sim === "virtual"
-      ? ["-device", `gsm-sim,operator=${operator}`]
+      ? ["-device", `gsm-sim,operator=${operator}${imsi ? `,imsi=${imsi}` : ""}`]
       : [];
     // GSM network (doc/gsm-network.md): on a board that has a radio, qemu
     // gets its built-in cell. Without the option, and on any other board,
@@ -1899,7 +1912,9 @@ async function boot() {
     // whose other port is the page (gprs-net.js).
     gsm = gsmFor(device);
     const gsmArgs = gsm
-      ? ["-netdev", "hubport,id=net0,hubid=0", "-object", "gsm-bts,id=gsm0,netdev=net0"]
+      ? ["-netdev", "hubport,id=net0,hubid=0",
+         ...(relay ? ["-chardev", "wasm-gsm,id=gsmrelay"] : []),
+         "-object", `gsm-bts,id=gsm0,netdev=net0${relay ? ",relay=gsmrelay" : ""}`]
       : [];
     // what the Accessory control shows, chosen there or not
     const accConf = readAccessories(device + ".toml");
@@ -2017,6 +2032,13 @@ async function boot() {
     gprsNet.start();
     renderGprs();
   }
+  // a dist built before the wasm-gsm chardev existed has no relay
+  if (relayRun && qemuModule._wasm_gsmrelay_ready) {
+    gsmRelay = new GsmRelay(qemuModule, { onChange: showRelayStatus });
+    window.__gsmRelay = gsmRelay; // debugging
+    gsmRelay.start();
+  }
+  showRelayStatus();
   // Stop came while the factory was starting the guest: stop it the usual way
   if (bootCancelled) stop();
 }
@@ -2030,6 +2052,27 @@ function showGprsStatus() {
   cap.textContent = down ? `No GPRS Internet: ${g.reason}` : "";
   cap.hidden = !cap.textContent;
 }
+
+// The virtual network's line under its option: the phone's number once the
+// relay has given it, else what the link is doing
+function showRelayStatus() {
+  const r = gsmRelay;
+  const cap = $("gsmrelay-caption");
+  cap.textContent = !r ? ""
+    : r.state === "online" && r.number ? `Your number: ${r.number}`
+    : r.state === "online" ? "Relay connected; the number comes once the phone has registered"
+    : r.state === "offline" ? "The relay is not reachable; retrying"
+    : r.state === "connecting" ? "Connecting to the relay…" : "";
+  cap.hidden = !cap.textContent;
+  cap.dataset.number = r?.number ?? "";
+  gprsLook();
+}
+
+// offered only where the server has a relay; on by default there
+relayOffered().then((ok) => {
+  relayAvail = ok;
+  $("gsmrelay-block").hidden = !ok;
+});
 
 /* ---- network badge ---- */
 // The pill's network badge (#gprs: an antenna over a bearer tag, what each
@@ -2137,7 +2180,9 @@ function gprsLook(badge = gprsBadge()) {
     const letters = `#gsm-bearer-${v.bearer}`;
     if (gprsLettersEl.getAttribute("href") !== letters) gprsLettersEl.setAttribute("href", letters);
   }
-  if (gsmStatusEl.textContent !== v.status) gsmStatusEl.textContent = v.status;
+  // the virtual network's number for this phone (gsm-relay.js), next to the state
+  const status = v.status && gsmRelay?.number ? `${v.status} · ${gsmRelay.number}` : v.status;
+  if (gsmStatusEl.textContent !== status) gsmStatusEl.textContent = status;
   if ((gsmStatusEl.dataset.tone ?? "") !== v.tone) gsmStatusEl.dataset.tone = v.tone;
   if (gsmDataEl.hidden !== !v.amounts) gsmDataEl.hidden = !v.amounts;
   gprsAmounts();
@@ -2233,6 +2278,13 @@ function onGuestExit(code) {
   gprsNet?.stop();
   gprsNet = null;
   window.__gprsNet = null;
+  gsmRelay?.stop();
+  gsmRelay = null;
+  window.__gsmRelay = null;
+  mic.stop();
+  mic.attach(null);
+  renderMic();
+  showRelayStatus();
   lastRelease = null;       // names this run's module, which must not outlive it
   caseState = { m: null, state: "lower" };   // likewise
   clearTimeout(quitTimer);
@@ -2893,6 +2945,33 @@ soundBtn.addEventListener("click", async () => {
   updateListening();
 });
 renderSound();
+
+// The microphone (mic.js): off until pressed, the browser asks then. It is
+// the run's: a new run starts with it off again.
+const micBtn = $("btn-mic");
+const mic = new Mic();
+window.__mic = mic;   // debugging and headless checks
+function renderMic() {
+  micBtn.setAttribute("aria-pressed", mic.on ? "true" : "false");
+  micBtn.setAttribute("aria-label", mic.on ? "Turn the microphone off" : "Turn the microphone on");
+  micBtn.title = mic.on ? "Stop using your microphone" : "Use your microphone as the phone's";
+}
+micBtn.addEventListener("click", async () => {
+  if (mic.on) {
+    mic.stop();
+    say("Microphone off");
+  } else {
+    try {
+      await mic.start();
+      mic.attach(running ? qemuModule : null);
+      say("Microphone on");
+    } catch (e) {
+      say(`No microphone: ${e?.name === "NotAllowedError" ? "not allowed" : e?.message ?? e}`);
+    }
+  }
+  renderMic();
+});
+renderMic();
 
 // Everything above is module-scoped, so a harness driving the page has no
 // other way to ask whether the context actually started (tools/audioprobe.mjs).

@@ -192,7 +192,7 @@ if ! built glib "$GLIB_VERSION" "$TARGET/lib/libglib-2.0.a" glib-2.0; then
   CFLAGS="$CFLAGS -Wno-incompatible-function-pointer-types" \
   meson setup _build --prefix="$TARGET" --cross-file="$SRCDIR/cross.meson" \
     --default-library=static --buildtype=release --force-fallback-for=pcre2 \
-    -Dselinux=disabled -Dxattr=false -Dlibmount=disabled -Dnls=disabled \
+    -Dselinux=disabled -Dxattr=false -Dlibmount=disabled -Dlibelf=disabled -Dnls=disabled \
     -Dtests=false -Dsysprof=disabled -Dglib_debug=disabled -Dglib_assert=false -Dglib_checks=false
   sed -i -E "/#define HAVE_POSIX_SPAWN 1/d; /#define HAVE_PTHREAD_GETNAME_NP 1/d" ./_build/config.h
   meson install -C _build
