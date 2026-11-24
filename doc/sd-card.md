@@ -153,12 +153,32 @@ qemu's sd-card reports a media change to the bus (`SDBusClass.set_inserted`). Th
 - EL71v45 native, the goal version: phone idle, eject + `mcopy` an empty EMPTY.TXT + insert at once, 4 s later eject + HOSTADD.TXT + insert: each removal and insertion done after one call; the card tab then lists EMPTY.TXT (0 bytes), HOSTADD.TXT and NOTES.TXT in Misc.
 - E71v45 native, the goal version, same binary and sequence: both removals and insertions done (the second insertion by the firmware's own rescan, 0 runs); after each the FS reads LBA 0, 2048, 2052, 2308.
 - Browser (wasm), the goal version: with the phone idle a folder change took about a minute (the removal waited 456 hook hits with the CARDSRV timer running, then 1 run; the phone then read the card by itself); with the explorer open on Misc an empty file and 6 s later a second file: two pushes one after the other, the second seen by the firmware without a run (its explorer's failed select rescans). State "going out > reading > in" each time, no firmware exit.
-- Browser, with the timer move-up and Sync card (dist-jit 2026-11-23): from the click to the phone having read the card again 1.8 s with the phone idle (explorer closed, screen dark), 2.5 s with the explorer open on Misc, 1.0 s for a second push right after; the removals were done by Nucleus expiring the moved-up timer or by one run. The phone then shows its own note "Data lost! Use option 'Eject card'." after every push, also when idle with the explorer closed: the firmware's reaction to a card removed without its "Eject card" option (the FS had it mounted), not an error of the model; OK closes it, the files are there. Avoiding it would need the firmware's own eject path (an unmount before the removal), which is per-firmware code; not done.
+- Browser, with the timer move-up and Sync card (dist-jit 2026-11-23): from the click to the phone having read the card again 1.8 s with the phone idle (explorer closed, screen dark), 2.5 s with the explorer open on Misc, 1.0 s for a second push right after; the removals were done by Nucleus expiring the moved-up timer or by one run. The phone then shows its own note "Data lost! Use option 'Eject card'." after every push, also when idle with the explorer closed: the firmware's reaction to a card removed without its "Eject card" option (the FS had it mounted), not an error of the model; OK closes it, the files are there. Gone since the clean unmount below.
 - The first version lost such a change in the user's Edge (an empty file added while the phone ran); in the headless test it happened not to (timing).
 - EL71v45 native, first version: eject, `mcopy` HOSTADD.TXT into Misc, insert: the removal is seen, the insert re-identifies the card and the FS mounts (about 150 reads with the card tab open); My stuff > card > Misc lists HOSTADD.TXT and NOTES.TXT ("2 entries"). Hook on A00978BB (Thumb), 82 timers found, 13 enabled.
 - E71v45 native (`siemens-e71`, `E71_45_lg91_From_00.bin`), same binary: CARDSRV routine A04D7950 found, removal seen, after the insert the FS reads MBR, boot sector, FAT and root (LBA 0, 2048, 2052, 2308). Its UI with SIM=none stays at "Please insert your SIM card!", so the explorer was not looked at.
 - With `PMB887X_MCI_NOHOOK=1` (no call): the removal is still noticed (an eject during an idle rescan: CMD0/8/55/1 time out three times), the insert never is: no MCI command at all after `change`, even with the card tab opened.
 - The earlier gdb-based checks (same FS path): host changes between eject and insert all show after the insert (files added in Misc, Pictures and the root, a file deleted); the phone then copied a file into the cluster freed by the host delete, `fsck.fat` clean. A rescan with the card left in only re-identifies it: presence does not change, so the FS gets no event. The card has to go out and come back in.
+
+### Clean unmount before the change (2026-11-24): no "Data lost"
+
+"Sync card" first asks the phone to unmount the card itself, as its "Eject card" option does:
+message 0x18 to the memory card file system process 0x4100 with drive 4,
+`GBS_SendMessage(0x4100, 0x18, 0, 4, 0)` (`pmb887x_mci_unmount`, `wasm_card_unmount`).
+- The FS writes its FAT and directories to the card and drops its cache. The card then goes out and in as above; the FS
+  mounts it on the next access. The note "Data lost" is only for a card removed while mounted, so it does not come.
+- `GBS_SendMessage` is found in the flash (from A0000000) by the ElfPack function library patterns of SWI 0x100
+  (`sdk/swilib/patterns.toml`: ELKA Thumb, NSG ARM), once, at the first sync; it has to match exactly once.
+  The call is made from the same hook as the CARDSRV routine (the timer HISR, where the firmware's GBS timers post
+  their messages too): registers saved, r0-r3 + one stack word set, LR = the hook, back there with the same SP.
+- The page then waits until the phone has stopped writing to the card (600 ms) before it takes the image.
+- Not found (0 or 2+ matches), no CARDSRV timer or hook: state 3, the old way (out/in only, with the note).
+- The FS refuses the unmount while a file on the card is open; the model does not see that (the reply goes to no
+  process), so the change then goes on as before, with the note.
+- Verified in the browser (dist-jit, EL71v45 `el71-23oct-full.bin`, tools/cardcheck.mjs): every push "clean unmount:
+  true", no note, the phone reads the card again in 1.9-3.6 s, all checks pass. With the card tab open the explorer
+  goes back to the phone memory tab on each push (as with "Eject card"). E71 and NSG phones: the pattern matches
+  (E71v45 A0091EAA, S75v52 A0092A94, S68v52 A0092A04), the sync itself not run there.
 
 ### Path (EL71v45)
 

@@ -2441,8 +2441,9 @@ $("btn-save-efa").addEventListener("click", () => {
 //  - phone -> folder: when the phone has written to the card and then been
 //    quiet for CARD_QUIET_MS, the image is read (FAT) and new, changed and
 //    deleted files go to the folder;
-//  - folder -> phone: only on "Sync card": the card is taken out
-//    (wasm_card_eject), the phone's changes are pulled first, a new image is
+//  - folder -> phone: only on "Sync card": the phone unmounts the card first
+//    (wasm_card_unmount: as its "Eject card", so no "Data lost" note), the
+//    card is taken out (wasm_card_eject), the phone's changes are pulled first, a new image is
 //    built from the folder and put in (wasm_card_insert). The phone drops its
 //    card cache and reads it again (hw/arm/pmb887x/mci.c turns the change
 //    into its card detect). Whether the folder has changes not on the card
@@ -2661,8 +2662,32 @@ function cardSettle(m) {
   });
 }
 
-// folder -> phone: out, pull, rebuild, in
+// the phone unmounts the card itself first (as "Eject card": it writes its
+// FAT and drops its cache, so taking the card out gives no "Data lost"):
+// wasm_card_unmount, then wait until the phone has stopped writing.
+// Returns false when the firmware cannot be asked (the old way then).
+async function cardUnmount(m) {
+  if (!m._wasm_card_unmount) return false;
+  m._wasm_card_unmount();
+  const t0 = performance.now();
+  while (m._wasm_card_unmount_state() === 1) {
+    if (performance.now() - t0 > 5000) return false;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  if (m._wasm_card_unmount_state() !== 2) return false;
+  let w = m._wasm_card_writes(), quiet = performance.now();
+  while (performance.now() - quiet < 600 && performance.now() - t0 < 8000) {
+    await new Promise((r) => setTimeout(r, 50));
+    const w2 = m._wasm_card_writes();
+    if (w2 !== w) { w = w2; quiet = performance.now(); }
+  }
+  return true;
+}
+
+// folder -> phone: unmount, out, pull, rebuild, in
 async function cardPush(m) {
+  const clean = await cardUnmount(m);
+  console.log("[card] clean unmount:", clean);
   const d0 = m._wasm_card_done();
   m._wasm_card_eject();
   await cardWait(m, d0 + 1);
