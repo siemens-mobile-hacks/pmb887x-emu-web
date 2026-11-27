@@ -148,14 +148,16 @@ as upstream's:
 
 | feature | fork files | hooks in upstream files | turned on by |
 |---|---|---|---|
-| relay: SMS, USSD and calls ([gsm-relay.md](gsm-relay.md)) | `hw/gsm/gsm-relay.c`; the relay server is the `gsmrelay/` submodule | `gsm-bts.c`/`.h` (the `relay=` property and a branch at each channel), `gsm-coding.c`/`.h` (TCH/F coding), `hw/gsm/meson.build` | `-object gsm-bts,...,relay=<chardev>` |
+| relay: SMS, USSD and calls ([gsm-relay.md](gsm-relay.md)) | `hw/gsm/gsm-relay.c`; the relay server is the `gsmrelay/` submodule | `gsm-bts.c`/`.h` (a one-line hook at each channel, the `relay=` property's registration), `gsm-coding.c`/`.h` (TCH/F coding), `hw/gsm/meson.build`, `qapi/qom.json` (`relay`) | `-object gsm-bts,...,relay=<chardev>` |
 | mic: the phone's microphone | `hw/arm/pmb887x/dsp/peripheral/afe-mic.c`, `dsp/afe-mic.h` | `afe.c` (the mic ADC's sample), `meson.build` | `PMB887X_MIC_FILE`, or samples from `wasm_mic_put` |
 | card assist: the firmware sees a card change ([sd-card.md](sd-card.md)) | `hw/arm/pmb887x/card-assist.c`/`.h` | `target/arm` (a one-shot PC hook: `cpu.h`, `helper-defs.h`, `translate.c`, `op_helper.c`), `hw/sd/core.c` + `sd.h` (a command observer), `qapi/qom.json` (the object type), `meson.build` | `-object pmb887x-card-assist,id=card` |
 
 Ports, not features: code that only makes upstream's own devices run in the
 browser is marked `PMB887X-WEB WASM PORT` (the memory card's block I/O and
 inserted state off the vCPU thread in `hw/sd/sd.c`) or `WASM PORT
-(removable)` (the cell's `ms-state` for the page's network badge). The
+(removable)` (the cell's `ms-state` for the page's network badge). A bug
+fix upstream does not have yet is marked `PMB887X-WEB UPSTREAM FIX` (the
+char-socket reconnect that aborted on a failed connect). The
 `wasm_*` exports of `ui/wasm.c` drive all of them from the page.
 
 DSP: the Teak DSP is emulated low-level by upstream. The mask ROM and the

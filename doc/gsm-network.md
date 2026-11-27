@@ -54,8 +54,9 @@ What the cell does is upstream's model, unchanged: BCCH (system information
 1-4 and 13), FCCH/SCH, random access and immediate assignment of an SDCCH,
 LAPDm, Location Updating Accept, and GPRS on timeslot 7 (attach, routing area
 update, PDP context). It rejects CM service requests, so there are **no calls
-and no SMS** (the option `relay=` adds them from an external relay server:
-doc/gsm-relay.md). Its IP side needs a qemu netdev: natively that is slirp, in
+and no SMS** on its own; its option `relay=` adds them from an external relay
+server, natively and in the browser (the page reaches the relay through
+`serve.mjs`'s `/gsmrelay`; doc/gsm-relay.md). Its IP side needs a qemu netdev: natively that is slirp, in
 the browser a slirp on a server the page relays to (both below).
 
 ### The phone's Internet in the browser
@@ -306,7 +307,7 @@ So the built-in cell stays where upstream runs it.
 
 ## Not supported, known gaps
 
-- **No SMS, no calls** (above), except natively with `relay=` (doc/gsm-relay.md).
+- **No SMS, no calls** (above) without a relay; with `relay=` (natively, or the page with a relay behind `/gsmrelay`) both work: doc/gsm-relay.md.
 - **Without a GPRS gateway** the browser build has no Internet: the phone
   attaches and gets an address, and nothing answers.
 - **The operator profiles through the gateway are unverified.** The nftables
@@ -334,13 +335,19 @@ So the built-in cell stays where upstream runs it.
   sleep before, because the TPU model woke the CPU early and the firmware
   then skips `SLPSTP`. This is upstream's model, native build included
   (`-global accessory-connector.accessory=music-cable` reproduces it; seen at
-  smh 55f765ae87, not looked at again after 23d7df3200), and is not fixed
-  here. With the data cable the firmware never enters that sleep. Since the
+  smh 55f765ae87). Fixed here 2026-11-27 (`hw/arm/pmb887x/sccu.c`,
+  `PMB887X-WEB UPSTREAM FIX`): an `SLPEN` write while `GSMCLK` is still set
+  starts a new sleep even though the old timer runs. Before that, plugging a
+  headset in (or pulling the data cable) after boot hung an idle EL71
+  within seconds of its next deep sleep; natively with the fix, the headset
+  and music cable both boot past the wizard and a 5 min idle with the
+  headset wakes on a key. With the data cable the firmware never enters that sleep. Since the
   bsp pin moved past 15157fe ("enable RF transceiver on ELKA") the EL71
   hangs with the music cable GSM or not (seen 2026-11-13: halts frozen,
   the wizard never answers a key), so the page now boots every board with
   its default accessory; it used to prefer the music cable, and the stereo
-  headset on SGOLD boards. The data cable plays sound too.
+  headset on SGOLD boards. The data cable plays sound too; it stays the
+  default after the fix.
 
 ## A network on a server (dropped)
 

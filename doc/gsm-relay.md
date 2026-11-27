@@ -85,12 +85,12 @@ GSM_RELAY=127.0.0.1:4725 node serve.mjs
   page's IMSI = the operator + 10 random digits kept in localStorage, each
   held by its tab with a Web Lock, so a reload keeps the number and a second
   tab takes another IMSI.
-- `site/app.js` / `index.html`: Advanced ▸ "Virtual network (SMS, calls,
+- `site/app.js` / `index.html`: Advanced ▸ "Online GSM network (SMS, calls,
   USSD)", shown only when the server offers a relay, on by default there;
-  it needs the GSM network option and the virtual SIM. The run then gets
+  greyed out unless the GSM network option is on and the SIM is not "none". The run then gets
   `-chardev wasm-gsm,id=gsmrelay`, `gsm-bts,...,relay=gsmrelay` and
-  `gsm-sim,...,imsi=<page IMSI>`. The number shows under the option and in
-  the pill's network line ("Registered · 8440"). Unticked, or a server
+  `gsm-sim,...,imsi=<page IMSI>`. The number shows in the pill's network
+  line ("Registered (emu.example.org) · 8440"; "(local)" without the relay). Unticked, or a server
   without a relay: the run's arguments are exactly as before.
 - `qemu/ui/wasm.c` (WASM PORT, removable): chardev type `wasm-gsm`, two
   64 KB byte rings, exports `_wasm_gsmrelay_ready/buf/take/put/open`. The
@@ -99,7 +99,8 @@ GSM_RELAY=127.0.0.1:4725 node serve.mjs
 
 ### Microphone in the browser
 
-A mic button next to the sound button, shown while a run has the input.
+A mic button next to the sound button, offered before Start too (every board's DSP takes the input); pressed
+before Start, it goes to the run once the phone is live, and the end of a run turns it off.
 Pressed, the page asks for the microphone (getUserMedia: https or localhost
 only), captures it at 8 kHz (`site/mic.js`) and hands 16-bit samples to
 `_wasm_mic_put` (`qemu/ui/wasm.c`). The AFE model
@@ -201,7 +202,9 @@ EL71 (`ICOUNT=vt`), natively and in headless Chromium:
 - No authentication, ciphering or TMSI; the LU always carries the IMSI.
 - Speech pacing: the relay sends `V` by wall clock, the cell plays 50 a
   second of guest time. A guest slower than real time fills the ring; above
-  32 frames (0.64 s) the oldest is dropped, so the delay stays bounded. The
+  48 frames (0.96 s) the oldest is dropped, so the delay stays bounded.
+  relay.py keeps up to 40 frames ahead (SP_PREFILL + SP_BATCH_AHEAD); the
+  cell's SP_HIGH must stay above that or every clip loses its start. The
   other direction (a slow guest sends fewer `U` frames) gives the far end
   gaps.
 - `ICOUNT=vt` was used for every check; the scripts' default `shift=3` stops

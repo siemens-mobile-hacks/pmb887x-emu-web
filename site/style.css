@@ -364,8 +364,15 @@ header h1 span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
   fill: none; stroke: currentColor; stroke-width: 1.8;
   stroke-linecap: round; stroke-linejoin: round;
 }
+/* on (speaker playing, mic in use): accent; off: dimmed, and crossed out */
+#btn-sound[aria-pressed="false"], #btn-mic[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 #btn-mic[aria-pressed="false"] { color: var(--muted); opacity: 0.75; }
-#btn-mic[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+#btn-mic .mic-off, #btn-mic[aria-pressed="false"] .mic-on { display: none; }
+#btn-mic[aria-pressed="false"] .mic-off { display: block; }
+/* the slash keeps a gap in the button's own colour, so it reads across the mic */
+.mic-slash, .mic-slash-gap { fill: none; stroke-linecap: round; }
+.mic-slash { stroke: currentColor; stroke-width: 1.8; }
+.mic-slash-gap { stroke: var(--panel2); stroke-width: 4.2; }
 #btn-sound .snd-off { display: none; }
 #btn-sound[aria-pressed="true"] { color: var(--muted); opacity: 0.75; }
 #btn-sound[aria-pressed="true"] .snd-on { display: none; }
@@ -1044,6 +1051,21 @@ body.is-fullscreen #btn-fullscreen { color: var(--accent); }
   margin: 0; font-size: 0.75rem; color: var(--muted);
 }
 
+/* the memory card, above Advanced: a header with the two pickers, what is
+   chosen (with Remove), and how the sync works */
+.card-box {
+  display: flex; flex-direction: column; gap: 0.4rem;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel2);
+  padding: 0.55rem 0.8rem 0.65rem;
+}
+.card-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.card-title { font-size: 0.85rem; font-weight: 600; margin-right: auto; }
+.card-pick { display: flex; gap: 0.4rem; }
+.card-status { margin: 0; font-size: 0.8rem; overflow-wrap: anywhere; }
+.card-status strong { color: var(--accent); font-weight: 600; }
+.card-status .linkbtn { margin-left: 0.4rem; font-size: 0.75rem; }
+fieldset:disabled .card-box { opacity: 0.45; }
+
 /* folded identity/radio/flash knobs inside the Firmware panel */
 .advanced {
   border: 1px solid var(--border); border-radius: 8px; background: var(--panel2);
@@ -1073,6 +1095,8 @@ fieldset:disabled .advanced summary { pointer-events: none; }
 /* the radio sits on the first line of a two-line label, not centred on both */
 .adv-span label.checkbox-label { align-items: flex-start; gap: 0.45rem; }
 .adv-span label.checkbox-label input { margin-top: 0.15rem; flex: none; }
+/* the online network needs the GSM network and a SIM (app.js renderRelayOption) */
+#gsmrelay-block label:has(#gsmrelay:disabled) { opacity: 0.5; cursor: default; }
 .adv-span label small { display: block; }
 
 /* ---------------- Run panel ---------------- */

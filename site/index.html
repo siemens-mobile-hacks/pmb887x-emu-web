@@ -46,6 +46,28 @@
           Locked while running. Stop to change firmware.
         </p>
 
+        <!-- the phone's memory card (doc/sd-card.md): a FAT16 image built
+             from a folder and kept in sync with it, or an image file; chosen
+             before Start (sdcard.js, app.js renderCard). Hidden for a board
+             without a slot. -->
+        <div class="card-box" id="card-block" role="group" aria-labelledby="card-title">
+          <div class="card-head">
+            <span class="card-title" id="card-title">Memory card</span>
+            <span class="card-pick">
+              <button type="button" id="card-folder" class="btn">Folder…</button>
+              <button type="button" id="card-image" class="btn">Image…</button>
+            </span>
+            <input type="file" id="card-image-file" accept=".img,.bin,application/octet-stream" hidden>
+          </div>
+          <p class="card-status" id="card-status" hidden>
+            <span id="card-status-text"></span>
+            <button type="button" id="card-none" class="linkbtn">Remove</button>
+          </p>
+          <p class="caption" id="card-caption">Select a folder (Chrome/Edge) or an image file to be
+            used as an SD card. Phone writes are visible immediately. Use the "Sync card" button for
+            the phone to see new files in the folder.</p>
+        </div>
+
         <!-- identity/radio/flash knobs: sane defaults boot every phone, so
              they stay folded away until someone needs them -->
         <details class="advanced" id="advanced">
@@ -90,27 +112,12 @@
             <div class="adv-span" id="gsmrelay-block" hidden>
               <label class="checkbox-label">
                 <input type="checkbox" id="gsmrelay" checked>
-                <span>Virtual network (SMS, calls, USSD)
-                  <small>Text and call the other phones on this server's
-                    relay; 7777 answers SMS, 300 is an echo call, *100#
-                    a USSD menu. Needs the virtual SIM</small></span>
+                <span>Online GSM network (SMS, calls, USSD)
+                  <small>Text and call the other phones connected to the
+                    same emulator.<br>7777 answers SMS, 300 is an echo call,
+                    *100# a USSD menu.</small></span>
               </label>
               <p class="caption" id="gsmrelay-caption" hidden></p>
-            </div>
-
-            <!-- the phone's memory card (doc/sd-card.md): a FAT16 image built
-                 from a folder and kept in sync with it, or an image file.
-                 PMB8876 boards only (EL71 tested); sdcard.js -->
-            <div class="adv-span" id="card-block">
-              <p class="adv-group-title">Memory card</p>
-              <div class="ff-status-row">
-                <button type="button" id="card-folder" class="btn">Folder…</button>
-                <button type="button" id="card-image" class="btn">Image…</button>
-                <button type="button" id="card-none" class="linkbtn" hidden>No card</button>
-                <input type="file" id="card-image-file" accept=".img,.bin,application/octet-stream" hidden>
-              </div>
-              <p class="caption" id="card-caption">No card. A folder becomes the card and stays in
-                sync with it while the phone runs (Chrome/Edge); an image is used as it is.</p>
             </div>
 
             <!-- Siemens only: the firmware refuses to boot unless the keys
@@ -278,9 +285,15 @@
         <button type="button" id="btn-mic" class="icon-btn"
           title="Use your microphone as the phone's" aria-label="Microphone"
           aria-pressed="false" hidden>
-          <svg viewBox="0 0 24 24" aria-hidden="true">
+          <svg class="mic-on" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 14.5a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5.5a3 3 0 0 0 3 3z"/>
             <path d="M18 11.5h-1.6a4.4 4.4 0 0 1-8.8 0H6a6 6 0 0 0 5.2 5.9V20h1.6v-2.6a6 6 0 0 0 5.2-5.9z"/>
+          </svg>
+          <svg class="mic-off" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 14.5a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5.5a3 3 0 0 0 3 3z"/>
+            <path d="M18 11.5h-1.6a4.4 4.4 0 0 1-8.8 0H6a6 6 0 0 0 5.2 5.9V20h1.6v-2.6a6 6 0 0 0 5.2-5.9z"/>
+            <path class="mic-slash-gap" d="M5 4l14 16"/>
+            <path class="mic-slash" d="M5 4l14 16"/>
           </svg>
         </button>
         <!-- The browser and system bars are most of the height the keypad is
@@ -365,6 +378,13 @@
   <!-- ============ right: post-start ============ -->
   <section class="ctrl-panel post-panel" id="post-panel">
     <div class="panel-card">
+      <!-- phone widths only (app.js): the recorder's place in the status
+           row went to the mic, so a capture starts here -->
+      <div class="group" id="rec-group" hidden>
+        <h2 class="group-title">Recording</h2>
+        <button type="button" id="btn-record-sheet" class="btn" disabled>Record video</button>
+        <p class="caption" id="rec-caption"></p>
+      </div>
       <div class="group">
         <h2 class="group-title">Accessory</h2>
         <!-- the profiles of the board's accessory connector; the button reads

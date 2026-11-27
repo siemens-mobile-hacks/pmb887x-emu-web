@@ -14,7 +14,7 @@ const view = (badge, ms, opts = {}) => badgeView(badge, net(ms, opts), opts);
 test("gsm-badge: every state of the mockups' table", () => {
   const rows = [
     ["nonet", 0, {}, "nonet", "none", "No network", ""],
-    ["registered", 1, {}, "registered", "none", "Registered", ""],
+    ["registered", 1, {}, "registered", "none", "Registered (local)", ""],
     ["attached", 3, {}, "registered", "attached", "GPRS attached", ""],
     ["attached", 7, {}, "registered", "attached", "GPRS attached · context active", ""],
     ["connecting", 7, {}, "registered", "connecting", "GPRS connecting…", "warn"],
@@ -92,4 +92,8 @@ test("gsm-badge: a short reason for every close code, unreachable otherwise", ()
     4029: "too many connections" };
   for (const [code, text] of Object.entries(codes)) assert.equal(shortReason(Number(code)), text);
   for (const code of [0, 1000, 1006, 4000]) assert.equal(shortReason(code), "unreachable");
+});
+
+test("gsm-badge: a registration through the relay names its host", () => {
+  assert.equal(view("registered", 1, { via: "gw.example.org" }).status, "Registered (gw.example.org)");
 });

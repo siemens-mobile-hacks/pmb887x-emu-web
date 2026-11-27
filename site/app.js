@@ -822,8 +822,12 @@ function render() {
   fwFieldset.disabled = panelLocked;
   for (const el of fwFieldset.querySelectorAll("input, select, button")) el.disabled = panelLocked;
   // the blanket re-enable above would undo the IMEI/ESN lock that
-  // "Brute-force ESN" needs (their values come from the image there)
-  if (!panelLocked) refreshSiemensKeys();
+  // "Brute-force ESN" needs (their values come from the image there),
+  // and the online network's need for the GSM network and a SIM
+  if (!panelLocked) {
+    refreshSiemensKeys();
+    renderRelayOption();
+  }
   for (const b of segButtons) {
     b.tabIndex = panelLocked ? -1 : (b.getAttribute("aria-checked") === "true" ? 0 : -1);
   }
@@ -850,11 +854,13 @@ function render() {
   const canRecord = (phoneLayout.matches ? emuState === "booting" || live : live)
     && !recBtn.dataset.unsupported;
   recBtn.disabled = !canRecord && !recorder;
-  // while a capture runs the pill takes the button's place (phone widths),
-  // and the button behind it is back to being the way to start one
+  // Phone widths: the row has no room for the recorder (the mic needs it),
+  // so a capture starts from the Settings sheet and the pill in the row
+  // shows and finishes it
   const pillRec = !!recorder && phoneLayout.matches;
   $("rec-pill").hidden = !pillRec;
-  recBtn.hidden = pillRec;
+  recBtn.hidden = phoneLayout.matches;
+  $("rec-group").hidden = !phoneLayout.matches;
   // The recording pill needs the record button's width and a little more: at
   // 320px the two pills plus four icons no longer fit the one row. So
   // fullscreen stands down while a capture runs — it is not something to
@@ -865,7 +871,9 @@ function render() {
   // down like fullscreen (the recording takes the sound whether or not the
   // speaker plays it, and the pill needs the room at 320px).
   soundBtn.hidden = pillRec;
-  micBtn.hidden = pillRec || !running || !qemuModule?._wasm_mic_put;
+  // every board's DSP takes the mic; offered before Start too (a dist built
+  // before wasm_mic_put existed shows it is not there once it runs)
+  micBtn.hidden = pillRec || (running && !qemuModule?._wasm_mic_put);
   const finishing = !!recorder && !pillRec;
   const recFmt = recExt(recType()).slice(1);
   recBtn.title = finishing ? `Finish recording and save the .${recFmt}`
@@ -873,6 +881,11 @@ function render() {
     : `Record the LCD to a .${recFmt} video`;
   recBtn.setAttribute("aria-label", finishing ? "Finish recording"
     : canRecord ? "Start recording" : "Start recording (emulator not running)");
+  const sheetRec = $("btn-record-sheet");
+  sheetRec.disabled = !canRecord && !recorder;
+  sheetRec.textContent = recorder ? "Finish recording" : "Record video";
+  $("rec-caption").textContent = recBtn.dataset.unsupported ? "This browser cannot record video."
+    : `The screen and the phone's sound, as a .${recFmt} download. While it records, a pill above the phone shows the time and finishes it.`;
 
   // the pill text opens the Firmware sheet, but only where there is one and
   // only while the panel is not locked
@@ -1089,11 +1102,9 @@ function gsmFor(device) {
 }
 
 // What a run boots with: the board's own default accessory, the data cable.
-// Every phone board has a transceiver since bsp 191612c, and with anything
-// else plugged in at boot the firmware goes into a deep sleep the SCCU model
-// does not bring it back from: an EL71 with the music cable, GSM or not,
-// stops answering keys at its first wizard (doc/gsm-network.md). Sound plays
-// with the data cable too, and the Accessory control plugs anything else in.
+// With anything else the firmware deep-sleeps, which hung an EL71 until the
+// SCCU fix of 2026-11-27 (doc/gsm-network.md); the cable stays the default.
+// Sound plays with it too, and the Accessory control plugs anything else in.
 function bootAccessory(conf) {
   return conf?.default ?? null;
 }
@@ -1915,7 +1926,7 @@ async function boot() {
     // sd-slot; the card assist tells the firmware when the card changes
     // (doc/sd-card.md)
     const cardBytes = await cardBootImage(device);
-    if (cardBytes === false) return;
+    checkCancel();
     const cardArgs = cardBytes
       ? ["-drive", `if=sd,format=raw,file=${CARD_PATH}`, "-object", "pmb887x-card-assist,id=card"]
       : [];
@@ -2050,6 +2061,7 @@ async function boot() {
   startPainting();
   startSerial();
   running = true;
+  if (mic.on) mic.attach(qemuModule);   // turned on before Start
   exportsReady = true;
   runStartedAt = Date.now();
   noEfaWarning = noEfa;
@@ -2092,8 +2104,6 @@ function showRelayStatus() {
   const r = gsmRelay;
   const cap = $("gsmrelay-caption");
   cap.textContent = !r ? ""
-    : r.state === "online" && r.number ? `Your number: ${r.number}`
-    : r.state === "online" ? "Relay connected; the number comes once the phone has registered"
     : r.state === "offline" ? "The relay is not reachable; retrying"
     : r.state === "connecting" ? "Connecting to the relay…" : "";
   cap.hidden = !cap.textContent;
@@ -2106,6 +2116,17 @@ relayOffered().then((ok) => {
   relayAvail = ok;
   $("gsmrelay-block").hidden = !ok;
 });
+
+// greyed out without the GSM network or without a SIM: the run would not use it
+function renderRelayOption() {
+  const why = !$("gsm").checked ? "Needs the GSM network"
+    : $("sim").value === "none" ? "Needs a SIM" : "";
+  $("gsmrelay").disabled = !!why;
+  $("gsmrelay").closest("label").title = why;
+}
+$("gsm").addEventListener("change", renderRelayOption);
+$("sim").addEventListener("change", renderRelayOption);
+renderRelayOption();
 
 /* ---- network badge ---- */
 // The pill's network badge (#gprs: an antenna over a bearer tag, what each
@@ -2206,7 +2227,8 @@ function renderGprs() {
 function gprsLook(badge = gprsBadge()) {
   const off = badge === "off";
   const v = off ? { status: "", tone: "", amounts: false }
-    : badgeView(badge, gprsNet, { retryIn: gprsRetryIn(gprsNet), bearer: gprsEl.dataset.bearer });
+    : badgeView(badge, gprsNet, { retryIn: gprsRetryIn(gprsNet), bearer: gprsEl.dataset.bearer,
+      via: gsmRelay?.state === "online" ? location.hostname : "local" });
   if (!off) {
     if (gprsEl.dataset.net !== v.net) gprsEl.dataset.net = v.net;
     if (gprsEl.dataset.gprs !== v.gprs) gprsEl.dataset.gprs = v.gprs;
@@ -2215,7 +2237,10 @@ function gprsLook(badge = gprsBadge()) {
   }
   // the virtual network's number for this phone (gsm-relay.js), next to the state
   const status = v.status && gsmRelay?.number ? `${v.status} · ${gsmRelay.number}` : v.status;
-  if (gsmStatusEl.textContent !== status) gsmStatusEl.textContent = status;
+  if (gsmStatusEl.textContent !== status) {
+    gsmStatusEl.textContent = status;
+    gsmStatusEl.title = status;   // the line is ellipsised in a narrow pill
+  }
   if ((gsmStatusEl.dataset.tone ?? "") !== v.tone) gsmStatusEl.dataset.tone = v.tone;
   if (gsmDataEl.hidden !== !v.amounts) gsmDataEl.hidden = !v.amounts;
   gprsAmounts();
@@ -2447,7 +2472,8 @@ $("btn-save-efa").addEventListener("click", () => {
 
 // The card is chosen before a run: a folder (File System Access API, read
 // and write) becomes a FAT16 image and stays in sync with it, or an image
-// file is used as it is. While the phone runs:
+// file is the card (the next run starts from what the phone wrote to it).
+// While the phone runs:
 //  - phone -> folder: when the phone has written to the card and then been
 //    quiet for CARD_QUIET_MS, the image is read (FAT) and new, changed and
 //    deleted files go to the folder;
@@ -2461,6 +2487,7 @@ $("btn-save-efa").addEventListener("click", () => {
 // A file changed on both sides is kept twice: the phone's copy as "name~phone".
 const CARD_PATH = "/data/card.img";
 const CARD_QUIET_MS = 3000;
+const CARD_GONE = new Error("the phone was stopped");   // card work for a run that ended
 let cardDir = null;          // FileSystemDirectoryHandle
 let cardImage = null;        // { name, bytes } chosen image
 let cardSync = null;         // CardSync of the running card (folder mode)
@@ -2490,21 +2517,33 @@ function cardLog(text) {
 }
 
 function renderCard(canExport) {
+  // a board without a slot boots with no card: nothing to choose (shown
+  // while the board is not known yet)
+  const dev = currentDevice();
+  $("card-block").hidden = !!dev && boardText.has(dev + ".toml") && !boardHasSdSlot(dev);
   const folderApi = typeof window.showDirectoryPicker === "function";
   $("card-folder").disabled = !folderApi || $("card-folder").disabled;
   $("card-folder").title = folderApi ? "A folder on your disk becomes the card"
     : "Needs the File System Access API (Chrome, Edge)";
-  $("card-none").hidden = !cardDir && !cardImage;
-  $("card-caption").textContent = cardDir ? `Card: the folder "${cardDir.name}" (kept in sync)`
-    : cardImage ? `Card: the image "${cardImage.name}" (${(cardImage.bytes.length / 1048576).toFixed(0)} MB)`
-    : "No card. A folder becomes the card and stays in sync with it while the phone runs (Chrome/Edge); an image is used as it is.";
+  // "SD Card: synced to folder <name>" / "SD Card: image <name> (N MB)"
+  const status = $("card-status-text");
+  status.replaceChildren();
+  if (cardDir || cardImage) {
+    const name = document.createElement("strong");
+    name.textContent = cardDir ? cardDir.name : cardImage.name;
+    status.append(cardDir ? "SD Card: synced to folder " : "SD Card: image ", name,
+      cardImage ? ` (${(cardImage.bytes.length / 1048576).toFixed(0)} MB)` : "");
+  }
+  $("card-status").hidden = !cardDir && !cardImage;
+  $("card-folder").textContent = cardDir ? "Change folder…" : "Folder…";
+  $("card-image").textContent = cardImage ? "Change image…" : "Image…";
   $("btn-save-card").hidden = !cardRun;
   $("btn-save-card").disabled = !canExport;
   $("btn-sync-card").hidden = !cardSync;
   $("btn-sync-card").disabled = !liveModule() || cardBusy;
 }
 
-// The image this boot starts with: null = no card, false = failed (shown)
+// The image this boot starts with, null = no card; throws when it cannot be built
 async function cardBootImage(device) {
   cardRun = false;
   cardSync = null;
@@ -2542,14 +2581,15 @@ async function cardBootImage(device) {
     cardRun = true;
     return bytes;
   } catch (e) {
-    setError("Memory card: " + e.message);
     cardSync = null;
-    return false;
+    throw new Error("Memory card: " + e.message);
   }
 }
 
 function cardStart(on) {
-  cardStop();
+  // (the last run's final pull was onGuestExit's cardStop)
+  if (cardTimer) clearInterval(cardTimer);
+  cardTimer = null;
   if (!on) return;
   cardWrites = -1;
   cardDirty = false;
@@ -2586,8 +2626,26 @@ function cardStop() {
     } catch (e) {
       cardLog("Card sync failed: " + e.message);
     }
-    if (img) cardRunExclusive(() => sync.pull(img), true);
+    if (img) cardRunExclusive(() => cardPull(m, sync, img), true);
+  } else if (cardRun && cardImage && !sync && m?.FS) {
+    // an image card keeps what the phone wrote, as a real one: the next
+    // run starts from it (Card downloads it)
+    try {
+      cardImage = { ...cardImage, bytes: m.FS.readFile(CARD_PATH) };
+    } catch { /* the module is gone: the picked image stays */ }
   }
+}
+
+// the card's image to the folder; a pull that fails is tried again by the
+// next cardTick (the phone's changes are only in the image until then)
+async function cardPull(m, sync, img = m.FS.readFile(CARD_PATH)) {
+  try {
+    await sync.pull(img);
+  } catch (e) {
+    if (sync === cardSync && liveModule() === m) cardDirty = true;
+    throw e;
+  }
+  if (sync === cardSync) cardHostPending = await sync.hostChanged();
 }
 
 // one card operation at a time; queue: run fn after the one under way
@@ -2606,6 +2664,7 @@ async function cardRunExclusive(fn, queue = false) {
       try {
         await f();
       } catch (e) {
+        if (e === CARD_GONE) continue;
         cardLog("Card sync failed: " + e.message);
         console.error(e);
       }
@@ -2626,10 +2685,7 @@ window.addEventListener("beforeunload", (e) => {
     cardDirty = false;
     cardWrites = m._wasm_card_writes();
     const sync = cardSync;
-    cardRunExclusive(async () => {
-      await sync.pull(m.FS.readFile(CARD_PATH));
-      cardHostPending = await sync.hostChanged();
-    });
+    cardRunExclusive(() => cardPull(m, sync));
   }
   e.preventDefault();
   e.returnValue = "";
@@ -2691,10 +2747,8 @@ function cardTick() {
   }
   if (cardDirty && now - cardQuietSince >= CARD_QUIET_MS) {
     cardDirty = false;
-    cardRunExclusive(async () => {
-      await cardSync.pull(m.FS.readFile(CARD_PATH));
-      cardHostPending = await cardSync.hostChanged();
-    });
+    const sync = cardSync;
+    cardRunExclusive(() => cardPull(m, sync));
   }
 }
 
@@ -2702,9 +2756,14 @@ function cardWait(m, done, ms = 10000) {
   return new Promise((resolve, reject) => {
     const t0 = performance.now();
     const step = () => {
-      if (m._wasm_card_done() >= done) return resolve();
-      if (performance.now() - t0 > ms) return reject(new Error("the emulator did not answer"));
-      setTimeout(step, 20);
+      try {
+        if (liveModule() !== m) return reject(CARD_GONE);
+        if (m._wasm_card_done() >= done) return resolve();
+        if (performance.now() - t0 > ms) return reject(new Error("the emulator did not answer"));
+        setTimeout(step, 20);
+      } catch (e) {
+        reject(e);
+      }
     };
     step();
   });
@@ -2716,7 +2775,13 @@ function cardSettle(m) {
   return new Promise((resolve) => {
     const t0 = performance.now();
     const step = () => {
-      const st = cardShowState(m);
+      if (liveModule() !== m) return resolve(-1);
+      let st;
+      try {
+        st = cardShowState(m);
+      } catch {
+        return resolve(-1);
+      }
       if (!m._wasm_card_state || st === 0 || st === 1 || st === 4) return resolve(st);
       if (performance.now() - t0 > CARD_SETTLE_MS) return resolve(st);
       setTimeout(step, 250);
@@ -2752,21 +2817,23 @@ async function cardPush(m) {
   const clean = await cardUnmount(m);
   console.log("[card] clean unmount:", clean);
   const d0 = m._wasm_card_done();
-  m._wasm_card_eject();
-  await cardWait(m, d0 + 1);
   try {
+    m._wasm_card_eject();
+    await cardWait(m, d0 + 1);
     await cardSync.pull(m.FS.readFile(CARD_PATH));
     const img = await cardSync.rebuild();
     m.FS.writeFile(CARD_PATH, img);
   } finally {
     // the card goes back in either way: the new image, or the one the
-    // phone had when the pull or the rebuild failed
+    // phone had when the eject, the pull or the rebuild failed
     // (path NUL-terminated, ASCII, as the accessory name)
-    const at = Number(m._wasm_card_buf());
-    for (let i = 0; i < CARD_PATH.length; i++) m.HEAPU8[at + i] = CARD_PATH.charCodeAt(i);
-    m.HEAPU8[at + CARD_PATH.length] = 0;
-    m._wasm_card_insert();
-    await cardWait(m, d0 + 2);
+    if (liveModule() === m) {
+      const at = Number(m._wasm_card_buf());
+      for (let i = 0; i < CARD_PATH.length; i++) m.HEAPU8[at + i] = CARD_PATH.charCodeAt(i);
+      m.HEAPU8[at + CARD_PATH.length] = 0;
+      m._wasm_card_insert();
+      await cardWait(m, d0 + 2);
+    }
   }
   // the new image is the base; what the phone writes from now on is pulled
   cardWrites = m._wasm_card_writes();
@@ -3012,6 +3079,12 @@ recBtn.addEventListener("click", () => {
   if (recorder) finishRecording(); else startRecording();
 });
 $("btn-rec-finish").addEventListener("click", () => finishRecording());
+// phone widths: from the Settings sheet, which gets out of the way of the capture
+$("btn-record-sheet").addEventListener("click", () => {
+  if (recorder) { finishRecording(); return; }
+  closeSheet();
+  startRecording();
+});
 
 // Off the phone layout the button itself becomes the capture pill (icon
 // dot -> square, plus a running m:ss); at phone widths .rec-pill takes its
@@ -3354,8 +3427,9 @@ soundBtn.addEventListener("click", async () => {
 });
 renderSound();
 
-// The microphone (mic.js): off until pressed, the browser asks then. It is
-// the run's: a new run starts with it off again.
+// The microphone (mic.js): off until pressed, the browser asks then. Pressed
+// before Start, it goes to the run once the phone is live; the end of a run
+// turns it off.
 const micBtn = $("btn-mic");
 const mic = new Mic();
 window.__mic = mic;   // debugging and headless checks

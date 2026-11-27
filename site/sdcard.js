@@ -242,12 +242,9 @@ export function buildImage(files) {
     for (const c of kids) {
       const { sfn, nt, lfn } = nameEntries(c.name, used);
       out.push(...lfn);
+      // (a folder's cluster goes in later, placeDir: its own entries decide its size)
       let cluster = 0, size = 0;
-      if (c.dir) {
-        // its own entries decide its size: lay it out first
-        c._entries = null;
-        cluster = 0;
-      } else if (c.data.length) {
+      if (!c.dir && c.data.length) {
         cluster = alloc(c.data.length);
         size = c.data.length;
         let off = 0;
@@ -477,7 +474,6 @@ export class CardSync {
     this.dir = dir;
     this.log = log;
     this.base = new Map();
-    this.busy = false;
   }
 
   // the first image, from the folder as it is now
@@ -523,6 +519,19 @@ export class CardSync {
       return 0;
     }
     const host = new Map((await listFolder(this.dir)).map((f) => [f.path, f]));
+    // FAT names ignore case, and the phone may write a host name back in
+    // capitals (PHOTO.JPG for photo.jpg): an image path takes the base's or
+    // the folder's spelling, else its parent's, so that nothing on the disk
+    // looks deleted or gets a twin of another case
+    const fold = new Map();
+    for (const p of [...host.keys(), ...this.base.keys()]) fold.set(p.toLowerCase(), p);
+    const canon = (p) => {
+      const hit = fold.get(p.toLowerCase());
+      if (hit) return hit;
+      const i = p.lastIndexOf("/");
+      return i < 0 ? p : canon(p.slice(0, i)) + p.slice(i);
+    };
+    entries = entries.map((e) => ({ ...e, path: canon(e.path) }));
     const hostSig = (p) => { const f = host.get(p); return f && !f.dir ? f.file.size + ":" + f.file.lastModified : null; };
     const inImage = new Map(entries.map((e) => [e.path, e]));
     let n = 0;

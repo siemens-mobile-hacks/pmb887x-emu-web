@@ -29,7 +29,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "./lib/argv.mjs";
-import { FULLFLASHES, flashPath } from "./lib/boards.mjs";
+import { FULLFLASHES, flashFiles, withSidecar } from "./lib/boards.mjs";
 import { bootOwnFlash, pageCall } from "./lib/page.mjs";
 
 const { opt } = parseArgs(process.argv.slice(2), {
@@ -49,9 +49,9 @@ if (!CARD) {
 }
 if (!fs.existsSync(CARD)) throw new Error(`--card: card image not found: ${CARD}`);
 const flashOpt = opt("flash", "");
-const flash = flashOpt in FULLFLASHES ? flashPath(flashOpt)
-  : flashOpt || (await import("./testflash.mjs")).fullflash;
-if (!fs.existsSync(flash)) throw new Error(`fullflash not found: ${flash}`);
+const flash = flashOpt in FULLFLASHES ? flashFiles(flashOpt)
+  : withSidecar(flashOpt || (await import("./testflash.mjs")).fullflash);
+for (const f of flash) if (!fs.existsSync(f)) throw new Error(`fullflash not found: ${f}`);
 const QUERY = [opt("query", ""), process.env.EXTRA_Q || "",
   COSTACK ? "env=" + encodeURIComponent("QEMU_COSTACK=1") : ""].filter(Boolean).join("&");
 
@@ -74,7 +74,7 @@ page.on("console", (m) => {
 await page.goto(`http://127.0.0.1:${PORT}/?dist=${DIST}${QUERY ? "&" + QUERY : ""}`,
                 { waitUntil: "domcontentloaded" });
 await page.setInputFiles("#card-image-file", CARD);
-await bootOwnFlash(page, [flash, flash + ".cfi-efa"].filter((f) => fs.existsSync(f)));
+await bootOwnFlash(page, flash);
 
 const call = (fn, arg, what) => pageCall(page.evaluate(fn, arg), what);
 const live = () => call(() => ({

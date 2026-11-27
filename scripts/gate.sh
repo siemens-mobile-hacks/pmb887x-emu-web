@@ -5,7 +5,7 @@
 #   scripts/gate.sh keep      # before committing a patch
 #   scripts/gate.sh close     # before the session's last commit
 #
-# quick has 7 jobs, keep 14 and close 22 (--list names them).  Measured on
+# quick has 7 jobs, keep 14 and close 23 (--list names them).  Measured on
 # this host (32 cores) at aa89576 (2026-11-14): close took 905 s, against
 # 2631 s for its jobs one after another, which is the whole point.  It is
 # bounded by boot-ordered (754 s -- five boards in one browser, in order,
@@ -121,6 +121,7 @@ JOBS=(
   "efa-web|close|yes|300|PORT=$PORT node '$ROOT/tools/efa-web.mjs' && PORT=$PORT node '$ROOT/tools/efa-web.mjs' noefa"
   "ui|close|yes|600|PORT=$PORT node '$ROOT/tools/ui-acceptance.mjs' --flash s75"
   "card|close|yes|600|node '$ROOT/tools/cardcheck.mjs' --port $PORT --dist $DIST --flash el71"
+  "cardfolder|close|yes|600|node '$ROOT/tools/cardfoldercheck.mjs' --port $PORT --dist $DIST --flash s75"
 )
 
 # ffboot reports in text, not an exit code: the Firefox module budget is
