@@ -1,9 +1,20 @@
 # Memory card (disk 4:)
 
-The model is `qemu/hw/arm/pmb887x/mci.c` (device `pmb887x-mci`), the PL180 MCI at F7301000, IRQ 148.
-The probe that led to it is in [sd-card-probe.md](sd-card-probe.md).
-The card behind it is qemu's own `sd-card`.
-Native: `CARD=` below. Browser: Advanced > Memory card (a folder kept in sync, or an image), see [Browser](#browser-a-folder-as-the-card).
+The card stack is upstream's (smh/master, merged at 827e5a7e62):
+- `qemu/hw/arm/pmb887x/mci.c` (device `pmb887x-mci`), the PL180 MCI at F7301000, IRQ 148, with a "CARD" port;
+- `qemu/hw/sd/sd-slot.c` (`sd-slot`), the board's slot: `[peripheral.SD_SLOT] type = "sd-slot"
+  port = { card = "MCI:CARD" }` in the board TOML (bsp), with `out = { cd = "MMC_CD" }` where the phone has a
+  card-detect pin. Its bool property `inserted` takes the card out of the port and puts it back;
+- qemu's own `sd-card` behind it, on the drive `-drive if=sd` (id `sd0`).
+
+Boards with a slot: the SG2 ELKA and X75 families (EL71, E71, M72, S75, SL75, C81, M81, S68), CL61/CL61A, SL98, LG KE800/KE970,
+Panasonic 705P. Other boards refuse an `if=sd` drive ("no slot takes it"), and the page and `run-native.sh` boot them without one.
+
+One piece is ours, a fork feature: the **card assist** (`hw/arm/pmb887x/card-assist.c`, `-object
+pmb887x-card-assist,id=card`). The firmware of most of these phones never looks at the card again after a mount
+(below), so a card changed under a running phone stays unseen; the assist makes the firmware's card server rescan and
+can ask the phone to unmount the card first. It is opt-in: without the object the card works as upstream has it.
+The probe that led to the first model is in [sd-card-probe.md](sd-card-probe.md).
 
 ## Use
 
@@ -20,51 +31,67 @@ CARD=card.img BOARD=siemens-el71 scripts/run-native.sh EL71v45.bin
 mdir -/ -i card.img@@1M ::                # what the phone wrote
 ```
 
-- `CARD=` adds `-drive if=sd,format=raw,file=<image>`. The image is writable, so stop qemu before you run mtools on it.
-- The card is SDSC only, because the firmware parses CSD v1 only. qemu's sd-card wants a power-of-two size (64 MB, 128 MB and so on).
+- `CARD=` adds `-drive if=sd,format=raw,file=<image>` and the card assist (`-object pmb887x-card-assist,id=card`).
+  `CARD_DEBUG=1` makes the assist report what it does (`debug=on`). The image is writable, so stop qemu, or take the
+  card out (below), before you run mtools on it.
+- The card is SDSC only, because the firmware parses CSD v1 only. qemu's sd-card takes a power-of-two size, or a
+  multiple of 256 KiB up to 1 GiB; the page pads any other image to the next power of two.
 - Without `CARD`, CMD0 answers "sent" and CMD8, CMD55 and CMD1 time out. The firmware then decides there is no card.
-- Debug: `-debug-channels log=MCI` prints every command and response and the start and end of each data block. Add `io=MCI` for the registers.
+- Debug: `-trace 'sdbus_*' -trace 'sdcard_*'` prints every command and block (`sdcard_read_block`/`sdcard_write_block`,
+  byte addresses).
 
-## How it works
+### Changing the card under a running phone
 
-- **Commands.** These follow pl181. A command completes 2 µs after the COMMAND write, from a timer, so the ISR sees CMDRESPEND. Long responses keep the pl181 word order.
-- **Reads.** The firmware writes DATACTRL (0x9B) before CMD17 or CMD18. The model arms the read and starts the data path only after the response, and only if the command did not fail.
-- **Writes.** For writes, the ISR enables DATACTRL after the response. The data path starts on that write.
-- **FIFO and DMA.**
-  - The FIFO at +0x80 moves one word per access. The bytes go through a 512-byte staging buffer: a block is read from the card (`sdbus_read_data`) when its first word is taken and written (`sdbus_write_data`) when its last word is in.
-  - **wasm:** qemu's sd-card does its block I/O (`blk_pread`/`blk_pwrite`) where it is called, here in an MMIO access on the vCPU thread, and the wasm build cannot run a coroutine there (`util/coroutine-wasm.c` aborts with "coroutine switch on the vCPU thread"). So in the wasm build each card call (command, block read, block write) runs as a one-shot BH on the main loop thread while the vCPU waits with the BQL released (`mci_sd_call`). The guest sees the same synchronous access. Native builds call directly.
-  - DMA is peripheral flow-controlled on DMAC0: SREQ for each word and LSREQ for the last word, which ends the channel with TC. The handshake is SREQ → CLR → drop → CLR low.
-  - DATAEND and DATABLOCKEND are set when the last word moves, which is after the DMAC took it. So TC comes before the MCI interrupt.
-- **Two request lines.** The firmware's DMA HAL does not always use the same request line. The early reads used line **6** (sel 1). The read at the partition start was programmed with SRC_PERIPH 0x0D, which is line **13** (sel 1), on another channel. The reason was not looked into.
-  - The model raises the same level on four signal sets: RX, TX, RX2 and TX2, on lines 6 and 13.
-  - A CLR on any set withdraws them all.
-  - Only the line the firmware programmed is served by the DMAC.
-  - When only line 6 was wired, the read at the partition start never got its DMA. The firmware then re-initialised the card in a loop.
-- **Wiring.**
-  - `gen/cpu_modules.c` is the bsp generator's output: `bsp/lib/data/modules/AMBA_MCI.cfg` has `.qemu pmb887x-mci`, `bsp/lib/data/pmb8876.cfg` the DMA sets TX 13, RX 6, TX2 6, RX2 13 (the model binds them by name), IRQ 148, AHB2.
-  - `board.c` creates the module for PMB8876 only, right after MMCI. Kconfig `PMB887X` selects `SD`.
-- **wasm Asyncify.** `mci_realize` realizes the sd-card, whose `blk_getlength` runs a coroutine, so `mci_realize` is in `configs/meson/asyncify-only.txt` (and `wasm_card_bh`, the page's eject/insert). Without it the coroutine switch could not unwind `mci_realize`: it ran again from its start on the rewind and corrupted the heap (2026-11-23: "RuntimeError: unreachable" in malloc at the start of every run with a card). Found with `env=QEMU_COSTACK=1` + `tools/asyncify-audit.mjs`.
+```sh
+CARD=card.img MONITOR=unix:/tmp/mon.sock scripts/run-native.sh EL71v45.bin
+(qemu) qom-set /objects/card inserted false      # the firmware sees the removal; its FS drops its cache
+(qemu) eject sd0
+mcopy -i card.img@@1M new.txt ::Misc/            # any host-side change
+(qemu) change sd0 card.img raw
+(qemu) qom-set /objects/card inserted true       # the firmware reads the card again
+(qemu) qom-get /objects/card state               # 0 in, 1 out, 2 going out, 3 reading, 4 not seen
+```
 
-## Verified (2026-11-23, EL71v45, `siemens-el71`, ICOUNT=vt)
+- The order matters: the card leaves the slot before its drive is closed, and the drive is open before the card
+  goes back. The slot's own `qom-set /machine/peripheral/SD_SLOT inserted false` works as well, but then the
+  firmware is not told.
+- `qom-set /objects/card inserted true` right after `false` is fine: the insert is held until the firmware has
+  seen the removal ("insert held" in the debug log), so the FS always sees a removal before the insertion.
+- Properties of the object: `slot` (path of the sd-slot, when a board has more than one), `debug`, `inserted`, and
+  read-only `state`, `writes` (write commands the card answered so far) and `unmount-state`.
+- The browser page does the same through `wasm_card_eject`/`wasm_card_insert` (ui/wasm.c).
+
+## wasm
+
+- **Block I/O off the vCPU thread.** The upstream MCI calls the card from MMIO accesses and from its transfer timers,
+  both on the vCPU thread, and qemu's block layer runs coroutines, which the wasm build can only switch on the main
+  loop thread (`util/coroutine-wasm.c` aborts with "coroutine switch on the vCPU thread"). So `hw/sd/sd.c`
+  (marked "PMB887X-WEB WASM PORT") runs a block read or write from that thread as a one-shot BH on the main loop while
+  the vCPU waits with the BQL released (`sd_blk_io`); the card and its BlockBackend are held meanwhile, since the main
+  loop may take the card out. The guest sees the same synchronous access. Native builds call directly.
+- **`blk_is_inserted()` as well:** it always runs a coroutine, and sd.c asks it for every command and every data byte.
+  The answer is kept by the main loop where the medium changes (`sd_cardchange`, `sd_realize`), and the vCPU thread
+  reads that (`sd_get_inserted`). The test is the thread itself (`qemu_coroutine_current_thread_forbidden()`), not
+  `current_cpu`: the MCI's timers run on the vCPU thread with no CPU current.
+- **Asyncify.** The slot realizes the card when it binds its port, and `sd_realize`'s `blk_getlength` runs a
+  coroutine, so that path (`qdev_bus_port_bind`, `bus_port_connect`, `sd_*`) is in `configs/meson/asyncify-only.txt`,
+  with `wasm_card_bh`, `pmb887x_card_set_inserted` and the assist's held insert `cd_insert_bh`. Checked with
+  `tools/cardcheck.mjs --costack` + `tools/asyncify-audit.mjs` (2026-11-27: S75, EL71, nothing missing).
+- `tools/cardcheck.mjs --card <image>` boots a phone with the card in the page and runs out, in, a quick out+in, the
+  clean unmount and a remount, each to the state the firmware must reach.
+
+## Verified (2026-11-27, upstream MCI + sd-slot + the card assist)
 
 | check | result |
 |---|---|
-| boot with card | card identified (CMD0/8/55+41/2/3/9/13/7/16), MBR, boot sector and FAT read with CMD17, folders created by the firmware (`Videos` appeared on the card at first boot, 9 x CMD24) |
-| My stuff | second tab "MultiMediaCard" lists Misc, Pictures, Videos with the right entry counts |
-| open a file | Pictures/test.png (64x48 PNG) shows in the picture viewer |
-| write by the phone | Options > Copy test.png, paste into Misc: mtools then reads `Misc/TEST.PNG`, which is byte-identical to the source; `fsck.fat -n` is clean. The session used CMD24, CMD25 (multi-block) and CMD12, with no timeouts |
-| no card | boots to idle as before; My stuff shows only the phone tab; the card tab does not switch |
-| S75 (PMB8876, no card slot used) | no MCI access; the frame at 60 s is byte-identical to the unmodified build |
+| native EL71 (`rr_ff_el71_stock.bin`), monitor `qom-set` out, mcopy, `change`, in | removal seen and card read again after 1 call each; CMD17 reads after the insert |
+| native S75 (`S75v40lg1.bin`, a card-detect pin) | the same, 1 call each; no double rescan from the CD line |
+| native EL71, QMP burst out+eject+change+in in one go | "insert held until the firmware has seen the removal", then both done |
+| browser S75 (`s75_working…bin`) and EL71, `tools/cardcheck.mjs` | out, in, out+in, unmount (sent to the firmware), remount: PASS |
 
-Not tested:
-- The `.txt` viewer: the firmware has no viewer for .txt, so the file shows a "?" icon.
-- SDHC.
-- Other NewSGOLD phones with cards.
-
-## Possible follow-ups
-
-- Burst requests (BREQ/LBREQ, SB_SIZE 8) instead of single words: this would make DMA faster. Reads are already fast enough for the explorer.
-- An empty `-drive if=sd` (no image at boot) is not removable in qemu's sd-card (it sets its block device ops only when a medium is there), so `change sd0` fails with "Device 'sd0' is not removable". Boot with an image to change cards at run time; the page always does.
+The 2026-11-23 checks of the phone with a card (My stuff lists the card, a picture opens, the phone copies a file onto
+the card and `fsck.fat` is clean, Format card) were made with the fork's own MCI model, which upstream's replaced on
+2026-11-27; its notes are in git history (this file before that date).
 
 ## Caching in the firmware's FAT driver (2026-11-23): can host changes show up live?
 
@@ -80,7 +107,7 @@ A live "folder synthesised as a block device" (vvfat-like) can therefore only be
 
 ### Block log
 
-`PMB887X_MCI_BLKLOG=<file>` (environment variable, read at realize) writes one line per data transfer: `<virtual ms> R|W <card LBA> <blocks> CMDn`.
+These were taken with the fork MCI's block log (one line per transfer: `<virtual ms> R|W <card LBA> <blocks> CMDn`); with upstream's MCI, `-trace sdcard_read_block -trace sdcard_write_block` gives the same (byte addresses: LBA × 512).
 
 On the test image (partition at LBA 2048):
 
@@ -117,35 +144,26 @@ On the test image (partition at LBA 2048):
   - After `change sd0 <image> raw`, no command came in 40 s, and opening the tab sent none either.
 - There is no card-detect interrupt on HW 0x28, so a remount would need either a firmware call to re-mount, or another phone/HW id with card detect. Neither was explored.
 
-## Remount without a reboot (2026-11-23)
+## Remount without a reboot (2026-11-23): the card assist
 
-The firmware drops its FAT and directory cache when the card bus layer reports "removed", and reads them again when it reports "inserted". Both reports come from the card server's rescan. EL71 has no card-detect interrupt (HW id 0x28, below), and after a removal nothing in the firmware rescans again. The emulator starts the rescans itself, with no gdb and no per-firmware addresses:
+The firmware drops its FAT and directory cache when the card bus layer reports "removed", and reads them again when it reports "inserted". Both reports come from the card server's rescan. EL71 has no card-detect interrupt (HW id 0x28, below), and after a removal nothing in the firmware rescans again. The card assist starts the rescans itself, with no gdb and no per-firmware addresses (use: [above](#changing-the-card-under-a-running-phone)).
 
-```sh
-CARD=card.img MONITOR=unix:/tmp/mon.sock scripts/run-native.sh EL71v45.bin
-(qemu) eject -f sd0                                    # FS unmounts (cache dropped)
-mcopy -i card.img@@1M new.txt ::Misc/                  # any host-side change
-(qemu) change sd0 card.img raw                         # FS mounts, re-reads
-```
+### How the assist starts a rescan (`cd_*` in card-assist.c)
 
-The browser page does the same through `wasm_card_eject`/`wasm_card_insert` (QMP `eject` / `blockdev-change-medium` on sd0).
-
-### How the model starts a rescan (`mci_cd_*` in mci.c)
-
-qemu's sd-card reports a media change to the bus (`SDBusClass.set_inserted`). The model then makes the card server's own timer "expire", again and again, until the firmware has acted on the change:
+The assist takes the card out of the slot or puts it in (`inserted`) and then makes the card server's own timer "expire", again and again, until the firmware has acted on the change:
 - **The card server** is a set of Nucleus PLUS objects named `CARDSRV ` (task, event group, mailbox, semaphore, timer). Its one-shot timer is armed after every burst of block requests; its expiration routine (EL71v45 `FUN_a04ddd18`, E71v45 A04D7950) sets the rescan event when it expires (initial value 0x32C8 = 13 s in ms ticks; natively about 10 s after a mount; in the browser the guest runs slower than real time, so it can be a minute of wall time), if the server is idle then. That is the firmware's own idle rescan.
-- **Found in RAM, not by address.** On each request the model scans the RAM ranges of the system address space for Nucleus application timer blocks (`TM_APP_TCB`: id `TIME` at +12, name +16, expiration routine +24, its argument +28, enabled +32, the actual timer at +48 whose information field +56 points back at the block by its virtual address, so only the offset in the page is compared: part of RAM is also mapped elsewhere, e.g. the MTIMER blocks at physical A8015994 point to AD005994). The `CARDSRV ` block gives the routine to run.
+- **Found in RAM, not by address.** On each request the assist scans the RAM ranges of the system address space for Nucleus application timer blocks (`TM_APP_TCB`: id `TIME` at +12, name +16, expiration routine +24, its argument +28, enabled +32, the actual timer at +48 whose information field +56 points back at the block by its virtual address, so only the offset in the page is compared: part of RAM is also mapped elsewhere, e.g. the MTIMER blocks at physical A8015994 point to AD005994). The `CARDSRV ` block gives the routine to run.
 - **Where it runs.** Nucleus runs expiration routines from the timer HISR. The model puts a one-shot translator hook (`arm_pc_hook_addr`, target/arm, A32 and Thumb) on the routine most enabled timers use (on both phones the Siemens MTIMER routine A00978BB, Thumb, firing every 0.2-1 s). At its entry the registers are saved and the guest is sent to the CARDSRV routine (r0 = its argument, LR = the hook address); when it returns there with the same SP the registers come back and the original routine runs. This is what Nucleus would do if the CARDSRV timer expired at that tick.
-- **Until it is done.** Each change sets a goal: a removal is done when the firmware's rescan has failed on the card and switched it off (the card stays hidden, commands time out, until then); an insertion is done when the firmware reads a block again (CMD17/18: the FS mounts). While a goal is open the hook stays armed, and at each tick of the hooked routine the CARDSRV routine is run if its own timer is not running and the last run is 1.5 s (host time; virtual time cannot be read in the middle of a TB under icount) ago, at most 10 runs and 10 minutes per goal (then the model gives up: log "giving up", page state "not seen"; a removal stops hiding the card).
+- **Until it is done.** Each change sets a goal: a removal is done when the firmware's rescan has failed on the card and switched it off (the card stays hidden, commands time out, until then); an insertion is done when the firmware reads a block again (CMD17/18: the FS mounts). While a goal is open the hook stays armed, and at each tick of the hooked routine the CARDSRV routine is run if its own timer is not running and the last run is 1.5 s (host time; virtual time cannot be read in the middle of a TB under icount) ago, at most 10 runs and 10 minutes per goal (then the assist gives up: log "giving up", page state "not seen"; a removal stops hiding the card).
   - Not while the CARDSRV timer is running: Nucleus runs the routine only on an expired timer, and on a running one its `NU_Reset_Timer` fails (firmware exit 0x000F "cardsrv", seen in the browser test). After card I/O (a mount, an explorer listing, a rescan of its own) it runs for ~13 s of guest time; waiting it out made a second change take ~10 s natively and up to a minute in the browser.
-  - **So the running timer is moved up** (`mci_cd_expedite`), in the hook, i.e. in the timer HISR inside Nucleus's expiration loop, the context in which Nucleus itself changes the list. Nucleus PLUS's active timer list: `TM_TCB` (+48 of the `TM_APP_TCB`): +0 type (`TM_TASK_TIMER` 0, `TM_APPL_TIMER` 1), +4 remaining time, +8 information, +12 next, +16 previous; circular, doubly linked, sorted; the head's remaining time absolute, the others deltas to the one before. The head pointer (`TMD_Active_Timers_List`) is found once, by value: the only RAM word that points at a member of the list (walked from the CARDSRV entry) and is not a member's own link field; it is checked again before every use. The CARDSRV entry is unlinked (its delta added to the next entry's) and linked in right after the head with delta 0, so it expires together with the next timer of all (within ~0.2-1 s), and Nucleus runs its routine normally (timer disabled first, no exit). If its routine then does not rescan (server busy), the goal loop goes on as above. Any mismatch (list not consistent, not exactly one head candidate): nothing is written, the model waits for the timer as before, and the page shows "waiting for the phone's card timer".
+  - **So the running timer is moved up** (`cd_expedite`), in the hook, i.e. in the timer HISR inside Nucleus's expiration loop, the context in which Nucleus itself changes the list. Nucleus PLUS's active timer list: `TM_TCB` (+48 of the `TM_APP_TCB`): +0 type (`TM_TASK_TIMER` 0, `TM_APPL_TIMER` 1), +4 remaining time, +8 information, +12 next, +16 previous; circular, doubly linked, sorted; the head's remaining time absolute, the others deltas to the one before. The head pointer (`TMD_Active_Timers_List`) is found once, by value: the only RAM word that points at a member of the list (walked from the CARDSRV entry) and is not a member's own link field; it is checked again before every use. The CARDSRV entry is unlinked (its delta added to the next entry's) and linked in right after the head with delta 0, so it expires together with the next timer of all (within ~0.2-1 s), and Nucleus runs its routine normally (timer disabled first, no exit). If its routine then does not rescan (server busy), the goal loop goes on as above. Any mismatch (list not consistent, not exactly one head candidate): nothing is written, the assist waits for the timer as before, and the page shows "waiting for the phone's card timer".
   - Siemens' Nucleus clears the next/previous fields of a timer when it expires (seen in RAM: the expired MTIMER entry has type 1, next 0, prev 0), so the head cannot be reached through the timer that just fired; hence the head pointer search.
-  - Measured (native, `-icount`): eject + empty file + insert 10 s after boot, then 2 s later a second change while the timer runs from the first mount. Before: 0.3-0.8 s and ~10 s (the timer waited out, 520-540 hook hits). After: 0.5 s and 0.8 s on EL71v45 (timer moved up 2 times, the removal then seen by Nucleus's own expiry, 0 runs from the model); 0.5 s and 0.5 s on E71v45, same binary. The phone lists EMPTY.TXT (0 bytes) and HOSTADD.TXT afterwards.
+  - Measured (native, `-icount`): eject + empty file + insert 10 s after boot, then 2 s later a second change while the timer runs from the first mount. Before: 0.3-0.8 s and ~10 s (the timer waited out, 520-540 hook hits). After: 0.5 s and 0.8 s on EL71v45 (timer moved up 2 times, the removal then seen by Nucleus's own expiry, 0 runs from the assist); 0.5 s and 0.5 s on E71v45, same binary. The phone lists EMPTY.TXT (0 bytes) and HOSTADD.TXT afterwards.
   - In the hook there is no `DEBUG_LOG`: its time stamp reads the virtual clock, which icount forbids in the middle of a TB ("Bad icount read"); the counts are logged when the goal is done or at the next media change.
   - The first version (2026-11-23 morning) made one call per change and, when the timer was running, skipped it trusting the timer's own expiry. That expiry rescans only if the server is idle at that moment, so a removal could stay unseen, the insertion waiting behind it forever: the phone lost the card after a folder change in the browser (user report, an empty file added).
 - **Removal first.** An insertion that comes while the removal is not seen yet waits for it, so a quick eject + insert still shows the FS a "removed" before the "inserted".
-- **State** for the page: `wasm_card_state()` (= `pmb887x_mci_card_state`): 0 in (read again), 1 out, 2 going out, 3 reading, 4 not seen (gave up); `| 0x10` while it waits for a CARDSRV timer it could not move up.
-- **Inert** when there is no `CARDSRV ` timer (another OS or layout): the card changes, the firmware is not told (log "no CARDSRV timer"). `PMB887X_MCI_NOHOOK=1` turns it off for experiments.
+- **State** for the page: `wasm_card_state()` and the object's `state` (= `pmb887x_card_state`): 0 in (read again), 1 out, 2 going out, 3 reading, 4 not seen (gave up); `| 0x10` while it waits for a CARDSRV timer it could not move up.
+- **Inert** when there is no `CARDSRV ` timer (another OS or layout): the card changes, the firmware is not told (log "no CARDSRV timer"). For experiments without it leave the object out and use the slot's `inserted`.
 - The earlier version (a per-firmware table calling the card-detect callback at `NU_Retrieve_Events`) is gone. The translator hook stays: a plain cpu breakpoint does not fire in the wasm build (its inlined TB chaining and pc caches skip `check_for_breakpoints`).
 
 ### Verified
@@ -153,18 +171,18 @@ qemu's sd-card reports a media change to the bus (`SDBusClass.set_inserted`). Th
 - EL71v45 native, the goal version: phone idle, eject + `mcopy` an empty EMPTY.TXT + insert at once, 4 s later eject + HOSTADD.TXT + insert: each removal and insertion done after one call; the card tab then lists EMPTY.TXT (0 bytes), HOSTADD.TXT and NOTES.TXT in Misc.
 - E71v45 native, the goal version, same binary and sequence: both removals and insertions done (the second insertion by the firmware's own rescan, 0 runs); after each the FS reads LBA 0, 2048, 2052, 2308.
 - Browser (wasm), the goal version: with the phone idle a folder change took about a minute (the removal waited 456 hook hits with the CARDSRV timer running, then 1 run; the phone then read the card by itself); with the explorer open on Misc an empty file and 6 s later a second file: two pushes one after the other, the second seen by the firmware without a run (its explorer's failed select rescans). State "going out > reading > in" each time, no firmware exit.
-- Browser, with the timer move-up and Sync card (dist-jit 2026-11-23): from the click to the phone having read the card again 1.8 s with the phone idle (explorer closed, screen dark), 2.5 s with the explorer open on Misc, 1.0 s for a second push right after; the removals were done by Nucleus expiring the moved-up timer or by one run. The phone then shows its own note "Data lost! Use option 'Eject card'." after every push, also when idle with the explorer closed: the firmware's reaction to a card removed without its "Eject card" option (the FS had it mounted), not an error of the model; OK closes it, the files are there. Gone since the clean unmount below.
+- Browser, with the timer move-up and Sync card (dist-jit 2026-11-23): from the click to the phone having read the card again 1.8 s with the phone idle (explorer closed, screen dark), 2.5 s with the explorer open on Misc, 1.0 s for a second push right after; the removals were done by Nucleus expiring the moved-up timer or by one run. The phone then shows its own note "Data lost! Use option 'Eject card'." after every push, also when idle with the explorer closed: the firmware's reaction to a card removed without its "Eject card" option (the FS had it mounted), not an error of the emulator; OK closes it, the files are there. Gone since the clean unmount below.
 - The first version lost such a change in the user's Edge (an empty file added while the phone ran); in the headless test it happened not to (timing).
 - EL71v45 native, first version: eject, `mcopy` HOSTADD.TXT into Misc, insert: the removal is seen, the insert re-identifies the card and the FS mounts (about 150 reads with the card tab open); My stuff > card > Misc lists HOSTADD.TXT and NOTES.TXT ("2 entries"). Hook on A00978BB (Thumb), 82 timers found, 13 enabled.
 - E71v45 native (`siemens-e71`, `E71_45_lg91_From_00.bin`), same binary: CARDSRV routine A04D7950 found, removal seen, after the insert the FS reads MBR, boot sector, FAT and root (LBA 0, 2048, 2052, 2308). Its UI with SIM=none stays at "Please insert your SIM card!", so the explorer was not looked at.
-- With `PMB887X_MCI_NOHOOK=1` (no call): the removal is still noticed (an eject during an idle rescan: CMD0/8/55/1 time out three times), the insert never is: no MCI command at all after `change`, even with the card tab opened.
+- Without the assist (no call): the removal is still noticed (an eject during an idle rescan: CMD0/8/55/1 time out three times), the insert never is: no MCI command at all after `change`, even with the card tab opened.
 - The earlier gdb-based checks (same FS path): host changes between eject and insert all show after the insert (files added in Misc, Pictures and the root, a file deleted); the phone then copied a file into the cluster freed by the host delete, `fsck.fat` clean. A rescan with the card left in only re-identifies it: presence does not change, so the FS gets no event. The card has to go out and come back in.
 
 ### Clean unmount before the change (2026-11-24): no "Data lost"
 
 "Sync card" first asks the phone to unmount the card itself, as its "Eject card" option does:
 message 0x18 to the memory card file system process 0x4100 with drive 4,
-`GBS_SendMessage(0x4100, 0x18, 0, 4, 0)` (`pmb887x_mci_unmount`, `wasm_card_unmount`).
+`GBS_SendMessage(0x4100, 0x18, 0, 4, 0)` (`pmb887x_card_unmount`, `wasm_card_unmount`).
 - The FS writes its FAT and directories to the card and drops its cache. The card then goes out and in as above; the FS
   mounts it on the next access. The note "Data lost" is only for a card removed while mounted, so it does not come.
 - `GBS_SendMessage` is found in the flash (from A0000000) by the ElfPack function library patterns of SWI 0x100
@@ -173,7 +191,7 @@ message 0x18 to the memory card file system process 0x4100 with drive 4,
   their messages too): registers saved, r0-r3 + one stack word set, LR = the hook, back there with the same SP.
 - The page then waits until the phone has stopped writing to the card (600 ms) before it takes the image.
 - Not found (0 or 2+ matches), no CARDSRV timer or hook: state 3, the old way (out/in only, with the note).
-- The FS refuses the unmount while a file on the card is open; the model does not see that (the reply goes to no
+- The FS refuses the unmount while a file on the card is open; the assist does not see that (the reply goes to no
   process), so the change then goes on as before, with the note.
 - Verified in the browser (dist-jit, EL71v45 `el71-23oct-full.bin`, tools/cardcheck.mjs): every push "clean unmount:
   true", no note, the phone reads the card again in 1.9-3.6 s, all checks pass. With the card tab open the explorer
@@ -220,15 +238,15 @@ To get there: My stuff > card tab > Options > Format card. It asks two confirmat
 
 ## Browser: a folder as the card
 
-Advanced > **Memory card** (PMB8876 phones only; other boards boot without one):
+Advanced > **Memory card** (boards with an sd-slot; other boards boot without one):
 - **Folder…** (Chrome/Edge, File System Access API, read+write): the page builds a FAT16 SD image from the folder (`site/sdcard.js`: MBR with one FAT16 partition at LBA 2048, 2 FATs, 512 root entries, VFAT long names, power-of-two size 64 MB-2 GB, at least 4 sectors per cluster) and keeps the two in sync while the phone runs. Entries starting with `.` are left out.
-- **Image…**: a raw card image is used as it is (padded to a power of two); no sync.
+- **Image…**: a raw card image is used as it is (padded to a power of two when qemu would refuse its size); no sync.
 - **Card** (Export row): downloads the image as it is now. **Sync card** (was "Sync card"): put the folder on the card at once (below).
 
-The image is a MEMFS file (`/data/card.img`) given to qemu as `-drive if=sd,format=raw`. Sync (`site/app.js`, "memory card"):
+The image is a MEMFS file (`/data/card.img`) given to qemu as `-drive if=sd,format=raw`, with the card assist. Sync (`site/app.js`, "memory card"):
 - **phone → folder.** `wasm_card_writes()` counts the blocks the phone wrote. When it changed and then stayed still for 3 s, the page reads the image (FAT parse in JS) and writes new and changed files to the folder and deletes the ones the phone deleted. A file deleted on the phone is deleted on disk only if the disk copy is unchanged since the last sync.
 - **folder → phone.** Only on **Sync card** (user 2026-11-23: no automatic folder poll; a half-written folder is never pushed). The page checks the folder (sizes and dates) when its window gets the focus and after each pull, and the state line then says "the folder has changes not on the card yet: Sync card". Sync card: `wasm_card_eject()`, then the phone's changes are pulled first, the image is rebuilt from the folder, written to MEMFS and `wasm_card_insert()` (path in `wasm_card_buf()`; `wasm_card_done()` counts finished eject/insert operations). The phone sees a removal and an insertion and reads the card again (above). The page then waits (at most 4 minutes; with the timer move-up about a second) until `wasm_card_state()` says the phone has read the card; the button stays disabled meanwhile, so pushes never overlap and never eject in the middle of a mount.
-- **Card state** under Export: "Card: in / out / going out… N s / reading… N s / not seen by the phone", with "(waiting for the phone's card timer, ~13 s of phone time)" when the model could not move that timer up.
+- **Card state** under Export: "Card: in / out / going out… N s / reading… N s / not seen by the phone", with "(waiting for the phone's card timer, ~13 s of phone time)" when the assist could not move that timer up.
 - **Both changed** the same file: the folder keeps its version and the phone's is written next to it as `name~phone.ext`.
 - What the phone writes as plain 8.3 names comes back in capitals (`TEST.PNG`).
 

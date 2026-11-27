@@ -326,6 +326,7 @@ const gsmRelay = process.env.GSM_RELAY
   : null;
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const WS_MAX = 1 << 20;   // a page sends a few KB at a time
+const WS_EARLY_MAX = 64 << 10;   // what a page may send before the relay answers
 
 function wsFrame(op, data) {
   const n = data.length;
@@ -346,8 +347,10 @@ const proxyGsmRelay = (req, socket, head) => {
   let rx = head?.length ? Buffer.from(head) : Buffer.alloc(0);
   let up = false;
   const close = () => { relay.destroy(); socket.destroy(); };
+  socket.pause();
   relay.on("connect", () => {
     up = true;
+    socket.resume();
     const accept = createHash("sha1").update(key + WS_GUID).digest("base64");
     socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`);
@@ -366,7 +369,7 @@ const proxyGsmRelay = (req, socket, head) => {
   socket.on("close", () => relay.destroy());
   const onData = (d) => {
     rx = rx.length ? Buffer.concat([rx, d]) : d;
-    if (!up) return;
+    if (!up) return rx.length > WS_EARLY_MAX ? close() : undefined;
     for (;;) {
       if (rx.length < 2) return;
       const op = rx[0] & 15, masked = rx[1] & 128;
@@ -388,6 +391,9 @@ const proxyGsmRelay = (req, socket, head) => {
 };
 
 const onUpgrade = (req, socket, head) => {
+  // node takes its own error listener off an upgraded socket: without one a
+  // reset (a page closed while refused or connecting) ends the process
+  socket.on("error", () => socket.destroy());
   try {
     if (isWebSocket(req) && new URL(req.url, "http://x").pathname === "/gsmrelay") {
       return proxyGsmRelay(req, socket, head);

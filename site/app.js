@@ -29,7 +29,7 @@ import { esnToOtp0, imeiToOtp1 } from "./otp.js";
 import { serialMessages, parseExit, EXIT_MARK, EXIT_HEAD } from "./exit-report.js";
 import {
   untar, boardText, readPanel, readBoardName, readAccessories,
-  boardCpu, gsmBoardHasRadio, boardHasDisplay, boardHasSimSlot,
+  boardCpu, gsmBoardHasRadio, boardHasDisplay, boardHasSimSlot, boardHasSdSlot,
 } from "./boards.js";
 
 /* ------------------------------------------------------------------ */
@@ -1477,6 +1477,7 @@ const engineWorkers = new WeakMap();   // Module -> its workers
 }
 // modules ended by forceStop(): an onExit that still comes is not news
 const forcedModules = new WeakSet();
+const exitedModules = new WeakSet();
 
 function startQemu({ factory, engine, args, opts, setup, report }) {
   let modRef = null; // FS access in onExit (qemuModule not yet assigned)
@@ -1490,6 +1491,7 @@ function startQemu({ factory, engine, args, opts, setup, report }) {
     ...engineInstantiate(engine, fail),
     ...opts,
     onExit: (code) => {
+      if (modRef) exitedModules.add(modRef);
       if (forcedModules.has(modRef)) return;
       // before the runtime tears the page down
       if (modRef) {
@@ -1909,10 +1911,14 @@ async function boot() {
       ? []
       : ["-audio", `wasm,out.frequency=${audioRate()},out.channels=2`];
     // the memory card (sdcard.js): an image built from the chosen folder,
-    // or the chosen image, in MEMFS as qemu's sd drive; PMB8876 boards only
+    // or the chosen image, in MEMFS as qemu's sd drive, on a board with an
+    // sd-slot; the card assist tells the firmware when the card changes
+    // (doc/sd-card.md)
     const cardBytes = await cardBootImage(device);
     if (cardBytes === false) return;
-    const cardArgs = cardBytes ? ["-drive", `if=sd,format=raw,file=${CARD_PATH}`] : [];
+    const cardArgs = cardBytes
+      ? ["-drive", `if=sd,format=raw,file=${CARD_PATH}`, "-object", "pmb887x-card-assist,id=card"]
+      : [];
     // the card is a device of its own, plugged into the board's empty
     // "iso7816-slot"; a board without one runs with no SIM
     const simSlot = boardHasSimSlot(device);
@@ -2023,6 +2029,9 @@ async function boot() {
     // whole run: MEMFS has the image now, so the page lets go of it (not in
     // setup, which launch() may run a second time)
     flashBytes = null;
+    // a guest that ended while it started (bad arguments, a failed board
+    // init) has had its onGuestExit already: nothing of the run starts
+    if (exitedModules.has(qemuModule)) return;
   } catch (e) {
     setEmuState("idle");
     if (!startCancelled(e)) {
@@ -2056,7 +2065,8 @@ async function boot() {
   }
   // a dist built before the wasm-gsm chardev existed has no relay
   if (relayRun && qemuModule._wasm_gsmrelay_ready) {
-    gsmRelay = new GsmRelay(qemuModule, { onChange: showRelayStatus });
+    const mod = qemuModule;
+    gsmRelay = new GsmRelay(mod, { onChange: showRelayStatus, alive: () => liveModule() === mod });
     window.__gsmRelay = gsmRelay; // debugging
     gsmRelay.start();
   }
@@ -2445,8 +2455,8 @@ $("btn-save-efa").addEventListener("click", () => {
 //    (wasm_card_unmount: as its "Eject card", so no "Data lost" note), the
 //    card is taken out (wasm_card_eject), the phone's changes are pulled first, a new image is
 //    built from the folder and put in (wasm_card_insert). The phone drops its
-//    card cache and reads it again (hw/arm/pmb887x/mci.c turns the change
-//    into its card detect). Whether the folder has changes not on the card
+//    card cache and reads it again (qemu's card assist, hw/arm/pmb887x/
+//    card-assist.c, turns the change into its card detect). Whether the folder has changes not on the card
 //    yet is checked when the window gets the focus and after each pull.
 // A file changed on both sides is kept twice: the phone's copy as "name~phone".
 const CARD_PATH = "/data/card.img";
@@ -2458,6 +2468,8 @@ let cardRun = false;         // this run has a card
 let cardTimer = null;
 let cardWrites = -1, cardQuietSince = 0, cardDirty = false;
 let cardBusy = false;
+let cardIdle = Promise.resolve();   // settles once no card operation runs
+let cardQueued = null;       // the run's last pull, waiting for the operation under way
 let cardHostPending = false;  // the folder has changes not on the card yet
 let cardStatus = "";
 let cardState = -1;          // wasm_card_state(): what the phone knows of the card
@@ -2497,10 +2509,12 @@ async function cardBootImage(device) {
   cardRun = false;
   cardSync = null;
   if (!cardDir && !cardImage) return null;
-  if (boardCpu(device) !== "pmb8876") {
-    cardLog("This phone has no memory card slot in the emulator (PMB8876 phones only)");
+  if (!boardHasSdSlot(device)) {
+    cardLog("This phone has no memory card slot in the emulator");
     return null;
   }
+  // the last run's final pull goes to the folder before it is read again
+  await cardIdle;
   try {
     let bytes;
     if (cardDir) {
@@ -2514,8 +2528,10 @@ async function cardBootImage(device) {
       bytes = await cardSync.initialImage();
     } else {
       bytes = cardImage.bytes.slice();
-      // qemu's sd-card wants a power-of-two size
-      if (bytes.length & (bytes.length - 1)) {
+      // qemu's sd-card takes a power-of-two size, or a multiple of 256 KiB
+      // up to 1 GiB; anything else is padded to a power of two
+      const pow2 = !(bytes.length & (bytes.length - 1));
+      if (!pow2 && (bytes.length % (256 << 10) || bytes.length > 1 << 30)) {
         let n = 1;
         while (n < bytes.length) n *= 2;
         const b = new Uint8Array(n);
@@ -2547,30 +2563,77 @@ function cardStart(on) {
   render();
 }
 
-function cardStop() {
-  if (cardTimer) clearInterval(cardTimer);
-  cardTimer = null;
-  // the phone's last writes still go to the folder
-  if (cardSync && cardDirty && qemuModule?.FS) {
-    cardDirty = false;
-    cardRunExclusive(() => cardSync.pull(qemuModule.FS.readFile(CARD_PATH)));
+// writes the phone made since cardTick last looked
+function cardUnseenWrites(m) {
+  try {
+    return !!m?._wasm_card_writes && m._wasm_card_writes() !== Math.max(cardWrites, 0);
+  } catch {
+    return false;   // the module is gone
   }
 }
 
-async function cardRunExclusive(fn) {
-  if (cardBusy) return;
+function cardStop() {
+  if (cardTimer) clearInterval(cardTimer);
+  cardTimer = null;
+  // the phone's last writes still go to the folder, after any operation
+  // under way: the image is taken now, the next run may replace the module
+  const m = qemuModule, sync = cardSync;
+  if (sync && (cardDirty || cardUnseenWrites(m)) && m?.FS) {
+    cardDirty = false;
+    let img = null;
+    try {
+      img = m.FS.readFile(CARD_PATH);
+    } catch (e) {
+      cardLog("Card sync failed: " + e.message);
+    }
+    if (img) cardRunExclusive(() => sync.pull(img), true);
+  }
+}
+
+// one card operation at a time; queue: run fn after the one under way
+// instead of dropping it (only the last queued one runs)
+async function cardRunExclusive(fn, queue = false) {
+  if (cardBusy) {
+    if (queue) cardQueued = fn;
+    return cardIdle;
+  }
   cardBusy = true;
   render();
+  let settle;
+  cardIdle = new Promise((resolve) => { settle = resolve; });
   try {
-    await fn();
-  } catch (e) {
-    cardLog("Card sync failed: " + e.message);
-    console.error(e);
+    for (let f = fn; f; f = cardQueued, cardQueued = null) {
+      try {
+        await f();
+      } catch (e) {
+        cardLog("Card sync failed: " + e.message);
+        console.error(e);
+      }
+    }
   } finally {
     cardBusy = false;
     render();
+    settle();
   }
 }
+
+// a page that goes away cannot wait for the last pull: ask first, and start
+// it, so that staying on the page saves the phone's changes
+window.addEventListener("beforeunload", (e) => {
+  const m = liveModule();
+  if (!cardSync || (!cardBusy && !cardDirty && !cardUnseenWrites(m))) return;
+  if (!cardBusy && m) {
+    cardDirty = false;
+    cardWrites = m._wasm_card_writes();
+    const sync = cardSync;
+    cardRunExclusive(async () => {
+      await sync.pull(m.FS.readFile(CARD_PATH));
+      cardHostPending = await sync.hostChanged();
+    });
+  }
+  e.preventDefault();
+  e.returnValue = "";
+});
 
 // the phone's view of the card (0 in, 1 out, 2 going out, 3 reading, 4 not
 // seen; | 0x10 waiting for the firmware's card timer), with a counter while
@@ -2691,15 +2754,20 @@ async function cardPush(m) {
   const d0 = m._wasm_card_done();
   m._wasm_card_eject();
   await cardWait(m, d0 + 1);
-  await cardSync.pull(m.FS.readFile(CARD_PATH));
-  const img = await cardSync.rebuild();
-  m.FS.writeFile(CARD_PATH, img);
-  // NUL-terminated, ASCII (as the accessory name)
-  const at = Number(m._wasm_card_buf());
-  for (let i = 0; i < CARD_PATH.length; i++) m.HEAPU8[at + i] = CARD_PATH.charCodeAt(i);
-  m.HEAPU8[at + CARD_PATH.length] = 0;
-  m._wasm_card_insert();
-  await cardWait(m, d0 + 2);
+  try {
+    await cardSync.pull(m.FS.readFile(CARD_PATH));
+    const img = await cardSync.rebuild();
+    m.FS.writeFile(CARD_PATH, img);
+  } finally {
+    // the card goes back in either way: the new image, or the one the
+    // phone had when the pull or the rebuild failed
+    // (path NUL-terminated, ASCII, as the accessory name)
+    const at = Number(m._wasm_card_buf());
+    for (let i = 0; i < CARD_PATH.length; i++) m.HEAPU8[at + i] = CARD_PATH.charCodeAt(i);
+    m.HEAPU8[at + CARD_PATH.length] = 0;
+    m._wasm_card_insert();
+    await cardWait(m, d0 + 2);
+  }
   // the new image is the base; what the phone writes from now on is pulled
   cardWrites = m._wasm_card_writes();
   cardDirty = false;
@@ -3297,14 +3365,17 @@ function renderMic() {
   micBtn.title = mic.on ? "Stop using your microphone" : "Use your microphone as the phone's";
 }
 micBtn.addEventListener("click", async () => {
-  if (mic.on) {
+  // a click while the browser still asks for the permission is a Stop too
+  if (mic.on || mic.pending) {
     mic.stop();
     say("Microphone off");
   } else {
     try {
-      await mic.start();
-      mic.attach(running ? qemuModule : null);
-      say("Microphone on");
+      // false: stopped while the browser asked
+      if (await mic.start()) {
+        mic.attach(running ? qemuModule : null);
+        say("Microphone on");
+      }
     } catch (e) {
       say(`No microphone: ${e?.name === "NotAllowedError" ? "not allowed" : e?.message ?? e}`);
     }

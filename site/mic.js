@@ -9,6 +9,7 @@
 const RATE = 8000;
 const CHUNK = 512;          // 64 ms at 8 kHz
 const MIC_BUF = 2048;       // MIC_BUF_SAMPLES in qemu/ui/wasm.c
+const CANCELLED = Symbol("mic start cancelled");
 
 export class Mic {
   constructor() {
@@ -16,40 +17,69 @@ export class Mic {
     this.stream = null;
     this.ctx = null;
     this.node = null;
+    this.starting = null;   // the start() under way (the permission prompt)
+    this.gen = 0;           // stop() count: a start() from before a stop() is dropped
     this.samples = 0;       // handed to qemu
     this.dropped = 0;       // not kept by qemu (its ring was full)
   }
 
   get on() { return !!this.stream; }
+  get pending() { return !!this.starting; }
 
   // the module of the run; null between runs (samples are then thrown away)
   attach(module) {
     this.m = module?._wasm_mic_put ? module : null;
   }
 
-  async start() {
-    if (this.stream) return;
+  // true: the mic is on; false: a stop() came while the browser was still
+  // asking for it (nothing stays open). A second start() during the
+  // permission prompt waits for the first one.
+  start() {
+    if (this.stream) return Promise.resolve(true);
+    if (!this.starting) {
+      const gen = this.gen;
+      this.starting = this.open(gen).finally(() => {
+        if (this.gen === gen) this.starting = null;
+      });
+    }
+    return this.starting;
+  }
+
+  async open(gen) {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
-    const ctx = new AudioContext({ sampleRate: RATE });
-    const src = ctx.createMediaStreamSource(stream);
-    // ScriptProcessor: deprecated but everywhere, and a 64 ms block is fine
-    // next to the GSM codec's own delay; its output is muted
-    const node = ctx.createScriptProcessor(CHUNK, 1, 1);
-    const mute = ctx.createGain();
-    mute.gain.value = 0;
-    node.onaudioprocess = (e) => this.put(e.inputBuffer.getChannelData(0));
-    src.connect(node);
-    node.connect(mute);
-    mute.connect(ctx.destination);
-    await ctx.resume().catch(() => {});
-    this.stream = stream;
-    this.ctx = ctx;
-    this.node = node;
+    let ctx = null;
+    try {
+      if (this.gen !== gen) throw CANCELLED;
+      ctx = new AudioContext({ sampleRate: RATE });
+      const src = ctx.createMediaStreamSource(stream);
+      // ScriptProcessor: deprecated but everywhere, and a 64 ms block is fine
+      // next to the GSM codec's own delay; its output is muted
+      const node = ctx.createScriptProcessor(CHUNK, 1, 1);
+      const mute = ctx.createGain();
+      mute.gain.value = 0;
+      node.onaudioprocess = (e) => this.put(e.inputBuffer.getChannelData(0));
+      src.connect(node);
+      node.connect(mute);
+      mute.connect(ctx.destination);
+      await ctx.resume().catch(() => {});
+      if (this.gen !== gen) throw CANCELLED;
+      this.stream = stream;
+      this.ctx = ctx;
+      this.node = node;
+      return true;
+    } catch (e) {
+      stream.getTracks().forEach((t) => t.stop());
+      ctx?.close().catch(() => {});
+      if (e === CANCELLED) return false;
+      throw e;
+    }
   }
 
   stop() {
+    this.gen++;
+    this.starting = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.node?.disconnect();
     this.ctx?.close().catch(() => {});

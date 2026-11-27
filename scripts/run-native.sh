@@ -29,9 +29,14 @@
 #   GSM=1                qemu's GSM cell (gsm-bts, doc/gsm-network.md)
 #   GSM_RELAY=host:port  the cell with SMS, USSD and calls served by a relay
 #                        server at host:port (doc/gsm-relay.md)
-#   CARD=card.img        memory card (PMB8876 boards: disk 4:), a raw SD image
-#                        opened writable: SDSC, a power-of-2 size <= 2 GB,
-#                        e.g. 64M with mkfs.fat -F 16 (doc/sd-card.md)
+#   CARD=card.img        memory card (boards with an sd-slot: disk 4:), a raw
+#                        SD image opened writable: a power-of-2 size, or a
+#                        multiple of 256 KiB up to 1 GiB, e.g. 64M with
+#                        mkfs.fat -F 16 (doc/sd-card.md). With it comes the
+#                        card assist, object "card": qom-set card inserted
+#                        false/true takes the card out and back and tells
+#                        the firmware
+#   CARD_DEBUG=1         the card assist reports what it does
 #   QEMU_BIN=path        the qemu-system-arm to run (default the JIT build's,
 #                        $QEMU_NATIVE_BUILD/qemu-system-arm: build-dirs.sh)
 set -euo pipefail
@@ -138,10 +143,13 @@ elif [ "${GSM:-0}" = 1 ]; then
   GSM_ARGS=(-machine pmb887x,gsm-network=gsm0 -object gsm-bts,id=gsm0)
 fi
 
+# qemu refuses an if=sd drive that no sd-slot takes
 CARD_ARGS=()
 if [ -n "${CARD:-}" ]; then
   [ -f "$CARD" ] || { echo "card image not found: $CARD" >&2; exit 1; }
-  CARD_ARGS=(-drive "if=sd,format=raw,file=$(realpath "$CARD")")
+  board_has '"sd-slot"' || { echo "board $BOARD has no memory card slot (sd-slot)" >&2; exit 1; }
+  CARD_ARGS=(-drive "if=sd,format=raw,file=$(realpath "$CARD")"
+    -object pmb887x-card-assist,id=card${CARD_DEBUG:+,debug=on})
 fi
 
 # ICOUNT=none boots without -icount entirely

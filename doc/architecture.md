@@ -108,6 +108,11 @@ the authoritative list; in outline:
     both via `wasm_net_buf()` and SPSC rings, the inbound one drained by a
     bottom half. `site/gprs-net.js` relays those frames over a WebSocket to
     the GPRS gateway at `/gprs` ([gsm-network.md](gsm-network.md));
+  - the relay link: the `wasm-gsm` chardev the cell's `relay=` uses, byte
+    rings the page moves over a WebSocket (`site/gsm-relay.js`);
+  - the microphone: `wasm_mic_put()` (`site/mic.js`);
+  - the memory card: `wasm_card_eject/insert/unmount/state/writes/done`
+    (`site/sdcard.js` and the card code in `site/app.js`);
   - the counters the page reads: `wasm_vclock`, `wasm_fb_updates`,
     `wasm_insns`, `wasm_halts`, `wasm_clock_banked`.
 - **`audio/wasmaudio.c`** (`-audio wasm`): a mixeng backend that publishes
@@ -132,6 +137,26 @@ the authoritative list; in outline:
   listed in [wasm-fast-paths.md](wasm-fast-paths.md).
 - **The lockstep fold** (`W64_LOCKSTEP*`), the b-side of
   `tools/lockstep-wasm.mjs`.
+
+#### Fork features (not upstream's, kept on purpose)
+
+Three features the page has and upstream does not. Each is a file of the fork
+where it can be, and every hook in an upstream file carries the comment
+`PMB887X-WEB FEATURE (<name>)` (`git -C qemu grep "PMB887X-WEB FEATURE"` lists
+them all). Each is off unless asked for, so a qemu without the page behaves
+as upstream's:
+
+| feature | fork files | hooks in upstream files | turned on by |
+|---|---|---|---|
+| relay: SMS, USSD and calls ([gsm-relay.md](gsm-relay.md)) | `hw/gsm/gsm-relay.c`; the relay server is the `gsmrelay/` submodule | `gsm-bts.c`/`.h` (the `relay=` property and a branch at each channel), `gsm-coding.c`/`.h` (TCH/F coding), `hw/gsm/meson.build` | `-object gsm-bts,...,relay=<chardev>` |
+| mic: the phone's microphone | `hw/arm/pmb887x/dsp/peripheral/afe-mic.c`, `dsp/afe-mic.h` | `afe.c` (the mic ADC's sample), `meson.build` | `PMB887X_MIC_FILE`, or samples from `wasm_mic_put` |
+| card assist: the firmware sees a card change ([sd-card.md](sd-card.md)) | `hw/arm/pmb887x/card-assist.c`/`.h` | `target/arm` (a one-shot PC hook: `cpu.h`, `helper-defs.h`, `translate.c`, `op_helper.c`), `hw/sd/core.c` + `sd.h` (a command observer), `qapi/qom.json` (the object type), `meson.build` | `-object pmb887x-card-assist,id=card` |
+
+Ports, not features: code that only makes upstream's own devices run in the
+browser is marked `PMB887X-WEB WASM PORT` (the memory card's block I/O and
+inserted state off the vCPU thread in `hw/sd/sd.c`) or `WASM PORT
+(removable)` (the cell's `ms-state` for the page's network badge). The
+`wasm_*` exports of `ui/wasm.c` drive all of them from the page.
 
 DSP: the Teak DSP is emulated low-level by upstream. The mask ROM and the
 code the ARM downloads run through the DSP's own TCG front end

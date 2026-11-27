@@ -14,3 +14,7 @@
 	path = deploy/gprs-gw/bts-emulator
 	url = https://github.com/siemens-mobile-hacks/bts-emulator
 	branch = gprs-gw
+[submodule "gsmrelay"]
+	path = gsmrelay
+	url = https://github.com/siemens-mobile-hacks/gsmrelay
+	branch = main

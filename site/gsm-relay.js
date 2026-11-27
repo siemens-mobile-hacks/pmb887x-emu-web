@@ -24,11 +24,14 @@ const PENDING_MAX = 256 * 1024;
 // state: "idle" (no machine yet), "connecting", "online", "offline" (the
 // relay is not reachable; retried after a backoff), "off" after stop().
 // onChange("state") and onChange("number") follow each change.
+// alive(): is the module still running? Once it says no, or a call into the
+// module throws (it aborted), the link stops by itself.
 export class GsmRelay {
-  constructor(module, { url = relayUrl(), onChange = () => {} } = {}) {
+  constructor(module, { url = relayUrl(), onChange = () => {}, alive = () => true } = {}) {
     this.m = module;
     this.url = url;
     this.onChange = onChange;
+    this.alive = alive;
     this.ws = null;
     this.timer = 0;
     this.state = "idle";
@@ -56,6 +59,18 @@ export class GsmRelay {
     this.setState("off");
   }
 
+  // fn() against the module, unless it is gone: then the link stops
+  withModule(fn) {
+    if (this.state === "off") return;
+    try {
+      if (!this.alive()) throw new Error("the emulator has exited");
+      fn();
+    } catch (e) {
+      console.warn("gsm-relay: stopped:", e?.message ?? e);
+      this.stop();
+    }
+  }
+
   setState(state) {
     if (this.state === state) return;
     this.state = state;
@@ -73,8 +88,10 @@ export class GsmRelay {
       this.pending = [];
       this.pendingBytes = 0;
       this.rx = new Uint8Array(0);
-      this.m._wasm_gsmrelay_open(1);
-      this.setState("online");
+      this.withModule(() => {
+        this.m._wasm_gsmrelay_open(1);
+        this.setState("online");
+      });
     };
     ws.onmessage = (e) => {
       if (this.ws !== ws || !(e.data instanceof ArrayBuffer)) return;
@@ -83,7 +100,8 @@ export class GsmRelay {
       this.watch(data);
       this.pending.push(data);
       this.pendingBytes += data.length;
-      this.feed();
+      this.withModule(() => this.feed());
+      if (this.ws !== ws) return;
       if (this.pendingBytes > PENDING_MAX) {
         ws.close();
         return;
@@ -95,7 +113,8 @@ export class GsmRelay {
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.ws = null;
-      this.m._wasm_gsmrelay_open(0);
+      this.withModule(() => this.m._wasm_gsmrelay_open(0));
+      if (this.state === "off") return;
       const now = Date.now();
       if (this.openedAt && now - this.openedAt >= HELD_MS) this.backoff = BACKOFF_MIN;
       this.retryAt = now + this.backoff;
@@ -138,6 +157,10 @@ export class GsmRelay {
   }
 
   poll() {
+    this.withModule(() => this.pump());
+  }
+
+  pump() {
     const m = this.m;
     if (!m._wasm_gsmrelay_ready()) return;
     if (!this.ws && Date.now() >= this.retryAt) this.connect();
