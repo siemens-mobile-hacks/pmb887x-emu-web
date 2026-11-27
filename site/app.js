@@ -3346,6 +3346,20 @@ function updateListening() {
   if (speaker) speaker.gain.value = soundOn ? 1 : 0;
 }
 
+// Opening the microphone switches a mobile browser into call mode, which can
+// leave the speaker's context suspended or (Safari) "interrupted", where
+// resume() alone does nothing. Only a gesture may restart it: the mic and
+// sound buttons call this.
+async function wakeSpeaker() {
+  const ac = audioCtx;
+  if (!ac || !(soundOn || recSound) || ac.state === "running" || ac.state === "closed") return;
+  try {
+    if (ac.state === "interrupted") await ac.suspend();
+    await ac.resume();
+  } catch { /* the next gesture tries again */ }
+  updateListening();
+}
+
 // The phone's sound for a capture (null without one), whether or not the
 // speaker is muted. Called from the record click, so the context may resume.
 function recordSound() {
@@ -3420,9 +3434,7 @@ soundBtn.addEventListener("click", async () => {
   // the run's context; between runs there is none, and the next Start makes it
   const ac = audioCtx;
   if (!ac) return;
-  if (soundOn) {
-    try { await ac.resume(); } catch { /* no gesture yet: the next Start has one */ }
-  }
+  if (soundOn) await wakeSpeaker();
   updateListening();
 });
 renderSound();
@@ -3448,6 +3460,7 @@ micBtn.addEventListener("click", async () => {
       // false: stopped while the browser asked
       if (await mic.start()) {
         mic.attach(running ? qemuModule : null);
+        await wakeSpeaker();
         say("Microphone on");
       }
     } catch (e) {
@@ -4114,6 +4127,12 @@ function diagnostics() {
     siemensMode: currentDevice()?.startsWith("siemens-") ? siemensMode() : null,
     siemensKeys: keyReport,
     bank: banked ? "banked" : "off",
+    // "no sound in a call": is the speaker's context running, does the mic
+    // reach qemu (dropped grows while the phone is not in a call), the relay
+    audio: { ...window.__audio(), rec: !!recSound },
+    mic: { on: mic.on, rate: mic.ctx?.sampleRate ?? 0, state: mic.ctx?.state ?? null,
+      samples: mic.samples, dropped: mic.dropped },
+    relay: gsmRelay ? { state: gsmRelay.state, number: gsmRelay.number } : null,
     // the firmware's own crash dump, if this run ended in one
     exit: exitReport && Object.fromEntries(exitReport.rows),
     avg10s: {
