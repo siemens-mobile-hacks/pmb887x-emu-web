@@ -15,8 +15,11 @@ centre and the services, and the cell gives the phone:
 
 Every emulator (and anything else that speaks the protocol below) connected
 to one relay is a phone of the same network: they text and call each other
-by number. The relay itself is a separate program; this repository has only
-the cell's side and the page's link to it.
+by number. The relay itself is a separate program, in the `gsmrelay/`
+submodule (github.com/siemens-mobile-hacks/gsmrelay): `gsmrelay/smsrelay/relay.py`
+is the server (its options and wire protocol are in its docstring),
+`gsmrelay/clip/` the sound clips it plays. This repository has the cell's side
+and the page's link to it.
 
 Without the option nothing changes: every new path in `gsm-bts.c` is behind
 `bts->relay_core`, which only the option creates.
@@ -24,6 +27,11 @@ Without the option nothing changes: every new path in `gsm-bts.c` is behind
 ## Running it
 
 ### Natively
+
+```
+git submodule update --init gsmrelay
+python3 gsmrelay/smsrelay/relay.py --port 4725   # --help for the options
+```
 
 ```
 GSM_RELAY=127.0.0.1:4725 BOARD=siemens-el71 ICOUNT=vt scripts/run-native.sh <fullflash>

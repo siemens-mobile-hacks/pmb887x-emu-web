@@ -167,6 +167,13 @@ export function gsmBoardHasRadio(device) {
   return boardChain(device + ".toml").some(([, txt]) => RADIO_TYPE_RE.test(txt));
 }
 
+// Does the board have a memory card slot for a -drive if=sd? (qemu refuses
+// an sd drive no slot takes)
+export const SD_SLOT_RE = /^[ \t]*type[ \t]*=[ \t]*"sd-slot"/m;
+export function boardHasSdSlot(device) {
+  return boardChain(device + ".toml").some(([, txt]) => SD_SLOT_RE.test(txt));
+}
+
 // Does the board have a SIM slot for a -device gsm-sim to sit in?
 export const SIM_SLOT_RE = /^[ \t]*type[ \t]*=[ \t]*"iso7816-slot"/m;
 export function boardHasSimSlot(device) {

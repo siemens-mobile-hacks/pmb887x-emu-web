@@ -444,14 +444,21 @@ async function writeHostFile(root, path, data) {
   await w.close();
 }
 
+// a folder is removed only when it is empty (whatever the disk added stays)
 async function removeHost(root, path) {
   const i = path.lastIndexOf("/");
   try {
     const dir = await folderHandleFor(root, i >= 0 ? path.slice(0, i) : "", false);
-    await dir.removeEntry(path.slice(i + 1), { recursive: true });
+    await dir.removeEntry(path.slice(i + 1));
   } catch (e) {
-    if (e.name !== "NotFoundError") throw e;
+    if (e.name !== "NotFoundError" && e.name !== "InvalidModificationError") throw e;
   }
+}
+
+async function hostFile(root, path) {
+  const i = path.lastIndexOf("/");
+  const dir = await folderHandleFor(root, i >= 0 ? path.slice(0, i) : "", false);
+  return (await dir.getFileHandle(path.slice(i + 1))).getFile();
 }
 
 function conflictName(path) {
@@ -532,32 +539,45 @@ export class CardSync {
       const b = this.base.get(e.path);
       if (b && !b.dir && b.hash === hash) continue;          // unchanged on the phone
       const hostEdited = b && hostSig(e.path) !== null && hostSig(e.path) !== b.hostSig;
-      const hostNew = !b && host.has(e.path);
-      let target = e.path;
-      if (hostEdited || hostNew) {
-        target = conflictName(e.path);                         // both changed: keep both
-        this.log(`card: ${e.path} changed on both sides, the phone's copy is ${target}`);
+      const hostNew = !b && host.get(e.path) && !host.get(e.path).dir;
+      if (hostNew) {
+        const f = host.get(e.path).file;
+        if (hashBytes(new Uint8Array(await f.arrayBuffer())) === hash) {   // the same file on both sides
+          this.base.set(e.path, { dir: false, hash, hostSig: f.size + ":" + f.lastModified });
+          continue;
+        }
       }
-      await writeHostFile(this.dir, target, e.data);
-      const f = await (await folderHandleFor(this.dir, target.includes("/") ? target.slice(0, target.lastIndexOf("/")) : "", false))
-        .getFileHandle(target.slice(target.lastIndexOf("/") + 1)).then((h) => h.getFile());
-      if (target === e.path) this.base.set(e.path, { dir: false, hash, hostSig: f.size + ":" + f.lastModified });
-      else this.base.set(target, { dir: false, hash, hostSig: f.size + ":" + f.lastModified });
+      if (hostEdited || hostNew) {
+        // both changed: keep both. The phone's copy is not in the base (the
+        // card does not hold it under that name): the folder has a change for
+        // the card, and no pull deletes it
+        const target = conflictName(e.path);
+        this.log(`card: ${e.path} changed on both sides, the phone's copy is ${target}`);
+        await writeHostFile(this.dir, target, e.data);
+        n++;
+        continue;
+      }
+      await writeHostFile(this.dir, e.path, e.data);
+      const f = await hostFile(this.dir, e.path);
+      this.base.set(e.path, { dir: false, hash, hostSig: f.size + ":" + f.lastModified });
       n++;
     }
-    // deleted on the phone: delete on the disk unless the disk changed it
-    for (const [p, b] of [...this.base]) {
-      if (inImage.has(p)) continue;
-      if (b.dir) {
-        if ([...this.base.keys()].some((q) => q.startsWith(p + "/") && inImage.has(q))) continue;
-        await removeHost(this.dir, p);
-        this.base.delete(p);
-        n++;
-      } else if (hostSig(p) === null || hostSig(p) === b.hostSig) {
+    // deleted on the phone: delete on the disk unless the disk changed it;
+    // files first, then folders deepest first, each only if left empty
+    const gone = [...this.base].filter(([p]) => !inImage.has(p));
+    for (const [p, b] of gone) {
+      if (b.dir) continue;
+      if (hostSig(p) === null || hostSig(p) === b.hostSig) {
         await removeHost(this.dir, p);
         this.base.delete(p);
         n++;
       }
+    }
+    const dirs = gone.filter(([, b]) => b.dir).map(([p]) => p).sort((x, y) => y.length - x.length);
+    for (const p of dirs) {
+      await removeHost(this.dir, p);
+      this.base.delete(p);
+      n++;
     }
     if (n) this.log(`card: ${n} change(s) from the phone written to the folder`);
     return n;
