@@ -321,12 +321,18 @@ const proxyGprs = (req, socket, head) => {
 // (GSM_RELAY=host:port; unset = no relay, the page leaves the option off).
 // The relay speaks plain TCP, so this end is the WebSocket server itself:
 // RFC 6455 framing, binary/continuation, ping, close; no extensions.
-const gsmRelay = process.env.GSM_RELAY
-  ? (([h, p]) => ({ host: h || "127.0.0.1", port: Number(p) }))(process.env.GSM_RELAY.split(":"))
-  : null;
+const gsmRelay = (() => {
+  if (!process.env.GSM_RELAY) return null;
+  const m = process.env.GSM_RELAY.match(/^(?:\[([^\]]+)\]|([^:]*)):(\d{1,5})$/);
+  if (!m || !(Number(m[3]) >= 1 && Number(m[3]) <= 65535)) {
+    console.error(`serve.mjs: GSM_RELAY must be host:port or [ipv6]:port, not "${process.env.GSM_RELAY}"`);
+    process.exit(2);
+  }
+  return { host: m[1] ?? (m[2] || "127.0.0.1"), port: Number(m[3]) };
+})();
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const WS_MAX = 1 << 20;   // a page sends a few KB at a time
-const WS_EARLY_MAX = 64 << 10;   // what a page may send before the relay answers
+const RELAY_CONNECT_MS = 10000;
 
 function wsFrame(op, data) {
   const n = data.length;
@@ -345,10 +351,13 @@ const proxyGsmRelay = (req, socket, head) => {
   relay.setNoDelay(true);
   socket.setNoDelay(true);
   let rx = head?.length ? Buffer.from(head) : Buffer.alloc(0);
-  let up = false;
+  let up = false, closing = false;
   const close = () => { relay.destroy(); socket.destroy(); };
+  // the page's frames wait in the paused socket until the relay answers
   socket.pause();
+  const late = setTimeout(() => { relay.destroy(); refuse(socket, "504 Gateway Timeout"); }, RELAY_CONNECT_MS);
   relay.on("connect", () => {
+    clearTimeout(late);
     up = true;
     socket.resume();
     const accept = createHash("sha1").update(key + WS_GUID).digest("base64");
@@ -363,13 +372,15 @@ const proxyGsmRelay = (req, socket, head) => {
   relay.on("data", (d) => { if (!socket.write(wsFrame(2, d))) relay.pause(); });
   socket.on("drain", () => relay.resume());
   relay.on("drain", () => socket.resume());
-  relay.on("error", () => (up ? close() : refuse(socket, "502 Bad Gateway")));
-  relay.on("close", () => { if (up) socket.end(wsFrame(8, Buffer.from([0x03, 0xe8]))); });
+  relay.on("error", () => { clearTimeout(late); return up ? close() : refuse(socket, "502 Bad Gateway"); });
+  // one close frame per side: the relay's end after the page's close is not another
+  const endWith = (frame) => { if (!closing) { closing = true; socket.end(frame); } };
+  relay.on("close", () => { if (up) endWith(wsFrame(8, Buffer.from([0x03, 0xe8]))); });
   socket.on("error", close);
-  socket.on("close", () => relay.destroy());
+  socket.on("close", () => { clearTimeout(late); relay.destroy(); });
   const onData = (d) => {
+    if (closing) return;
     rx = rx.length ? Buffer.concat([rx, d]) : d;
-    if (!up) return rx.length > WS_EARLY_MAX ? close() : undefined;
     for (;;) {
       if (rx.length < 2) return;
       const op = rx[0] & 15, masked = rx[1] & 128;
@@ -383,7 +394,7 @@ const proxyGsmRelay = (req, socket, head) => {
       for (let i = 0; i < n; i++) data[i] ^= mask[i & 3];
       rx = rx.subarray(at + 4 + n);
       if (op === 0 || op === 2) { if (!relay.write(data)) socket.pause(); }
-      else if (op === 8) { relay.end(); socket.end(wsFrame(8, data.subarray(0, 2))); return; }
+      else if (op === 8) { relay.end(); endWith(wsFrame(8, data.subarray(0, 2))); return; }
       else if (op === 9) socket.write(wsFrame(10, data));
     }
   };

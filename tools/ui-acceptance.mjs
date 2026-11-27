@@ -100,7 +100,8 @@ ok("1.2 radiogroup", await evaluate(() => {
   return !!g && g.querySelectorAll('[role="radio"]').length === 2;
 }));
 ok("1.2 default is Preset", await $eval("#ff-mode-preset", (e) => e.getAttribute("aria-checked") === "true"));
-ok("1.2 preset mode has no file input", !(await has('#firmware-panel input[type="file"]')));
+// (the memory card's image picker is not the firmware's)
+ok("1.2 preset mode has no file input", !(await has('#firmware-panel input[type="file"]:not(#card-image-file)')));
 ok("1.3 preset dropdown present", await has("#ff-preset"));
 
 // order of the preset body
@@ -195,7 +196,15 @@ ok("keys default is recalculate",
   (await $eval('input[name="siemens-mode"]:checked', (e) => e.value)) === "recalc");
 ok("keys block sits above IMEI/ESN", await $eval(".adv-grid", (g) =>
   [...g.children].map((c) => c.id || c.querySelector("input,select")?.id).join(",")
-    === "sim,operator,startup,gsm,siemens-keys-block,imei,esn"));
+    === "sim,operator,startup,gsm,gsmrelay-block,siemens-keys-block,imei,esn"));
+ok("the memory card sits above Advanced, outside it", await evaluate(() => {
+  const c = document.getElementById("card-block"), a = document.getElementById("advanced");
+  return !a.contains(c) && c.nextElementSibling === a;
+}));
+await page.selectOption("#device", "siemens-s65");
+ok("no card picker for a board without a card slot", await $eval("#card-block", (e) => e.hidden));
+await page.selectOption("#device", "siemens-s75");
+ok("the card picker is back for a board with one", await $eval("#card-block", (e) => !e.hidden));
 ok("GSM network is a checkbox, ticked by default",
   await $eval("#gsm", (e) => e.type === "checkbox" && e.checked));
 ok("IMEI/ESN editable in recalc mode",
@@ -240,16 +249,17 @@ ok("2.2 idle dot + text", (await text("#status-text")) === "Idle"
 ok("2.3 screen placeholder", (await text("#ov-msg")) === "Ready to boot");
 
 /* ---------------- Run panel ---------------- */
+// (Recording is a group only at phone widths, where the row has no recorder)
 ok("3.1 groups", await evaluate(() =>
-  [...document.querySelectorAll("#post-panel .group-title")].map((e) => e.textContent).join() === "Accessory,Keyboard,Export"));
+  [...document.querySelectorAll("#post-panel .group:not([hidden]) .group-title")].map((e) => e.textContent).join() === "Accessory,Keyboard,Export"));
 ok("3.1 no Run legend", !(await has("#post-panel legend")));
 ok("3.1 accessory group contents", await evaluate(() => {
-  const g = document.querySelectorAll("#post-panel .group")[0];
+  const g = document.querySelectorAll("#post-panel .group:not([hidden])")[0];
   return !!g.querySelector("select#acc-select") && g.querySelectorAll("button").length === 1
     && /^(Connect|Disconnect)$/.test(g.querySelector("#btn-accessory").textContent.trim());
 }));
 ok("3.1 keyboard group contents", await evaluate(() => {
-  const g = document.querySelectorAll("#post-panel .group")[1];
+  const g = document.querySelectorAll("#post-panel .group:not([hidden])")[1];
   return !!g.querySelector("#kbd-keyboard") && !!g.querySelector("#kbd-variant")
     && !!g.querySelector("#kbd-hints") && !!g.querySelector("#kbd-typing") && !!g.querySelector("#opt-hud");
 }));
@@ -322,9 +332,13 @@ ok("3.1 typing goes by the board's chip", await evaluate(() =>
   && ["siemens-s75", "siemens-e71", "siemens-m81"].every((d) => window.__boardCpu(d) === "pmb8876")));
 ok("3.1 HUD label has no parenthetical, tooltip instead", await $eval("#opt-hud", (e) =>
   e.parentElement.textContent.trim() === "Performance HUD" && !!e.parentElement.title));
-ok("3.1 export buttons", await evaluate(() =>
-  [...document.querySelectorAll(".export-row .btn")].map((b) => b.textContent.trim()).join() === "Flash,EFA"
-  && document.querySelectorAll(".export-row .btn svg").length === 2));
+// (Card and Sync card are shown only for a run with a card)
+ok("3.1 export buttons", await evaluate(() => {
+  const shown = [...document.querySelectorAll(".export-row .btn")]
+    .filter((b) => b.id !== "btn-save-card" && b.id !== "btn-sync-card");
+  return shown.map((b) => b.textContent.trim()).join() === "Flash,EFA"
+    && shown.every((b) => b.querySelector("svg"));
+}));
 ok("3.2 exports disabled before any run", await evaluate(() =>
   document.getElementById("btn-save-flash").disabled && document.getElementById("btn-save-efa").disabled
   && !document.getElementById("export-caption").hidden
@@ -525,20 +539,22 @@ ok("v2.1 exactly one row above the screen", await evaluate(() => {
 // the network badge is drawn at 3/4 here (27.75px), inside the pill
 ok("v2.1 row is 32px tall", await $eval(".status-row", (e) =>
   Math.round(e.getBoundingClientRect().height) === 32));
-ok("v2.1 pill + five 28px buttons", await evaluate(() => {
+ok("v2.1 pill + 28px buttons, the recorder in the Settings sheet", await evaluate(() => {
   const row = document.querySelector(".status-row");
   const ids = [...row.children].map((e) => e.id);
   const sq = (id) => {
     const r = document.getElementById(id).getBoundingClientRect();
     return Math.round(r.width) === 28 && Math.round(r.height) === 28;
   };
-  // rec-pill sits in the record button's place and is hidden until a
-  // capture runs; the speaker and fullscreen
-  // follow the recorder
-  return ids.join() === "status,btn-shot,btn-record,rec-pill,btn-sound,btn-fullscreen,btn-settings"
+  // the record button stands down here (a capture starts from the Settings
+  // sheet); rec-pill is hidden until a capture runs; the speaker, the mic
+  // (shown while a run has the input) and fullscreen follow
+  return ids.join() === "status,btn-shot,btn-record,rec-pill,btn-sound,btn-mic,btn-fullscreen,btn-settings"
+    && document.getElementById("btn-record").hidden
+    && !document.getElementById("rec-group").hidden
     && document.getElementById("rec-pill").hidden
     && !document.getElementById("btn-sound").hidden
-    && sq("btn-shot") && sq("btn-record") && sq("btn-sound") && sq("btn-fullscreen") && sq("btn-settings")
+    && sq("btn-shot") && sq("btn-sound") && sq("btn-fullscreen") && sq("btn-settings")
     && document.getElementById("btn-settings").getAttribute("aria-label") === "Settings";
 }), await evaluate(() => [...document.querySelector(".status-row").children].map((e) => e.id).join()));
 
@@ -715,7 +731,7 @@ ok("5.4 pill follows the sheet", (await text("#status-text")).startsWith("EL71v4
 await page.click("#btn-settings");
 await page.waitForTimeout(300);
 ok("5.4 settings sheet body", await evaluate(() =>
-  [...document.querySelectorAll("#sheet-settings .group-title")].map((e) => e.textContent).join() === "Accessory,Keyboard,Export"));
+  [...document.querySelectorAll("#sheet-settings .group-title")].map((e) => e.textContent).join() === "Recording,Accessory,Keyboard,Export"));
 // The toggle once had no effect on a phone and was hidden there; both
 // layouts honour it now, so the sheet is where a phone reaches it
 ok("v4.4 the HUD toggle is in the mobile settings sheet", await evaluate(() => {
@@ -1069,7 +1085,7 @@ if (!process.env.SKIP_BOOT) {
       JSON.stringify(seen.map((p) => `${p.stage} ${p.net} ${JSON.stringify(p.antenna)}`)));
     if (size.width === 1770) {
       ok("gprs: the status line names each state", JSON.stringify(seen.map((p) => p.status)) === JSON.stringify([
-        "No network", "Registered", "GPRS attached", "GPRS attached · context active", "GPRS connecting…",
+        "No network", "Registered (local)", "GPRS attached", "GPRS attached · context active", "GPRS connecting…",
         "GPRS reconnecting…", "GPRS Connected", "GPRS Connected", "GPRS Connected", "GPRS Connected",
         "GPRS offline · unreachable · retry 9s", "GPRS offline · too many connections · retry 59s",
         "GPRS offline · waiting for data", "GPRS refused · address banned",
@@ -1171,9 +1187,11 @@ if (!process.env.SKIP_BOOT) {
       '#firmware-panel [tabindex]:not([tabindex="-1"])');
     return f.length === 0;
   }));
-  ok("1.7 lock note above Advanced", await evaluate(() => {
+  ok("1.7 lock note above the memory card and Advanced", await evaluate(() => {
     const n = document.getElementById("ff-lock-note");
-    return !n.hidden && n.nextElementSibling.id === "advanced"
+    const next = n.nextElementSibling;
+    return !n.hidden && (next.id === "advanced"
+        || (next.id === "card-block" && next.nextElementSibling.id === "advanced"))
       && n.textContent.trim() === "Locked while running. Stop to change firmware."
       && !!n.querySelector("svg");
   }), await text("#ff-lock-note"));
@@ -1324,12 +1342,17 @@ if (!process.env.SKIP_BOOT) {
     };
   });
   const before = await geom();
-  ok("v3.1 enabled while running", await evaluate(() => {
-    const b = document.getElementById("btn-record");
-    return !b.disabled && b.getAttribute("aria-label") === "Start recording";
+  await page.click("#btn-settings");
+  await page.waitForTimeout(500);
+  ok("v3.1 enabled while running (Settings sheet)", await evaluate(() => {
+    const b = document.getElementById("btn-record-sheet");
+    return !b.disabled && b.textContent.trim() === "Record video" && b.offsetParent !== null;
   }));
-  await page.click("#btn-record");
+  await page.click("#btn-record-sheet");
   await page.waitForTimeout(1500);
+  ok("v3.1 the sheet closed for the capture", await evaluate(() =>
+    document.getElementById("sheet-settings").hidden
+    || !document.getElementById("sheet-settings").classList.contains("open")));
 
   ok("v3.2 the pill took the button's place", await evaluate(() => {
     const row = [...document.querySelector(".status-row").children]
@@ -1397,16 +1420,14 @@ if (!process.env.SKIP_BOOT) {
 
   await page.click("#btn-rec-finish");
   await page.waitForTimeout(1200);
-  ok("v3.2 idle button restored in the same place", await evaluate(() => {
+  ok("v3.2 the row is back, the sheet offers a new capture", await evaluate(() => {
     const row = [...document.querySelector(".status-row").children]
       .filter((e) => !e.hidden).map((e) => e.id);
-    const b = document.getElementById("btn-record");
     // the speaker and fullscreen are back too: they stand down only while
-    // a capture runs
-    return row.join() === "status,btn-shot,btn-record,btn-sound,btn-fullscreen,btn-settings"
-      && b.getAttribute("aria-label") === "Start recording"
-      && Math.round(b.getBoundingClientRect().width) === 28;
-  }));
+    // a capture runs (the mic stays where the run has the input)
+    return row.join().replace(",btn-mic", "") === "status,btn-shot,btn-sound,btn-fullscreen,btn-settings"
+      && document.getElementById("btn-record-sheet").textContent.trim() === "Record video";
+  }), await evaluate(() => [...document.querySelector(".status-row").children].filter((e) => !e.hidden).map((e) => e.id).join()));
   ok("v3.5 save was announced", (await text("#live-region")) === "Recording saved");
   ok("v3.3 the Running prefix comes back",
     /^Running · \d+:\d\d( · slow)?$/.test(await text("#status-text")), await text("#status-text"));

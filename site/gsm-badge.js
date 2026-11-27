@@ -26,11 +26,13 @@ export const shortReason = (code) => SHORT[code] ?? "unreachable";
 // "nonet", "registered" or "attached", "idle" on a dist that cannot read the
 // cell, or the link's "connecting", "online", "offline" or "refused" (from
 // the phone's first data on, whatever the cell says). g is the GprsNet,
-// retryIn the redial countdown in seconds (0: none), bearer the tag's word. Gives the antenna (net: the cell), the tag (gprs: the
+// retryIn the redial countdown in seconds (0: none), bearer the tag's word,
+// via what the phone is registered through: the relay's host, else "local"
+// (the emulator's own cell). Gives the antenna (net: the cell), the tag (gprs: the
 // link), the bearer it spells, the desktop status line and its tone ("",
 // "warn" or "off"), and whether the amounts sent and received show: from
 // the phone's first data, which is what dials the link, until Stop.
-export function badgeView(badge, g, { retryIn = 0, bearer = "GPRS" } = {}) {
+export function badgeView(badge, g, { retryIn = 0, bearer = "GPRS", via = "local" } = {}) {
   const cell = g.ms === null ? "unknown"
     : g.registered || g.gprsAttached ? "registered" : "nonet";
   const link = LINK.has(badge);
@@ -38,7 +40,7 @@ export function badgeView(badge, g, { retryIn = 0, bearer = "GPRS" } = {}) {
   let status, tone = "";
   switch (badge) {
     case "nonet": status = "No network"; break;
-    case "registered": status = "Registered"; break;
+    case "registered": status = `Registered (${via})`; break;
     case "attached": status = `${b} attached` + (g.pdpActive ? " · context active" : ""); break;
     case "idle": status = `${b} not used yet`; break;
     case "connecting":

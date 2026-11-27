@@ -79,6 +79,9 @@ mcopy -i card.img@@1M new.txt ::Misc/            # any host-side change
   `tools/cardcheck.mjs --costack` + `tools/asyncify-audit.mjs` (2026-11-27: S75, EL71, nothing missing).
 - `tools/cardcheck.mjs --card <image>` boots a phone with the card in the page and runs out, in, a quick out+in, the
   clean unmount and a remount, each to the state the firmware must reach.
+- `tools/cardfoldercheck.mjs` runs folder mode (the folder picker answered with an origin-private folder): a file added
+  after boot must raise the "not on the card yet" notice when the window gets the focus, and Sync card must put it on
+  the card and have the phone read the card again. Both are close-tier gate jobs (`card`, `cardfolder`).
 
 ## Verified (2026-11-27, upstream MCI + sd-slot + the card assist)
 
@@ -88,10 +91,22 @@ mcopy -i card.img@@1M new.txt ::Misc/            # any host-side change
 | native S75 (`S75v40lg1.bin`, a card-detect pin) | the same, 1 call each; no double rescan from the CD line |
 | native EL71, QMP burst out+eject+change+in in one go | "insert held until the firmware has seen the removal", then both done |
 | browser S75 (`s75_working…bin`) and EL71, `tools/cardcheck.mjs` | out, in, out+in, unmount (sent to the firmware), remount: PASS |
+| browser S75, `tools/cardfoldercheck.mjs` | a file added after boot: notice on focus, Sync card puts it on the card, phone reads it in 3 s: PASS |
 
 The 2026-11-23 checks of the phone with a card (My stuff lists the card, a picture opens, the phone copies a file onto
 the card and `fsck.fat` is clean, Format card) were made with the fork's own MCI model, which upstream's replaced on
 2026-11-27; its notes are in git history (this file before that date).
+
+## Where the phones look (2026-11-27)
+
+A phone shows only its own folders; files elsewhere on the card are there but invisible.
+- **LG KE800** (KE800-v11b): on mount it creates `Images/`, `Videos/`, `Sounds/MP3/` (and lists `Others/`).
+  My stuff ▸ External memory shows only Videos, Images, Sounds, Others, not the root or any other top-level
+  folder. The **MP3 player** lists the MP3s in `Sounds/MP3/` only (long and 8.3 names both), and only those on the card
+  when the phone booted: a Sync card while it runs puts them on the card (My stuff sees them) but the player's list
+  stays as it was until a restart. Checked in the page with a folder card (`q08-mp3.png` run: two card MP3s after
+  the 10 built-in tracks).
+- **Siemens S75**: on mount it created `Pictures/` and `Videos/` on a card without them (cardfoldercheck run).
 
 ## Caching in the firmware's FAT driver (2026-11-23): can host changes show up live?
 
@@ -238,14 +253,15 @@ To get there: My stuff > card tab > Options > Format card. It asks two confirmat
 
 ## Browser: a folder as the card
 
-Advanced > **Memory card** (boards with an sd-slot; other boards boot without one):
+**Memory card**, above Advanced in the Firmware panel (shown only for boards with an sd-slot; the others boot without one).
+The line under the pickers says what is chosen ("SD Card: synced to folder *name*" / "SD Card: image *name* (N MB)", with Remove):
 - **Folder…** (Chrome/Edge, File System Access API, read+write): the page builds a FAT16 SD image from the folder (`site/sdcard.js`: MBR with one FAT16 partition at LBA 2048, 2 FATs, 512 root entries, VFAT long names, power-of-two size 64 MB-2 GB, at least 4 sectors per cluster) and keeps the two in sync while the phone runs. Entries starting with `.` are left out.
-- **Image…**: a raw card image is used as it is (padded to a power of two when qemu would refuse its size); no sync.
-- **Card** (Export row): downloads the image as it is now. **Sync card** (was "Sync card"): put the folder on the card at once (below).
+- **Image…**: a raw card image is the card (padded to a power of two when qemu would refuse its size); no sync. What the phone writes stays in the page: the next run starts from it, and **Card** downloads it. The file picked is never written.
+- **Card** (Export row): downloads the image as it is now. **Sync card**: put the folder on the card at once (below).
 
 The image is a MEMFS file (`/data/card.img`) given to qemu as `-drive if=sd,format=raw`, with the card assist. Sync (`site/app.js`, "memory card"):
 - **phone → folder.** `wasm_card_writes()` counts the blocks the phone wrote. When it changed and then stayed still for 3 s, the page reads the image (FAT parse in JS) and writes new and changed files to the folder and deletes the ones the phone deleted. A file deleted on the phone is deleted on disk only if the disk copy is unchanged since the last sync.
-- **folder → phone.** Only on **Sync card** (user 2026-11-23: no automatic folder poll; a half-written folder is never pushed). The page checks the folder (sizes and dates) when its window gets the focus and after each pull, and the state line then says "the folder has changes not on the card yet: Sync card". Sync card: `wasm_card_eject()`, then the phone's changes are pulled first, the image is rebuilt from the folder, written to MEMFS and `wasm_card_insert()` (path in `wasm_card_buf()`; `wasm_card_done()` counts finished eject/insert operations). The phone sees a removal and an insertion and reads the card again (above). The page then waits (at most 4 minutes; with the timer move-up about a second) until `wasm_card_state()` says the phone has read the card; the button stays disabled meanwhile, so pushes never overlap and never eject in the middle of a mount.
+- **folder → phone.** Only on **Sync card** (user 2026-11-23, again 2026-11-27: no automatic folder poll; a half-written folder is never pushed, and every push is a card swap that closes whatever the phone has open from the card). The page checks the folder (sizes and dates) when its window gets the focus and after each pull, and the state line then says "the folder has changes not on the card yet: Sync card". Sync card: the phone unmounts the card first (`wasm_card_unmount()`, as its own "Eject card", so no "Data lost" note), then `wasm_card_eject()`, the phone's changes are pulled, the image is rebuilt from the folder, written to MEMFS and `wasm_card_insert()` (path in `wasm_card_buf()`; `wasm_card_done()` counts finished eject/insert operations). The phone sees a removal and an insertion and reads the card again (above). The page then waits (at most 4 minutes; with the timer move-up about a second) until `wasm_card_state()` says the phone has read the card; the button stays disabled meanwhile, so pushes never overlap and never eject in the middle of a mount.
 - **Card state** under Export: "Card: in / out / going out… N s / reading… N s / not seen by the phone", with "(waiting for the phone's card timer, ~13 s of phone time)" when the assist could not move that timer up.
 - **Both changed** the same file: the folder keeps its version and the phone's is written next to it as `name~phone.ext`.
 - What the phone writes as plain 8.3 names comes back in capitals (`TEST.PNG`).
