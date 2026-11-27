@@ -509,10 +509,9 @@ test plugins, `test-plugins/`) for each one alone.
   TCI with plugins force-enabled (the lockstep b-side), from the same
   source.
 - `scripts/run-native.sh` — launcher mirroring the web boot recipe's
-  pflash/serial/env-var set and SIM device, but timed by
-  `-icount shift=3,sleep=off` by default (deterministic and unpaced, so
-  a native boot fast-forwards idle time; `ICOUNT=vt` runs vcpu-timers
-  instead).
+  pflash/serial/env-var set, SIM device and `vcpu-timers` clock
+  (`ICOUNT=<spec>` runs `-icount` instead: only the lockstep tools, which
+  need two runs to match instruction for instruction).
 
 ## Correctness / testing ladder
 

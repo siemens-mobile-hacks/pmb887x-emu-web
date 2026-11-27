@@ -13,8 +13,10 @@ Current methods and numbers are in [performance.md](performance.md).
   time starves the guest of instructions per virtual second and the phone
   aborts with `>>EXIT<< FILE: l1bbcsg`. The page's `vcpu-timers` clock
   counts guest CPU cycles and is paced to wall time, so a slow host slows
-  the clock instead. `-icount shift=3,sleep=off` has the same property
-  unpaced, and is what lockstep and `scripts/run-native.sh` use.
+  the clock instead. `scripts/run-native.sh` uses the same clock (since
+  2026-11-27). `-icount shift=3,sleep=off` has the same property unpaced,
+  and only the lockstep tools still use it: two `vcpu-timers` runs of one
+  build diverge within ~12.6M insns (it is paced to wall time).
 - **Under icount, `sleep=off` is the indispensable half.** With `sleep=on`
   the vCPU parks in real time during every idle window and the DSP
   handshake desyncs: `shift=3` and `shift=4` both die with the L1 abort,

@@ -53,7 +53,7 @@ is non-zero if any test fails.
 ## What is tested
 
 Every fullflash boots **in parallel** with the exact `run-native.sh`
-recipe (`-icount shift=3,sleep=off`, OTP words derived from IMEI/ESN,
+recipe (the page's `vcpu-timers` clock, OTP words derived from IMEI/ESN,
 virtual SIM, ONLINE startup). The harness drives the HMP monitor
 (screendump, `info registers`) and reads the serial log + the
 instruction-count plugin.
@@ -78,9 +78,9 @@ instruction-count plugin.
   window (plugin's own monotonic clock; comparable across builds,
   independent of guest-visible milestones).
 - **milestone timings** — seconds to first serial byte / LCD lit / LCD
-  content. Boot is deterministic under `-icount shift=3,sleep=off`, so
-  these track emulation speed too (icount is unpaced, so idle time is
-  skipped; the instruction window is the pure-CPU measure).
+  content. Under `vcpu-timers` they are paced to wall time like the
+  page's, so a slow host shows as late milestones; the instruction window
+  is the pure-CPU measure.
 
 The suite stops each instance ~10 s after the benchmark window once all
 verdicts are in (fast path); the `--timeout` deadline is the worst case.
@@ -128,7 +128,9 @@ node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
   epoch and the dense rerun must pinpoint insn N.
 
 The gate is JIT vs TCI on S75, 3 × 2.5G guest insns (a full boot through
-idle), run in parallel. Lockstep requires the icount timing model. SL65
+idle), run in parallel. Lockstep requires the icount timing model, the
+one place it is still used (`tools/lockstep.mjs` sets `ICOUNT`; two
+`vcpu-timers` runs of one build diverge within ~12.6M insns). SL65
 is not deterministic enough for it even against itself
 (doc/performance.md, Lockstep).
 

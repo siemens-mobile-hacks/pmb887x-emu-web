@@ -140,6 +140,9 @@ export class Side {
         MONITOR: `unix:${this.monitor}`,
         DISPLAY_MODE: "none",
         RW: "0",
+        // two runs must match instruction for instruction: vcpu-timers, the
+        // default, is paced to wall time and diverges within a second
+        ICOUNT: process.env.ICOUNT || "shift=3,sleep=off",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

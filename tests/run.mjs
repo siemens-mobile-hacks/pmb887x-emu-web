@@ -1,7 +1,7 @@
 // Test suite + benchmark for the pmb887x emulator (native build).
 //
 // Boots every "currently working" fullflash (s75, el71, c81, ke800, ke970) in parallel
-// with scripts/run-native.sh's boot recipe (same -icount, OTP env, etc),
+// with scripts/run-native.sh's boot recipe (the page's vcpu-timers clock, OTP env, etc),
 // drives the HMP monitor for progress signals, and checks:
 //
 //   1. boot-init    board config parses, no hw_error, guest executes

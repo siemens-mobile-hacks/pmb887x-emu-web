@@ -237,7 +237,7 @@ Probes and traces:
 env PMB887X_BOARD=bsp/lib/data/board/siemens-s75.toml \
     PMB887X_STARTUP=ONLINE \
     PMB887X_FLASH0_OTP0=02004AB3C31100000000 PMB887X_FLASH0_OTP1=000094104502237315FF \
-  build/qemu-native-build/qemu-system-arm -display none -icount shift=3,sleep=off -machine pmb887x \
+  build/qemu-native-build/qemu-system-arm -display none -accel tcg,thread=multi,vcpu-timers=on -machine pmb887x \
     -drive if=pflash,format=raw,file=<fullflash>,readonly=on \
     -device gsm-sim,operator=00101 \
     -debug-channels log=dsp,scu,io=dsp,scu -serial file:serial.log -D trace.log
