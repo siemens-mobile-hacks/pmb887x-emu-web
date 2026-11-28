@@ -4,12 +4,10 @@
 //   node tools/cardfoldercheck.mjs [--dist dist] [--flash <id|image>]
 //       [--boot 90] [--wait 120] [--port P (default $PORT, else 8080)]
 //
-// After --boot seconds a file is added to the folder, as an editor would:
-//   notice   the window gets the focus back: the card state line must say
-//            the folder has changes not on the card yet
-//   sync     "Sync card": the card must hold the new file and the phone must
-//            read it again (state "in") within --wait seconds
-// PASS = both, no firmware exit, no abort and no page error.
+// After --boot seconds a file is added to the folder, as an editor would, and
+// "Sync card" is pressed: the card must hold the new file and the phone must
+// read it again (state "in") within --wait seconds.
+// PASS = that, no firmware exit, no abort and no page error.
 import { chromium } from "playwright-core";
 import fs from "node:fs";
 import { parseArgs } from "./lib/argv.mjs";
@@ -85,15 +83,7 @@ if (!errors.length) {
     const w = await (await window.__cardFolder.getFileHandle("added.txt", { create: true })).createWritable();
     await w.write("added while the phone ran");
     await w.close();
-    window.dispatchEvent(new Event("focus"));
   }, null, "add file");
-  let text = "";
-  for (let i = 0; i < 20 && !/not on the card yet/.test(text); i++) {
-    await sleep(500);
-    text = await cardText();
-  }
-  console.log(`notice: ${/not on the card yet/.test(text) ? "ok" : "FAIL"} (${text})`);
-  if (!/not on the card yet/.test(text)) errors.push("no notice of the folder's change");
 
   await call(() => document.getElementById("btn-sync-card").click(), null, "Sync card");
   const t = Date.now();
@@ -102,7 +92,7 @@ if (!errors.length) {
     await sleep(1000);
     files = await cardFiles();
     st = await cardText();
-  } while ((!files.some((p) => /^added\.txt$/i.test(p)) || !/^Card: in\b/.test(st) || /not on the card/.test(st))
+  } while ((!files.some((p) => /^added\.txt$/i.test(p)) || !/^Card: in\b/.test(st))
            && Date.now() - t < WAIT * 1000);
   const ok = files.some((p) => /^added\.txt$/i.test(p)) && /^Card: in\b/.test(st);
   console.log(`sync: ${ok ? "ok" : "FAIL"} in ${((Date.now() - t) / 1000).toFixed(1)} s (${st}; card: ${files.join(", ")})`);

@@ -2474,8 +2474,7 @@ $("btn-save-efa").addEventListener("click", () => {
 //    card is taken out (wasm_card_eject), the phone's changes are pulled first, a new image is
 //    built from the folder and put in (wasm_card_insert). The phone drops its
 //    card cache and reads it again (qemu's card assist, hw/arm/pmb887x/
-//    card-assist.c, turns the change into its card detect). Whether the folder has changes not on the card
-//    yet is checked when the window gets the focus and after each pull.
+//    card-assist.c, turns the change into its card detect).
 // A file changed on both sides is kept twice: the phone's copy as "name~phone".
 const CARD_PATH = "/data/card.img";
 const CARD_QUIET_MS = 3000;
@@ -2489,13 +2488,11 @@ let cardWrites = -1, cardQuietSince = 0, cardDirty = false;
 let cardBusy = false;
 let cardIdle = Promise.resolve();   // settles once no card operation runs
 let cardQueued = null;       // the run's last pull, waiting for the operation under way
-let cardHostPending = false;  // the folder has changes not on the card yet
 let cardStatus = "";
 let cardState = -1;          // wasm_card_state(): what the phone knows of the card
 let cardStateSince = 0;      // performance.now() of the last state change
 let cardPending = null;      // { sync, img }: a run's last changes no pull could write yet
 let cardFails = 0, cardRetryAt = 0;   // failed pulls in a row, and when the next may run
-let cardGen = 0;             // counts card operations: a folder check from before one is stale
 let cardSavedWrites = 0;     // image mode: the phone's writes when the image was last saved
 let cardImageUnsaved = false; // image mode: a finished run wrote what was not saved
 const CARD_STATES = ["in", "out", "going out", "reading", "not seen by the phone"];
@@ -2601,7 +2598,6 @@ function cardStart(on) {
   if (!on) return;
   cardWrites = -1;
   cardDirty = false;
-  cardHostPending = false;
   cardState = -1;
   cardFails = 0;
   cardRetryAt = 0;
@@ -2667,7 +2663,6 @@ async function cardPull(m, sync, img = m.FS.readFile(CARD_PATH)) {
   }
   cardFails = 0;
   if (cardPending?.sync === sync) cardPending = null;
-  if (sync === cardSync) cardHostPending = await sync.hostChanged();
 }
 
 // one card operation at a time; queue: run fn after the one under way
@@ -2678,7 +2673,6 @@ async function cardRunExclusive(fn, queue = false) {
     return cardIdle;
   }
   cardBusy = true;
-  cardGen++;
   render();
   let settle;
   cardIdle = new Promise((resolve) => { settle = resolve; });
@@ -2747,7 +2741,6 @@ function cardShowState(m) {
         text += `… ${Math.round((now - cardStateSince) / 1000)} s`;
         if (raw & 0x10) text += " (waiting for the phone's card timer, ~13 s of phone time)";
       }
-      if (cardHostPending && st !== 2 && st !== 3) text += " · the folder has changes not on the card yet: Sync card";
     }
     el.textContent = text;
     el.dataset.state = st;
@@ -2755,20 +2748,6 @@ function cardShowState(m) {
   }
   return st;
 }
-
-// on focus (the user comes back from editing the folder): any changes?
-async function cardCheckHost() {
-  if (!cardSync || cardBusy || !liveModule()) return;
-  const sync = cardSync, gen = cardGen;
-  try {
-    const changed = await sync.hostChanged();
-    // (a sync that ran meanwhile has the newer answer)
-    if (sync === cardSync && gen === cardGen && !cardBusy) cardHostPending = changed;
-  } catch { /* the folder went away: the next sync says so */ }
-  cardShowState(liveModule());
-}
-window.addEventListener("focus", () => cardCheckHost());
-document.addEventListener("visibilitychange", () => { if (!document.hidden) cardCheckHost(); });
 
 function cardTick() {
   const m = liveModule();
@@ -2890,7 +2869,6 @@ async function cardInsertNow() {
   if (!m || !cardSync) return;
   cardLog(`Putting "${cardDir.name}" on the card…`);
   await cardPush(m);
-  cardHostPending = false;
   cardShowState(m);
 }
 

@@ -106,7 +106,6 @@ test("a name the phone writes back in capitals is the same file, not a deletion"
   assert.equal(text(root.kids.get("photo.jpg").data), "new");
   assert.deepEqual([...misc.kids.keys()].sort(), ["NEW.TXT", "note.txt"]);
   assert.equal(text(misc.kids.get("NEW.TXT").data), "fresh");
-  assert.equal(await sync.hostChanged(), false);
 });
 
 test("a file deleted on the phone is deleted in the folder", async () => {
@@ -140,7 +139,6 @@ test("names that differ only in case: the first goes on the card, the other stay
   const sync = new CardSync({ dir: root });
   const got = readImage(await sync.initialImage());
   assert.deepEqual(got.map((e) => [e.path, text(e.data)]), [["a.txt", "lower"]]);
-  assert.equal(await sync.hostChanged(), false);
   // the phone's edit goes to the file the card holds, the twin is untouched
   await sync.pull(buildImage([{ path: "a.txt", data: bytes("edited"), mtime: clock }]));
   assert.equal(text(root.kids.get("a.txt").data), "edited");

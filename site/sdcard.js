@@ -528,21 +528,6 @@ export class CardSync {
     return buildImage(files);
   }
 
-  // the folder changed since the last sync?
-  async hostChanged() {
-    const list = await listFolder(this.dir);
-    const seen = new Set();
-    for (const f of list) {
-      seen.add(f.path);
-      if (this.skipped.has(f.path)) continue;
-      const b = this.base.get(f.path);
-      if (!b || b.dir !== f.dir) return true;
-      if (!f.dir && b.hostSig !== f.file.size + ":" + f.file.lastModified) return true;
-    }
-    for (const p of this.base.keys()) if (!seen.has(p)) return true;
-    return false;
-  }
-
   // phone -> folder: what the image holds that the base does not. An image
   // that cannot be read throws (the caller tries again later)
   async pull(image) {
