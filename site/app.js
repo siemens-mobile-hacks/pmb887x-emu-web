@@ -2008,7 +2008,7 @@ async function boot() {
         mod.FS.mkdirTree("/data");
         // canOwn: MEMFS takes these buffers as they are instead of a copy
         mod.FS.writeFile(FULLFLASH_PATH, flashBytes, { canOwn: true });
-        if (cardBytes) mod.FS.writeFile(CARD_PATH, cardBytes);
+        if (cardBytes) mod.FS.writeFile(CARD_PATH, cardBytes, { canOwn: true });
         for (const [suffix, bytes] of sidecarBytes)
           mod.FS.writeFile(FULLFLASH_PATH + suffix, bytes, { canOwn: true });
         mod.ENV.PMB887X_BOARD = `/boards/${device}.toml`;
@@ -2493,6 +2493,11 @@ let cardHostPending = false;  // the folder has changes not on the card yet
 let cardStatus = "";
 let cardState = -1;          // wasm_card_state(): what the phone knows of the card
 let cardStateSince = 0;      // performance.now() of the last state change
+let cardPending = null;      // { sync, img }: a run's last changes no pull could write yet
+let cardFails = 0, cardRetryAt = 0;   // failed pulls in a row, and when the next may run
+let cardGen = 0;             // counts card operations: a folder check from before one is stale
+let cardSavedWrites = 0;     // image mode: the phone's writes when the image was last saved
+let cardImageUnsaved = false; // image mode: a finished run wrote what was not saved
 const CARD_STATES = ["in", "out", "going out", "reading", "not seen by the phone"];
 // a push waits at most this long for the phone to read the card (usually
 // about a second; without the model's timer shortcut the firmware's own card
@@ -2555,10 +2560,21 @@ async function cardBootImage(device) {
           (await cardDir.requestPermission({ mode: "readwrite" })) !== "granted") {
         throw new Error("no permission to write to the folder");
       }
+      // the last run's changes that never reached this folder go first: the
+      // new image is made from the folder, and would drop them
+      if (cardPending && await cardPending.sync.dir.isSameEntry?.(cardDir)) {
+        try {
+          await cardPending.sync.pull(cardPending.img);
+          cardPending = null;
+        } catch (e) {
+          throw new Error(`the phone's changes from the last run could not be written to the folder (${e.message})`);
+        }
+      }
       cardSync = new CardSync({ dir: cardDir, log: cardLog });
       bytes = await cardSync.initialImage();
     } else {
       bytes = cardImage.bytes.slice();
+      if (!bytes.length || bytes.length > 2 ** 31) throw new Error("the image is empty or over 2 GB (an SD card's limit)");
       // qemu's sd-card takes a power-of-two size, or a multiple of 256 KiB
       // up to 1 GiB; anything else is padded to a power of two
       const pow2 = !(bytes.length & (bytes.length - 1));
@@ -2587,6 +2603,9 @@ function cardStart(on) {
   cardDirty = false;
   cardHostPending = false;
   cardState = -1;
+  cardFails = 0;
+  cardRetryAt = 0;
+  cardSavedWrites = 0;
   cardTimer = setInterval(cardTick, 1000);
   if (cardSync) {
     cardLog(`Card in sync with "${cardDir.name}"`);
@@ -2624,19 +2643,30 @@ function cardStop() {
     // run starts from it (Card downloads it)
     try {
       cardImage = { ...cardImage, bytes: m.FS.readFile(CARD_PATH) };
+      if (m._wasm_card_writes && m._wasm_card_writes() !== cardSavedWrites) cardImageUnsaved = true;
     } catch { /* the module is gone: the picked image stays */ }
   }
 }
 
-// the card's image to the folder; a pull that fails is tried again by the
-// next cardTick (the phone's changes are only in the image until then)
+// the card's image to the folder. A pull that fails is tried again, with a
+// growing wait, by cardTick while the run lasts (the phone's changes are only
+// in the image until then); after the run, by the next boot with this folder
 async function cardPull(m, sync, img = m.FS.readFile(CARD_PATH)) {
   try {
     await sync.pull(img);
   } catch (e) {
-    if (sync === cardSync && liveModule() === m) cardDirty = true;
+    if (sync === cardSync && liveModule() === m) {
+      cardDirty = true;
+      cardFails++;
+      cardRetryAt = performance.now() + Math.min(CARD_QUIET_MS * 2 ** cardFails, 60000);
+    } else {
+      cardPending = { sync, img };
+      cardLog("The phone's last card changes are kept until this folder is used again");
+    }
     throw e;
   }
+  cardFails = 0;
+  if (cardPending?.sync === sync) cardPending = null;
   if (sync === cardSync) cardHostPending = await sync.hostChanged();
 }
 
@@ -2648,6 +2678,7 @@ async function cardRunExclusive(fn, queue = false) {
     return cardIdle;
   }
   cardBusy = true;
+  cardGen++;
   render();
   let settle;
   cardIdle = new Promise((resolve) => { settle = resolve; });
@@ -2672,6 +2703,18 @@ async function cardRunExclusive(fn, queue = false) {
 // it, so that staying on the page saves the phone's changes
 window.addEventListener("beforeunload", (e) => {
   const m = liveModule();
+  // an image card: what the phone wrote is in this page only, until saved
+  if (cardImage && (cardImageUnsaved ||
+      (cardRun && !cardSync && m?._wasm_card_writes && m._wasm_card_writes() !== cardSavedWrites))) {
+    e.preventDefault();
+    e.returnValue = "";
+    return;
+  }
+  if (cardPending) {
+    e.preventDefault();
+    e.returnValue = "";
+    return;
+  }
   if (!cardSync || (!cardBusy && !cardDirty && !cardUnseenWrites(m))) return;
   if (!cardBusy && m) {
     cardDirty = false;
@@ -2716,8 +2759,11 @@ function cardShowState(m) {
 // on focus (the user comes back from editing the folder): any changes?
 async function cardCheckHost() {
   if (!cardSync || cardBusy || !liveModule()) return;
+  const sync = cardSync, gen = cardGen;
   try {
-    cardHostPending = await cardSync.hostChanged();
+    const changed = await sync.hostChanged();
+    // (a sync that ran meanwhile has the newer answer)
+    if (sync === cardSync && gen === cardGen && !cardBusy) cardHostPending = changed;
   } catch { /* the folder went away: the next sync says so */ }
   cardShowState(liveModule());
 }
@@ -2737,7 +2783,7 @@ function cardTick() {
     if (!cardDirty) cardDirty = w > 0;   // the first look: boot-time writes
     return;
   }
-  if (cardDirty && now - cardQuietSince >= CARD_QUIET_MS) {
+  if (cardDirty && now - cardQuietSince >= CARD_QUIET_MS && now >= cardRetryAt) {
     cardDirty = false;
     const sync = cardSync;
     cardRunExclusive(() => cardPull(m, sync));
@@ -2852,6 +2898,7 @@ $("card-folder").addEventListener("click", async () => {
   try {
     cardDir = await window.showDirectoryPicker({ id: "phone-card", mode: "readwrite" });
     cardImage = null;
+    cardImageUnsaved = false;
   } catch (e) {
     if (e.name !== "AbortError") setError("Memory card: " + e.message);
   }
@@ -2860,18 +2907,29 @@ $("card-folder").addEventListener("click", async () => {
 $("card-image").addEventListener("click", () => $("card-image-file").click());
 $("card-image-file").addEventListener("change", async (ev) => {
   const f = ev.target.files?.[0];
-  if (!f) return;
-  cardImage = { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) };
-  cardDir = null;
   ev.target.value = "";
+  if (!f) return;
+  if (!f.size || f.size > 2 ** 31) {
+    setError(`Memory card: ${f.name} is ${f.size ? "over 2 GB (an SD card's limit)" : "empty"}`);
+    return;
+  }
+  cardImage = { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) };
+  cardImageUnsaved = false;
+  cardDir = null;
   render();
 });
 $("card-none").addEventListener("click", () => {
   cardDir = null;
   cardImage = null;
+  cardImageUnsaved = false;
   render();
 });
-$("btn-save-card").addEventListener("click", () => downloadMemfs(CARD_PATH, cardImageName()));
+$("btn-save-card").addEventListener("click", () => {
+  if (!downloadMemfs(CARD_PATH, cardImageName())) return;
+  const m = liveModule();
+  if (m?._wasm_card_writes) cardSavedWrites = m._wasm_card_writes();
+  if (!m) cardImageUnsaved = false;   // after the run: the final image
+});
 $("btn-sync-card").addEventListener("click", () => cardRunExclusive(cardInsertNow));
 
 /* ------------------------------------------------------------------ */
@@ -3435,7 +3493,7 @@ renderSound();
 // before Start, it goes to the run once the phone is live; the end of a run
 // turns it off.
 const micBtn = $("btn-mic");
-const mic = new Mic();
+const mic = new Mic({ onEnd: () => renderMic() });
 window.__mic = mic;   // debugging and headless checks
 function renderMic() {
   micBtn.setAttribute("aria-pressed", mic.on ? "true" : "false");

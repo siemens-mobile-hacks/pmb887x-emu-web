@@ -12,8 +12,11 @@ const CHUNK = 2048;         // ~43 ms at 48 kHz; at most MIC_BUF samples once at
 const MIC_BUF = 2048;       // MIC_BUF_SAMPLES in qemu/ui/wasm.c
 const CANCELLED = Symbol("mic start cancelled");
 
+// onEnd(): the browser ended the capture by itself (the device unplugged,
+// the permission taken back); the mic is off by then
 export class Mic {
-  constructor() {
+  constructor({ onEnd = () => {} } = {}) {
+    this.onEnd = onEnd;
     this.m = null;          // the running qemu module, or null
     this.stream = null;
     this.ctx = null;
@@ -75,6 +78,13 @@ export class Mic {
       this.stream = stream;
       this.ctx = ctx;
       this.node = node;
+      for (const t of stream.getTracks()) {
+        t.addEventListener("ended", () => {
+          if (this.stream !== stream) return;
+          this.stop();
+          this.onEnd();
+        });
+      }
       return true;
     } catch (e) {
       stream.getTracks().forEach((t) => t.stop());

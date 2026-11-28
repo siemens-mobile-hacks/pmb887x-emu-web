@@ -76,15 +76,20 @@ GSM_RELAY=127.0.0.1:4725 node serve.mjs
   WebSocket server itself (RFC 6455 binary frames, ping, close) and pipes to
   the relay with backpressure both ways; the same Origin rule as `/gprs`
   (403 otherwise). A relay that is down = 502 on the upgrade; the page
-  retries.
-- `site/gsm-relay.js`: `GsmRelay` pumps the bytes every 20 ms (and on every
+  retries. At most 8 relay WebSockets per client address (429 above):
+  the relay sees every page as this host's loopback, which its own
+  per-address limit (`MAX_PER_IP`) exempts.
+- `site/gsm-relay.js`: `GsmRelay` pumps the bytes
+  every 20 ms (and on every
   message, as background tabs throttle timers), redials with a 1-30 s
   backoff, closes and redials when the emulator has not taken 256 KB of
   relay bytes (stalled), and reads the relay's `N` frame (the phone's
   number). `relayOffered()` asks `GET /gsmrelay`. `simImsi(operator)`: the
   page's IMSI = the operator + 10 random digits kept in localStorage, each
   held by its tab with a Web Lock, so a reload keeps the number and a second
-  tab takes another IMSI.
+  tab takes another IMSI. Without Web Locks (plain http on the LAN) each
+  tab keeps its own IMSI in sessionStorage: a reload keeps it, a new tab
+  gets a new one.
 - `site/app.js` / `index.html`: Advanced ▸ "Online GSM network (SMS, calls,
   USSD)", shown only when the server offers a relay, on by default there;
   greyed out unless the GSM network option is on and the SIM is not "none". The run then gets
@@ -134,8 +139,27 @@ A byte stream both ways (TCP natively), frames `[type u8][len u8][payload]`.
 One call per phone. The relay paces `V` by wall-clock time; the cell plays
 50 frames a second of guest time (see Limits).
 
-Without a relay connected the cell answers itself: an SMS comes back to the
-sender, a call is answered (silence), USSD gets an empty RELEASE COMPLETE.
+Without a relay connected (the link down, or the relay restarting) the
+phone is told the network is out of order: an SMS fails with RP-ERROR cause
+38, a call is released with cause 38, USSD gets an empty RELEASE COMPLETE.
+Only the cell's own test number 100 still answers (it hangs up after 1 s).
+Until 2026-11-27 the cell answered itself (the SMS came back to its sender,
+the call was answered with silence), which looked like a delivered SMS.
+
+An MT call while the phone's channel is up for something else (an SMS, a
+location update) is paged once that ends, not answered busy; the user dialling
+out while paged ends the page (the caller hears busy). The SMS queued in the
+cell for the phone stay across a new link: the relay sends each SMS once and
+does not resend it.
+
+The relay gives each IMSI the number of its last digits, or the next free
+one, and keeps it in `numbers.json` for 30 days after the phone was last
+seen: a phone that is away does not lose its number to another IMSI with the
+same digits. A link that says hello with a second IMSI is dropped; a
+reconnect with the same IMSI replaces the old link (its call ends). The
+balances (`balances.json`) and numbers are written at most once a second,
+atomically; a balances file that cannot be read stops the relay instead of
+starting everyone from scratch.
 
 ## How it is built
 
@@ -192,7 +216,7 @@ EL71 (the page's vcpu-timers clock), natively and in headless Chromium:
 | downlink speech | a melody from the relay: the speaker's pitch follows it note for note (natively and in the page's audio) |
 | uplink speech | a microphone file / fake browser microphone: the relay's recording correlates 0.81-0.87 (50 ms RMS envelope) with it |
 | two pages | own IMSIs and numbers; SMS and calls between them |
-| relay restart | the cell runs alone meanwhile, reconnects, the same number |
+| relay restart | reconnects, the same number (checked when the cell still answered itself meanwhile; the refusal since 2026-11-27 is not checked on a phone) |
 | option off | "CC 001 NC 01", `ms-state` as before |
 
 ## Limits

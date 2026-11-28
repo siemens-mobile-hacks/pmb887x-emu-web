@@ -333,6 +333,11 @@ const gsmRelay = (() => {
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const WS_MAX = 1 << 20;   // a page sends a few KB at a time
 const RELAY_CONNECT_MS = 10000;
+// The relay sees every page as this host's loopback, which its own
+// per-address limit exempts: the limit is kept here, by the page's address,
+// or one client could take all of the relay's MAX_PHONES (64) connections.
+const RELAY_PER_ADDR = 8;   // relay.py's MAX_PER_IP
+const relayLinks = new Map();   // remote address -> open relay WebSockets
 
 function wsFrame(op, data) {
   const n = data.length;
@@ -347,6 +352,14 @@ const proxyGsmRelay = (req, socket, head) => {
   if (!sameOrigin(req)) return refuse(socket, "403 Forbidden");
   const key = String(req.headers["sec-websocket-key"] ?? "");
   if (!key) return refuse(socket, "400 Bad Request");
+  const addr = String(req.socket.remoteAddress);
+  if ((relayLinks.get(addr) ?? 0) >= RELAY_PER_ADDR) return refuse(socket, "429 Too Many Requests");
+  relayLinks.set(addr, (relayLinks.get(addr) ?? 0) + 1);
+  socket.once("close", () => {
+    const n = relayLinks.get(addr) - 1;
+    if (n > 0) relayLinks.set(addr, n);
+    else relayLinks.delete(addr);
+  });
   const relay = net.connect(gsmRelay.port, gsmRelay.host);
   relay.setNoDelay(true);
   socket.setNoDelay(true);
@@ -377,6 +390,9 @@ const proxyGsmRelay = (req, socket, head) => {
   const endWith = (frame) => { if (!closing) { closing = true; socket.end(frame); } };
   relay.on("close", () => { if (up) endWith(wsFrame(8, Buffer.from([0x03, 0xe8]))); });
   socket.on("error", close);
+  // the HTTP server's sockets are half-open: a page gone without a close
+  // frame (a FIN only) would keep this socket and the relay's link open
+  socket.on("end", close);
   socket.on("close", () => { clearTimeout(late); relay.destroy(); });
   const onData = (d) => {
     if (closing) return;

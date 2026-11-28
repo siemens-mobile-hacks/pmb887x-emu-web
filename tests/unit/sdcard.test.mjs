@@ -121,3 +121,74 @@ test("a file deleted on the phone is deleted in the folder", async () => {
   await sync.pull(buildImage([{ path: "KEEP.TXT", data: bytes("keep.txt"), mtime: clock }]));
   assert.deepEqual([...root.kids.keys()], ["keep.txt"]);
 });
+
+const put = async (dir, name, s) => {
+  const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+  await w.write(bytes(s));
+  await w.close();
+};
+
+test("a name outside the BMP (an emoji) keeps its surrogate pair", () => {
+  const files = [{ path: "photo 📷.jpg", data: bytes("x"), mtime: clock }];
+  assert.deepEqual(readImage(buildImage(files)).map((e) => e.path), ["photo 📷.jpg"]);
+});
+
+test("names that differ only in case: the first goes on the card, the other stays on the disk", async () => {
+  const root = new MemDir();
+  await put(root, "a.txt", "lower");
+  await put(root, "A.TXT", "upper");
+  const sync = new CardSync({ dir: root });
+  const got = readImage(await sync.initialImage());
+  assert.deepEqual(got.map((e) => [e.path, text(e.data)]), [["a.txt", "lower"]]);
+  assert.equal(await sync.hostChanged(), false);
+  // the phone's edit goes to the file the card holds, the twin is untouched
+  await sync.pull(buildImage([{ path: "a.txt", data: bytes("edited"), mtime: clock }]));
+  assert.equal(text(root.kids.get("a.txt").data), "edited");
+  assert.equal(text(root.kids.get("A.TXT").data), "upper");
+});
+
+// a FAT16 image's first FAT and its data area, as buildImage lays them out
+const layout = (img) => {
+  const dv = new DataView(img.buffer);
+  const bs = dv.getUint32(446 + 8, true) * 512;
+  const fat = bs + dv.getUint16(bs + 14, true) * 512;
+  return { dv, fat, root: fat + 2 * dv.getUint16(bs + 22, true) * 512 };
+};
+
+test("a broken cluster chain is an error, not a file cut short", async () => {
+  const csize = 2048 * 4;
+  const img = buildImage([{ path: "big.bin", data: new Uint8Array(3 * csize), mtime: clock }]);
+  const { dv, fat, root } = layout(img);
+  // the root's entries: the label, then big.bin
+  const first = dv.getUint16(root + 32 + 26, true);
+  dv.setUint16(fat + first * 2, 0xffff, true);      // the chain ends after one cluster
+  assert.throws(() => readImage(img), /cluster/);
+  dv.setUint16(fat + first * 2, first, true);       // the chain loops
+  assert.throws(() => readImage(img), /loops/);
+
+  // pull throws too (the page tries again), and the folder is untouched
+  const dir = new MemDir();
+  await put(dir, "big.bin", "on the disk");
+  const sync = new CardSync({ dir });
+  await sync.initialImage();
+  await assert.rejects(sync.pull(img));
+  assert.equal(text(dir.kids.get("big.bin").data), "on the disk");
+});
+
+test("a conflict copy is written once, and never over a file on the disk", async () => {
+  const root = new MemDir();
+  await put(root, "n.txt", "base");
+  await put(root, "n~phone.txt", "the user's own");
+  const sync = new CardSync({ dir: root });
+  await sync.initialImage();
+  await put(root, "n.txt", "edited on the disk");
+  const img = buildImage([
+    { path: "n.txt", data: bytes("edited on the phone"), mtime: clock },
+    { path: "n~phone.txt", data: bytes("the user's own"), mtime: clock },
+  ]);
+  await sync.pull(img);
+  await sync.pull(img);
+  assert.equal(text(root.kids.get("n~phone.txt").data), "the user's own");
+  assert.equal(text(root.kids.get("n~phone2.txt").data), "edited on the phone");
+  assert.equal(root.kids.has("n~phone3.txt"), false);
+});

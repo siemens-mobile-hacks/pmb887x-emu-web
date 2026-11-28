@@ -203,11 +203,32 @@ export async function relayOffered() {
 // digits of its own, kept in localStorage ("gsm-relay-imsi": a list, one per
 // tab open at once) so a reload keeps its number. A tab holds its entry with
 // a Web Lock while it runs, so a second tab takes the next free one or adds
-// a new one: two tabs with one IMSI would be one phone to the relay.
+// a new one: two tabs with one IMSI would be one phone to the relay. Without
+// Web Locks (a page over plain http on the LAN) no tab can tell which entries
+// are taken: each tab then keeps its own in sessionStorage, which a reload of
+// that tab keeps.
 const IMSI_KEY = "gsm-relay-imsi";
+const TAB_IMSI_KEY = "gsm-relay-imsi-tab";
 let heldImsi = null;
 
+const newSubscriber = (taken = []) => {
+  let s;
+  do {
+    s = Array.from(crypto.getRandomValues(new Uint8Array(10)), (x) => x % 10).join("");
+  } while (taken.includes(s));
+  return s;
+};
+
 export async function simImsi(operator) {
+  if (!navigator.locks) {
+    let s = null;
+    try { s = sessionStorage.getItem(TAB_IMSI_KEY); } catch {}
+    if (!/^\d{10}$/.test(s ?? "")) {
+      s = newSubscriber();
+      try { sessionStorage.setItem(TAB_IMSI_KEY, s); } catch {}
+    }
+    return imsiOf(operator, heldImsi = s);
+  }
   let list = [];
   try { list = JSON.parse(localStorage.getItem(IMSI_KEY) ?? "[]"); } catch {}
   if (!Array.isArray(list)) list = [];
@@ -216,10 +237,7 @@ export async function simImsi(operator) {
   for (const s of list) {
     if (await hold(s)) return imsiOf(operator, heldImsi = s);
   }
-  let s;
-  do {
-    s = Array.from(crypto.getRandomValues(new Uint8Array(10)), (x) => x % 10).join("");
-  } while (list.includes(s));
+  const s = newSubscriber(list);
   list.push(s);
   try { localStorage.setItem(IMSI_KEY, JSON.stringify(list)); } catch {}
   await hold(s);
@@ -230,7 +248,6 @@ const imsiOf = (operator, subscriber) => operator + subscriber.slice(operator.le
 
 // taken for as long as the tab lives; false if another tab has it
 function hold(s) {
-  if (!navigator.locks) return Promise.resolve(true);
   return new Promise((resolve) => {
     navigator.locks.request(`gsm-relay-imsi-${s}`, { ifAvailable: true }, (lock) => {
       resolve(!!lock);

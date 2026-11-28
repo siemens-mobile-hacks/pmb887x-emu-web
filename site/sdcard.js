@@ -91,11 +91,10 @@ function nameEntries(name, used) {
   const sfn = makeShortName(name, used);
   used.add(sfn);
   const sum = sfnChecksum(sfn);
+  // UTF-16 code units, as VFAT stores them (an emoji is its surrogate pair)
   const units = [];
-  for (const ch of name) {
-    const c = ch.codePointAt(0);
-    units.push(c > 0xffff ? 0x5f : c);   // no surrogates in names: "_"
-  }
+  for (let i = 0; i < name.length; i++) units.push(name.charCodeAt(i));
+  if (units.length > 255) throw new Error("name longer than 255 characters: " + name);
   units.push(0);
   while (units.length % 13) units.push(0xffff);
   const n = units.length / 13, lfn = [];
@@ -132,7 +131,8 @@ function makeTree(files) {
   return root;
 }
 
-function geometry(totalBytes) {
+// sizes: the bytes of each file and folder, each taking whole clusters
+function geometry(sizes) {
   // the smallest power-of-two card with room for the files and some to spare
   let mb = MIN_MB;
   for (;;) {
@@ -148,9 +148,12 @@ function geometry(totalBytes) {
       fatSz = Math.ceil((clusters + 2) * 2 / SECTOR);
     }
     const clusters = Math.floor((part - 4 - 2 * fatSz - rootSecs) / spc);
-    const room = clusters * spc * SECTOR;
-    if (room >= totalBytes * 1.25 + 8 * 1024 * 1024 || mb >= MAX_MB) {
-      if (room < totalBytes) throw new Error("the folder does not fit on a 2 GB card");
+    const csize = spc * SECTOR;
+    let need = 0;
+    for (const s of sizes) need += Math.max(1, Math.ceil(s / csize));
+    const room = clusters * csize, used = need * csize;
+    if (room >= used * 1.25 + 8 * 1024 * 1024 || mb >= MAX_MB) {
+      if (need > clusters) throw new Error("the folder does not fit on a 2 GB card");
       return { mb, sectors, part, spc, fatSz, rootSecs, clusters };
     }
     mb *= 2;
@@ -159,16 +162,16 @@ function geometry(totalBytes) {
 
 export function buildImage(files) {
   const tree = makeTree(files);
-  // bytes the files and folders take, rounded per cluster later; a first guess
-  let total = 0;
+  // what each file and folder takes (a folder: its entries, LFN worst case)
+  const sizes = [];
   const walkSize = (n) => {
     for (const c of n.children.values()) {
-      if (c.dir) { total += 4096 + c.children.size * 64; walkSize(c); }
-      else total += c.data.length + 4096;
+      if (c.dir) { sizes.push((2 + c.children.size * (1 + 20)) * 32); walkSize(c); }
+      else sizes.push(c.data.length);
     }
   };
   walkSize(tree);
-  const g = geometry(total);
+  const g = geometry(sizes);
   const csize = g.spc * SECTOR;
   const img = new Uint8Array(g.sectors * SECTOR);
   const dv = new DataView(img.buffer);
@@ -333,14 +336,24 @@ export function readImage(img) {
     const n = dv.getUint16(fatOff + c * 2, true);
     return n >= 0xfff8 ? -1 : n;
   };
+  // A broken chain (a loop, a cluster off the card, a file shorter than its
+  // size: the firmware was mid-write, or the card is damaged) is an error,
+  // not a file cut short: the caller tries again rather than sync a stub
   const chain = (c) => {
     const out = [];
     const seen = new Set();
-    while (c >= 2 && c < clusters + 2 && !seen.has(c)) { seen.add(c); out.push(c); c = nextOf(c); }
+    while (c !== -1) {
+      if (c < 2 || c >= clusters + 2) throw new Error(`cluster ${c} is off the card`);
+      if (seen.has(c)) throw new Error(`cluster chain loops at ${c}`);
+      seen.add(c);
+      out.push(c);
+      c = nextOf(c);
+    }
     return out;
   };
   const readChain = (c, size) => {
     const cl = chain(c);
+    if (size !== undefined && cl.length * csize < size) throw new Error(`a file of ${size} bytes has ${cl.length} cluster(s)`);
     const buf = new Uint8Array(size ?? cl.length * csize);
     let off = 0;
     for (const k of cl) {
@@ -353,7 +366,7 @@ export function readImage(img) {
   };
   const out = [];
   const walk = (bytes, prefix, depth) => {
-    if (depth > 32) return;
+    if (depth > 32) throw new Error("folders nested deeper than 32 (a loop?): " + prefix);
     let lfn = [];
     for (let o = 0; o + 32 <= bytes.length; o += 32) {
       const b0 = bytes[o];
@@ -389,9 +402,11 @@ export function readImage(img) {
       const path = prefix + name;
       if (attr & 0x10) {
         out.push({ path, dir: true, mtime });
+        if (!cluster) throw new Error("a folder with no cluster: " + path);
         walk(readChain(cluster), path + "/", depth + 1);
       } else {
         const size = e.getUint32(28, true);
+        if (!cluster && size) throw new Error(`a file of ${size} bytes with no cluster: ${path}`);
         out.push({ path, dir: false, data: cluster ? readChain(cluster, size) : new Uint8Array(0), mtime });
       }
     }
@@ -458,9 +473,10 @@ async function hostFile(root, path) {
   return (await dir.getFileHandle(path.slice(i + 1))).getFile();
 }
 
-function conflictName(path) {
+function conflictName(path, k = 1) {
+  const tag = k > 1 ? "~phone" + k : "~phone";
   const i = path.lastIndexOf("."), s = path.lastIndexOf("/");
-  return i > s + 1 ? path.slice(0, i) + "~phone" + path.slice(i) : path + "~phone";
+  return i > s + 1 ? path.slice(0, i) + tag + path.slice(i) : path + tag;
 }
 
 /* ------------------------------------------------------------------ */
@@ -474,6 +490,8 @@ export class CardSync {
     this.dir = dir;
     this.log = log;
     this.base = new Map();
+    this.skipped = new Set();     // folder paths the card cannot hold (a case twin)
+    this.conflicts = new Map();   // phone's copy written -> its hash
   }
 
   // the first image, from the folder as it is now
@@ -481,7 +499,22 @@ export class CardSync {
     const list = await listFolder(this.dir);
     const files = [];
     this.base.clear();
+    this.skipped.clear();
+    this.conflicts.clear();
+    // FAT names ignore case: of names that differ only in case (a
+    // case-sensitive disk), the first listed goes on the card, the others
+    // (and what is under them) stay on the disk alone
+    const claimed = new Map();   // lower-case path -> the path on the card
     for (const f of list) {
+      const s = f.path.lastIndexOf("/");
+      const parent = s < 0 ? "" : f.path.slice(0, s);
+      const lower = f.path.toLowerCase();
+      if ((parent && this.skipped.has(parent)) || (claimed.has(lower) && claimed.get(lower) !== f.path)) {
+        if (!this.skipped.has(parent)) this.log(`card: ${f.path} left off the card, ${claimed.get(lower)} has its name`);
+        this.skipped.add(f.path);
+        continue;
+      }
+      claimed.set(lower, f.path);
       if (f.dir) {
         files.push({ path: f.path, dir: true });
         this.base.set(f.path, { dir: true });
@@ -501,6 +534,7 @@ export class CardSync {
     const seen = new Set();
     for (const f of list) {
       seen.add(f.path);
+      if (this.skipped.has(f.path)) continue;
       const b = this.base.get(f.path);
       if (!b || b.dir !== f.dir) return true;
       if (!f.dir && b.hostSig !== f.file.size + ":" + f.file.lastModified) return true;
@@ -509,23 +543,20 @@ export class CardSync {
     return false;
   }
 
-  // phone -> folder: what the image holds that the base does not
+  // phone -> folder: what the image holds that the base does not. An image
+  // that cannot be read throws (the caller tries again later)
   async pull(image) {
-    let entries;
-    try {
-      entries = readImage(image);
-    } catch (e) {
-      this.log("card: cannot read the card (" + e.message + "), nothing pulled");
-      return 0;
-    }
+    let entries = readImage(image);
     const host = new Map((await listFolder(this.dir)).map((f) => [f.path, f]));
     // FAT names ignore case, and the phone may write a host name back in
     // capitals (PHOTO.JPG for photo.jpg): an image path takes the base's or
     // the folder's spelling, else its parent's, so that nothing on the disk
-    // looks deleted or gets a twin of another case
+    // looks deleted or gets a twin of another case. The base's spelling wins
+    // over a case twin on the disk the card does not hold
     const fold = new Map();
     for (const p of [...host.keys(), ...this.base.keys()]) fold.set(p.toLowerCase(), p);
     const canon = (p) => {
+      if (this.base.has(p)) return p;
       const hit = fold.get(p.toLowerCase());
       if (hit) return hit;
       const i = p.lastIndexOf("/");
@@ -559,10 +590,15 @@ export class CardSync {
       if (hostEdited || hostNew) {
         // both changed: keep both. The phone's copy is not in the base (the
         // card does not hold it under that name): the folder has a change for
-        // the card, and no pull deletes it
-        const target = conflictName(e.path);
+        // the card, and no pull deletes it. A copy already written is not
+        // written again, and no file already on the disk is written over
+        if ([...this.conflicts.values()].includes(e.path + "\n" + hash)) continue;
+        let target = conflictName(e.path);
+        for (let k = 2; host.has(target) || this.conflicts.has(target) || this.base.has(target); k++)
+          target = conflictName(e.path, k);
         this.log(`card: ${e.path} changed on both sides, the phone's copy is ${target}`);
         await writeHostFile(this.dir, target, e.data);
+        this.conflicts.set(target, e.path + "\n" + hash);
         n++;
         continue;
       }
