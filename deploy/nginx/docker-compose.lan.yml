@@ -30,6 +30,14 @@ services:
       # browsers reach the gateway through pmb887x-web only
       GPRS_GW_TRUSTED_PROXIES: ${GPRS_GW_TRUSTED_PROXIES:-1}
 
+  pmb887x-gsmrelay:
+    environment:
+      # empty: the page's own https://<lan address>:<port>, as its Host says
+      GSMRELAY_ORIGINS: ${GSMRELAY_ORIGINS:-}
+      GSMRELAY_PAGE_ORIGIN: ""
+      # browsers reach the relay through pmb887x-web only
+      GSMRELAY_TRUSTED_PROXIES: ${GSMRELAY_TRUSTED_PROXIES:-1}
+
 networks:
   # an ordinary network instead of the external nginx-proxy one; named, since
   # Compose v2 merges this with the base definition and would keep its name

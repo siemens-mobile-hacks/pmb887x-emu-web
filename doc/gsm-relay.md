@@ -100,7 +100,21 @@ GSM_RELAY=127.0.0.1:4725 node serve.mjs
 - `qemu/ui/wasm.c` (WASM PORT, removable): chardev type `wasm-gsm`, two
   64 KB byte rings, exports `_wasm_gsmrelay_ready/buf/take/put/open`. The
   cell is told OPENED / CLOSED when the WebSocket opens / closes.
-- The nginx deployment (`deploy/nginx`) has no `/gsmrelay` route yet.
+- The nginx deployment (`deploy/nginx`) has no `serve.mjs`: there the relay
+  is the WebSocket server itself (`relay.py --ws-port`, in the
+  `pmb887x-gsmrelay` container, `deploy/gsmrelay/README.md`), and
+  `site.conf` passes `/gsmrelay` to it, plain GET and upgrade alike:
+
+  ```
+  site/gsm-relay.js --wss /gsmrelay--> nginx-proxy --> pmb887x-web (site.conf)
+     --> relay.py's WebSocket (deploy/gsmrelay)
+  ```
+
+  The relay answers the plain GET with `{"relay": true}`, checks Origin,
+  and counts each page by its address in `X-Forwarded-For`
+  (`--trusted-proxies`), so its own per-address limit applies to the real
+  client instead of a proxy. Without the container `/gsmrelay` is a 502
+  and the option stays hidden.
 
 ### Microphone in the browser
 

@@ -6,7 +6,7 @@ The moving parts:
 |---|---|
 | `scripts/bundle-dist.sh` | assembles the self-contained bundle in `<repo>/dist` (gitignored) |
 | `Dockerfile` + `site.conf` | `nginx:stable-alpine` image serving that bundle with the same headers/contract as `serve.mjs` |
-| `docker-compose.yml` | runs it on the external `nginx-proxy` network with `VIRTUAL_HOST` env, so the front (jwilder/nginx-proxy + letsencrypt companion) picks it up, and the GPRS gateway (`../gprs-gw`) |
+| `docker-compose.yml` | runs it on the external `nginx-proxy` network with `VIRTUAL_HOST` env, so the front (jwilder/nginx-proxy + letsencrypt companion) picks it up, the GPRS gateway (`../gprs-gw`) and the virtual network's relay (`../gsmrelay`) |
 | `docker-compose.lan.yml` + `lan-tls.sh` | LAN mode instead of the front: https with a self-signed certificate on a published port (section 4) |
 
 ## 1. Bundle
@@ -50,11 +50,12 @@ docker run -d --name nginx-letsencrypt --restart=always \
   --volumes-from nginx-proxy jrcs/letsencrypt-nginx-proxy-companion
 ```
 
-Then check out the GPRS gateway's submodule once (`../gprs-gw/README.md`,
-"Where the source comes from") and, from `deploy/nginx/` here:
+Then check out the GPRS gateway's and the relay's submodules once
+(`../gprs-gw/README.md`, "Where the source comes from") and, from
+`deploy/nginx/` here:
 
 ```bash
-git submodule update --init ../gprs-gw/bts-emulator
+git submodule update --init ../gprs-gw/bts-emulator ../../gsmrelay
 VIRTUAL_HOST=emu.example.org \
 LETSENCRYPT_HOST=emu.example.org \
 LETSENCRYPT_EMAIL=you@example.org \
@@ -86,7 +87,8 @@ template differs only where noted.
   (80) from `pmb887x-web` and proxies to its address on the network it
   shares with the front, the external `nginx-proxy` network (`expose`,
   no published port). `VIRTUAL_PROTO` stays the default `http`. The gateway has no `VIRTUAL_HOST` and is on the stack's
-  `gprs` network only, so the front never routes to it.
+  `gprs` network only, so the front never routes to it; the same goes for
+  the relay and its `gsmrelay` network.
 - **TLS:** `LETSENCRYPT_HOST` and `LETSENCRYPT_EMAIL` are read by the
   companion, not the proxy. The front then redirects http to https and
   adds `Strict-Transport-Security: max-age=31536000`.
@@ -146,6 +148,24 @@ Do not also run bts-emulator's full stack with its `compose.web.yaml` for the
 same host name: the front would then route `/gprs` there (`VIRTUAL_PATH`),
 past this container.
 
+### The virtual network
+
+SMS, calls and USSD between the pages (`../../doc/gsm-relay.md`) go to
+`wss://<host>/gsmrelay`, which `site.conf` passes to the relay in the
+`pmb887x-gsmrelay` container (`deploy/gsmrelay`), built and started with the
+page from the `gsmrelay` submodule. The relay serves that WebSocket itself
+(no `serve.mjs` here) and answers the page's plain `GET /gsmrelay` with
+`{"relay": true}`, which is what makes the page offer its "Online GSM
+network" option. `deploy/gsmrelay/README.md` has its settings (origins,
+trusted proxies, limits), state and security notes. While the relay is down
+`/gsmrelay` answers 502 and the page leaves the option hidden; a page already
+running redials every 1-30 s.
+
+The relay is on the internal `gsmrelay` network with `pmb887x-web` only: no
+`VIRTUAL_HOST`, no published port, no way out. Never give it a
+`VIRTUAL_HOST`: the front would route to it directly, past `site.conf`, and
+`GSMRELAY_TRUSTED_PROXIES=2` would then let a client choose its own address.
+
 ## 3. Standalone (no proxy mesh)
 
 ```bash
@@ -161,12 +181,12 @@ not over `http://<lan-ip>:8080`. For other machines use LAN mode (section 4).
 
 ## 4. LAN (no front, self-signed https)
 
-The page and the GPRS gateway for the machines on your network, without
-the front, a domain or Let's Encrypt:
+The page, the GPRS gateway and the relay for the machines on your network,
+without the front, a domain or Let's Encrypt:
 
 ```bash
 scripts/bundle-dist.sh        # once: the image build copies dist/
-git submodule update --init deploy/gprs-gw/bts-emulator
+git submodule update --init deploy/gprs-gw/bts-emulator gsmrelay
 cd deploy/nginx
 docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d --build
 # open https://<lan-ip>:8443 and accept the certificate warning once
@@ -201,7 +221,10 @@ plain `docker compose up -d --build` uses it.
 - runs the gateway with `GPRS_GW_TRUSTED_PROXIES=1` (only `pmb887x-web` in
   front) and `GPRS_GW_ORIGINS` empty (any origin, since the page's origin
   is whatever LAN address it is opened at). Set `GPRS_GW_ORIGINS` in `.env`
-  to `https://<lan-ip>:8443` to restrict it.
+  to `https://<lan-ip>:8443` to restrict it;
+- runs the relay with `GSMRELAY_TRUSTED_PROXIES=1` and `GSMRELAY_ORIGINS`
+  empty, which for the relay means the page's own origin as its `Host`
+  header names it, port included, whatever LAN address it is opened at.
 
 Without `LAN_TLS`, `lan-tls.sh` does nothing and the image is the
 front's plain port-80 server as before.
@@ -234,7 +257,10 @@ big downloads. `location = /gprs` proxies the WebSocket upgrade to
 `pmb887x-gprs-gw:5751` (looked up per request through Docker's DNS, so
 nginx starts without it), appends the peer to `X-Forwarded-For`, and keeps
 an idle link for 960 s, past the gateway's own 15-minute idle close (the
-front does the same, see "What the front is").
+front does the same, see "What the front is"). `location = /gsmrelay` does
+the same for `pmb887x-gsmrelay:4726`, plain GET included, and passes
+`Host` with its port (`$http_host`), which the relay's Origin check
+compares.
 
 ## Re-deploys
 
@@ -243,6 +269,10 @@ The `COPY dist/` layer is rebuilt whenever the bundle changes; clients
 revalidate (`no-cache` + ETag), so new content is live on the next
 reload while unchanged files keep their caches.
 
-The repo-root `.dockerignore` keeps the build context to `dist/` +
-`deploy/nginx/` — the qemu submodule and toolchains never reach the
-docker daemon.
+The repo-root `.dockerignore` keeps the build context to `dist/`,
+`deploy/nginx/`, `deploy/gsmrelay/`, and the relay's `relay.py` and
+`clip/` — the qemu submodule and toolchains never reach the docker daemon,
+nor a local relay run's `balances.json`, `numbers.json` or `relay.log`.
+After changing `relay.py` (or updating the `gsmrelay` submodule), the same
+`docker compose up -d --build` rebuilds the relay; its state stays in the
+`gsmrelay-state` volume.

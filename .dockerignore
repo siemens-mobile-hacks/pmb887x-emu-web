@@ -1,9 +1,19 @@
-# The site image build (deploy/nginx/Dockerfile) needs only the bundle
-# (dist/, from scripts/bundle-dist.sh) and its own config — keep the
-# multi-GB qemu/ tree, toolchains and A/B snapshots out of the context.
+# The image builds from the repository root need little of it — keep the
+# multi-GB qemu/ tree, toolchains and A/B snapshots out of the context:
+#  - the site (deploy/nginx/Dockerfile): the bundle (dist/, from
+#    scripts/bundle-dist.sh) and its own config;
+#  - the relay (deploy/gsmrelay/Dockerfile): relay.py and its sound clips
+#    only, never a local run's balances.json, numbers.json or relay.log.
 *
 !dist/
 !dist/**
 !deploy/
 !deploy/nginx/
 !deploy/nginx/**
+!deploy/gsmrelay/
+!deploy/gsmrelay/**
+!gsmrelay/
+!gsmrelay/smsrelay/
+!gsmrelay/smsrelay/relay.py
+!gsmrelay/clip/
+!gsmrelay/clip/**

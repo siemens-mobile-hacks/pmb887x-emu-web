@@ -20,6 +20,11 @@
 # (git submodule update --init deploy/gprs-gw/bts-emulator).  The front
 # must not close an idle /gprs after nginx's default 60 s: the proxy-timeout
 # label below (README.md, "What the front is").
+#
+# The virtual network (SMS, calls, USSD between the pages at /gsmrelay,
+# ../gsmrelay/README.md) is the pmb887x-gsmrelay service, built from the
+# gsmrelay submodule at the repository root (git submodule update --init
+# gsmrelay).  Without it the page leaves its "Virtual network" option hidden.
 services:
   pmb887x-web:
     build:
@@ -52,6 +57,7 @@ services:
     networks:
       - default
       - gprs
+      - gsmrelay
 
   pmb887x-gprs-gw:
     build:
@@ -101,12 +107,55 @@ services:
         max-size: 10m
         max-file: "5"
 
+  # No VIRTUAL_HOST (nor the nginx-proxy network): the front must never route
+  # here; pages reach it through pmb887x-web's /gsmrelay only.
+  pmb887x-gsmrelay:
+    build:
+      # the repository root, as for pmb887x-web (its NB on "../.." applies)
+      context: ../..
+      dockerfile: deploy/gsmrelay/Dockerfile
+    image: pmb887x-gsmrelay
+    container_name: pmb887x-gsmrelay
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp          # ffmpeg's scratch files when the relay starts
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # measured about 30 MB at 64 phones; ffmpeg's threads only at start
+    pids_limit: 128
+    mem_limit: 256m
+    expose:
+      - "4726"
+    # An empty value leaves the relay's default (../gsmrelay/README.md).
+    environment:
+      GSMRELAY_ORIGINS: ${GSMRELAY_ORIGINS:-}
+      GSMRELAY_PAGE_ORIGIN: https://${VIRTUAL_HOST:-emu.example.org}
+      # nginx-proxy front + pmb887x-web, each appending to X-Forwarded-For
+      GSMRELAY_TRUSTED_PROXIES: ${GSMRELAY_TRUSTED_PROXIES:-2}
+      GSMRELAY_MAX_PHONES: ${GSMRELAY_MAX_PHONES:-}
+      GSMRELAY_PER_IP: ${GSMRELAY_PER_IP:-}
+    volumes:
+      - gsmrelay-state:/var/lib/gsmrelay
+    networks:
+      - gsmrelay
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
 networks:
   default:
     name: nginx-proxy
     external: true
   # pmb887x-web <-> gateway only; also the gateway's way out to the Internet
   gprs: {}
+  # pmb887x-web <-> relay only; internal: the relay needs no way out
+  gsmrelay:
+    internal: true
 
 volumes:
   gprs-gw-state:
+  gsmrelay-state:
