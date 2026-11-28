@@ -28,7 +28,7 @@
 //     of a bench-patched build.
 //   - the clock is the one the page ships: vCPU timers paced to wall
 //     time, the boot's lost time caught up (?bank=, default 30 s).
-//     Another clock goes in through EXTRA_Q (bank=0, icount=…), which the
+//     Another clock goes in through EXTRA_Q (bank=0, idlelead=0, …), which the
 //     JSON records.
 //
 // Results: tests/results/uibench-<board>-<dist>[-<EXTRA_Q>]-<ts>-<pid>.json

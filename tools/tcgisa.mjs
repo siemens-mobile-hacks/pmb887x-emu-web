@@ -16,8 +16,7 @@
 // fixed.
 //
 // Trailing ENV=VAL arguments become ?env= page knobs, and EXTRA_Q appends
-// raw page query (e.g. EXTRA_Q=icount=1 — the suite boots without icount
-// by default, which is a different wasm64 prologue path).
+// raw page query.
 //
 // Exit code: 0 = suite green, 1 = failure/timeout (the log is still
 // printed + written to outfile if given).

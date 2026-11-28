@@ -16,7 +16,7 @@
 // timestamped as they stream) and <dist-name> (wasm page legs via
 // ?suite=dist/tcgbench.bin&dist=<name>, /serial.log polled, lines
 // timestamped on appearance; guest insns read at DONE for MIPS).
-// Results -> tests/results/<suite>-<legs>[-icount..][-<EXTRA_Q>]-<ts>-<pid>.json (+ tcgbench-latest.json, only
+// Results -> tests/results/<suite>-<legs>[-<EXTRA_Q>]-<ts>-<pid>.json (+ tcgbench-latest.json, only
 // when every leg finished with identical checksums).
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
@@ -33,7 +33,6 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = path.resolve(here, "..");
 const port = process.env.PORT || "8080";
 const legs = (process.env.LEGS || "native-jit,dist").split(",");
-const icounts = (process.env.ICOUNTS || "0").split(","); // e.g. "0,1": tax matrix
 const extraQ = process.env.EXTRA_Q || "";
 const runs = Number(process.env.RUNS || 1);
 const suite = process.env.SUITE === "quick" ? "tcgbench-quick" : "tcgbench";
@@ -48,11 +47,10 @@ const bins = {
 const stamp = () => Number(process.hrtime.bigint() / 1000000n) / 1000; // s, µs res
 
 // run one native leg: returns { phases: [[name, ts]], serial, rc }
-function runNative(bin, icount) {
+function runNative(bin) {
   return new Promise((resolve, reject) => {
     const args = ["-M", "versatilepb",
       "-kernel", `${ROOT}/tests/tcgbench/${suite}.bin`, "-semihosting",
-      ...(icount ? ["-icount", "shift=3,sleep=off"] : []),
       "-display", "none", "-monitor", "none", "-serial", "stdio"];
     const p = spawn(bin, args, { stdio: ["ignore", "pipe", "inherit"] });
     let buf = "";
@@ -79,10 +77,9 @@ function runNative(bin, icount) {
 }
 
 // run one wasm page leg: poll /serial.log, timestamp new lines
-async function runWasm(dist, browser, icount) {
+async function runWasm(dist, browser) {
   const page = await browser.newPage();
   const q = new URLSearchParams({ suite: `dist/${suite}.bin`, dist });
-  if (icount) q.set("icount", "1");
   for (const kv of extraQ.split("&").filter(Boolean)) {
     const i = kv.indexOf("=");
     q.append(i > 0 ? kv.slice(0, i) : kv, i > 0 ? kv.slice(i + 1) : "");
@@ -153,12 +150,10 @@ const browser = await chromium.launch({ headless: true });
 try {
   for (let r = 0; r < runs; r++) {
     for (const leg of legs) {
-      for (const ic of icounts) {
-      const icount = ic === "1";
       const t0 = stamp();
       const res = leg.startsWith("native-")
-        ? await runNative(bins[leg], icount)
-        : await runWasm(leg, browser, icount);
+        ? await runNative(bins[leg])
+        : await runWasm(leg, browser);
       const secs = phaseSecs(res.phases);
       const total = secs.reduce((a, [, s]) => a + s, 0);
       const cksum = (res.serial.join("\n").match(/^BENCH done cksum=(\S+)/m) || [])[1] || null;
@@ -167,7 +162,7 @@ try {
         if (m) ITERS[m[1]] = Number(m[2]);
       }
       const entry = {
-        leg, icount, run: r + 1, rc: res.rc, why: res.why ?? undefined, total: +total.toFixed(3),
+        leg, run: r + 1, rc: res.rc, why: res.why ?? undefined, total: +total.toFixed(3),
         wasm: leg.startsWith("native-") ? undefined : path.join("site", leg, "qemu-system-arm.wasm"),
         wasmSha: leg.startsWith("native-") ? null : (() => {
           try { return createHash("sha256").update(fs.readFileSync(path.join(ROOT, "site", leg, "qemu-system-arm.wasm"))).digest("hex").slice(0, 16); } catch { return null; }
@@ -183,13 +178,12 @@ try {
         cksum,
       };
       results.push(entry);
-      console.log(`== ${leg}${icount ? "+icount" : ""} run${r + 1}: total ${entry.total}s` +
+      console.log(`== ${leg} run${r + 1}: total ${entry.total}s` +
         (entry.mips ? ` (${entry.mips} MIPS, ${(entry.insns / 1e6).toFixed(0)}M insns)` : "") +
         `  cksum=${cksum}` + (entry.why ? `  FAILED: ${entry.why}` : ""));
       for (const { n, s, nsPerAccess } of entry.phases) {
         console.log(`   ${n.padEnd(8)} ${s.toFixed(3)}s` +
           (nsPerAccess ? `  (${nsPerAccess} ns/access)` : ""));
-      }
       }
     }
   }
@@ -200,7 +194,7 @@ try {
 // summary + cross-leg checks
 const byLeg = new Map();
 for (const e of results) {
-  const k = e.leg + (e.icount ? "+icount" : "");
+  const k = e.leg;
   if (!byLeg.has(k)) byLeg.set(k, []);
   byLeg.get(k).push(e);
 }
@@ -214,7 +208,7 @@ for (const [leg, es] of byLeg) {
     Object.entries(ph).map(([n, v]) => `${n}=${median(v).toFixed(2)}`).join(" "));
 }
 
-// device-tax summary: ns/access for the poll mirrors, per leg+icount
+// device-tax summary: ns/access for the poll mirrors, per leg
 {
   console.log("\n=== device tax (ns per access, median) ===");
   const rows = [];
@@ -246,17 +240,17 @@ console.log(cksumOk
   ? `checksums identical across legs (${[...cksums][0]})`
   : `!! CHECKSUM MISMATCH: ${[...cksums].join(" ")}`);
 const failed = results.filter((e) => e.rc !== 0);
-for (const e of failed) console.log(`!! ${e.leg}${e.icount ? "+icount" : ""} run${e.run} did not finish (rc ${e.rc}${e.why ? ": " + e.why : ""})`);
+for (const e of failed) console.log(`!! ${e.leg} run${e.run} did not finish (rc ${e.rc}${e.why ? ": " + e.why : ""})`);
 const ok = cksumOk && !failed.length;
 if (!ok) process.exitCode = 1;
 
 const out = {
   ts: new Date().toISOString(),
-  suite, legs, icounts, extraQ, runs,
+  suite, legs, extraQ, runs,
   results, medians: med,
 };
 fs.mkdirSync(`${ROOT}/tests/results`, { recursive: true });
-const file = `${ROOT}/tests/results/${resultName(suite, legs.join(","), icounts.join(",") === "0" ? "" : "icount" + icounts.join(","), extraQ)}.json`;
+const file = `${ROOT}/tests/results/${resultName(suite, legs.join(","), "", extraQ)}.json`;
 fs.writeFileSync(file, JSON.stringify(out, null, 1));
 // a failed run must not become the baseline the next one is compared with
 const latest = `tcgbench-${suite === "tcgbench" ? "" : "quick-"}latest.json`;

@@ -202,7 +202,7 @@ static void phase_mix(void)
     phase_footer();
 }
 
-/* ---- device/icount tax mirrors (same loop body, SRAM vs MMIO) ----
+/* ---- device tax mirrors (same loop body, SRAM vs MMIO) ----
  *
  * rampoll and mmiopoll are written to compile to the SAME instruction
  * sequence (4 volatile reads + 4 conditional updates per iteration);

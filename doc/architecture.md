@@ -129,7 +129,9 @@ the authoritative list; in outline:
 - **Clock options:** the default clock is upstream's TCG `vcpu-timers`.
   The fork adds `vcpu-timers-bank` (lag caught up during the boot, page
   `?bank=`) and `vcpu-timers-idle-lead` (an idle guest's timers run in
-  batches ahead of wall time, page `?idlelead=`). `cross-page-links` is
+  batches ahead of wall time, page `?idlelead=`) and
+  `vcpu-timers-deterministic` (real time kept out of the clock, for
+  lockstep; a fork feature, below). `cross-page-links` is
   upstream's option, on in the page's default accel
   ([performance.md](performance.md), Timing model).
 - **Speed-only changes** in accel/tcg, cputlb, memory, the ARM translator,
@@ -140,7 +142,7 @@ the authoritative list; in outline:
 
 #### Fork features (not upstream's, kept on purpose)
 
-Three features the page has and upstream does not. Each is a file of the fork
+Four features the page has and upstream does not. Each is a file of the fork
 where it can be, and every hook in an upstream file carries the comment
 `PMB887X-WEB FEATURE (<name>)` (`git -C qemu grep "PMB887X-WEB FEATURE"` lists
 them all). Each is off unless asked for, so a qemu without the page behaves
@@ -151,6 +153,7 @@ as upstream's:
 | relay: SMS, USSD and calls ([gsm-relay.md](gsm-relay.md)) | `hw/gsm/gsm-relay.c`; the relay server is the `gsmrelay/` submodule | `gsm-bts.c`/`.h` (a one-line hook at each channel, the `relay=` property's registration), `gsm-coding.c`/`.h` (TCH/F coding), `hw/gsm/meson.build`, `qapi/qom.json` (`relay`) | `-object gsm-bts,...,relay=<chardev>` |
 | mic: the phone's microphone | `hw/arm/pmb887x/dsp/peripheral/afe-mic.c`, `dsp/afe-mic.h` | `afe.c` (the mic ADC's sample), `meson.build` | `PMB887X_MIC_FILE`, or samples from `wasm_mic_put` |
 | card assist: the firmware sees a card change ([sd-card.md](sd-card.md)) | `hw/arm/pmb887x/card-assist.c`/`.h` | `target/arm` (a one-shot PC hook: `cpu.h`, `helper-defs.h`, `translate.c`, `op_helper.c`), `hw/sd/core.c` + `sd.h` (a command observer), `qapi/qom.json` (the object type), `meson.build` | `-object pmb887x-card-assist,id=card` |
+| deterministic clock: two runs match instruction for instruction, for lockstep ([performance.md](performance.md), Timing model) | none | `system/cpu-timers.c` + `include/system/cpu-timers.h` (a host clock only the vCPU moves, budgets that end on the cycle a timer is due), `accel/tcg/tcg-all.c` (the property), `accel/tcg/memory-timing.c` (the I-cache fetch model off) | `-accel tcg,vcpu-timers=on,vcpu-timers-deterministic=on` |
 
 Ports, not features: code that only makes upstream's own devices run in the
 browser is marked `PMB887X-WEB WASM PORT` (the memory card's block I/O and
@@ -447,10 +450,9 @@ thread is using them).
   -object gsm-bts,id=gsm0,netdev=net0` and `gsm-network=gsm0` on the
   machine, see
   [gsm-network.md](gsm-network.md); `?bank=`/`?idlelead=` set
-  those two values, `?icount=` swaps the accel for `-icount`, a `?qargs=`
-  with its own `-accel` drops it). The native launcher uses the same
-  drive/serial/env/SIM set but boots under `-icount shift=3,sleep=off`
-  by default.
+  those two values, a `?qargs=` with its own `-accel` drops it). The
+  native launcher uses the same drive/serial/env/SIM set and the same
+  `-accel`.
 - LCD canvas repaints from the staging buffer on `requestAnimationFrame`;
   every phone key is a `<button>` mapped to linux keycodes, plus
   physical-key mapping.
@@ -486,7 +488,7 @@ thread is using them).
   of the dying screen. `tools/exitcheck.mjs` drives the whole path.
 - URL params (see [diagnostics.md](diagnostics.md)): `?dist=<dir>`
   runs another build output (A/B snapshots), `?suite=` boots a bare-metal image headlessly,
-  `?env=NAME=VAL` passes environment variables, `?icount=`/`?bank=`/
+  `?env=NAME=VAL` passes environment variables, `?bank=`/
   `?idlelead=`/`?trace=`/`?qargs=`/`?sound=off` override the boot recipe,
   `?lockstep=1` turns on the built-in guest-state fold.
 
@@ -510,8 +512,9 @@ test plugins, `test-plugins/`) for each one alone.
   source.
 - `scripts/run-native.sh` — launcher mirroring the web boot recipe's
   pflash/serial/env-var set, SIM device and `vcpu-timers` clock
-  (`ICOUNT=<spec>` runs `-icount` instead: only the lockstep tools, which
-  need two runs to match instruction for instruction).
+  (`ACCEL_OPTS=vcpu-timers-deterministic=on` for two runs that match
+  instruction for instruction; an extra arg's own `-accel` replaces the
+  default, as the lockstep tools pass theirs).
 
 ## Correctness / testing ladder
 

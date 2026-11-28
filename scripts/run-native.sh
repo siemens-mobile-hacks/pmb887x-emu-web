@@ -5,7 +5,7 @@
 #
 # Mirrors the web page's boot: same -drive, -serial and PMB887X_* env vars
 # (PMB887X_BOARD / _STARTUP / _FLASH0_OTP0/1), -device gsm-sim and the same
-# vcpu-timers clock (ICOUNT below for the lockstep tools' exception).
+# vcpu-timers clock.
 #
 # Env overrides:
 #   BOARD=siemens-s75    board config id (default: inferred from filename)
@@ -22,13 +22,10 @@
 #                        $TMPDIR/pmb887x-serial.XXXXXX.log per run, removed
 #                        when qemu exits)
 #   MONITOR=stdio        stdio | unix:path | none
-#   ICOUNT=<spec>        -icount <spec> instead of the page's vcpu-timers
-#                        clock: only the lockstep tools, which need two runs
-#                        to match instruction for instruction (vcpu-timers is
-#                        paced to wall time); "none" runs neither clock.
-#                        Unset (or "vt"): vcpu-timers, as the page
-#   ACCEL_OPTS=a=b,...   more -accel tcg properties under vcpu-timers (an
-#                        extra arg's own -accel replaces the default one)
+#   ACCEL_OPTS=a=b,...   more -accel tcg properties for the page's clock, e.g.
+#                        vcpu-timers-deterministic=on: two runs match
+#                        instruction for instruction (the lockstep tools).
+#                        An extra arg's own -accel replaces the default one
 #   GSM=1                qemu's GSM cell (gsm-bts, doc/gsm-network.md)
 #   GSM_RELAY=host:port  the cell with SMS, USSD and calls served by a relay
 #                        server at host:port (doc/gsm-relay.md)
@@ -79,9 +76,6 @@ if [ -z "${SERIAL:-}" ]; then
   SERIAL_TMP="$SERIAL"
 fi
 MONITOR="${MONITOR:-stdio}"
-# Timing model: the page's vcpu-timers clock (site/app.js timingArgs),
-# guest cycles paced to wall time, unless ICOUNT asks for icount.
-ICOUNT="${ICOUNT:-vt}"
 # bare unix:path means "listen" — add the server options unless given fully
 if [[ "$MONITOR" == unix:* && "$MONITOR" != *,* ]]; then
   MONITOR="$MONITOR,server=on,wait=off"
@@ -155,22 +149,19 @@ if [ -n "${CARD:-}" ]; then
     -object pmb887x-card-assist,id=card${CARD_DEBUG:+,debug=on})
 fi
 
-# ICOUNT=none boots with neither clock; extra args with their own -accel
-# replace the default one, as a ?qargs= -accel does in the page
-ICOUNT_ARGS=()
-if [ "$ICOUNT" = "vt" ]; then
-  case " $* " in
-    *" -accel "*) ;;
-    *) ICOUNT_ARGS=(-accel "tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on${ACCEL_OPTS:+,$ACCEL_OPTS}") ;;
-  esac
-elif [ "$ICOUNT" != "none" ]; then
-  ICOUNT_ARGS=(-icount "$ICOUNT")
-fi
+# Timing model: the page's vcpu-timers clock (site/app.js timingArgs),
+# guest cycles paced to wall time. Extra args with their own -accel replace
+# it, as a ?qargs= -accel does in the page
+ACCEL_ARGS=()
+case " $* " in
+  *" -accel "*) ;;
+  *) ACCEL_ARGS=(-accel "tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on${ACCEL_OPTS:+,$ACCEL_OPTS}") ;;
+esac
 
 : > "$SERIAL"
 QEMU_ARGS=(
   -machine pmb887x
-  "${ICOUNT_ARGS[@]}"
+  "${ACCEL_ARGS[@]}"
   -display "$DISPLAY_MODE"
   -drive "if=pflash,format=raw,file=$FLASH${READONLY:+,$READONLY}"
   -serial "file:$SERIAL"

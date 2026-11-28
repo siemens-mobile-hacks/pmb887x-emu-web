@@ -315,9 +315,10 @@ So the built-in cell stays where upstream runs it.
   could not be loaded in the container this was written in (no
   `NET_ADMIN`); the checks here use the MTS Internet-GPRS connection.
 - **`-icount shift=3`.** Natively with the cell and the scripts' default
-  clock (`-icount shift=3,sleep=on`), EL71 stopped at the boot logo with a
-  firmware `>>EXIT<<` from `l1bbcsg` (layer 1); with the page's clock
-  (`ICOUNT=vt`) it registers. Seen once on `d5421c70af`, not looked into.
+  clock of the time (`-icount shift=3,sleep=on`), EL71 stopped at the boot
+  logo with a firmware `>>EXIT<<` from `l1bbcsg` (layer 1); with the page's
+  clock it registers. Seen once on `d5421c70af`, not looked into. The
+  scripts no longer use icount.
 - **LG boards**: KE800 and KE970 stayed on "No network" at qemu
   47d1ff26aa, native build included. At 133f91266b (bsp 191612c) both
   register and show "Test Network" (table above).

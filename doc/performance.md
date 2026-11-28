@@ -136,8 +136,8 @@ emulator.
 The site default (`site/app.js`) is:
 `-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on`.
 `?bank=` and `?idlelead=` change the two fork values. A `?qargs=` with its own
-`-accel` replaces the whole default. `?icount=<spec>` selects icount instead,
-and `?icount=none` selects neither.
+`-accel` replaces the whole default; that is how lockstep-wasm boots the page
+with `vcpu-timers-deterministic=on`. Nothing uses icount.
 
 | Piece | Origin | What it does |
 |---|---|---|
@@ -147,7 +147,7 @@ and `?icount=none` selects neither.
 | `cross-page-links=on` | upstream option, site default since 2026-11-03 (parent `de0adbd`) | Chains TBs across guest pages and unlinks them on TLB flushes. EL71 boot window −5.8 %; steady state neutral to +1 % |
 | `QEMU_TIMER_ATTR_LAZY` | fork (`util/qemu-timer.c`) | A lazy timer neither caps the budget nor counts as the first deadline. It is used by the dif_v2 TX bus timer, which catches up on any access that could observe it (`0c3c3c8c9b`) |
 | DSP sync | upstream | The Teak runs on the vCPU thread. It is caught up every `DSP_SYNC_PERIOD_NS` (100 µs virtual, `hw/arm/pmb887x/dsp.c`) and on every MCU access to DSP state: ~15k syncs/s in video and midi, two thirds from the timer. The period is guest timing, not a tuning knob |
-| icount `shift=3,sleep=off` | upstream | Deterministic. Used by lockstep (`tools/lockstep-wasm.mjs` passes it explicitly) and as the default of `scripts/run-native.sh` (`ICOUNT=vt` selects vt there) |
+| `vcpu-timers-deterministic=on` | fork (`6d45a4d9ca`) | With `vcpu-timers=on`, keeps real time out of the clock, so two runs match instruction for instruction (as `-icount sleep=off` did). The host clock is a stand-in that only the vCPU moves: to its own position at each budget, and to the next timer deadline while the guest waits (with no timer, the clock stops until an interrupt). It never waits for real time and never drops lag, so it runs unpaced. A budget ends on the exact first cycle at which the next timer is due, with no `CPU_CLOCK_BUDGET_MIN`. The I-cache fetch model is off, because it charges cycles on TB lookups, which depend on exits, kicks and the backend's chaining. Used by lockstep (`LOCKSTEP_ACCEL` in `tools/lockstep.mjs`; `scripts/run-native.sh` takes it as `ACCEL_OPTS=vcpu-timers-deterministic=on`). The same commit made the anchor keep its sub-ns remainder when it moves, in every mode; it used to lose up to 1 ns per re-anchor |
 
 Cost facts:
 
@@ -159,6 +159,10 @@ Cost facts:
 - **The vt boot to idle is bounded by the guest's timeline.** A compute saving
   shows up only in the compute-bound early window (the first ~11 s of an S75
   boot, 2026-10-29).
+- **The deterministic mode is not free-run.** `tools/perf/freerun.diff`
+  keeps the shipped clock and only speeds up its host reading. The
+  deterministic mode changes guest timing (no I-cache charge, exact
+  budgets), so it cannot stand in for free-run in an A/B.
 - **`-accel tcg,thread=multi` without vcpu-timers** (wall-clock virtual time)
   is unusable with the DSP LLE: stopwatch reports "guest never went idle"
   (2026-11-02).
@@ -576,18 +580,30 @@ bash scripts/gate.sh close --dist dist-x           # before the last commit of a
   boots (`tests/run.mjs`) and `lockstep-wasm` (S75, 250e6 insns). `close` adds the ordered boot, native lockstep,
   `lockstep-full` (2.5e9 x3), Firefox, detect, efa-web and the UI check.
   `--list` prints the tiers.
-- **Browser jobs boot with the page default** (vt + cross-page-links). The
-  native boots and the lockstep jobs use icount `shift=3,sleep=off`
-  (`scripts/run-native.sh`, `ICOUNT=vt` for the page's clock).
+- **Browser jobs boot with the page default** (vt + cross-page-links), and
+  so do the native boots (`scripts/run-native.sh`). The lockstep jobs add
+  `vcpu-timers-deterministic=on` (below).
 
 ### Lockstep
 
 | Check | How | Blind to |
 |---|---|---|
-| Default | `node tools/lockstep-wasm.mjs --port 8080 --dist dist-x --insns 2.5e9` (S75; `--flash el71` for EL71). Both sides run icount, one instruction per TB, pinned RTC | Multi-instruction TBs, superblock accounting, io_recompile rewinds, vt-only paths, framebuffer SDRAM (compared only loosely) |
-| Multi-instruction TBs | Prefix `LS_QARGS="-rtc base=2000-01-01T00:00:00,clock=vm"`. This **replaces** the default qargs, so the wasm side runs real TBs and superblocks and does io_recompile rewinds; native stays one instruction per TB. Add `-accel tcg,cross-page-links=on` to cover the page's linking | vt-only paths |
+| Default | `node tools/lockstep-wasm.mjs --port 8080 --dist dist-x --insns 2.5e9` (S75; `--flash el71` for EL71). Both sides run `LOCKSTEP_ACCEL`: the vt clock with `vcpu-timers-deterministic=on`, cross-page-links, one instruction per TB; pinned RTC | Multi-instruction TBs, superblock accounting, io_recompile rewinds, the paced clock's real-time paths (bank, idle lead, `CPU_CLOCK_BUDGET_MIN`) and the I-cache fetch model, framebuffer SDRAM (compared only loosely) |
+| Multi-instruction TBs | Prefix `LS_QARGS="-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-deterministic=on,cross-page-links=on -rtc base=2000-01-01T00:00:00,clock=vm"`. This **replaces** the default qargs, so the wasm side runs real TBs and superblocks and does io_recompile rewinds; native stays one instruction per TB. Without its own `-accel` the page boots its paced default, which cannot match. Not run since lockstep left icount | The paced clock's real-time paths, the I-cache fetch model |
 | DSP translator changes | Native old vs new binary: `node tools/lockstep.mjs --a-bin <old>/qemu-system-arm --b-bin <new>/qemu-system-arm --flash el71 --insns 1e9`, then S75. Normal lockstep runs the same DSP translator on both sides, so it cannot see a DSP change | SL65 (see below) |
 
+- **The clock is the page's, without real time.** Since 2026-11-27
+  lockstep boots with `-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-deterministic=on,cross-page-links=on,one-insn-per-tb=on`
+  (`LOCKSTEP_ACCEL` in `tools/lockstep.mjs`; `lockstep-wasm.mjs` passes it
+  to the page through `?qargs=`, whose `-accel` replaces the page's
+  default). Before, it ran icount `shift=3,sleep=off`. S75 boot, one
+  instruction per TB (2026-11-27): the same binary twice is clean through
+  300M insns (the paced vt clock diverged at 12.6M, ~1 s into the boot);
+  native JIT vs TCI is clean through 2.5G insns, 2390 epochs, serial
+  identical; `lockstep-wasm` (native JIT vs the wasm64 page, 250M) passes in
+  24 s (37 s under icount) with hard digests and serial identical and 246
+  soft E/SDRAM differences (227 under icount; the soft drift is by design,
+  see What lockstep-wasm compares).
 - **The reference is stamped.** It is `build/qemu-native-build`
   (`$WEB_BUILD/qemu-native-build` or `$QEMU_NATIVE_BUILD` when set:
   `scripts/build-dirs.sh`).
@@ -1173,6 +1189,17 @@ where noted):
   started.
 - **One check per TLB probe:** done as C8 (2026-11-10), with three hooks.
 
+From the 2026-11-27 round (paired V8 profiles, bobby and towerblox,
+`6d45a4d9ca`):
+
+- **The baseband's clock poll.** `dsp_bus_advance` asks
+  `baseband_is_active` on every call, which reads the virtual clock while a
+  "full" deadline is set, and `baseband_advance` reads it again. The reads
+  (`cpu_get_clock` + `cpu_clock_owner_position`) are ~0.5 % of bobby and
+  ~0.4 % of towerblox, which is the ceiling. Removing them means comparing
+  against the deadline in DSP cycles, so the bus horizon would hold it.
+  That is upstream's code and below the swab's resolution: not built.
+
 From the 2026-11-10 round (towerblox profile with named TBs, above):
 
 - **Probes are not what a hot TB's listing suggests.** The hottest ARM TBs
@@ -1283,6 +1310,7 @@ contention, free-run) and do not compare across rows.
 | 2026-11-12 | `9de7811900` (`47d1ff26aa`) | Not a speed change: `ui/wasm.c` gets a network port for the page, the GSM cell's IP side in the browser (`site/gprs-net.js`, [gsm-network.md](gsm-network.md)). Nothing runs unless the page attaches, which it does only with the GSM option on, so no benchmark scene sees it; with it on, the page polls the port every 20 ms on its main thread |
 | 2026-11-14 | `48858038d9`, `133f91266b` (`7dd5289`, `1d34feb`) | Not a speed change, checked afterwards with the 419 parent commits of the review rounds (a9b40fe → b1c2a53), both legs built the same way with `tools/perf/freerun.diff` and served side by side. No benchmark runs the changed code: the exit wrap runs at exit, and the page polls `wasm_gsm_state` once a second only with the GSM option on, which the benchmarks untick. Free-run, HEAD against a9b40fe, pairs in both orders: stopwatch +1.2 % (8 pairs, se 1.5), towerblox +0.4 % (8, se 0.8), midi −0.2 % (8, se 0.2), bobby −1.5 % (16, se 0.4), video MIPS −0.7 % (16, se 0.4) and fps −0.7 % (16, se 0.2); the A/A rounds read −1.0 to +1.0 %. Paced, host CPU (lower is better): stopwatch −0.9 %, towerblox +0.3 %, bobby +0.3 % (8 pairs each, se 0.4–0.7). EL71 boot burst (`bootab.sh`): +0.3 % and −2.0 % in the two orders, so HEAD was 0.85 % faster on average; tIdle 30.6 s on both. idlebench, S75, 4 runs each: tIdle 23.4 s on both, guest 1G at 17.3 s on both. uibench MIPS, keylag (v/wall 1.00 on both) and loadbench are the same. The bobby and video differences are placement. The hot DSP functions have the same bodies, but 20326 of 20715 functions changed index: `__wrap_exit`, `wasm_gsm_state` and the uint8 property accessors come early. The qemu-only legs carry the difference (bobby −0.9 %, se 0.9), and the page-only legs do not (+0.1 %, se 1.3). There is nothing to fix |
 | 2026-11-21 | `94754705d1` (`133f91266b`) | Review of the fork against smh/master `3403936c99`: 29 defects fixed, 49 reductions towards upstream (version-pins.md has the list, wasm-fast-paths.md the rows; the numbers are in 2026-11-21 review cleanup, below). Whole candidate against `133f91266b`, free-run, 4 pairs a round: towerblox +1.5 % (4 rounds), bobby +1.7 % (2), midi +0.7 % (2), video MIPS −0.5 % over 12 rounds (se ~0.35; 8 of them on the scene-identical tree `bf626e1fcd`). Boot (bootab.sh, lower = faster): S75 burst +0.1 %, audioMs +0.5 % (4 rounds); KE970 burst −0.35 %, audioMs +1.5 % (2 rounds, se ~3). stopwatch, music, idle and the EL71 boot were not measured: `EL71v41lg91.bin` was missing from the container |
+| 2026-11-27 | `6d45a4d9ca` (`94754705d1`) | The gsm-relay branch as a whole: smh/master `827e5a7e62` (the PL180 MCI and the sd-slot, bsp `502d8d7`), the card assist, the mic and the relay as fork features, the SCCU re-sleep fix, and `vcpu-timers-deterministic` (lockstep's clock in place of `-icount`; in shipped mode it only keeps the sub-ns remainder of the anchor). The legs need a page server each (`PORT_A`/`PORT_B`): the old qemu stops at the new bsp's `sd-slot`. Free-run, 4 pairs a round, one round in each order (this host read the B side ~2–3 % fast whichever dist it was): towerblox −0.1 %, midi −0.7 %, bobby −0.7 % (4 rounds), video MIPS −0.4 %. Boot (bootab.sh, lower = faster): S75 burst −2.5 % (se 1.4); KE970 burst +1.5 % and −1.2 % in the two orders, so +1.35 %, of which the new bsp alone (new qemu, old board configs against new) is +0.9 % (se 1.4). Paired V8 profiles of bobby and towerblox have the same shares to within 0.3 % per function; the clock reads moved from `cpu_clock_position` into `cpu_get_clock` and `cpu_clock_owner_position` (inlining) and come to +0.03–0.08 % of the vCPU. stopwatch, music, idle and the EL71 boot were not measured (no `EL71v41lg91.bin`) |
 
 ## 2026-11-04 deviation cleanup
 

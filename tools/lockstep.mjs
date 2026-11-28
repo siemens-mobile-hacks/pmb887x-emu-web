@@ -11,7 +11,9 @@
 //   node tools/lockstep.mjs --keep                # keep the run dirs
 //
 // Each run boots the fullflash on both binaries (a = reference JIT,
-// b = TCI) under -accel tcg,one-insn-per-tb=on (TB boundaries == insn
+// b = TCI) under the page's vcpu-timers clock with
+// vcpu-timers-deterministic=on (real time out of the clock: two runs match
+// instruction for instruction), one-insn-per-tb=on (TB boundaries == insn
 // boundaries: the plugin's executed-insn-keyed sampling is exact on
 // every backend) and -rtc base=<fixed>,clock=vm (the pmb887x RTC seeds
 // from host time — must be pinned for cross-run comparability), until
@@ -38,7 +40,9 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const RUN_NATIVE = path.join(ROOT, "scripts", "run-native.sh");
 export const PLUGIN = testPlugin("lockstep");
 export const RTC_ARGS = ["-rtc", "base=2000-01-01T00:00:00,clock=vm"];
-export const OIPT_ARGS = ["-accel", "tcg,one-insn-per-tb=on"];
+export const LOCKSTEP_ACCEL = "tcg,thread=multi,vcpu-timers=on,vcpu-timers-deterministic=on," +
+  "cross-page-links=on,one-insn-per-tb=on";
+const ACCEL_ARGS = ["-accel", LOCKSTEP_ACCEL];
 
 const REG_NAMES = [
   "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10",
@@ -131,7 +135,7 @@ export class Side {
     fs.mkdirSync(this.dir, { recursive: true });
     liveSides.add(this);
     this.child = spawn(RUN_NATIVE, [
-      flash, ...RTC_ARGS, ...OIPT_ARGS, "-plugin", this.pluginArgs(),
+      flash, ...RTC_ARGS, ...ACCEL_ARGS, "-plugin", this.pluginArgs(),
     ], {
       env: {
         ...process.env,
@@ -140,9 +144,6 @@ export class Side {
         MONITOR: `unix:${this.monitor}`,
         DISPLAY_MODE: "none",
         RW: "0",
-        // two runs must match instruction for instruction: vcpu-timers, the
-        // default, is paced to wall time and diverges within a second
-        ICOUNT: process.env.ICOUNT || "shift=3,sleep=off",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

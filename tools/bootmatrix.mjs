@@ -9,10 +9,10 @@
 // Usage:
 //   node tools/bootmatrix.mjs --secs 900 [--poll 20] SPEC [SPEC ...]
 //     SPEC = label[|query[|fullflash[|sidecar]]]
-//            query   e.g. "icount=shift=3" (& not needed; single param)
+//            query   e.g. "bank=0" (& not needed; single param)
 //            files default to tools/testflash.mjs's flash (and its sidecar)
 //   Examples:
-//     node tools/bootmatrix.mjs --secs 600 'shift3|icount=shift=3' 'none||fullflashes/KE800-v11b.bin|fullflashes/KE800-v11b.bin.cfi-efa'
+//     node tools/bootmatrix.mjs --secs 600 'nobank|bank=0' 'ke800||fullflashes/KE800-v11b.bin|fullflashes/KE800-v11b.bin.cfi-efa'
 //
 // Output: one line per poll per page (label v=… insns=… …), a final
 // JSON verdict per page (last v/insns/fb, exit text, why it failed;

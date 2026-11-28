@@ -11,9 +11,10 @@
  * Three qemu properties shape the design (all learned the hard way,
  * 2026-09-10):
  *
- * 1. TB partitioning is TCG-internal state, not guest state. With
- *    -icount, accel/tcg/cpu-exec.c retranslates deadline-capped TBs
- *    (cflags_next_tb | insns_left) and the exact cap depends on
+ * 1. TB partitioning is TCG-internal state, not guest state. Under
+ *    -icount (the lockstep clock until 2026-11-27),
+ *    accel/tcg/cpu-exec.c retranslated deadline-capped TBs
+ *    (cflags_next_tb | insns_left) and the exact cap depended on
  *    generated-code expiry behavior: measured JIT vs TCI on S75, same
  *    guest insn stream and identical registers, TB lengths off by one
  *    (70 vs 69). A per-TB digest stream is therefore NOT comparable
@@ -40,7 +41,8 @@
  *    (tools/lockstep.mjs) therefore boots both sides with
  *    one-insn-per-tb=on and -rtc base=<fixed>,clock=vm (the pmb887x RTC
  *    otherwise seeds from host time — the one real nondeterminism
- *    source found; under -icount the vm clock is guest-driven).
+ *    source found; under vcpu-timers-deterministic=on the vm clock is
+ *    guest-driven).
  *
  * Every epoch an E-line carries a hash of the GPR+CPSR vector at the
  * epoch's last sample (the samples in between feed only the dense

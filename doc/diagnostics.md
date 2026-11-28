@@ -23,15 +23,14 @@ option they do not know (exit 2).
 | Param | Effect |
 |---|---|
 | `?dist=<dir>` | build output under `site/` to run: default `dist` (wasm64 TCG backend); any `dist-*` A/B snapshot. Only a bare directory name (letters, digits, `_`, `.`, `-`; not `.` or `..`) is taken; anything else blocks Start with a message |
-| `?icount=<spec>` | run `-icount <spec>` instead of the default `-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on` (`shift=3,sleep=off` = the deterministic, unpaced model the lockstep tools use; `none` = plain realtime clock). A `?qargs=` that carries its own `-accel` also drops the default |
 | `?bank=<s>` | `vcpu-timers-bank`: for the guest's first `<s>` seconds of its own clock (default 30, the boot) time lost to a slow host is caught up — whenever the guest idles — instead of dropped; `0` = upstream (lag over 100 ms is dropped). The clock never runs ahead of wall time. While banked the pill's `slow` warning stays off (see below) |
 | `?idlelead=<us>` | `vcpu-timers-idle-lead`: while the guest waits for an interrupt, its virtual timers run in batches up to `<us>` ahead of wall time, so the vCPU thread sleeps once per batch instead of once per timer (the DSP sync timer fires every 100 us). Default 2000; `0` = the idle clock follows wall time exactly. A build older than the option needs `?qargs=` with its own `-accel` |
 | `?trace=<channels>` | `-debug-channels log=<channels>,io=<channels>` (e.g. `trace=dsp,scu`): log lines and register accesses of the matching devices. A channel is a pattern matched against device ids, QOM types and their parents, and subchannels (`dsp.*`); the flash is `cfi-flash`. qemu exits on a pattern that matches nothing (`qemu/qemu-options.hx`) |
 | `?tracebuf=1` | buffer raw stderr in `window.__qemulog` (no console flood) |
 | `?debug=1` | print every stderr line to console (no dedup) |
-| `?qargs=<args>` | append raw qemu arguments (e.g. `qargs=-d exec -D /exec.log`) |
+| `?qargs=<args>` | append raw qemu arguments (e.g. `qargs=-d exec -D /exec.log`). One that carries its own `-accel` replaces the default `-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=30,vcpu-timers-idle-lead=2000,cross-page-links=on`: lockstep-wasm passes its `-accel` with `vcpu-timers-deterministic=on` (the clock without real time, unpaced) this way |
 | `?env=NAME=VAL` | extra environment for the build (repeatable) — what qemu still reads is its own section below |
-| `?suite=<url>` | boot a bare-metal versatilepb image instead of a phone (`dist/tcgisa.bin`, `dist/tcgbench.bin`); with `?icount=1` the suite runs under `-icount shift=3,sleep=off` (the tcgbench icount-tax leg) |
+| `?suite=<url>` | boot a bare-metal versatilepb image instead of a phone (`dist/tcgisa.bin`, `dist/tcgbench.bin`) |
 | `?lockstep=1` (+ `ls-*`) | built-in guest-state fold on the wasm64 backend — the b-side of `tools/lockstep-wasm.mjs`; `ls-*` params (`insns`, `period`, `epoch`, `meminsns`, `mem`, `from`, `to`) set the insn budget and grid |
 | `?sound=off` | no audiodev at all. lockstep-wasm uses it, because the native leg it is compared with boots without one. The benchmarks keep sound on: bootbench and scenebench measure the audio (site/app.js's comment at the option still says otherwise) |
 | `?serialpoll=1` | don't tap the serial log's MEMFS ops — read the file on a 1 Hz timer instead (the page's fallback path; `SERIAL_POLL=1 tools/exitcheck.mjs` takes it through the EXIT checks) |
@@ -48,7 +47,7 @@ stats HUD is a control too:
 a two-line strip sampled at 2 Hz. Line 1 is this second's guest: speed
 (`1.00×` — virtual seconds per wall second, 1.0 = real time, below it the
 guest is compute-bound; green ≥ 0.95, amber ≥ 0.80, red under), `MIPS`
-(guest insns/s; under `?icount=shift=3`, 125 = real time), `fps`, the
+(guest insns/s), `fps`, the
 page's own paint cost in `ms`, `lag` (wall − virtual: time the guest has
 lost to a slow host) and `halt/s`. `lag` counts from the run start, or
 from the end of the bank (`?bank=`) once that has happened — after the
@@ -229,7 +228,7 @@ Probes and traces:
 | `audioprobe.mjs`, `recprobe.mjs` | the sound path and the video capture (README, Sound) |
 | `recalc-check.mjs`, `keysboot.mjs` | the Siemens key module without a browser; a boot through every key mode |
 | `session.mjs` + `ctl.mjs` | persistent headless-browser session and its client; a command that reads the page (`status`, `wait`, `rate`, `serial`) fails after 20 s on a page whose main thread is frozen |
-| `vclock.mjs`, `bootmatrix.mjs` | virtual-clock progression per `?icount=` variant; parallel boot matrix over query variants |
+| `vclock.mjs`, `bootmatrix.mjs` | virtual-clock progression per page query variant (`bank=0`, `idlelead=0`, ...); parallel boot matrix over query variants |
 
 ## Native reference runs
 
@@ -249,8 +248,10 @@ when `WEB_BUILD` is.
 `scripts/run-native.sh` builds this command line from the fullflash
 name; pass `-debug-channels …` after the fullflash, as an extra
 argument. `-device gsm-sim` plugs into the board's empty
-`iso7816-slot`.) A wasm run under `?icount=shift=3,sleep=off` replays the
-same instruction stream: diff the trace sequences (`COM_SET` →
+`iso7816-slot`.) Under the lockstep tools' `-accel` (`LOCKSTEP_ACCEL` in
+`tools/lockstep.mjs`, with `vcpu-timers-deterministic=on`; on the page
+through `?qargs=`, natively as an extra argument) a wasm run replays the
+native run's instruction stream: diff the trace sequences (`COM_SET` →
 `DSP_CFR cleared` → `SCU_DSP_INT` → …) between the native build and
 `dist` to find where they diverge and bisect a wasm-only failure.
 Remember: `>>EXIT<<` on serial = phone crashed; stop there.

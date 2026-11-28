@@ -14,9 +14,21 @@ Current methods and numbers are in [performance.md](performance.md).
   aborts with `>>EXIT<< FILE: l1bbcsg`. The page's `vcpu-timers` clock
   counts guest CPU cycles and is paced to wall time, so a slow host slows
   the clock instead. `scripts/run-native.sh` uses the same clock (since
-  2026-11-27). `-icount shift=3,sleep=off` has the same property unpaced,
-  and only the lockstep tools still use it: two `vcpu-timers` runs of one
-  build diverge within ~12.6M insns (it is paced to wall time).
+  2026-11-27). Two paced `vcpu-timers` runs of one build diverge within
+  ~12.6M insns, so the lockstep tools add `vcpu-timers-deterministic=on`
+  (unpaced, real time kept out of the clock), which replaced
+  `-icount shift=3,sleep=off` there on 2026-11-27. Nothing uses icount
+  now.
+- **A deterministic clock must not see when a kick arrives.** A kick from
+  another thread ends a budget at a host-timed point. Three things can
+  turn that into guest-visible differences under `vcpu-timers`: a budget
+  limit rounded from where the budget began (or pushed out to a 64-cycle
+  minimum), the I-cache model charging TB lookups (which happen after
+  every exit), and the anchor dropping its sub-ns remainder at every move.
+  They were found by reading the code and removed before the first
+  deterministic run, so which of them would have diverged first is not
+  known. The deterministic mode removes the first two; the anchor keeps its
+  remainder in every mode (2026-11-27).
 - **Under icount, `sleep=off` is the indispensable half.** With `sleep=on`
   the vCPU parks in real time during every idle window and the DSP
   handshake desyncs: `shift=3` and `shift=4` both die with the L1 abort,
@@ -105,7 +117,7 @@ Current methods and numbers are in [performance.md](performance.md).
   waker erase another's wake. A wake issued before
   `qatomic_set(&ctx->notified, true)` in `aio_notify()` is spent on an
   empty look. Either loses an edge, and where the main loop runs the
-  virtual timers (`?icount=none`) a lost edge is a dead guest: KE800 froze
+  virtual timers (neither `vcpu-timers` nor icount) a lost edge is a dead guest: KE800 froze
   on its splash screen on Android. A race like this cannot be A/B'd on a
   clock. Build a knob that widens the window until the failure is certain.
 - **Who runs the timers decides whether a wake is waste.** Under

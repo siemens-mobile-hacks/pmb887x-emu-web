@@ -1576,10 +1576,6 @@ async function bootSuite(url) {
     checkCancel();
     const factory = (await import(engineUrl("qemu-system-arm.js"))).default;
     checkCancel();
-    /* ?icount=1: the icount timing model — measures the icount
-     * tax on the tcgbench workload (TB icount-capping + accounting +
-     * virtual-timer runs) against the same run without it */
-    const icount = QS.get("icount") === "1";
     // the last run's module must not hold its heap while the loader allocates
     // this one's
     qemuModule = null;
@@ -1592,7 +1588,6 @@ async function bootSuite(url) {
         "-M", "versatilepb",
         "-kernel", "/data/tcgisa.bin",
         "-semihosting",
-        ...(icount ? ["-icount", "shift=3,sleep=off"] : []),
         "-serial", "file:/serial.log",
         "-monitor", "none",
         "-parallel", "none",
@@ -1899,19 +1894,16 @@ async function boot() {
     // ?idlelead=<us>: while the guest waits for an interrupt its timers run
     // in batches up to <us> (default 2000) ahead of wall time, one host sleep per batch
     // instead of one per timer; 0 = follow wall time exactly.
-    // ?icount=<spec> selects the instruction-counting model instead (the
-    // lockstep tools need its determinism); ?icount=none runs neither.
     // cross-page-links=on chains TBs across guest pages (unlinked on every
     // TLB flush): EL71 boot window -5.8 %, steady state neutral to +1 %.
-    // A ?qargs= with its own -accel replaces the default one.
-    const icount = QS.get("icount");
+    // A ?qargs= with its own -accel replaces the default one: the lockstep
+    // tools add vcpu-timers-deterministic=on, which keeps real time out of
+    // the clock so that two runs match instruction for instruction.
     const bank = QS.get("bank") ?? "30";
     const idleLead = QS.get("idlelead") ?? "2000";
     const trace = QS.get("trace");
     const extraArgs = (QS.get("qargs") ?? "").split(/\s+/).filter(Boolean);
-    const timingArgs = icount
-      ? (icount === "none" ? [] : ["-icount", icount])
-      : extraArgs.includes("-accel") ? []
+    const timingArgs = extraArgs.includes("-accel") ? []
       : ["-accel", `tcg,thread=multi,vcpu-timers=on,vcpu-timers-bank=${bank},vcpu-timers-idle-lead=${idleLead},cross-page-links=on`];
     // The guest's mixer resamples straight to the output device's own rate,
     // so the worklet copies frames instead of interpolating them. ?sound=off
@@ -3737,7 +3729,7 @@ document.fonts?.ready.then(refitHud);
 // without a debugger. Line 1: speed (virtual seconds per wall second — 1.0
 // is real time), MIPS (guest insns/s), fps, the page's own paint cost, lag
 // (wall − virtual since the run started: time the guest lost to a slow
-// host, or under ?icount= what the real-time cap still owes) and halts/s. Line 2: the
+// host; below zero on a clock that runs ahead of it) and halts/s. Line 2: the
 // machine they were measured on. Whatever the width, it is exactly two
 // lines: tokens are dropped off the line, never wrapped or shrunk.
 let paintMs = 0;

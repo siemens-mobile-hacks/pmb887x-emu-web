@@ -113,8 +113,9 @@ node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
   boundaries (TB partitioning is TCG-internal — see the plugin header
   for the three qemu properties this design owes to).
 - **Driver** `tools/lockstep.mjs`: boots the fullflash on both binaries
-  under `-accel tcg,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,
-  clock=vm` until both sides reach `--insns`, quits via the HMP monitor,
+  under `-accel tcg,thread=multi,vcpu-timers=on,vcpu-timers-deterministic=on,
+  cross-page-links=on,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,
+  clock=vm` (`LOCKSTEP_ACCEL`) until both sides reach `--insns`, quits via the HMP monitor,
   byte-diffs the digest streams (+ serial logs), and saves both sides'
   final screendump next to the results JSON
   (`lockstep-<label>-<stamp>-run<N>-{a,b}.png`; the wasm gate
@@ -128,9 +129,10 @@ node tools/lockstep.mjs --corrupt 67108864 --insns 100e6   # positive control
   epoch and the dense rerun must pinpoint insn N.
 
 The gate is JIT vs TCI on S75, 3 × 2.5G guest insns (a full boot through
-idle), run in parallel. Lockstep requires the icount timing model, the
-one place it is still used (`tools/lockstep.mjs` sets `ICOUNT`; two
-`vcpu-timers` runs of one build diverge within ~12.6M insns). SL65
+idle), run in parallel. Lockstep requires a clock without real time in
+it: the page's vcpu-timers clock with `vcpu-timers-deterministic=on`
+(two paced `vcpu-timers` runs of one build diverge within ~12.6M insns;
+under the deterministic mode, 300M insns match). SL65
 is not deterministic enough for it even against itself
 (doc/performance.md, Lockstep).
 

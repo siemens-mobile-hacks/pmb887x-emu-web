@@ -137,15 +137,14 @@ const distQuery = (spec) => {
   return i < 0 ? "" : spec.slice(i + 1);
 };
 // Per-board protocol.  insnMilestones: "wall s until N insns"; cmpInsns:
-// the LCD comparison starts there at the latest; icount: report the
-// v-window for the board.  The name is historical: the page now runs the
-// vcpu-timers clock (?icount= selects icount), whose guest time is paced to
+// the LCD comparison starts there at the latest; window: report the
+// v-window for the board.  The page's vcpu-timers clock paces guest time to
 // wall time, so the window measures speed only while the guest is behind.
 const BOARDS = {
   s75: {
     flash: "S75v40lg1.bin", sidecars: [], ref: "S75v40lg1_idle.png", rows: 139,
     insnMilestones: [0.1e9, 0.25e9, 0.5e9, 0.75e9, 1.0e9, 1.2e9, 1.3e9],
-    cmpInsns: 1.2e9, icount: true,
+    cmpInsns: 1.2e9, window: true,
   },
   // The LG idle screen prints the host date and time ("03 : 38 / 15/9
   // [Fri]"), so it can never match a reference captured at another
@@ -157,7 +156,7 @@ const BOARDS = {
   ke800: {
     flash: "KE800-v11b.bin", sidecars: ["KE800-v11b.bin.cfi-efa"], ref: "KE800-v11b_idle.png", rows: 150,
     insnMilestones: [0.5e9, 1.0e9, 1.5e9, 1.8e9],
-    cmpInsns: 1.6e9, icount: true, pct: 3.0,
+    cmpInsns: 1.6e9, window: true, pct: 3.0,
   },
 };
 const boardId = opt("board", "s75");
@@ -497,7 +496,7 @@ async function runOne(dist, hashes, r) {
     // A/B window metric (ex-bootbench): wall secs of guest work between
     // v=winLo and v=winHi, interpolated over the sample series
     const wLo = crossAt(rec.samples, winLo), wHi = crossAt(rec.samples, winHi);
-    if (board.icount && wLo !== null && wHi !== null) rec.window = +(wHi - wLo).toFixed(1);
+    if (board.window && wLo !== null && wHi !== null) rec.window = +(wHi - wLo).toFixed(1);
     // guest-work milestones: wall s until N insns executed (deterministic
     // work -> pure speed; no LCD, no grid, immune to idle real-time gating)
     rec.tInsns = {};

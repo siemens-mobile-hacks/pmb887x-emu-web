@@ -1,5 +1,6 @@
-// Measures guest virtual-clock progression in the browser for ?icount= variants.
-//   node vclock.mjs [icountQuery] [totalSeconds] [intervalSeconds]
+// Measures guest virtual-clock progression in the browser for page query
+// variants (bank=0, idlelead=0, ...).
+//   node vclock.mjs [query] [totalSeconds] [intervalSeconds]
 import { chromium } from "playwright-core";
 import { files as fullflashFiles } from "./testflash.mjs";
 const q = process.argv[2] || "";
@@ -12,7 +13,7 @@ await page.goto(`http://127.0.0.1:${process.env.PORT || 8080}/` + (q ? "?" + q :
 await page.click("#ff-mode-own");
 await page.setInputFiles("#fullflash", fullflashFiles);
 await page.click("#btn-start");
-console.log("booted", q || "(default icount)");
+console.log("booted", q || "(default clock)");
 let last = 0n, lastWall = performance.now();
 for (let t = 0; t < totalS; t += everyS) {
   await new Promise((r) => setTimeout(r, everyS * 1000));

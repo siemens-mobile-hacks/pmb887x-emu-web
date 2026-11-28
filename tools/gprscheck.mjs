@@ -217,7 +217,7 @@ async function nativeBackend() {
     "-netdev", "user,id=net0",
     "-object", "gsm-bts,id=gsm0,netdev=net0",
     "-machine", "pmb887x,gsm-network=gsm0"], {
-    env: { ...process.env, QEMU_BIN: QEMU, BOARD: ph.board, RW: "1", ICOUNT: "vt",
+    env: { ...process.env, QEMU_BIN: QEMU, BOARD: ph.board, RW: "1",
       MONITOR: `unix:${monitor}`, SERIAL: path.join(run, "serial.log") },
     stdio: ["ignore", fs.openSync(path.join(run, "qemu.log"), "w"), "inherit"],
   });

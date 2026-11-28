@@ -16,8 +16,8 @@
 // qemu-source.txt the server serves for the dist; --a-bin picks another
 // build dir, --no-ref-check skips the check for a deliberate cross-version
 // comparison).  Both legs boot
-// the same fullflash with -accel tcg,one-insn-per-tb=on and the RTC
-// pinned (determinism prerequisites from phase 0b).
+// the same fullflash with lockstep.mjs's -accel (the deterministic
+// vcpu-timers clock, one insn per TB) and the RTC pinned.
 //
 // Exit 0 iff every run reached the budget on both legs with the same config
 // line, byte-identical serial and identical internal-SRAM digests. The
@@ -30,7 +30,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Side, compareDigestLogs, FLASHES, claimRunStamp, PLUGIN, quitAll, requireLogs } from "./lockstep.mjs";
+import { Side, compareDigestLogs, FLASHES, claimRunStamp, LOCKSTEP_ACCEL, PLUGIN, quitAll, requireLogs } from "./lockstep.mjs";
 import { bounded, loadOwnFlash, pageCall, PageUnresponsive } from "./lib/page.mjs";
 import { NATIVE_JIT_BIN } from "./lib/build-dirs.mjs";
 import { ppmFileToPng } from "./ppm2png.mjs";
@@ -131,8 +131,6 @@ class WasmSide {
     liveWasm.add(this);
     const q = [
       `dist=${dist}`,
-      // the page's default vcpu-timers clock is not deterministic
-      "icount=" + encodeURIComponent("shift=3,sleep=off"),
       "lockstep=1",
       // the native leg (scripts/run-native.sh) boots with no audiodev
       "sound=off",
@@ -142,7 +140,7 @@ class WasmSide {
       `ls-meminsns=${this.args.meminsns}`,
       ...(this.args.mem ? [`ls-mem=${encodeURIComponent(this.args.mem)}`] : []),
       "qargs=" + encodeURIComponent(process.env.LS_QARGS ??
-        "-accel tcg,one-insn-per-tb=on -rtc base=2000-01-01T00:00:00,clock=vm"),
+        `-accel ${LOCKSTEP_ACCEL} -rtc base=2000-01-01T00:00:00,clock=vm`),
       ...(this.args.env || []).map((e) => "env=" + encodeURIComponent(e)),
     ].join("&");
     // an unknown switch, ignored by chromium; rss() finds this leg's

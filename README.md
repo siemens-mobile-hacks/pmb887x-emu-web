@@ -107,10 +107,11 @@ idles, so the boot ends close to the phone's own timeline. It never runs
 ahead of wall time. `vcpu-timers-idle-lead` (page `?idlelead=<us>`) lets a
 waiting guest run its timers in batches up to that far ahead instead, one
 host sleep per batch (default 2000 µs). `cross-page-links` chains TBs
-directly across guest pages. Every board runs this clock. `?icount=<spec>` selects stock
-icount instead (`shift=3,sleep=off` is the deterministic model the
-lockstep tools use; it runs unpaced); `?icount=none` runs the plain
-realtime clock. Why not the plain realtime clock:
+directly across guest pages. Every board runs this clock.
+`vcpu-timers-deterministic=on` (this fork) keeps real time out of it, so
+two runs match instruction for instruction; it runs unpaced, and the
+lockstep tools use it (a `?qargs=` with its own `-accel` replaces the
+page's default). Why not the plain realtime clock:
 [doc/lessons.md](doc/lessons.md).
 
 **Where the time goes:** on the wasm64 backend an S75 boot to the idle
@@ -158,8 +159,8 @@ including the boards.tar wiring).
 ## Native (Linux) build
 
 The same emulator, compiled natively (real TCG JIT — much faster than
-the wasm builds; S75 boots to the idle screen in ~15 s, unpaced: the
-launcher's default `-icount shift=3,sleep=off` never waits for wall time):
+the wasm builds; it runs the page's vcpu-timers clock, so it waits for
+wall time where the page would):
 
 ```bash
 scripts/build-native.sh                          # qemu/ as checked out → build/qemu-native-build (see below)
@@ -172,10 +173,10 @@ scripts/run-native.sh fullflashes/KE800-v11b.bin
 `run-native.sh` follows the web boot recipe (same `-drive if=pflash…`,
 `-serial file:…`, `PMB887X_*` env vars and, with a bsp from 85d4f78 on,
 `-device gsm-sim,operator=…`; board inferred from the fullflash filename,
-IMEI/ESN → OTP included) but defaults to the deterministic
-`-icount shift=3,sleep=off` instead of the page's vcpu-timers clock:
-`ICOUNT=<spec>` sets another `-icount`, `ICOUNT=vt` runs
-`-accel tcg,thread=multi,vcpu-timers=on`, `ICOUNT=none` neither. Options via
+IMEI/ESN → OTP included) and the page's vcpu-timers `-accel`.
+`ACCEL_OPTS=a=b,...` adds `-accel tcg` properties
+(`ACCEL_OPTS=vcpu-timers-deterministic=on` for runs that repeat exactly);
+extra args with their own `-accel` replace the default. Options via
 env: `BOARD= STARTUP= SIM= OPERATOR= IMEI= ESN= EFA_FILE=`
 `RW=1 DISPLAY_MODE=vnc=[:N] MONITOR=unix:/tmp/pmb.sock SERIAL=path`,
 extra qemu args as positional args. Headless by default, the flash is
@@ -274,8 +275,8 @@ still points one run at another binary.
                         static deployment
     bundle-dist.sh      assemble the deployable static bundle in dist/ (what
                         deploy/nginx/ serves; pre-gzip'd + manifest)
-    run-native.sh       native launcher (the web page's boot recipe, icount
-                        clock by default)
+    run-native.sh       native launcher (the web page's boot recipe and
+                        vcpu-timers clock)
     ninja-fast.sh       incremental rebuild + deploy (wasm64 →
                         site/dist) — the iteration loop
     iterate.sh          one-command edit→rebuild→browser-verdict loop
@@ -306,7 +307,7 @@ still points one run at another binary.
                         register + memory digests) — see tests/README.md
     tcgbench/ (+ tools/tcgbench.mjs)
                         fast-iteration perf bench on versatilepb: per-phase
-                        backend A/B + the device/icount-tax mirrors
+                        backend A/B + the device mirrors
     run.mjs             native boot suite (s75/el71/c81/ke800/ke970) and the A/B
                         harness for qemu/bsp bumps; insncount.c is its
                         instruction-count plugin

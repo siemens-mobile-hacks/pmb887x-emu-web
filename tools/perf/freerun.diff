@@ -1,22 +1,22 @@
 diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index d5f78e5966..d2da6ffff2 100644
+index 0d7998d72c..fbdd914bad 100644
 --- a/include/system/cpu-timers.h
 +++ b/include/system/cpu-timers.h
-@@ -67,6 +67,7 @@ void cpu_clock_owner_idle_advance(int64_t deadline);
+@@ -70,6 +70,7 @@ void cpu_clock_owner_idle_advance(int64_t deadline);
  int64_t cpu_get_real_clock(void);
  void cpu_clock_owner_start_budget(int64_t real);
  void cpu_clock_owner_shorten_budget(void);
 +void cpu_clock_set_free_run(int on);
  
- void qemu_timer_notify_cb(void *opaque, QEMUClockType type);
- 
+ /*
+  * PMB887X-WEB FEATURE (deterministic clock): real time leaves the clock.
 diff --git a/system/cpu-timers.c b/system/cpu-timers.c
-index ec613e0a0f..b6493b91f9 100644
+index c5415dc3e3..2e55255a49 100644
 --- a/system/cpu-timers.c
 +++ b/system/cpu-timers.c
-@@ -71,13 +71,22 @@ int64_t cpu_get_ticks(void)
-     return ticks;
- }
+@@ -78,12 +78,23 @@ int64_t cpu_get_ticks(void)
+ static bool cpu_clock_deterministic;
+ static int64_t cpu_clock_deterministic_host;
  
 +/* BENCH ONLY: the vt clock's host reading runs 1000x wall speed */
 +static int64_t cpu_clock_free_run_base = -1;
@@ -26,24 +26,24 @@ index ec613e0a0f..b6493b91f9 100644
 +    qatomic_store_release(&cpu_clock_free_run_base, on ? get_clock() : -1);
 +}
 +
- int64_t cpu_get_clock_locked(void)
+ static int64_t cpu_clock_host(void)
  {
--    int64_t time;
-+    int64_t time, base;
- 
-     time = timers_state.cpu_clock_offset;
-     if (timers_state.cpu_ticks_enabled) {
--        time += get_clock();
-+        base = qatomic_load_acquire(&cpu_clock_free_run_base);
-+        time += base < 0 ? get_clock() : base + (get_clock() - base) * 1000;
++    int64_t base;
++
+     if (cpu_clock_deterministic) {
+         return qatomic_read(&cpu_clock_deterministic_host);
      }
+-    return get_clock();
++    base = qatomic_load_acquire(&cpu_clock_free_run_base);
++    return base < 0 ? get_clock() : base + (get_clock() - base) * 1000;
+ }
  
-     return time;
+ int64_t cpu_get_clock_locked(void)
 diff --git a/ui/wasm.c b/ui/wasm.c
-index 1aa831c1e2..aaef90dd42 100644
+index 5dd55239a0..cf572ff9e3 100644
 --- a/ui/wasm.c
 +++ b/ui/wasm.c
-@@ -201,6 +201,13 @@ int32_t wasm_clock_banked(void)
+@@ -205,6 +205,13 @@ int32_t wasm_clock_banked(void)
      return cpu_clock_banked();
  }
  

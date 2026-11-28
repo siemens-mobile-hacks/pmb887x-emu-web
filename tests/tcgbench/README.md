@@ -13,9 +13,7 @@ scene: the keep/revert meter for a change is the free-run A/B in
 It doubles as the **device-tax bench**: `rampoll` vs `mmiopoll` are
 instruction-shape mirrors (4 volatile loads + 4 conditional updates per
 iteration; verified in disassembly) over SRAM vs four inert MMIO
-registers, so their per-access delta *is* the device-dispatch tax. The
-whole workload can also run with and without `-icount shift=3,sleep=off`
-(`ICOUNTS=0,1`, `?icount=1` on the page).
+registers, so their per-access delta *is* the device-dispatch tax.
 
 ## Phases
 
@@ -60,7 +58,6 @@ SUITE=quick node tools/tcgbench.mjs                      # ÷4 smoke image, 40 m
 
 node tools/tcgbench.mjs                                  # native-jit + dist (wasm64)
 LEGS=native-jit,native-tci,dist,dist-x node tools/tcgbench.mjs
-ICOUNTS=0,1 node tools/tcgbench.mjs                      # icount-tax matrix
 RUNS=3 node tools/tcgbench.mjs                           # medians
 ```
 

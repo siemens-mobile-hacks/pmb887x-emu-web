@@ -34,7 +34,7 @@ python3 gsmrelay/smsrelay/relay.py --port 4725   # --help for the options
 ```
 
 ```
-GSM_RELAY=127.0.0.1:4725 BOARD=siemens-el71 ICOUNT=vt scripts/run-native.sh <fullflash>
+GSM_RELAY=127.0.0.1:4725 BOARD=siemens-el71 scripts/run-native.sh <fullflash>
 ```
 
 `GSM_RELAY=host:port` (scripts/run-native.sh) adds
@@ -181,7 +181,7 @@ sender, a call is answered (silence), USSD gets an empty RELEASE COMPLETE.
 
 ## Verified
 
-EL71 (`ICOUNT=vt`), natively and in headless Chromium:
+EL71 (the page's vcpu-timers clock), natively and in headless Chromium:
 
 | what | result |
 |---|---|
@@ -207,7 +207,8 @@ EL71 (`ICOUNT=vt`), natively and in headless Chromium:
   cell's SP_HIGH must stay above that or every clip loses its start. The
   other direction (a slow guest sends fewer `U` frames) gives the far end
   gaps.
-- `ICOUNT=vt` was used for every check; the scripts' default `shift=3` stops
-  EL71 at the boot logo with the cell (doc/gsm-network.md).
+- The page's vcpu-timers clock was used for every check; under
+  `-icount shift=3`, the scripts' default then, EL71 stopped at the boot
+  logo with the cell (doc/gsm-network.md).
 - A public relay is a shared service: whoever reaches it can claim any IMSI.
   Access control is the relay's business.

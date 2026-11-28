@@ -22,7 +22,7 @@
 //
 // It runs the clock the page ships, which is what the user feels: vCPU
 // timers paced to wall time, with the boot's lost time caught up (?bank=,
-// default 30 s). Another clock goes in through EXTRA_Q (bank=0, icount=…).
+// default 30 s). Another clock goes in through EXTRA_Q (bank=0, idlelead=0, …).
 import { chromium } from "playwright-core";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
